@@ -5,9 +5,9 @@ import asyncio
 import logging
 
 from ftre_agent_core.agent import ReActAgent
-from ftre_agent_core.tool import Tool
 from ftre.bus import BusMessage, EventBus
 from ftre.config import AgentConfig, DEFAULT_CONFIG
+from ftre.tools import get_default_tools
 
 logger = logging.getLogger(__name__)
 
@@ -15,11 +15,10 @@ logger = logging.getLogger(__name__)
 class AgentLoop:
     """每个 session 一个实例，消费 inbound → 驱动 Agent → 产出 outbound。"""
 
-    def __init__(self, session_id: str, bus: EventBus, config: AgentConfig = None, tools: list[Tool] = None):
+    def __init__(self, session_id: str, bus: EventBus, config: AgentConfig = None):
         self.session_id = session_id
         self.bus = bus
         self.config = config or DEFAULT_CONFIG
-        self._tools = tools or []
         self._agent = self._create_agent()
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -42,7 +41,10 @@ class AgentLoop:
         try:
             async for msg in self.bus.subscribe_inbound(self.session_id):
                 if msg.type == "user_input":
-                    await asyncio.get_event_loop().run_in_executor(None, self._run, msg)
+                    # 在线程中执行，不阻塞消费循环
+                    self._run_task = asyncio.ensure_future(
+                        asyncio.get_event_loop().run_in_executor(None, self._run, msg)
+                    )
                 elif msg.type == "cancel":
                     self._agent.cancel_nowait()
         except asyncio.CancelledError:
@@ -73,6 +75,6 @@ class AgentLoop:
             api_base=c.llm.api_base,
             api_type=c.llm.api_type,
             system_prompt=c.system_prompt,
-            tools=self._tools,
+            tools=get_default_tools(),
             max_iterations=c.max_iterations,
         )

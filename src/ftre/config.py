@@ -18,7 +18,7 @@ class AgentConfig:
     """Agent 配置"""
     llm: LLMConfig = field(default_factory=LLMConfig)
     system_prompt: str = ""
-    max_iterations: int = 10
+    max_iterations: int | None = None  # None = 无限循环
 
 
 # 全局默认配置

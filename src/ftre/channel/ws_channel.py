@@ -106,9 +106,34 @@ class WebSocketChannel(Channel):
             logger.info(f"[ws-channel] session disconnected: {session_id}")
 
     async def _on_message(self, session_id: str, raw: str) -> None:
-        """收到客户端消息 → 投递到 Bus"""
+        """
+        收到客户端消息 → 投递到 Bus
+
+        上行帧格式（与下行对称）: {id, type, data, metadata?}
+        - type: "user_input" → data.content 投递到 AgentLoop
+        - type: "cancel"     → 取消当前执行
+        """
         try:
-            data = json.loads(raw)
+            frame = json.loads(raw)
         except json.JSONDecodeError:
             return
-        await self.receive(session_id, data=data)
+
+        frame_type = frame.get("type", "")
+        data = frame.get("data", {})
+        metadata = frame.get("metadata", {})
+
+        if frame_type == "user_input":
+            await self.receive(session_id, data=data, metadata=metadata)
+        elif frame_type == "cancel":
+            cancel_msg = BusMessage(
+                type="cancel",
+                from_channel=self.channel_id,
+                from_session=session_id,
+                to_channel=self.channel_id,
+                to_session=session_id,
+                data=data,
+                metadata=metadata,
+            )
+            await self.bus.publish_inbound(cancel_msg)
+        else:
+            logger.debug(f"[ws-channel] unknown frame type: {frame_type}")
