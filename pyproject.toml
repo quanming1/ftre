@@ -21,5 +21,8 @@ dev = [
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
+[project.scripts]
+ftre = "ftre.main:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]

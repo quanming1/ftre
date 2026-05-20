@@ -1,5 +1,5 @@
 """
-ftre 启动入口
+ftre CLI 入口
 
 用法：
   ftre gateway    启动 WebSocket 网关服务
@@ -12,15 +12,22 @@ from ftre.channel import WebSocketChannel, ChannelManager
 
 
 async def run_gateway():
+    """启动网关：Bus + WebSocket Channel + ChannelManager 分发循环"""
+
+    # 消息总线
     bus = EventBus()
+
+    # WebSocket Channel（启动时自动监听 ws://0.0.0.0:18790）
     ws_channel = WebSocketChannel(bus)
 
+    # Channel 管理器（负责消费 Bus outbound → 分发到对应 Channel）
     mgr = ChannelManager(bus)
     mgr.register(ws_channel)
 
+    # 启动所有 Channel + 分发循环
     await mgr.start()
 
-    # 保持运行
+    # 保持进程运行，直到 Ctrl+C
     try:
         while True:
             await asyncio.sleep(1)
