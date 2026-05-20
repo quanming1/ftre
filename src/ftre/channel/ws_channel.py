@@ -10,6 +10,7 @@ import logging
 import asyncio
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
 from ftre.bus import BusMessage, EventBus
 from .base import Channel
@@ -24,6 +25,13 @@ class WebSocketChannel(Channel):
         self.host = host
         self.port = port
         self.app = FastAPI(title="ftre-gateway")
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
         self._connections: dict[str, WebSocket] = {}
         self._server = None
 
