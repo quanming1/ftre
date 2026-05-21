@@ -1,7 +1,7 @@
 """
 EventBus - 消息网关
 
-- inbound:  按 session_id 隔离队列（Agent Loop 按 session 消费）
+- inbound:  全局单队列（AgentLoop 统一消费）
 - outbound: 全局单队列（ChannelManager 统一消费，按 to_channel 分发）
 """
 import asyncio
@@ -18,7 +18,7 @@ Middleware = Callable[[BusMessage], BusMessage | None]
 class EventBus:
 
     def __init__(self):
-        self._inbound_queues: dict[str, asyncio.Queue[BusMessage]] = {}
+        self._inbound_queue: asyncio.Queue[BusMessage] = asyncio.Queue()
         self._outbound_queue: asyncio.Queue[BusMessage] = asyncio.Queue()
         self._inbound_middlewares: list[Middleware] = []
         self._outbound_middlewares: list[Middleware] = []
@@ -49,8 +49,7 @@ class EventBus:
         msg = self._apply(msg, self._inbound_middlewares)
         if msg is None:
             return
-        queue = self._get_inbound_queue(msg.to_session)
-        await queue.put(msg)
+        await self._inbound_queue.put(msg)
 
     async def publish_outbound(self, msg: BusMessage) -> None:
         """Agent Loop → Bus"""
@@ -63,32 +62,12 @@ class EventBus:
     # 订阅
     # ============================================================
 
-    async def subscribe_inbound(self, session_id: str):
-        """Agent Loop 消费：按 session 隔离"""
-        queue = self._get_inbound_queue(session_id)
+    async def subscribe_inbound(self):
+        """AgentLoop 消费：全局单队列"""
         while True:
-            yield await queue.get()
+            yield await self._inbound_queue.get()
 
     async def subscribe_outbound(self):
         """ChannelManager 消费：全局单队列"""
         while True:
             yield await self._outbound_queue.get()
-
-    # ============================================================
-    # Session
-    # ============================================================
-
-    def create_session(self, session_id: str) -> None:
-        self._get_inbound_queue(session_id)
-
-    def close_session(self, session_id: str) -> None:
-        self._inbound_queues.pop(session_id, None)
-
-    # ============================================================
-    # 内部
-    # ============================================================
-
-    def _get_inbound_queue(self, session_id: str) -> asyncio.Queue[BusMessage]:
-        if session_id not in self._inbound_queues:
-            self._inbound_queues[session_id] = asyncio.Queue()
-        return self._inbound_queues[session_id]

@@ -17,6 +17,13 @@ def set_session_manager(manager: SessionManager) -> None:
     _session_manager = manager
 
 
+@router.post("/sessions")
+async def create_session(title: str = ""):
+    """创建新 session，返回 session_id"""
+    session_id = await _session_manager.create_session(title=title)
+    return {"session_id": session_id}
+
+
 @router.get("/sessions")
 async def list_sessions(limit: int = 50):
     """获取会话列表（按最近活跃排序）"""
