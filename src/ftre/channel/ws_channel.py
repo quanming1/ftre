@@ -2,7 +2,7 @@
 WebSocket Channel
 
 启动时创建 FastAPI + WebSocket 端点。
-每个连接 = 一个 session，自动创建 AgentLoop。
+多个客户端连接共享同一个全局 AgentLoop。
 """
 import uuid
 import json
@@ -20,11 +20,10 @@ logger = logging.getLogger(__name__)
 
 class WebSocketChannel(Channel):
 
-    def __init__(self, bus: EventBus, session_manager=None, host: str = "0.0.0.0", port: int = 18790):
+    def __init__(self, bus: EventBus, host: str = "0.0.0.0", port: int = 18790):
         super().__init__(channel_id="ws", name="WebSocket Channel", bus=bus)
         self.host = host
         self.port = port
-        self._session_manager = session_manager
         self.app = FastAPI(title="ftre-gateway")
         self.app.add_middleware(
             CORSMiddleware,
@@ -33,11 +32,16 @@ class WebSocketChannel(Channel):
             allow_methods=["*"],
             allow_headers=["*"],
         )
+        # session_id → WebSocket 映射（一个 session 对应一个活跃连接）
         self._connections: dict[str, WebSocket] = {}
         self._server = None
 
         # 注册路由
         self.app.websocket("/")(self._ws_endpoint)
+
+        # 挂载 HTTP API 路由
+        from ftre.api.routes import router as api_router
+        self.app.include_router(api_router, prefix="/api")
 
     async def start(self) -> None:
         """启动 WebSocket 服务"""
@@ -54,7 +58,7 @@ class WebSocketChannel(Channel):
         logger.info("[ws-channel] stopped")
 
     async def send(self, msg: BusMessage) -> None:
-        """Bus outbound → 推送给客户端"""
+        """Bus outbound → 推送给客户端（按 session_id 找 WebSocket）"""
         ws = self._connections.get(msg.to_session)
         if not ws:
             return
@@ -64,7 +68,6 @@ class WebSocketChannel(Channel):
             "type": msg.type,
             "data": msg.data,
             "metadata": {
-                **msg.metadata,
                 "channel_id": msg.to_channel,
                 "session_id": msg.to_session,
             },
@@ -76,70 +79,76 @@ class WebSocketChannel(Channel):
     # ============================================================
 
     async def _ws_endpoint(self, ws: WebSocket) -> None:
-        """每个连接 = 一个 session"""
+        """WebSocket 连接入口"""
         await ws.accept()
-        session_id = uuid.uuid4().hex[:12]
+        # 当前连接绑定的 session_id（首次发消息时注册）
+        bound_session_id: str | None = None
 
-        # 注册
-        self._connections[session_id] = ws
-        self.bus.create_session(session_id)
-
-        # 启动 AgentLoop
-        from ftre.agent.loop import AgentLoop
-        from ftre.config import DEFAULT_CONFIG
-        agent_loop = AgentLoop(
-            session_id=session_id,
-            bus=self.bus,
-            session_manager=self._session_manager,
-            config=DEFAULT_CONFIG,
-        )
-        agent_loop.start()
-
-        logger.info(f"[ws-channel] session connected: {session_id}")
+        logger.info("[ws-channel] connection established")
 
         try:
             while True:
                 raw = await ws.receive_text()
-                await self._on_message(session_id, raw)
+                session_id = self._on_message(raw, ws)
+                if session_id and not bound_session_id:
+                    bound_session_id = session_id
         except WebSocketDisconnect:
             pass
         except Exception as e:
-            logger.warning(f"[ws-channel] session {session_id} error: {e}")
+            logger.warning(f"[ws-channel] connection error: {e}")
         finally:
-            self._connections.pop(session_id, None)
-            await agent_loop.stop()
-            self.bus.close_session(session_id)
-            logger.info(f"[ws-channel] session disconnected: {session_id}")
+            # 清理连接映射
+            if bound_session_id:
+                self._connections.pop(bound_session_id, None)
+            logger.info(f"[ws-channel] connection closed (session={bound_session_id})")
 
-    async def _on_message(self, session_id: str, raw: str) -> None:
+    def _on_message(self, raw: str, ws: WebSocket) -> str | None:
         """
         收到客户端消息 → 投递到 Bus
 
-        上行帧格式（与下行对称）: {id, type, data, metadata?}
-        - type: "user_input" → data.content 投递到 AgentLoop
-        - type: "cancel"     → 取消当前执行
+        上行帧格式: {id, type, data: {content, session_id, ...}, metadata?}
+        返回 session_id（用于连接绑定）
         """
         try:
             frame = json.loads(raw)
         except json.JSONDecodeError:
-            return
+            return None
 
         frame_type = frame.get("type", "")
         data = frame.get("data", {})
         metadata = frame.get("metadata", {})
+        session_id = data.get("session_id", "")
+
+        if not session_id:
+            logger.warning("[ws-channel] 收到无 session_id 的消息，忽略")
+            return None
+
+        # 注册 session_id → WebSocket 映射（后续 outbound 按此推送）
+        self._connections[session_id] = ws
 
         if frame_type == "user_input":
-            await self.receive(session_id, data=data, metadata=metadata)
-        elif frame_type == "cancel":
-            cancel_msg = BusMessage(
-                type="cancel",
+            msg = BusMessage(
+                type="user_input",
                 from_channel=self.channel_id,
-                from_session=session_id,
                 to_channel=self.channel_id,
+                from_session=session_id,
                 to_session=session_id,
                 data=data,
                 metadata=metadata,
             )
-            await self.bus.publish_inbound(cancel_msg)
+            asyncio.ensure_future(self.bus.publish_inbound(msg))
+        elif frame_type == "cancel":
+            cancel_msg = BusMessage(
+                type="cancel",
+                from_channel=self.channel_id,
+                to_channel=self.channel_id,
+                from_session=session_id,
+                to_session=session_id,
+                data=data,
+                metadata=metadata,
+            )
+            asyncio.ensure_future(self.bus.publish_inbound(cancel_msg))
         else:
             logger.debug(f"[ws-channel] unknown frame type: {frame_type}")
+
+        return session_id

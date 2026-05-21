@@ -219,7 +219,7 @@ class SessionManager:
                 content = event["data"].get("content", "")
                 messages.append({"role": "user", "content": content})
 
-            elif t == "TOOL_CALL":
+            elif t == "tool_call":
                 pending_tool_calls.append({
                     "id": event["data"].get("id", ""),
                     "type": "function",
@@ -229,7 +229,7 @@ class SessionManager:
                     },
                 })
 
-            elif t == "TOOL_RESULT":
+            elif t == "tool_result":
                 _flush_tool_calls()
                 messages.append({
                     "role": "tool",
@@ -237,7 +237,7 @@ class SessionManager:
                     "content": event["data"].get("result", ""),
                 })
 
-            elif t == "MESSAGE_COMPLETE":
+            elif t == "message_complete":
                 _flush_tool_calls()
                 messages.append({
                     "role": "assistant",
