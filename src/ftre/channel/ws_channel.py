@@ -20,10 +20,11 @@ logger = logging.getLogger(__name__)
 
 class WebSocketChannel(Channel):
 
-    def __init__(self, bus: EventBus, host: str = "0.0.0.0", port: int = 18790):
+    def __init__(self, bus: EventBus, session_manager=None, host: str = "0.0.0.0", port: int = 18790):
         super().__init__(channel_id="ws", name="WebSocket Channel", bus=bus)
         self.host = host
         self.port = port
+        self._session_manager = session_manager
         self.app = FastAPI(title="ftre-gateway")
         self.app.add_middleware(
             CORSMiddleware,
@@ -86,7 +87,12 @@ class WebSocketChannel(Channel):
         # 启动 AgentLoop
         from ftre.agent.loop import AgentLoop
         from ftre.config import DEFAULT_CONFIG
-        agent_loop = AgentLoop(session_id=session_id, bus=self.bus, config=DEFAULT_CONFIG)
+        agent_loop = AgentLoop(
+            session_id=session_id,
+            bus=self.bus,
+            session_manager=self._session_manager,
+            config=DEFAULT_CONFIG,
+        )
         agent_loop.start()
 
         logger.info(f"[ws-channel] session connected: {session_id}")
