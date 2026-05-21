@@ -9,16 +9,25 @@ import asyncio
 
 from ftre.bus import EventBus
 from ftre.channel import WebSocketChannel, ChannelManager
+from ftre.session import SessionManager
 
 
 async def run_gateway():
-    """启动网关：Bus + WebSocket Channel + ChannelManager 分发循环"""
+    """启动网关：Bus + SessionManager + WebSocket Channel + ChannelManager 分发循环"""
+
+    # Session 管理器（SQLite）
+    session_manager = SessionManager()
+    await session_manager.init()
+
+    # 注入到 API 路由
+    from ftre.api.routes import set_session_manager
+    set_session_manager(session_manager)
 
     # 消息总线
     bus = EventBus()
 
     # WebSocket Channel（启动时自动监听 ws://0.0.0.0:18790）
-    ws_channel = WebSocketChannel(bus)
+    ws_channel = WebSocketChannel(bus, session_manager=session_manager)
 
     # Channel 管理器（负责消费 Bus outbound → 分发到对应 Channel）
     mgr = ChannelManager(bus)
@@ -35,6 +44,7 @@ async def run_gateway():
         pass
     finally:
         await mgr.stop()
+        await session_manager.close()
 
 
 def main():
