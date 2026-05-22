@@ -50,7 +50,7 @@ async def run_gateway():
     await mgr.start()
 
     # Cron 调度器 — 扫描 ~/.ftre/cron/ 触发定时任务
-    cron_scheduler = CronScheduler(bus=bus, session_manager=session_manager)
+    cron_scheduler = CronScheduler(bus=bus, session_manager=session_manager, channel_manager=mgr)
     cron_scheduler.start()
 
     # 保持进程运行，直到 Ctrl+C
