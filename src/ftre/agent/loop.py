@@ -13,7 +13,7 @@ from ftre_agent_core.agent import ReActAgent
 from ftre.bus import BusMessage, EventBus
 from ftre.config import AgentConfig, DEFAULT_CONFIG
 from ftre.session import SessionManager
-from ftre.tools import get_default_tools
+from ftre.tools import build_default_tools
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +27,10 @@ class AgentLoop:
     - stop()   → 取消消费协程 + 中断 Agent
     """
 
-    def __init__(self, bus: EventBus, session_manager: SessionManager, config: AgentConfig = None):
+    def __init__(self, bus: EventBus, session_manager: SessionManager, channel_manager=None, config: AgentConfig = None):
         self.bus = bus
         self.session_manager = session_manager
+        self.channel_manager = channel_manager
         self.config = config or DEFAULT_CONFIG
         self._agent = self._create_agent()
         self._task: asyncio.Task | None = None
@@ -106,6 +107,12 @@ class AgentLoop:
         else:
             messages = content
 
+        # 注入当前上下文到 system_prompt（channel_id / session_id）
+        self._agent.system_prompt = (
+            self.config.system_prompt
+            + f"\n\n[当前上下文] channel_id={inbound.from_channel}, session_id={session_id}"
+        )
+
         # Step 2: 存储用户输入
         asyncio.run_coroutine_threadsafe(
             self.session_manager.save_message(session_id, "USER_INPUT", inbound.data),
@@ -113,7 +120,14 @@ class AgentLoop:
         ).result()
 
         # Step 3: 驱动 Agent 执行
-        for event in self._agent.run(messages):
+        runtime_context = {
+            "session_id": session_id,
+            "channel_id": inbound.from_channel,
+            "event_loop": self._event_loop,
+            "bus": self.bus,
+            "session_manager": self.session_manager,
+        }
+        for event in self._agent.run(messages, runtime_context=runtime_context):
             # Step 4: 持久事件存储
             if event.get("type") in self.PERSISTENT_EVENTS:
                 asyncio.run_coroutine_threadsafe(
@@ -141,6 +155,6 @@ class AgentLoop:
             api_base=c.llm.api_base,
             api_type=c.llm.api_type,
             system_prompt=c.system_prompt,
-            tools=get_default_tools(),
+            tools=build_default_tools(channel_manager=self.channel_manager),
             max_iterations=c.max_iterations,
         )
