@@ -9,6 +9,7 @@ import os
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 from ftre.bus import BusMessage
 from .bash import create_bash_tool, _BashState
+from .cron import create_cron_tool
 from .edit import create_edit_tool
 from .read import create_read_tool
 from .think import create_think_tool
@@ -76,7 +77,7 @@ def _create_send_message_tool(channel_manager) -> Tool:
 
 
 def build_default_tools(cwd: str | None = None, channel_manager=None) -> list[Tool]:
-    """构建默认工具集：think + bash + read + write + edit + send_message
+    """构建默认工具集：think + bash + read + write + edit + cron + send_message
 
     Args:
         cwd: 工作目录（默认使用进程 CWD）
@@ -89,6 +90,7 @@ def build_default_tools(cwd: str | None = None, channel_manager=None) -> list[To
         create_read_tool(state=state),
         create_write_tool(state=state),
         create_edit_tool(state=state),
+        create_cron_tool(),
     ]
 
     if channel_manager:

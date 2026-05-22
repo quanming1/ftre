@@ -78,9 +78,11 @@ class SessionManager:
     # Session CRUD
     # ============================================================
 
-    async def create_session(self, session_id: str | None = None, title: str = "") -> str:
-        """创建新 session，返回 session_id"""
-        sid = session_id or self.create_id()
+    async def create_session(self, channel_id: str, title: str = "") -> str:
+        """创建新 session，返回带 channel_id 前缀的 session_id（格式: '{channel_id}::sess_xxx'）"""
+        if not channel_id:
+            raise ValueError("channel_id 不能为空")
+        sid = f"{channel_id}::{self.create_id()}"
         now = time.time()
         await self._db.execute(
             "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",

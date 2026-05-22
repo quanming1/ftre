@@ -13,6 +13,7 @@ from ftre.session import SessionManager
 from ftre.plugin import PluginManager
 from ftre.agent.loop import AgentLoop
 from ftre.config import load_config_file
+from ftre.tools.cron import CronScheduler
 
 
 async def run_gateway():
@@ -48,6 +49,10 @@ async def run_gateway():
     # 启动所有 Channel + 分发循环
     await mgr.start()
 
+    # Cron 调度器 — 扫描 ~/.ftre/cron/ 触发定时任务
+    cron_scheduler = CronScheduler(bus=bus, session_manager=session_manager)
+    cron_scheduler.start()
+
     # 保持进程运行，直到 Ctrl+C
     try:
         while True:
@@ -55,6 +60,7 @@ async def run_gateway():
     except KeyboardInterrupt:
         pass
     finally:
+        await cron_scheduler.stop()
         await agent_loop.stop()
         await mgr.stop()
         await session_manager.close()
