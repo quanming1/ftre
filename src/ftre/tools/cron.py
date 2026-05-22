@@ -22,7 +22,8 @@ import uuid
 from pathlib import Path
 
 from croniter import croniter
-from ftre_agent_core.tool import Tool, ToolParameter
+from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre.channel import Channel
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,19 @@ def last_run(job: dict) -> float:
 
 
 # ============================================================
+# Cron Channel - 静默通道，不向任何外部投递（cron session 仅通过 send_message 推到其他 channel）
+# ============================================================
+
+class CronChannel(Channel):
+    def __init__(self, bus):
+        super().__init__(channel_id="cron", name="Cron Channel", bus=bus)
+
+    async def send(self, msg) -> None:
+        """cron channel 是静默的，outbound 不推送任何地方"""
+        return
+
+
+# ============================================================
 # Scheduler
 # ============================================================
 
@@ -98,12 +112,15 @@ class CronScheduler:
     Agent 收到 prompt 后可调用 send_message 向其他 session 推送结果。
     """
 
-    def __init__(self, bus, session_manager, default_channel: str = "ws", scan_interval: int = 30):
+    def __init__(self, bus, session_manager, channel_manager=None, default_channel: str = "cron", scan_interval: int = 30):
         self.bus = bus
         self.session_manager = session_manager
         self.default_channel = default_channel
         self.scan_interval = scan_interval
         self._task: 'asyncio.Task | None' = None
+        # 注册静默 cron channel 让 outbound 分发不报 unknown channel
+        if channel_manager is not None:
+            channel_manager.register(CronChannel(bus))
 
     def start(self) -> None:
         import asyncio
@@ -187,6 +204,15 @@ cron 表达式（5 段：分 时 日 月 周）
   例：'*/5 * * * *' 每5分钟；'0 9 * * *' 每天9点；'0 */1 * * *' 每小时整点
 
 任务到期会触发 agent 在独立 cron session 中执行 prompt。
+
+⚠️ 关于 prompt 字段（重要！避免误解）：
+- prompt 是**每次到期单独触发**时发给 agent 的指令，描述"这一次要做的事"
+- 调度频率已由 cron 表达式表达，**prompt 中绝不要再写"每隔X分钟/每天/定时"等时间频率词**
+- 不要写"持续生成/不停地..."等暗示循环的措辞
+- 写法应像一次性命令，例如：
+    ✅ 好："写一首诗，要求选一个国家作为灵感，注明国家名"
+    ❌ 差："每隔1分钟写一首诗，每次换一个国家"  ← 把调度信息混进了任务内容
+- 如果有"不要重复"等跨次约束，应明确说"参考最近的历史/上次"，不要用"每次/连续"
 """
 
 
@@ -196,7 +222,12 @@ def _cron(
     title: str = "",
     prompt: str = "",
     job_id: str = "",
+    caller_channel: str = Injected("channel_id"),
 ) -> str:
+    # 在 cron 触发的 session 中禁止再调用 cron 工具，避免无限套娃
+    if caller_channel == "cron":
+        return "[error] cron 触发的会话中禁止使用 cron 工具（避免循环创建/修改任务）"
+
     if action == "create":
         if not cron or not title or not prompt:
             return "[error] create 需要 cron, title, prompt 三个参数"
@@ -271,7 +302,7 @@ def create_cron_tool() -> Tool:
             ToolParameter(name="action", type="string", description="操作：create/list/delete/update", required=True, enum=["create", "list", "delete", "update"]),
             ToolParameter(name="cron", type="string", description="cron 表达式（create/update 用）", required=False),
             ToolParameter(name="title", type="string", description="任务标题（create/update 用）", required=False),
-            ToolParameter(name="prompt", type="string", description="到期触发的提示词（create/update 用）", required=False),
+            ToolParameter(name="prompt", type="string", description="到期触发的提示词（create/update 用）。这是每次单独触发时发给 agent 的一次性指令，不要包含频率/周期词（'每隔X分钟'、'每天'、'连续'等），频率由 cron 表达式表达", required=False),
             ToolParameter(name="job_id", type="string", description="任务 ID（delete/update 用）", required=False),
         ],
         func=_cron,
