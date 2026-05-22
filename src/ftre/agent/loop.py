@@ -32,9 +32,10 @@ class AgentLoop:
         self.session_manager = session_manager
         self.channel_manager = channel_manager
         self.config = config or DEFAULT_CONFIG
-        self._agent = self._create_agent()
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        # session_id → 当前正在执行的 agent（用于取消）
+        self._active_agents: dict[str, ReActAgent] = {}
 
     def start(self) -> None:
         """启动消费循环"""
@@ -42,21 +43,23 @@ class AgentLoop:
         self._task = asyncio.create_task(self._consume())
 
     async def stop(self) -> None:
-        """停止消费循环并中断 Agent"""
+        """停止消费循环并中断所有正在运行的 Agent"""
         if self._task:
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        self._agent.cancel_nowait()
+        for agent in list(self._active_agents.values()):
+            agent.cancel_nowait()
+        self._active_agents.clear()
 
     async def _consume(self) -> None:
         """
         消费循环：从 Bus 全局 inbound 队列读取消息。
 
         - user_input → 在线程池中执行 _run()
-        - cancel     → 发送取消信号给 Agent
+        - cancel     → 发送取消信号给对应 session 的 Agent
         """
         try:
             async for msg in self.bus.subscribe_inbound():
@@ -65,7 +68,12 @@ class AgentLoop:
                         asyncio.get_event_loop().run_in_executor(None, self._run, msg)
                     )
                 elif msg.type == "cancel":
-                    self._agent.cancel_nowait()
+                    sid = msg.from_session or msg.data.get("session_id", "")
+                    agent = self._active_agents.get(sid)
+                    if agent is not None:
+                        agent.cancel_nowait()
+                    else:
+                        logger.warning(f"[agent-loop] cancel: 未找到活跃 agent (session={sid})")
         except asyncio.CancelledError:
             pass
 
@@ -107,11 +115,13 @@ class AgentLoop:
         else:
             messages = content
 
-        # 注入当前上下文到 system_prompt（channel_id / session_id）
-        self._agent.system_prompt = (
+        # 每次都建一个独立 agent，彻底避免跨 session 串扰
+        agent = self._create_agent()
+        agent.system_prompt = (
             self.config.system_prompt
             + f"\n\n[当前上下文] channel_id={inbound.from_channel}, session_id={session_id}"
         )
+        self._active_agents[session_id] = agent
 
         # Step 2: 存储用户输入
         asyncio.run_coroutine_threadsafe(
@@ -127,24 +137,30 @@ class AgentLoop:
             "bus": self.bus,
             "session_manager": self.session_manager,
         }
-        for event in self._agent.run(messages, runtime_context=runtime_context):
-            # Step 4: 持久事件存储
-            if event.get("type") in self.PERSISTENT_EVENTS:
-                asyncio.run_coroutine_threadsafe(
-                    self.session_manager.save_message(session_id, event["type"], event.get("data", {})),
-                    self._event_loop,
-                ).result()
 
-            # Step 5: 推送给前端
-            out = BusMessage(
-                type="agent_event",
-                from_channel=inbound.from_channel,
-                to_channel=inbound.to_channel,
-                from_session=inbound.from_session,
-                to_session=inbound.to_session,
-                data=event,
-            )
-            asyncio.run_coroutine_threadsafe(self.bus.publish_outbound(out), self._event_loop).result()
+        try:
+            for event in agent.run(messages, runtime_context=runtime_context):
+                # Step 4: 持久事件存储
+                if event.get("type") in self.PERSISTENT_EVENTS:
+                    asyncio.run_coroutine_threadsafe(
+                        self.session_manager.save_message(session_id, event["type"], event.get("data", {})),
+                        self._event_loop,
+                    ).result()
+
+                # Step 5: 推送给前端
+                out = BusMessage(
+                    type="agent_event",
+                    from_channel=inbound.from_channel,
+                    to_channel=inbound.to_channel,
+                    from_session=inbound.from_session,
+                    to_session=inbound.to_session,
+                    data=event,
+                )
+                asyncio.run_coroutine_threadsafe(self.bus.publish_outbound(out), self._event_loop).result()
+        finally:
+            # 清理活跃引用，让 GC 回收
+            if self._active_agents.get(session_id) is agent:
+                self._active_agents.pop(session_id, None)
 
     def _create_agent(self) -> ReActAgent:
         """根据配置创建 ReActAgent 实例"""
