@@ -18,9 +18,9 @@ def set_session_manager(manager: SessionManager) -> None:
 
 
 @router.post("/sessions")
-async def create_session(title: str = ""):
-    """创建新 session，返回 session_id"""
-    session_id = await _session_manager.create_session(title=title)
+async def create_session(channel_id: str, title: str = ""):
+    """创建新 session，返回带 channel 前缀的 session_id（如 'ws::sess_xxx'）"""
+    session_id = await _session_manager.create_session(channel_id=channel_id, title=title)
     return {"session_id": session_id}
 
 
