@@ -2,21 +2,25 @@
 SessionManager - 会话与消息持久化（SQLite）
 
 两张表：
-- sessions: 会话元信息（id, title, created_at, updated_at）
+- sessions: 会话元信息（id, channel_id, title, created_at, updated_at）
 - messages: 事件流（id, session_id, type, data, timestamp）
 """
 import json
 import time
 import uuid
 import logging
+from pathlib import Path
 from typing import Any, TypedDict
 
 import aiosqlite
 
+from ftre.config import CONFIG_PATH
+
 
 class SessionModel(TypedDict):
     """会话元信息"""
-    id: str              # 会话唯一标识
+    id: str              # 会话唯一标识（含 channel 前缀，如 'ws::sess_xxx'）
+    channel_id: str      # 来源 channel（如 'ws' / 'cron' / 'cli'）
     title: str           # 对话标题
     created_at: float    # 创建时间戳
     updated_at: float    # 最后活跃时间戳
@@ -33,19 +37,27 @@ class MessageModel(TypedDict):
 logger = logging.getLogger(__name__)
 
 
+# 默认数据库路径：~/.ftre/sessions.db，与 config.json 同目录
+DEFAULT_DB_PATH = str(CONFIG_PATH.parent / "sessions.db")
+
+
 class SessionManager:
 
-    def __init__(self, db_path: str = "./data/sessions.db"):
-        self._db_path = db_path
+    def __init__(self, db_path: str | None = None):
+        self._db_path = db_path or DEFAULT_DB_PATH
         self._db: aiosqlite.Connection | None = None
 
     async def init(self) -> None:
         """初始化数据库连接并建表"""
+        # 保证目标目录存在（首次启动 ~/.ftre 可能还没建）
+        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+
         self._db = await aiosqlite.connect(self._db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
                 id          TEXT PRIMARY KEY,
+                channel_id  TEXT NOT NULL DEFAULT '',
                 title       TEXT NOT NULL DEFAULT '',
                 created_at  REAL NOT NULL,
                 updated_at  REAL NOT NULL
@@ -62,7 +74,34 @@ class SessionManager:
             CREATE INDEX IF NOT EXISTS idx_messages_session
                 ON messages(session_id, timestamp ASC);
         """)
+        # 老库迁移：sessions 表存量没有 channel_id 列时补上
+        await self._migrate_add_column(
+            "sessions", "channel_id", "TEXT NOT NULL DEFAULT ''"
+        )
+        # 索引：channel_id + updated_at（按 channel 过滤会话列表用）
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_channel "
+            "ON sessions(channel_id, updated_at DESC)"
+        )
+        # 老数据回填：channel_id 为空时尝试从 id 前缀（'<ch>::sess_xxx'）解析
+        await self._db.execute(
+            "UPDATE sessions "
+            "SET channel_id = substr(id, 1, instr(id, '::') - 1) "
+            "WHERE channel_id = '' AND instr(id, '::') > 0"
+        )
         await self._db.commit()
+
+    async def _migrate_add_column(
+        self, table: str, column: str, decl: str
+    ) -> None:
+        """如果 table 上没有 column，则 ALTER TABLE 加上"""
+        cursor = await self._db.execute(f"PRAGMA table_info({table})")
+        rows = await cursor.fetchall()
+        existing = {r["name"] for r in rows}
+        if column in existing:
+            return
+        await self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        logger.warning(f"[session] 迁移：{table}.{column} 已添加")
 
     async def close(self) -> None:
         """关闭数据库连接"""
@@ -85,8 +124,9 @@ class SessionManager:
         sid = f"{channel_id}::{self.create_id()}"
         now = time.time()
         await self._db.execute(
-            "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (sid, title, now, now),
+            "INSERT INTO sessions (id, channel_id, title, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (sid, channel_id, title, now, now),
         )
         await self._db.commit()
         return sid
@@ -101,6 +141,7 @@ class SessionManager:
             return None
         return SessionModel(
             id=row["id"],
+            channel_id=row["channel_id"],
             title=row["title"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -127,15 +168,29 @@ class SessionManager:
         await self._db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         await self._db.commit()
 
-    async def list_sessions(self, limit: int = 200) -> list[SessionModel]:
-        """列出最近的 sessions（按 updated_at 倒序）"""
-        cursor = await self._db.execute(
-            "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)
-        )
+    async def list_sessions(
+        self, limit: int = 200, channel_id: str | None = None
+    ) -> list[SessionModel]:
+        """
+        列出最近的 sessions（按 updated_at 倒序）。
+        channel_id 非空时仅返回该 channel 的会话。
+        """
+        if channel_id:
+            cursor = await self._db.execute(
+                "SELECT * FROM sessions WHERE channel_id = ? "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (channel_id, limit),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            )
         rows = await cursor.fetchall()
         return [
             SessionModel(
                 id=r["id"],
+                channel_id=r["channel_id"],
                 title=r["title"],
                 created_at=r["created_at"],
                 updated_at=r["updated_at"],
