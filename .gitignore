@@ -5,3 +5,9 @@ dist/
 build/
 .venv/
 data/
+
+# 临时调试脚本（避免误提交含密钥的本地脚本）
+_*.py
+tmp_*.py
+fetch_*.py
+debug_*.py
