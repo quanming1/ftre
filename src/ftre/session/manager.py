@@ -198,6 +198,8 @@ class SessionManager:
         - TOOL_CALL         → 连续的合并为 {"role": "assistant", "tool_calls": [...]}
         - TOOL_RESULT       → {"role": "tool", "tool_call_id": ..., "content": ...}
         - MESSAGE_COMPLETE  → {"role": "assistant", "content": ...}
+        - EXTERNAL_MESSAGE  → {"role": "assistant", "name": "<src>", "content": "[来自 ...]"}
+                              其他 AI agent 通过 send_message 发来的消息
         - 其他类型跳过
         """
         messages: list[dict] = []
@@ -246,6 +248,18 @@ class SessionManager:
                     "content": event["data"].get("content", ""),
                 })
 
+            elif t == "external_message":
+                _flush_tool_calls()
+                d = event["data"]
+                from_ch = d.get("from_channel", "")
+                from_sid = d.get("from_session", "")
+                src = f"{from_ch}::{from_sid}" if from_ch or from_sid else "external"
+                messages.append({
+                    "role": "assistant",
+                    "name": _safe_name(src),
+                    "content": f"[来自 {src} 的消息] {d.get('content', '')}",
+                })
+
         _flush_tool_calls()
         return messages
 
@@ -255,3 +269,12 @@ def _serialize_arguments(arguments) -> str:
     if isinstance(arguments, str):
         return arguments
     return json.dumps(arguments, ensure_ascii=False)
+
+
+def _safe_name(s: str) -> str:
+    """
+    把任意字符串规整为 OpenAI 允许的 name（^[a-zA-Z0-9_-]+$，长度<=64）
+    例：'ws::sess_c6aa9ad2a883' → 'ws_sess_c6aa9ad2a883'
+    """
+    cleaned = "".join(c if (c.isalnum() or c in "_-") else "_" for c in s).strip("_")
+    return (cleaned or "external")[:64]
