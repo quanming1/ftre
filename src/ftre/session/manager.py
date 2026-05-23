@@ -220,8 +220,13 @@ class SessionManager:
 
             if t == "USER_INPUT":
                 _flush_tool_calls()
-                content = event["data"].get("content", "")
-                messages.append({"role": "user", "content": content})
+                from .multimodal import build_user_content
+                text = event["data"].get("content", "")
+                attachments = event["data"].get("attachments") or []
+                messages.append({
+                    "role": "user",
+                    "content": build_user_content(text, attachments),
+                })
 
             elif t == "tool_call":
                 pending_tool_calls.append({

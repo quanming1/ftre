@@ -13,6 +13,7 @@ from ftre_agent_core.agent import ReActAgent
 from ftre.bus import BusMessage, EventBus
 from ftre.config import AgentConfig, DEFAULT_CONFIG
 from ftre.session import SessionManager
+from ftre.session.multimodal import build_user_content
 from ftre.tools import build_default_tools
 
 logger = logging.getLogger(__name__)
@@ -95,13 +96,18 @@ class AgentLoop:
         在线程中执行 Agent，事件逐条投递回 Bus。
         """
         content = inbound.data.get("content", "")
-        if not content:
+        attachments = inbound.data.get("attachments") or []
+        if not content and not attachments:
             return
 
         session_id = inbound.data.get("session_id", "")
         if not session_id:
             logger.warning("[agent-loop] 收到无 session_id 的消息，忽略")
             return
+
+        # 把 (text, attachments) 折成 OpenAI user content
+        # 无附件返回 str；有附件返回 list[part]
+        user_content = build_user_content(content, attachments)
 
         # Step 1: 加载该 session 的历史，构建消息
         events = asyncio.run_coroutine_threadsafe(
@@ -111,10 +117,14 @@ class AgentLoop:
 
         if events:
             history = SessionManager.to_openai_messages(events)
-            history.append({"role": "user", "content": content})
+            history.append({"role": "user", "content": user_content})
             messages = history
         else:
-            messages = content
+            # 无历史时：纯文本走原有 str 路径，多模态需要包成 list[dict]
+            if isinstance(user_content, str):
+                messages = user_content
+            else:
+                messages = [{"role": "user", "content": user_content}]
 
         # 每次都建一个独立 agent，彻底避免跨 session 串扰
         agent = self._create_agent()

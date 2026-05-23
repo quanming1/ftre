@@ -11,6 +11,8 @@ WebSocket Channel
 - 客户端必须显式发送 attach 帧（或在 user_input/cancel 时隐式 attach 当前 session），
   后端才会把这条 ws 加入 session 的推送目标。
 """
+import base64
+import binascii
 import json
 import logging
 import asyncio
@@ -22,6 +24,68 @@ from ftre.bus import BusMessage, EventBus
 from .base import Channel
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# 附件校验（user_input.data.attachments）
+# ============================================================
+
+# 允许的图片 MIME
+ALLOWED_IMAGE_MIME = frozenset({
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+})
+
+# 单张附件 base64 解码后的字节数上限
+MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024  # 3 MB
+
+# 单条消息允许的最大附件数
+MAX_ATTACHMENTS_PER_MESSAGE = 8
+
+
+def _validate_attachments(attachments) -> tuple[bool, str]:
+    """
+    校验 user_input.data.attachments。
+    返回 (ok, error_message)。无附件视为合法。
+    """
+    if attachments is None:
+        return True, ""
+    if not isinstance(attachments, list):
+        return False, "attachments 必须是数组"
+    if len(attachments) > MAX_ATTACHMENTS_PER_MESSAGE:
+        return False, f"附件数量超过上限 {MAX_ATTACHMENTS_PER_MESSAGE}"
+
+    for i, att in enumerate(attachments):
+        if not isinstance(att, dict):
+            return False, f"attachments[{i}] 必须是对象"
+
+        att_type = att.get("type")
+        if att_type != "image":
+            return False, f"attachments[{i}].type 仅支持 'image'，收到 {att_type!r}"
+
+        mime = att.get("mime_type", "")
+        if mime not in ALLOWED_IMAGE_MIME:
+            return False, f"attachments[{i}].mime_type 不支持: {mime!r}"
+
+        b64 = att.get("data")
+        if not isinstance(b64, str) or not b64:
+            return False, f"attachments[{i}].data 缺失或非字符串"
+
+        try:
+            raw = base64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError):
+            return False, f"attachments[{i}].data 不是合法 base64"
+
+        if len(raw) > MAX_ATTACHMENT_BYTES:
+            limit_mb = MAX_ATTACHMENT_BYTES / 1024 / 1024
+            actual_mb = len(raw) / 1024 / 1024
+            return False, (
+                f"attachments[{i}] 大小 {actual_mb:.2f}MB 超过上限 {limit_mb:.0f}MB"
+            )
+
+    return True, ""
 
 
 class WebSocketChannel(Channel):
@@ -199,6 +263,14 @@ class WebSocketChannel(Channel):
             logger.warning(f"[ws-channel] {frame_type} 缺少 session_id，忽略")
             return
 
+        # user_input 附件校验：违规直接拒绝，不进 Bus
+        if frame_type == "user_input":
+            ok, err = _validate_attachments(data.get("attachments"))
+            if not ok:
+                logger.warning(f"[ws-channel] user_input 附件非法: {err}")
+                await self._reject(ws, frame.get("id", ""), session_id, err)
+                return
+
         # user_input / cancel 隐式 attach（保持向后兼容）
         self._attach(session_id, ws)
 
@@ -216,3 +288,23 @@ class WebSocketChannel(Channel):
             metadata=metadata,
         )
         await self.bus.publish_inbound(msg)
+
+    async def _reject(self, ws: WebSocket, frame_id: str, session_id: str, reason: str) -> None:
+        """向客户端回写一帧拒绝消息（不入 Bus）"""
+        payload = {
+            "id": frame_id or "",
+            "type": "error",
+            "data": {
+                "code": "invalid_input",
+                "message": reason,
+                "session_id": session_id,
+            },
+            "metadata": {
+                "channel_id": self.channel_id,
+                "session_id": session_id,
+            },
+        }
+        try:
+            await ws.send_text(json.dumps(payload, ensure_ascii=False))
+        except Exception as e:
+            logger.debug(f"[ws-channel] reject 回写失败: {e}")
