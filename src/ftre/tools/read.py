@@ -6,6 +6,7 @@ from pathlib import Path
 from ftre_agent_core.tool import Tool, ToolParameter
 
 from .bash import _BashState
+from ._io import read_text
 
 
 def _resolve(path: str, state: "_BashState | None") -> Path:
@@ -23,7 +24,7 @@ def create_read_tool(
     """创建 read 工具
 
     Args:
-        max_bytes: 单文件最大读取字节数（默认 256KB）
+        max_bytes: 单文件最大读取字节数（默认 256KB）。超出必须显式 start_line/end_line
         state: 共享 cwd 状态（与 bash 共用，相对路径基于此解析）
     """
 
@@ -32,8 +33,13 @@ def create_read_tool(
             p = _resolve(path, state)
             if not p.exists():
                 return f"[error] 文件不存在: {p}"
+            if p.is_dir():
+                return (
+                    f"[error] 是目录而非文件: {p}\n"
+                    f"提示：用 bash 工具运行 `ls`/`dir` 列出目录内容"
+                )
             if not p.is_file():
-                return f"[error] 不是文件: {p}"
+                return f"[error] 不是普通文件: {p}"
 
             size = p.stat().st_size
             if size > max_bytes and end_line == 0:
@@ -42,27 +48,33 @@ def create_read_tool(
                     f"请使用 start_line / end_line 分段读取"
                 )
 
-            content = p.read_text(encoding="utf-8", errors="replace")
-            lines = content.splitlines()
+            tf = read_text(p)
+            lines = tf.text.splitlines()
 
             if start_line > 0 or end_line > 0:
                 start = max(0, start_line - 1)
                 end = end_line if end_line > 0 else len(lines)
-                lines = lines[start:end]
-                numbered = [f"{i + start + 1:6d}| {line}" for i, line in enumerate(lines)]
-                return "\n".join(numbered)
+                visible = lines[start:end]
+                numbered = [f"{i + start + 1:6d}| {line}" for i, line in enumerate(visible)]
+            else:
+                numbered = [f"{i + 1:6d}| {line}" for i, line in enumerate(lines)]
 
-            numbered = [f"{i + 1:6d}| {line}" for i, line in enumerate(lines)]
-            return "\n".join(numbered)
+            # 在多 byte/非 UTF-8 文件上提示一下编码，便于排错
+            header = ""
+            if tf.encoding != "utf-8" and tf.encoding != "utf-8-sig":
+                header = f"[encoding] {tf.encoding}\n"
+            return header + "\n".join(numbered)
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}"
 
     return Tool(
         name="read",
         description=(
-            "读取文件内容并返回带行号的文本。相对路径基于当前工作目录（由 bash cd 切换）。"
-            "可选 start_line / end_line 限定行范围（1-indexed，闭区间）。"
-            "对大文件必须指定行范围。"
+            "读取文件内容并返回带行号的文本。相对路径基于当前工作目录（由 bash cd 切换）。\n"
+            "- 自动识别编码（utf-8 / utf-8-sig / gbk 等），非 utf-8 文件首行会显示 [encoding]\n"
+            "- 可选 start_line / end_line 限定行范围（1-indexed，闭区间）\n"
+            "- 超过 256KB 的文件必须传入行范围\n"
+            "- 路径是目录时拒绝读取，提示用 bash 列目录"
         ),
         parameters=[
             ToolParameter(name="path", type="string", description="文件路径（绝对或相对当前 cwd）", required=True),
