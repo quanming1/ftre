@@ -42,9 +42,14 @@ async def create_session(channel_id: str, title: str = ""):
 
 
 @router.get("/sessions")
-async def list_sessions(limit: int = 50):
-    """获取会话列表（按最近活跃排序）"""
-    sessions = await _session_manager.list_sessions(limit=limit)
+async def list_sessions(limit: int = 50, channel_id: str | None = None):
+    """
+    获取会话列表（按最近活跃排序）。
+    可选 channel_id 过滤：仅返回指定 channel 的会话。
+    """
+    sessions = await _session_manager.list_sessions(
+        limit=limit, channel_id=channel_id
+    )
     return {"sessions": sessions}
 
 
