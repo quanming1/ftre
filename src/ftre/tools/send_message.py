@@ -32,21 +32,25 @@ def create_send_message_tool(channel_manager) -> Tool:
         if channel_id == caller_channel and session_id == caller_session:
             return "[error] 不能给当前 session 发消息（直接在回复中输出即可）"
 
+        event_data = {
+            "content": content,
+            "from_session": caller_session or "",
+            "from_channel": caller_channel or "",
+        }
+
         msg = BusMessage(
             type="agent_event",
             from_channel=caller_channel or "",
             to_channel=channel_id,
             from_session=caller_session or "",
             to_session=session_id,
-            data={"type": "message_complete", "data": {"content": content}},
+            data={"type": "external_message", "data": event_data},
         )
 
         try:
             # 1) 持久化到目标 session 的历史，前端切换/刷新都能看到
             asyncio.run_coroutine_threadsafe(
-                session_manager.save_message(
-                    session_id, "message_complete", {"content": content}
-                ),
+                session_manager.save_message(session_id, "external_message", event_data),
                 event_loop,
             ).result(timeout=10)
 
@@ -62,8 +66,9 @@ def create_send_message_tool(channel_manager) -> Tool:
     return Tool(
         name="send_message",
         description=(
-            "向指定频道的指定 session 发送消息。可用于跨频道通知、推送结果等。"
-            "消息会同时持久化到目标 session 历史并实时推送给前端。"
+            "向指定频道的指定 session 发送一条独立的消息（事件类型 external_message）。"
+            "用于跨 session 通知、推送结果等。消息会持久化到目标 session 历史并实时推送给前端，"
+            "目标 session 自己的运行不受影响。"
         ),
         parameters=[
             ToolParameter(name="channel_id", type="string", description="目标频道 ID（如 ws、telegram）", required=True),

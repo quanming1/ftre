@@ -3,8 +3,14 @@ WebSocket Channel
 
 启动时创建 FastAPI + WebSocket 端点。
 多个客户端连接共享同一个全局 AgentLoop。
+
+连接 / session 模型：
+- 一个客户端 = 一条物理 WebSocket。
+- 一条 WebSocket 可以 attach 到多个 session（前端同时关注多个会话）。
+- session_id → set[WebSocket]：同一个 session 也允许被多个客户端 attach（多端同步）。
+- 客户端必须显式发送 attach 帧（或在 user_input/cancel 时隐式 attach 当前 session），
+  后端才会把这条 ws 加入 session 的推送目标。
 """
-import uuid
 import json
 import logging
 import asyncio
@@ -32,9 +38,12 @@ class WebSocketChannel(Channel):
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        # session_id → WebSocket 映射（一个 session 对应一个活跃连接）
-        self._connections: dict[str, WebSocket] = {}
+        # session_id → 关注该 session 的 ws 连接集合
+        self._connections: dict[str, set[WebSocket]] = {}
+        # 反向索引：ws → 它 attach 过的所有 session_id（断开时清理用）
+        self._ws_sessions: dict[WebSocket, set[str]] = {}
         self._server = None
+        self._server_task: asyncio.Task | None = None
 
         # 注册路由
         self.app.websocket("/")(self._ws_endpoint)
@@ -48,19 +57,24 @@ class WebSocketChannel(Channel):
         import uvicorn
         config = uvicorn.Config(self.app, host=self.host, port=self.port, log_level="info")
         self._server = uvicorn.Server(config)
-        asyncio.create_task(self._server.serve())
+        self._server_task = asyncio.create_task(self._server.serve())
         logger.info(f"[ws-channel] listening on ws://{self.host}:{self.port}/")
 
     async def stop(self) -> None:
         """停止服务"""
         if self._server:
             self._server.should_exit = True
+        if self._server_task:
+            try:
+                await self._server_task
+            except asyncio.CancelledError:
+                pass
         logger.info("[ws-channel] stopped")
 
     async def send(self, msg: BusMessage) -> None:
-        """Bus outbound → 推送给客户端（按 session_id 找 WebSocket）"""
-        ws = self._connections.get(msg.to_session)
-        if not ws:
+        """Bus outbound → 推送给所有 attach 该 session 的 ws"""
+        targets = self._connections.get(msg.to_session)
+        if not targets:
             return
 
         payload = {
@@ -72,7 +86,23 @@ class WebSocketChannel(Channel):
                 "session_id": msg.to_session,
             },
         }
-        await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
+        text = json.dumps(payload, ensure_ascii=False, default=str)
+
+        # 拷贝一份再迭代，避免发送过程中其它路径改动 set
+        dead: list[WebSocket] = []
+        for ws in list(targets):
+            try:
+                await ws.send_text(text)
+            except Exception as e:
+                logger.debug(f"[ws-channel] send 失败，准备关闭: {e}")
+                dead.append(ws)
+
+        # 主动关闭坏连接，receive 循环 finally 会兜底清理索引
+        for ws in dead:
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     # ============================================================
     # WebSocket 端点
@@ -81,74 +111,108 @@ class WebSocketChannel(Channel):
     async def _ws_endpoint(self, ws: WebSocket) -> None:
         """WebSocket 连接入口"""
         await ws.accept()
-        # 当前连接绑定的 session_id（首次发消息时注册）
-        bound_session_id: str | None = None
+        self._ws_sessions[ws] = set()
 
         logger.info("[ws-channel] connection established")
 
         try:
             while True:
                 raw = await ws.receive_text()
-                session_id = self._on_message(raw, ws)
-                if session_id and not bound_session_id:
-                    bound_session_id = session_id
+                await self._on_message(raw, ws)
         except WebSocketDisconnect:
             pass
         except Exception as e:
             logger.warning(f"[ws-channel] connection error: {e}")
         finally:
-            # 清理连接映射
-            if bound_session_id:
-                self._connections.pop(bound_session_id, None)
-            logger.info(f"[ws-channel] connection closed (session={bound_session_id})")
+            attached = self._ws_sessions.get(ws, set())
+            logger.info(f"[ws-channel] connection closed (sessions={list(attached)})")
+            self._detach_all(ws)
 
-    def _on_message(self, raw: str, ws: WebSocket) -> str | None:
+    # ============================================================
+    # 连接登记
+    # ============================================================
+
+    def _attach(self, session_id: str, ws: WebSocket) -> None:
+        if not session_id:
+            return
+        self._connections.setdefault(session_id, set()).add(ws)
+        self._ws_sessions.setdefault(ws, set()).add(session_id)
+        logger.info(f"[ws-channel] attach session={session_id}")
+
+    def _detach(self, session_id: str, ws: WebSocket) -> None:
+        conns = self._connections.get(session_id)
+        if conns:
+            conns.discard(ws)
+            if not conns:
+                self._connections.pop(session_id, None)
+        sids = self._ws_sessions.get(ws)
+        if sids:
+            sids.discard(session_id)
+
+    def _detach_all(self, ws: WebSocket) -> None:
+        for sid in list(self._ws_sessions.get(ws, ())):
+            self._detach(sid, ws)
+        self._ws_sessions.pop(ws, None)
+
+    # ============================================================
+    # 上行帧处理
+    # ============================================================
+
+    async def _on_message(self, raw: str, ws: WebSocket) -> None:
         """
         收到客户端消息 → 投递到 Bus
 
-        上行帧格式: {id, type, data: {content, session_id, ...}, metadata?}
-        返回 session_id（用于连接绑定）
+        上行帧格式: {id, type, data: {...}, metadata?}
+
+        type:
+        - attach     声明这条 ws 关心的 session（data.session_id）
+        - detach     取消关心（data.session_id）
+        - user_input 用户消息（隐式 attach data.session_id）
+        - cancel     取消生成（隐式 attach data.session_id）
         """
         try:
             frame = json.loads(raw)
         except json.JSONDecodeError:
-            return None
+            return
+        if not isinstance(frame, dict):
+            return
 
         frame_type = frame.get("type", "")
-        data = frame.get("data", {})
-        metadata = frame.get("metadata", {})
+        data = frame.get("data") or {}
+        if not isinstance(data, dict):
+            return
         session_id = data.get("session_id", "")
 
-        if not session_id:
-            logger.warning("[ws-channel] 收到无 session_id 的消息，忽略")
-            return None
+        if frame_type == "attach":
+            self._attach(session_id, ws)
+            return
 
-        # 注册 session_id → WebSocket 映射（后续 outbound 按此推送）
-        self._connections[session_id] = ws
+        if frame_type == "detach":
+            self._detach(session_id, ws)
+            return
 
-        if frame_type == "user_input":
-            msg = BusMessage(
-                type="user_input",
-                from_channel=self.channel_id,
-                to_channel=self.channel_id,
-                from_session=session_id,
-                to_session=session_id,
-                data=data,
-                metadata=metadata,
-            )
-            asyncio.ensure_future(self.bus.publish_inbound(msg))
-        elif frame_type == "cancel":
-            cancel_msg = BusMessage(
-                type="cancel",
-                from_channel=self.channel_id,
-                to_channel=self.channel_id,
-                from_session=session_id,
-                to_session=session_id,
-                data=data,
-                metadata=metadata,
-            )
-            asyncio.ensure_future(self.bus.publish_inbound(cancel_msg))
-        else:
+        if frame_type not in ("user_input", "cancel"):
             logger.debug(f"[ws-channel] unknown frame type: {frame_type}")
+            return
 
-        return session_id
+        if not session_id:
+            logger.warning(f"[ws-channel] {frame_type} 缺少 session_id，忽略")
+            return
+
+        # user_input / cancel 隐式 attach（保持向后兼容）
+        self._attach(session_id, ws)
+
+        metadata = frame.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        msg = BusMessage(
+            type=frame_type,
+            from_channel=self.channel_id,
+            to_channel=self.channel_id,
+            from_session=session_id,
+            to_session=session_id,
+            data=data,
+            metadata=metadata,
+        )
+        await self.bus.publish_inbound(msg)
