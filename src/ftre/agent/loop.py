@@ -11,7 +11,7 @@ import logging
 
 from ftre_agent_core.agent import ReActAgent
 from ftre.bus import BusMessage, EventBus
-from ftre.config import AgentConfig, DEFAULT_CONFIG
+from ftre.config import AgentConfig, load_config
 from ftre.session import SessionManager
 from ftre.session.multimodal import build_user_content
 from ftre.tools import build_default_tools
@@ -32,7 +32,9 @@ class AgentLoop:
         self.bus = bus
         self.session_manager = session_manager
         self.channel_manager = channel_manager
-        self.config = config or DEFAULT_CONFIG
+        # 注入的 config 优先（测试场景）；否则每次 _create_agent 都重新读盘，
+        # 让 UI 改完 ~/.ftre/config.json 立即生效。
+        self._injected_config = config
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         # session_id → 当前正在执行的 agent（用于取消）
@@ -127,9 +129,11 @@ class AgentLoop:
                 messages = [{"role": "user", "content": user_content}]
 
         # 每次都建一个独立 agent，彻底避免跨 session 串扰
-        agent = self._create_agent()
+        # 同时每次重新读取配置文件，UI 改 model/provider/system_prompt 立即生效
+        config = self._load_current_config()
+        agent = self._create_agent(config)
         agent.system_prompt = (
-            self.config.system_prompt
+            config.system_prompt
             + f"\n\n[当前上下文] channel_id={inbound.from_channel}, session_id={session_id}"
         )
         self._active_agents[session_id] = agent
@@ -185,9 +189,19 @@ class AgentLoop:
             if self._active_agents.get(session_id) is agent:
                 self._active_agents.pop(session_id, None)
 
-    def _create_agent(self) -> ReActAgent:
+    def _load_current_config(self) -> AgentConfig:
+        """
+        读取当前生效的配置：
+        - 若构造时显式注入了 config（如测试），始终用注入值
+        - 否则每次都重新读取 ~/.ftre/config.json，让 UI 改动立即生效
+        """
+        if self._injected_config is not None:
+            return self._injected_config
+        return load_config()
+
+    def _create_agent(self, config: AgentConfig) -> ReActAgent:
         """根据配置创建 ReActAgent 实例"""
-        c = self.config
+        c = config
         return ReActAgent(
             model=c.llm.model,
             api_key=c.llm.api_key,
