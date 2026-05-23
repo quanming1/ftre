@@ -85,6 +85,7 @@ class AgentLoop:
         "tool_cancel_requested",
         "tool_cancelled",
         "tool_timed_out",
+        "usage_update",
         "error",
         "done",
     }
@@ -157,6 +158,18 @@ class AgentLoop:
                     data=event,
                 )
                 asyncio.run_coroutine_threadsafe(self.bus.publish_outbound(out), self._event_loop).result()
+        except Exception:
+            # 保证一定有 done 事件投递，避免前端永远卡在"思考中"
+            logger.exception(f"[agent-loop] _run 异常 (session={session_id})")
+            err_evt = BusMessage(
+                type="agent_event",
+                from_channel=inbound.from_channel,
+                to_channel=inbound.to_channel,
+                from_session=inbound.from_session,
+                to_session=inbound.to_session,
+                data={"type": "done", "data": {"success": False, "reason": "error"}},
+            )
+            asyncio.run_coroutine_threadsafe(self.bus.publish_outbound(err_evt), self._event_loop).result()
         finally:
             # 清理活跃引用，让 GC 回收
             if self._active_agents.get(session_id) is agent:
