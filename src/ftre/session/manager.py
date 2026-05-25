@@ -287,19 +287,32 @@ class SessionManager:
         - MESSAGE_COMPLETE  → {"role": "assistant", "content": ...}
         - EXTERNAL_MESSAGE  → {"role": "assistant", "name": "<src>", "content": "[来自 ...]"}
                               其他 AI agent 通过 send_message 发来的消息
+        - REASONING         → 累积到下一条 assistant message 的 reasoning_content
+                              （部分 thinking 模型要求多轮间透传）
         - 其他类型跳过
         """
         messages: list[dict] = []
         pending_tool_calls: list[dict] = []
+        pending_reasoning: list[str] = []
+
+        def _take_reasoning() -> str:
+            nonlocal pending_reasoning
+            text = "".join(pending_reasoning)
+            pending_reasoning = []
+            return text
 
         def _flush_tool_calls():
             nonlocal pending_tool_calls
             if pending_tool_calls:
-                messages.append({
+                msg: dict = {
                     "role": "assistant",
                     "content": None,
                     "tool_calls": pending_tool_calls,
-                })
+                }
+                reasoning = _take_reasoning()
+                if reasoning:
+                    msg["reasoning_content"] = reasoning
+                messages.append(msg)
                 pending_tool_calls = []
 
         for event in events:
@@ -307,6 +320,8 @@ class SessionManager:
 
             if t == "USER_INPUT":
                 _flush_tool_calls()
+                # 用户消息边界：丢弃可能残留的 reasoning（属于上一轮且没有 assistant 收尾）
+                _take_reasoning()
                 from .multimodal import build_user_content
                 text = event["data"].get("content", "")
                 attachments = event["data"].get("attachments") or []
@@ -314,6 +329,9 @@ class SessionManager:
                     "role": "user",
                     "content": build_user_content(text, attachments),
                 })
+
+            elif t == "reasoning":
+                pending_reasoning.append(event["data"].get("content", "") or "")
 
             elif t == "tool_call":
                 pending_tool_calls.append({
@@ -335,13 +353,18 @@ class SessionManager:
 
             elif t == "message_complete":
                 _flush_tool_calls()
-                messages.append({
+                msg: dict = {
                     "role": "assistant",
                     "content": event["data"].get("content", ""),
-                })
+                }
+                reasoning = _take_reasoning()
+                if reasoning:
+                    msg["reasoning_content"] = reasoning
+                messages.append(msg)
 
             elif t == "external_message":
                 _flush_tool_calls()
+                _take_reasoning()
                 d = event["data"]
                 from_ch = d.get("from_channel", "")
                 from_sid = d.get("from_session", "")

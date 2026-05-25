@@ -233,6 +233,9 @@ def _cron(
     # 在 cron 触发的 session 中禁止再调用 cron 工具，避免无限套娃
     if caller_channel == "cron":
         return "[error] cron 触发的会话中禁止使用 cron 工具（避免循环创建/修改任务）"
+    # subagent 不允许注册定时任务（避免子任务遗留副作用）
+    if caller_channel == "subagent":
+        return "[error] subagent 内不允许调用 cron 工具，请把任务做完即可，不要注册定时任务"
 
     if action == "create":
         if not cron or not title or not prompt:
