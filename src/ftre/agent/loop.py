@@ -93,6 +93,16 @@ class AgentLoop:
         "done",
     }
 
+    # ─── 上下文治理参数 ─────────────────────────────────────
+    # 水位（total_tokens / context_window）超过此阈值就触发裁剪
+    CONTEXT_PRESSURE_THRESHOLD = 0.6
+    # 保护最近 N 轮（一轮 = 一个 USER_INPUT 到下一个 USER_INPUT 之前）
+    PROTECTED_ROUNDS = 2
+    # tool_result 被裁剪后保留的 result 前缀长度（字符）
+    TOOL_RESULT_TRUNCATE_KEEP = 500
+    # 裁剪占位提示
+    TOOL_RESULT_TRUNCATE_HINT = "\n\n…[已裁剪以节省上下文]"
+
     def _run(self, inbound: BusMessage) -> None:
         """
         在线程中执行 Agent，事件逐条投递回 Bus。
@@ -111,12 +121,13 @@ class AgentLoop:
         # 无附件返回 str；有附件返回 list[part]
         user_content = build_user_content(content, attachments)
 
-        # Step 1: 加载历史 + 拼接当前用户消息
-        messages = self._build_messages(session_id, user_content)
-
         # 每次都建一个独立 agent，彻底避免跨 session 串扰
         # 同时每次重新读取配置文件，UI 改 model/provider/system_prompt 立即生效
         config = self._load_current_config()
+
+        # Step 1: 加载历史 + 拼接当前用户消息（含上下文治理）
+        messages = self._build_messages(session_id, user_content, config)
+
         agent = self._create_agent(config)
         agent.system_prompt = (
             config.system_prompt
@@ -186,22 +197,31 @@ class AgentLoop:
         return load_config()
 
     def _build_messages(
-        self, session_id: str, user_content: str | list[dict]
+        self,
+        session_id: str,
+        user_content: str | list[dict],
+        config: AgentConfig,
     ) -> str | list[dict]:
         """
-        构建一次 LLM 调用的输入消息。
+        构建一次 LLM 调用的输入消息（含上下文治理）。
 
         - 有历史：回放历史事件为 OpenAI messages，再追加当前用户消息
         - 无历史 + 纯文本 user_content：返回 str，走 ReActAgent 的快速路径
         - 无历史 + 多模态 user_content：必须包一层 list[{role, content}]
 
-        独立成方法是为了给上下文治理（截断 / 摘要 / 滑动窗口等）留 hook：
-        将来加策略时只需在这里插入 events / messages 的处理。
+        上下文治理：水位 (total_tokens / context_window) > CONTEXT_PRESSURE_THRESHOLD
+        时，对最后 PROTECTED_ROUNDS 轮以外的 tool_result 做长度裁剪。
         """
         events = asyncio.run_coroutine_threadsafe(
             self.session_manager.get_messages_by_session(session_id),
             self._event_loop,
         ).result()
+
+        # 先消除孤立的 tool_call / tool_result（OpenAI 协议要求两者必须配对）
+        events = self._drop_orphan_tool_events(events)
+
+        # 上下文治理：必要时裁剪老 tool_result 的输出
+        events = self._govern_context(session_id, events, config)
 
         if events:
             history = SessionManager.to_openai_messages(events)
@@ -212,6 +232,125 @@ class AgentLoop:
         if isinstance(user_content, str):
             return user_content
         return [{"role": "user", "content": user_content}]
+
+    def _drop_orphan_tool_events(self, events: list) -> list:
+        """
+        丢弃孤立的 tool_call / tool_result 事件。
+
+        OpenAI 协议要求：assistant.tool_calls 必须有对应 role=tool 的 tool_result
+        相邻配对，反过来也是。事件流里如果出现：
+        - tool_call(id=X) 但没有 tool_result(id=X)（如 cancelled / timed_out / 崩溃）
+        - tool_result(id=X) 但没有 tool_call(id=X)（老数据 / 协议错配）
+
+        都会导致后续 LLM 调用 400 报错。这里直接丢弃。
+
+        匹配维度：data.id（OpenAI tool_call_id）
+        """
+        if not events:
+            return events
+
+        call_ids: set[str] = set()
+        result_ids: set[str] = set()
+        for ev in events:
+            t = ev.get("type")
+            if t == "tool_call":
+                call_ids.add((ev.get("data") or {}).get("id", ""))
+            elif t == "tool_result":
+                result_ids.add((ev.get("data") or {}).get("id", ""))
+
+        paired = call_ids & result_ids
+        # 没有孤立项就直接返回（避免拷贝）
+        if len(call_ids) == len(paired) and len(result_ids) == len(paired):
+            return events
+
+        dropped = 0
+        out: list = []
+        for ev in events:
+            t = ev.get("type")
+            if t in ("tool_call", "tool_result"):
+                if (ev.get("data") or {}).get("id", "") not in paired:
+                    dropped += 1
+                    continue
+            out.append(ev)
+
+        if dropped:
+            logger.info(f"[govern] 丢弃 {dropped} 个孤立 tool 事件")
+        return out
+
+    def _govern_context(
+        self,
+        session_id: str,
+        events: list,
+        config: AgentConfig,
+    ) -> list:
+        """
+        上下文治理：水位过高时裁剪老 tool_result 的输出，保护最近 N 轮。
+
+        裁剪规则：
+        - 找到最后 PROTECTED_ROUNDS 个 USER_INPUT 之中最早的那个，作为保护边界
+        - 该边界之前所有 tool_result 事件的 data.result 截断到 TOOL_RESULT_TRUNCATE_KEEP
+        - 保护边界内的事件原样保留
+        - 数据库不变，仅修改内存中的 events 副本
+
+        返回：可能被裁剪过的新 events 列表（不修改入参）
+        """
+        cw = config.llm.context_window
+        if not cw or cw <= 0 or not events:
+            return events
+
+        # 取真实水位（最近一次 LLM 实算 + pending 估算）
+        total = self._get_total_tokens(session_id)
+        ratio = total / cw
+        if ratio <= self.CONTEXT_PRESSURE_THRESHOLD:
+            return events
+
+        # 找最近 PROTECTED_ROUNDS 个 USER_INPUT 中最早那个的 index
+        user_input_indices = [
+            i for i, ev in enumerate(events) if ev.get("type") == "USER_INPUT"
+        ]
+        if len(user_input_indices) <= self.PROTECTED_ROUNDS:
+            # 历史不够 N 轮，没什么可裁的
+            return events
+        boundary = user_input_indices[-self.PROTECTED_ROUNDS]
+
+        # 复制并裁剪 boundary 之前的 tool_result
+        truncated_count = 0
+        out: list = []
+        for i, ev in enumerate(events):
+            if i >= boundary or ev.get("type") != "tool_result":
+                out.append(ev)
+                continue
+            data = ev.get("data") or {}
+            result = data.get("result", "")
+            if isinstance(result, str) and len(result) > self.TOOL_RESULT_TRUNCATE_KEEP:
+                new_data = dict(data)
+                new_data["result"] = (
+                    result[: self.TOOL_RESULT_TRUNCATE_KEEP]
+                    + self.TOOL_RESULT_TRUNCATE_HINT
+                )
+                # 浅拷贝事件，原引用不动
+                new_ev = dict(ev)
+                new_ev["data"] = new_data
+                out.append(new_ev)
+                truncated_count += 1
+            else:
+                out.append(ev)
+
+        if truncated_count:
+            logger.info(
+                f"[govern] session={session_id} 水位 {ratio:.0%} "
+                f"({total}/{cw})，裁剪 {truncated_count} 条 tool_result，"
+                f"保护最近 {self.PROTECTED_ROUNDS} 轮"
+            )
+        return out
+
+    def _get_total_tokens(self, session_id: str) -> int:
+        """从 SessionManager 取该 session 的 token 总量（实算 + pending 估算）"""
+        usage = asyncio.run_coroutine_threadsafe(
+            self.session_manager.get_token_usage(session_id),
+            self._event_loop,
+        ).result()
+        return int(usage.get("total", 0) or 0)
 
     def _create_agent(self, config: AgentConfig) -> ReActAgent:
         """根据配置创建 ReActAgent 实例"""

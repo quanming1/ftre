@@ -18,11 +18,28 @@ CONFIG_PATH = Path(os.environ.get("USERPROFILE", Path.home()) if sys.platform ==
 
 @dataclass
 class LLMConfig:
-    """LLM 配置"""
-    model: str = ""
+    """
+    LLM 配置 —— 字段与 ~/.ftre/config.json 保持一致：
+
+    - 来自 providers[provider]：api_key / api_base / api_type
+    - 来自 providers[provider].models[] 中匹配 default model 的条目：
+      name / id / context_window / max_output / vision
+
+    `model` 是派生字段：把 id 加上 LiteLLM 需要的 provider 前缀（如 'openai/'），
+    供 ReActAgent 直接使用。原始 id 保留在 `id` 里，避免上层重复解析。
+    """
+    # provider 层
     api_key: str = ""
     api_base: str = ""
     api_type: str = "completions"
+    # model 条目层（与 config.json models[] 同名）
+    name: str = ""
+    id: str = ""
+    context_window: int | None = None
+    max_output: int | None = None
+    vision: bool = False
+    # 派生：LiteLLM 模型名（含 provider 前缀）
+    model: str = ""
 
 
 @dataclass
@@ -53,6 +70,16 @@ def _build_model_name(model_id: str, protocol: str) -> str:
     return f"{prefix}/{model_id}"
 
 
+def _find_model_entry(provider: dict, model_id: str) -> dict:
+    """从 provider.models 里找到 id==model_id 的条目；找不到返回空 dict"""
+    if not model_id:
+        return {}
+    for m in provider.get("models", []) or []:
+        if isinstance(m, dict) and m.get("id") == model_id:
+            return m
+    return {}
+
+
 def load_config() -> AgentConfig:
     """从配置文件加载 AgentConfig"""
     data = load_config_file()
@@ -65,14 +92,29 @@ def load_config() -> AgentConfig:
 
     provider = data.get("providers", {}).get(provider_name, {})
     protocol = provider.get("api_protocol", "openai")
+    model_entry = _find_model_entry(provider, model_id)
+
+    cw = model_entry.get("context_window")
+    mo = model_entry.get("max_output")
 
     llm = LLMConfig(
-        model=_build_model_name(model_id, protocol) if model_id else "",
+        # provider 层
         api_key=provider.get("api_key", ""),
         api_base=provider.get("api_base", ""),
+        # model 条目层（与 config.json 字段同名）
+        name=model_entry.get("name", ""),
+        id=model_id,
+        context_window=cw if isinstance(cw, int) else None,
+        max_output=mo if isinstance(mo, int) else None,
+        vision=bool(model_entry.get("vision", False)),
+        # 派生
+        model=_build_model_name(model_id, protocol) if model_id else "",
     )
 
-    logger.warning(f"[config] model={llm.model}, provider={provider_name}")
+    logger.warning(
+        f"[config] model={llm.model}, provider={provider_name}, "
+        f"context_window={llm.context_window}, max_output={llm.max_output}"
+    )
     return AgentConfig(llm=llm)
 
 
