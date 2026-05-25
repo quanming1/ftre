@@ -114,18 +114,32 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
             pass
 
 
-def create_bash_tool(timeout: int = 60) -> Tool:
+def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
     """创建 bash 工具
 
     cwd 由 runtime_context['workspace'] 承载（一个 {'cwd': str} dict）。
     纯 cd 命令会持久切换 ws['cwd']；其他命令交给底层 shell 执行。
+
+    Args:
+        default_timeout: LLM 不传 timeout 时的默认值（秒）
+        max_timeout: LLM 可指定的上限（防止"无限挂起"）
     """
 
-    def bash(command: str, ws: dict = Injected("workspace")) -> str:
+    def bash(
+        command: str,
+        timeout: int = 0,
+        ws: dict = Injected("workspace"),
+    ) -> str:
         if not command.strip():
             return "[error] 空命令"
         if not isinstance(ws, dict) or "cwd" not in ws:
             return "[error] runtime_context.workspace 未注入"
+
+        # timeout 处理：0/负数 → 用默认值；超过上限 → 钳位
+        if timeout is None or timeout <= 0:
+            effective_timeout = default_timeout
+        else:
+            effective_timeout = min(int(timeout), max_timeout)
 
         # 1) 纯 cd → 持久切换
         cd_result = _try_handle_cd(command, ws)
@@ -151,7 +165,7 @@ def create_bash_tool(timeout: int = 60) -> Tool:
         try:
             proc = subprocess.Popen(args, **popen_kwargs)
             try:
-                stdout_b, stderr_b = proc.communicate(timeout=timeout)
+                stdout_b, stderr_b = proc.communicate(timeout=effective_timeout)
             except subprocess.TimeoutExpired:
                 _kill_process_tree(proc)
                 try:
@@ -161,8 +175,8 @@ def create_bash_tool(timeout: int = 60) -> Tool:
                 stdout = _decode(stdout_b)
                 stderr = _decode(stderr_b)
                 msg = (
-                    f"[error] 命令超时（{timeout}s），进程已被强制结束。"
-                    f"如需运行长任务请拆分命令或调高 timeout。"
+                    f"[error] 命令超时（{effective_timeout}s），进程已被强制结束。"
+                    f"如需运行长任务请拆分命令或调大 timeout 参数（最大 {max_timeout}s）。"
                 )
                 tail = []
                 if stdout.strip():
@@ -194,7 +208,7 @@ def create_bash_tool(timeout: int = 60) -> Tool:
             "- 仅【纯 cd】命令（如 `cd src`、`cd /d D:\\proj`）会持久切换 cwd；\n"
             "- 组合命令（如 `cd x && yyy`）由底层 shell 自行处理，不持久切换；\n"
             "- 平台：Windows 走 cmd /s /c，POSIX 走 /bin/bash -c；\n"
-            "- 单条命令默认超时 60 秒，挂死会被强制终止；\n"
+            f"- 默认超时 {default_timeout}s，可通过 timeout 参数延长（上限 {max_timeout}s）；\n"
             "- 输出首行 [cwd] 显示当前工作目录，便于排错。"
         ),
         parameters=[
@@ -203,6 +217,16 @@ def create_bash_tool(timeout: int = 60) -> Tool:
                 type="string",
                 description="要执行的 shell 命令",
                 required=True,
+            ),
+            ToolParameter(
+                name="timeout",
+                type="number",
+                description=(
+                    f"超时秒数。0 或不传 → 默认 {default_timeout}s；"
+                    f"上限 {max_timeout}s（超过会被钳位）。"
+                    "长任务（npm install / 大型构建 / 网络抓取等）传更大值"
+                ),
+                required=False,
             ),
         ],
         func=bash,

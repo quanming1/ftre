@@ -4,12 +4,15 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 行为：
 - session_id 不传 → 在 channel="subagent" 下新建 session
 - session_id 传了 → 复用，会带上其历史
-- 通过 SubagentChannel.receive 投递 user_input，跟 ws/cron 一样走标准 channel
-  路径，让 outbound 分发不报 unknown channel
+- 通过 SubagentChannel.receive 投递 user_input
 - 投递后阻塞等待目标 session 跑完，返回最后一条 ai 回复 + session_id
 
-终止判定：轮询 SessionManager.get_messages_by_session，等到 timestamp ≥ baseline
-的 'done' 事件即认为完成，然后取这之后的最后一条 message_complete 作为返回值。
+终止判定：
+- 用 AgentLoop._active_agents 作为权威信号判断"是否在跑"。
+  AgentLoop._run 在 finally 里必定 pop，所以无论 done 是否被发出（异常 / 超时
+  / 被 cancel）都能正确感知"agent 不再运行"。
+- 等到 sid 不再 active，就去事件流取 baseline_ts 之后最后一条 message_complete
+  作为返回值。
 
 防递归：subagent channel 的调用方禁止再调 task。
 """
@@ -25,8 +28,9 @@ logger = logging.getLogger(__name__)
 
 
 # 轮询参数
-_POLL_INTERVAL = 0.5      # 每 500ms 查一次
-_TIMEOUT_SECONDS = 600    # 单次 task 最长等待 10 分钟
+_POLL_INTERVAL = 0.5         # 每 500ms 查一次状态
+_STARTUP_TIMEOUT = 30        # 等 agent 启动（is_session_running 变 True）的上限
+_TIMEOUT_SECONDS = 600       # 启动后到 agent 结束的上限（10 分钟）
 
 
 _SUBAGENT_PREAMBLE = """\
@@ -56,62 +60,39 @@ def _run_async(coro, event_loop, timeout: float = 10.0):
     return asyncio.run_coroutine_threadsafe(coro, event_loop).result(timeout=timeout)
 
 
-def _wait_for_completion(
+def _wait_until(predicate, timeout: float, interval: float = _POLL_INTERVAL) -> bool:
+    """阻塞轮询 predicate，True 即返回 True；超时返回 False"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def _final_content_after(
     session_manager,
     event_loop,
     sid: str,
     baseline_ts: float,
-) -> tuple[str | None, str]:
-    """
-    阻塞轮询直到该 session 出现 timestamp ≥ baseline_ts 的 done 事件。
-
-    返回 (final_content, status):
-      status: 'completed' | 'timeout' | 'error'
-      final_content: 该 done 之前最近一条 message_complete 的 content；
-                     没有时为 None
-    """
-    deadline = time.time() + _TIMEOUT_SECONDS
-    while time.time() < deadline:
-        try:
-            events = _run_async(
-                session_manager.get_messages_by_session(sid),
-                event_loop,
-                timeout=10.0,
-            )
-        except Exception as e:
-            logger.warning(f"[task] 轮询 events 失败: {e}")
-            time.sleep(_POLL_INTERVAL)
-            continue
-
-        # 倒序找 baseline 之后的 done：跨过基线就停，无需扫全量
-        done_ev = None
-        for ev in reversed(events):
-            ts = ev.get("timestamp", 0)
-            if ts < baseline_ts:
-                break
-            if ev.get("type") == "done":
-                done_ev = ev
-                break
-
-        if done_ev is not None:
-            done_ts = done_ev.get("timestamp", 0)
-            # 倒序找最近一条 message_complete（在 done 时间点之前、baseline 之后）
-            final_content: str | None = None
-            for ev in reversed(events):
-                ts = ev.get("timestamp", 0)
-                if ts > done_ts:
-                    continue
-                if ts < baseline_ts:
-                    break
-                if ev.get("type") == "message_complete":
-                    final_content = (ev.get("data") or {}).get("content") or ""
-                    break
-            success = (done_ev.get("data") or {}).get("success", True)
-            return final_content, "completed" if success else "error"
-
-        time.sleep(_POLL_INTERVAL)
-
-    return None, "timeout"
+) -> str | None:
+    """取 baseline_ts 之后最近一条 message_complete 的 content；找不到返回 None"""
+    try:
+        events = _run_async(
+            session_manager.get_messages_by_session(sid),
+            event_loop,
+            timeout=10.0,
+        )
+    except Exception as e:
+        logger.warning(f"[task] 拉取 events 失败: {e}")
+        return None
+    for ev in reversed(events):
+        ts = ev.get("timestamp", 0)
+        if ts < baseline_ts:
+            break
+        if ev.get("type") == "message_complete":
+            return (ev.get("data") or {}).get("content") or ""
+    return None
 
 
 def create_task_tool(channel_manager) -> Tool:
@@ -128,10 +109,11 @@ def create_task_tool(channel_manager) -> Tool:
         caller_channel: str = Injected("channel_id"),
         event_loop=Injected("event_loop"),
         session_manager=Injected("session_manager"),
+        agent_loop=Injected("agent_loop"),
     ) -> str:
         if not prompt or not prompt.strip():
             return "[error] prompt 不能为空"
-        if event_loop is None or session_manager is None:
+        if event_loop is None or session_manager is None or agent_loop is None:
             return "[error] runtime context 未注入完整"
         if caller_channel == SUBAGENT_CHANNEL_ID:
             return (
@@ -157,11 +139,8 @@ def create_task_tool(channel_manager) -> Tool:
                 )
 
             wrapped_prompt = _wrap_with_preamble(prompt)
-
-            # 记录派发时间作为完成事件的过滤基线（必须在 publish 前）
             baseline_ts = time.time()
 
-            # 通过 SubagentChannel.receive 走标准 inbound 路径，跟 ws/cron 一致
             _run_async(
                 subagent_channel.receive(
                     session_id=sid,
@@ -172,22 +151,36 @@ def create_task_tool(channel_manager) -> Tool:
         except Exception as e:
             return f"[error] 派发失败: {type(e).__name__}: {e}"
 
-        # 阻塞等结果
-        final_content, status = _wait_for_completion(
-            session_manager, event_loop, sid, baseline_ts
-        )
+        head = f"[session={sid}"
 
-        head = f"[session={sid}, status={status}]"
-        if status == "timeout":
+        # 阶段 A：等 AgentLoop 把这条 inbound 消费、_run 真正进入活跃态
+        if not _wait_until(
+            lambda: agent_loop.is_session_running(sid), _STARTUP_TIMEOUT
+        ):
             return (
-                f"{head} 任务超时（{_TIMEOUT_SECONDS}s）未完成。"
+                f"{head}, status=startup_timeout] "
+                f"派发后 {_STARTUP_TIMEOUT}s 内 agent 仍未启动，可能 AgentLoop "
+                f"消费阻塞或鉴权失败"
+            )
+
+        # 阶段 B：等 agent 跑完（_run finally 必定 pop，不依赖 done 事件）
+        if not _wait_until(
+            lambda: not agent_loop.is_session_running(sid), _TIMEOUT_SECONDS
+        ):
+            return (
+                f"{head}, status=timeout] "
+                f"任务超时（{_TIMEOUT_SECONDS}s）未完成。"
                 f"可下次调用 task 时传入 session_id={sid} 接着上次执行"
             )
+
+        # agent 已结束，取最后一条 message_complete 作为返回值
+        final_content = _final_content_after(
+            session_manager, event_loop, sid, baseline_ts
+        )
+        head_full = f"{head}, status=completed]"
         if final_content:
-            return f"{head}\n{final_content}"
-        # done 已到达但没有 message_complete：subagent 可能直接静默退出 / 仅工具调用
-        # 没有最终总结。父 agent 应当注意这条状态。
-        return f"{head} 任务结束但 subagent 未输出最终回复"
+            return f"{head_full}\n{final_content}"
+        return f"{head_full} 任务结束但 subagent 未输出最终回复（可能仅工具调用 / 异常退出）"
 
     return Tool(
         name="task",
