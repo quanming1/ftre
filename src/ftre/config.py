@@ -48,6 +48,10 @@ class AgentConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     system_prompt: str = "你是 ftre，一个 AI 编程助手。"
     max_iterations: int | None = None
+    # 默认工作区。空字符串表示走进程 cwd 兜底。
+    # 一个 session 没有 set_workspace 历史时使用这个值；
+    # 配置项位于 config.json 的 agents.defaults.workspace。
+    workspace: str = ""
 
 
 def load_config_file() -> dict:
@@ -111,11 +115,16 @@ def load_config() -> AgentConfig:
         model=_build_model_name(model_id, protocol) if model_id else "",
     )
 
+    workspace = defaults.get("workspace", "") or ""
+    if not isinstance(workspace, str):
+        workspace = ""
+
     logger.warning(
         f"[config] model={llm.model}, provider={provider_name}, "
-        f"context_window={llm.context_window}, max_output={llm.max_output}"
+        f"context_window={llm.context_window}, max_output={llm.max_output}, "
+        f"workspace={workspace or '(default)'}"
     )
-    return AgentConfig(llm=llm)
+    return AgentConfig(llm=llm, workspace=workspace)
 
 
 DEFAULT_CONFIG = load_config()
