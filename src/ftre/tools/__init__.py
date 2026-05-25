@@ -1,35 +1,35 @@
 """
 ftre 内置工具集
 
-每次 build_default_tools() 创建独立的工具实例（带共享的 cwd 状态），
-保证 session 之间隔离。
+工具是无状态的工厂产物；当前工作区由 agent 每次 run 时通过
+runtime_context['workspace'] = {'cwd': str} 注入，
+工具通过 Injected("workspace") 取得这个 mutable dict 引用。
 """
-import os
-
 from ftre_agent_core.tool import Tool
-from .bash import create_bash_tool, _BashState
+
+from .bash import create_bash_tool
 from .cron import create_cron_tool
 from .edit import create_edit_tool
 from .read import create_read_tool
 from .send_message import create_send_message_tool
+from .set_workspace import create_set_workspace_tool
 from .think import create_think_tool
 from .write import create_write_tool
 
 
-def build_default_tools(cwd: str | None = None, channel_manager=None) -> list[Tool]:
-    """构建默认工具集：think + bash + read + write + edit + cron + send_message
+def build_default_tools(channel_manager=None) -> list[Tool]:
+    """构建默认工具集：think + bash + read + write + edit + set_workspace + cron + send_message
 
     Args:
-        cwd: 工作目录（默认使用进程 CWD）
         channel_manager: ChannelManager 实例（用于 send_message 工具）
     """
-    state = _BashState(cwd or os.getcwd())
     tools = [
         create_think_tool(),
-        create_bash_tool(state=state),
-        create_read_tool(state=state),
-        create_write_tool(state=state),
-        create_edit_tool(state=state),
+        create_bash_tool(),
+        create_read_tool(),
+        create_write_tool(),
+        create_edit_tool(),
+        create_set_workspace_tool(),
         create_cron_tool(),
     ]
 

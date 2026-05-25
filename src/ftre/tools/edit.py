@@ -1,9 +1,8 @@
 """
 edit 工具 - 通过精确字符串替换修改文件
 """
-from ftre_agent_core.tool import Tool, ToolParameter
+from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
-from .bash import _BashState
 from .read import _resolve
 from ._io import read_text, write_text_preserving
 
@@ -27,21 +26,15 @@ def _line_numbers_of_matches(text: str, needle: str, max_show: int = 5) -> list[
 
 
 def _trimmed_match_hint(text: str, needle: str) -> str | None:
-    """
-    当 needle 完全匹配为 0 时，尝试帮助 agent 定位：
-    - 把 needle 每行 strip 后再去 text 里找
-    - 如果能找到，提示是缩进/前后空格不一致
-    """
+    """匹配 0 次时给定位提示：是否缩进/前后空格不一致"""
     if not needle.strip():
         return None
     needle_lines = [ln.strip() for ln in needle.splitlines()]
     if not needle_lines:
         return None
-    # 取第一行非空作为指纹
     fingerprint = next((ln for ln in needle_lines if ln), "")
     if not fingerprint:
         return None
-    # 在 text 中查找首行指纹的次数
     text_lines = text.splitlines()
     hits = [i + 1 for i, ln in enumerate(text_lines) if ln.strip() == fingerprint]
     if hits:
@@ -53,20 +46,23 @@ def _trimmed_match_hint(text: str, needle: str) -> str | None:
     return None
 
 
-def create_edit_tool(state: "_BashState | None" = None) -> Tool:
+def create_edit_tool() -> Tool:
     """创建 edit 工具（基于精确字符串替换）
 
-    行为：
-    - 严格唯一匹配：0 次或 >1 次都会报错并给定位提示
-    - 写回保留原 encoding 与换行风格
-
-    Args:
-        state: 共享 cwd 状态（相对路径基于此解析）
+    严格唯一匹配：0 次或 >1 次都会报错并给定位提示。
+    写回保留原 encoding 与换行风格。
     """
 
-    def edit(path: str, old_str: str, new_str: str) -> str:
+    def edit(
+        path: str,
+        old_str: str,
+        new_str: str,
+        ws: dict = Injected("workspace"),
+    ) -> str:
         try:
-            p = _resolve(path, state)
+            if not isinstance(ws, dict) or "cwd" not in ws:
+                return "[error] runtime_context.workspace 未注入"
+            p = _resolve(path, ws)
             if not p.exists():
                 return f"[error] 文件不存在: {p}"
             if p.is_dir():
@@ -75,8 +71,7 @@ def create_edit_tool(state: "_BashState | None" = None) -> Tool:
                 return f"[error] 不是普通文件: {p}"
 
             tf = read_text(p)
-            content = tf.text  # 已统一为 \n
-            # 把 old_str / new_str 的换行也统一为 \n，避免 CRLF 不一致导致匹配失败
+            content = tf.text
             old_norm = old_str.replace("\r\n", "\n").replace("\r", "\n")
             new_norm = new_str.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -112,7 +107,7 @@ def create_edit_tool(state: "_BashState | None" = None) -> Tool:
     return Tool(
         name="edit",
         description=(
-            "通过精确字符串替换修改文件。相对路径基于当前工作目录（由 bash cd 切换）。\n"
+            "通过精确字符串替换修改文件。相对路径基于当前工作区目录。\n"
             "- old_str 必须在文件中【唯一】匹配（含缩进和换行）\n"
             "- 0 次匹配：会提示是否为缩进/空格不一致\n"
             "- 多次匹配：会列出行号，提示加更多上下文\n"
@@ -120,7 +115,7 @@ def create_edit_tool(state: "_BashState | None" = None) -> Tool:
             "- 新建文件请用 write 工具"
         ),
         parameters=[
-            ToolParameter(name="path", type="string", description="文件路径（绝对或相对当前 cwd）", required=True),
+            ToolParameter(name="path", type="string", description="文件路径（绝对或相对当前工作区）", required=True),
             ToolParameter(
                 name="old_str",
                 type="string",
