@@ -240,6 +240,38 @@ class SessionManager:
         ]
 
     # ============================================================
+    # Token 用量（最近一次 LLM 实算 + 之后未计入事件的字符级粗估）
+    # ============================================================
+
+    async def get_token_usage(self, session_id: str) -> dict:
+        """
+        计算指定 session 当前 token 用量。
+
+        策略：
+        - 找事件流中最晚的"携带 usage 的事件"作为 anchor
+          （usage_update，或 done.data.usage 非空）
+        - anchor 之后还没被 LLM 计入但会进下次 prompt 的事件用字符级粗估
+        - total = anchor.total_tokens + pending_estimated
+        - 没有 anchor 时（全新 session）退化为对全量回放事件估算
+
+        Returns:
+            {
+              "session_id": str,
+              "anchor": {
+                "prompt_tokens": int,
+                "completion_tokens": int,
+                "total_tokens": int,
+                "at": float,
+                "source": "usage_update" | "done"
+              } | None,
+              "pending_estimated": int,
+              "total": int
+            }
+        """
+        events = await self.get_messages_by_session(session_id)
+        return _compute_token_usage(session_id, events)
+
+    # ============================================================
     # 历史恢复
     # ============================================================
 
@@ -338,3 +370,70 @@ def _safe_name(s: str) -> str:
     """
     cleaned = "".join(c if (c.isalnum() or c in "_-") else "_" for c in s).strip("_")
     return (cleaned or "external")[:64]
+
+
+def _compute_token_usage(session_id: str, events: list[MessageModel]) -> dict:
+    """
+    根据事件流计算 token 用量。抽出来便于单测，不依赖 db。
+
+    见 SessionManager.get_token_usage 文档。
+    """
+    from .token_counter import estimate_event_tokens
+
+    # 倒序找最晚的"携带 usage 的事件"
+    anchor_index = -1
+    anchor_usage: dict | None = None
+    anchor_source: str = ""
+    for i in range(len(events) - 1, -1, -1):
+        ev = events[i]
+        t = ev["type"]
+        data = ev.get("data") or {}
+        if t == "usage_update":
+            usage = data.get("usage")
+            if usage:
+                anchor_index = i
+                anchor_usage = usage
+                anchor_source = "usage_update"
+                break
+        elif t == "done":
+            usage = data.get("usage")
+            if usage:
+                anchor_index = i
+                anchor_usage = usage
+                anchor_source = "done"
+                break
+
+    # 取要估算的事件区间
+    if anchor_index >= 0:
+        pending_events = events[anchor_index + 1:]
+    else:
+        pending_events = events
+
+    pending_estimated = sum(estimate_event_tokens(ev) for ev in pending_events)
+
+    if anchor_usage is not None:
+        # total_tokens 不存在时回退到 prompt + completion
+        total_real = anchor_usage.get("total_tokens")
+        if total_real is None:
+            total_real = (
+                int(anchor_usage.get("prompt_tokens", 0) or 0)
+                + int(anchor_usage.get("completion_tokens", 0) or 0)
+            )
+        anchor_payload = {
+            "prompt_tokens": int(anchor_usage.get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(anchor_usage.get("completion_tokens", 0) or 0),
+            "total_tokens": int(total_real or 0),
+            "at": events[anchor_index]["timestamp"],
+            "source": anchor_source,
+        }
+        total = anchor_payload["total_tokens"] + pending_estimated
+    else:
+        anchor_payload = None
+        total = pending_estimated
+
+    return {
+        "session_id": session_id,
+        "anchor": anchor_payload,
+        "pending_estimated": pending_estimated,
+        "total": total,
+    }
