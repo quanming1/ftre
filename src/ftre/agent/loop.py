@@ -8,6 +8,7 @@ AgentLoop - 全局单例，消费所有 session 的 inbound 消息
 """
 import asyncio
 import logging
+import os
 
 from ftre_agent_core.agent import ReActAgent
 from ftre.bus import BusMessage, EventBus
@@ -148,6 +149,10 @@ class AgentLoop:
             "event_loop": self._event_loop,
             "bus": self.bus,
             "session_manager": self.session_manager,
+            # workspace 是个 mutable dict：bash cd / set_workspace 工具会原地改 cwd，
+            # 同 run 内后续 read/write/edit 立即看到。每个 run 一份，session 间不串。
+            # 初始 cwd 从历史中恢复（最后一次成功的 set_workspace），找不到回落到进程 cwd。
+            "workspace": {"cwd": self._resolve_initial_workspace(session_id)},
         }
 
         try:
@@ -232,6 +237,66 @@ class AgentLoop:
         if isinstance(user_content, str):
             return user_content
         return [{"role": "user", "content": user_content}]
+
+    def _resolve_initial_workspace(self, session_id: str) -> str:
+        """
+        从会话历史恢复工作区初始 cwd。
+
+        策略：倒序扫事件，找最近一对 (set_workspace tool_call, 配对的 tool_result
+        且非 [error] 开头) 来恢复路径。bash cd 视为临时切换，不参与恢复。
+
+        从 result 字符串解析新路径：
+        - "工作区已切换: <old> → <new>"
+        - "工作区未变化: <new>"
+        解析失败或没有命中，回落到 os.getcwd()。
+        """
+        events = asyncio.run_coroutine_threadsafe(
+            self.session_manager.get_messages_by_session(session_id),
+            self._event_loop,
+        ).result()
+        if not events:
+            return os.getcwd()
+
+        # 收集 set_workspace 的 tool_call.id 集合
+        sw_call_ids: set[str] = set()
+        for ev in events:
+            if ev.get("type") != "tool_call":
+                continue
+            data = ev.get("data") or {}
+            if data.get("name") == "set_workspace":
+                sw_call_ids.add(data.get("id", ""))
+
+        if not sw_call_ids:
+            return os.getcwd()
+
+        # 倒序找最近一条配对的、成功的 tool_result
+        for ev in reversed(events):
+            if ev.get("type") != "tool_result":
+                continue
+            data = ev.get("data") or {}
+            if data.get("id") not in sw_call_ids:
+                continue
+            result = data.get("result") or ""
+            if not isinstance(result, str) or result.startswith("[error]"):
+                continue
+            cwd = self._parse_set_workspace_result(result)
+            if cwd and os.path.isdir(cwd):
+                return cwd
+
+        return os.getcwd()
+
+    @staticmethod
+    def _parse_set_workspace_result(result: str) -> str | None:
+        """从 set_workspace 的 result 字符串解析出目标 cwd"""
+        # "工作区已切换: <old> → <new>"
+        idx = result.find("→")
+        if idx >= 0:
+            return result[idx + 1:].strip() or None
+        # "工作区未变化: <path>"
+        prefix = "工作区未变化:"
+        if result.startswith(prefix):
+            return result[len(prefix):].strip() or None
+        return None
 
     def _drop_orphan_tool_events(self, events: list) -> list:
         """
