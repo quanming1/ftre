@@ -3,34 +3,36 @@ read 工具 - 读取文件内容
 """
 from pathlib import Path
 
-from ftre_agent_core.tool import Tool, ToolParameter
+from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
-from .bash import _BashState
 from ._io import read_text
 
 
-def _resolve(path: str, state: "_BashState | None") -> Path:
-    """解析路径：相对路径基于 state.cwd（如果有），绝对路径直接用"""
+def _resolve(path: str, ws: dict) -> Path:
+    """解析路径：相对路径基于 ws['cwd']，绝对路径直接用"""
     p = Path(path).expanduser()
-    if not p.is_absolute() and state is not None:
-        p = state.cwd / p
+    if not p.is_absolute():
+        p = Path(ws["cwd"]) / p
     return p.resolve()
 
 
-def create_read_tool(
-    max_bytes: int = 256 * 1024,
-    state: "_BashState | None" = None,
-) -> Tool:
+def create_read_tool(max_bytes: int = 256 * 1024) -> Tool:
     """创建 read 工具
 
     Args:
         max_bytes: 单文件最大读取字节数（默认 256KB）。超出必须显式 start_line/end_line
-        state: 共享 cwd 状态（与 bash 共用，相对路径基于此解析）
     """
 
-    def read(path: str, start_line: int = 0, end_line: int = 0) -> str:
+    def read(
+        path: str,
+        start_line: int = 0,
+        end_line: int = 0,
+        ws: dict = Injected("workspace"),
+    ) -> str:
         try:
-            p = _resolve(path, state)
+            if not isinstance(ws, dict) or "cwd" not in ws:
+                return "[error] runtime_context.workspace 未注入"
+            p = _resolve(path, ws)
             if not p.exists():
                 return f"[error] 文件不存在: {p}"
             if p.is_dir():
@@ -59,7 +61,6 @@ def create_read_tool(
             else:
                 numbered = [f"{i + 1:6d}| {line}" for i, line in enumerate(lines)]
 
-            # 在多 byte/非 UTF-8 文件上提示一下编码，便于排错
             header = ""
             if tf.encoding != "utf-8" and tf.encoding != "utf-8-sig":
                 header = f"[encoding] {tf.encoding}\n"
@@ -70,14 +71,14 @@ def create_read_tool(
     return Tool(
         name="read",
         description=(
-            "读取文件内容并返回带行号的文本。相对路径基于当前工作目录（由 bash cd 切换）。\n"
+            "读取文件内容并返回带行号的文本。相对路径基于当前工作区目录。\n"
             "- 自动识别编码（utf-8 / utf-8-sig / gbk 等），非 utf-8 文件首行会显示 [encoding]\n"
             "- 可选 start_line / end_line 限定行范围（1-indexed，闭区间）\n"
             "- 超过 256KB 的文件必须传入行范围\n"
             "- 路径是目录时拒绝读取，提示用 bash 列目录"
         ),
         parameters=[
-            ToolParameter(name="path", type="string", description="文件路径（绝对或相对当前 cwd）", required=True),
+            ToolParameter(name="path", type="string", description="文件路径（绝对或相对当前工作区）", required=True),
             ToolParameter(
                 name="start_line",
                 type="number",
