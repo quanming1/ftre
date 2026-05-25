@@ -372,6 +372,32 @@ def _safe_name(s: str) -> str:
     return (cleaned or "external")[:64]
 
 
+def _find_anchor(events: list[MessageModel]) -> tuple[int, dict | None, str]:
+    """倒序找最晚的"携带 usage 的事件"，返回 (index, usage_dict, source)"""
+    for i in range(len(events) - 1, -1, -1):
+        ev = events[i]
+        if ev["type"] not in ("usage_update", "done"):
+            continue
+        usage = (ev.get("data") or {}).get("usage")
+        if usage:
+            return i, usage, ev["type"]
+    return -1, None, ""
+
+
+def _build_anchor_payload(usage: dict, timestamp: float, source: str) -> dict:
+    """把 LLM 上报的 usage dict 整理成对外 payload，补全 total_tokens"""
+    prompt = int(usage.get("prompt_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or 0)
+    total = int(usage.get("total_tokens") or (prompt + completion))
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+        "at": timestamp,
+        "source": source,
+    }
+
+
 def _compute_token_usage(session_id: str, events: list[MessageModel]) -> dict:
     """
     根据事件流计算 token 用量。抽出来便于单测，不依赖 db。
@@ -380,62 +406,26 @@ def _compute_token_usage(session_id: str, events: list[MessageModel]) -> dict:
     """
     from .token_counter import estimate_events_tokens
 
-    # 倒序找最晚的"携带 usage 的事件"
-    anchor_index = -1
-    anchor_usage: dict | None = None
-    anchor_source: str = ""
-    for i in range(len(events) - 1, -1, -1):
-        ev = events[i]
-        t = ev["type"]
-        data = ev.get("data") or {}
-        if t == "usage_update":
-            usage = data.get("usage")
-            if usage:
-                anchor_index = i
-                anchor_usage = usage
-                anchor_source = "usage_update"
-                break
-        elif t == "done":
-            usage = data.get("usage")
-            if usage:
-                anchor_index = i
-                anchor_usage = usage
-                anchor_source = "done"
-                break
+    anchor_index, anchor_usage, anchor_source = _find_anchor(events)
 
-    # 取要估算的事件区间
-    if anchor_index >= 0:
-        pending_events = events[anchor_index + 1:]
-    else:
-        pending_events = events
-
-    # 批量估算：先折成 OpenAI messages 再算 token，复用 to_openai_messages
-    # 的合并规则（连续 tool_call 折叠 / external_message name 等）
+    # 锚点之后的事件用字符级粗估（无锚点时即全量估算）
+    pending_events = events[anchor_index + 1:] if anchor_index >= 0 else events
     pending_estimated = estimate_events_tokens(pending_events)
 
-    if anchor_usage is not None:
-        # total_tokens 不存在时回退到 prompt + completion
-        total_real = anchor_usage.get("total_tokens")
-        if total_real is None:
-            total_real = (
-                int(anchor_usage.get("prompt_tokens", 0) or 0)
-                + int(anchor_usage.get("completion_tokens", 0) or 0)
-            )
-        anchor_payload = {
-            "prompt_tokens": int(anchor_usage.get("prompt_tokens", 0) or 0),
-            "completion_tokens": int(anchor_usage.get("completion_tokens", 0) or 0),
-            "total_tokens": int(total_real or 0),
-            "at": events[anchor_index]["timestamp"],
-            "source": anchor_source,
+    if anchor_usage is None:
+        return {
+            "session_id": session_id,
+            "anchor": None,
+            "pending_estimated": pending_estimated,
+            "total": pending_estimated,
         }
-        total = anchor_payload["total_tokens"] + pending_estimated
-    else:
-        anchor_payload = None
-        total = pending_estimated
 
+    anchor = _build_anchor_payload(
+        anchor_usage, events[anchor_index]["timestamp"], anchor_source
+    )
     return {
         "session_id": session_id,
-        "anchor": anchor_payload,
+        "anchor": anchor,
         "pending_estimated": pending_estimated,
-        "total": total,
+        "total": anchor["total_tokens"] + pending_estimated,
     }
