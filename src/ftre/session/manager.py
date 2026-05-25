@@ -281,24 +281,24 @@ class SessionManager:
         将事件流重建为 OpenAI 格式消息列表。
 
         转换规则：
-        - USER_INPUT        → {"role": "user", "content": ...}
-        - TOOL_CALL         → 连续的合并为 {"role": "assistant", "tool_calls": [...]}
-        - TOOL_RESULT       → {"role": "tool", "tool_call_id": ..., "content": ...}
-        - MESSAGE_COMPLETE  → {"role": "assistant", "content": ...}
-        - EXTERNAL_MESSAGE  → {"role": "assistant", "name": "<src>", "content": "[来自 ...]"}
-                              其他 AI agent 通过 send_message 发来的消息
-        - REASONING         → 累积到下一条 assistant message 的 reasoning_content
-                              （部分 thinking 模型要求多轮间透传）
+        - USER_INPUT          → {"role": "user", "content": ...}
+        - TOOL_CALL           → 连续的合并为 {"role": "assistant", "tool_calls": [...]}
+        - TOOL_RESULT         → {"role": "tool", "tool_call_id": ..., "content": ...}
+        - MESSAGE_COMPLETE    → {"role": "assistant", "content": ...}
+        - REASONING_COMPLETE  → 暂存到下一条 assistant message 的 reasoning_content
+                                （部分 thinking 模型要求多轮间透传）
+        - EXTERNAL_MESSAGE    → {"role": "assistant", "name": "<src>", "content": "[来自 ...]"}
+                                其他 AI agent 通过 send_message 发来的消息
         - 其他类型跳过
         """
         messages: list[dict] = []
         pending_tool_calls: list[dict] = []
-        pending_reasoning: list[str] = []
+        pending_reasoning: str | None = None
 
-        def _take_reasoning() -> str:
+        def _take_reasoning() -> str | None:
             nonlocal pending_reasoning
-            text = "".join(pending_reasoning)
-            pending_reasoning = []
+            text = pending_reasoning
+            pending_reasoning = None
             return text
 
         def _flush_tool_calls():
@@ -320,7 +320,7 @@ class SessionManager:
 
             if t == "USER_INPUT":
                 _flush_tool_calls()
-                # 用户消息边界：丢弃可能残留的 reasoning（属于上一轮且没有 assistant 收尾）
+                # user 消息边界：丢弃可能残留的 reasoning
                 _take_reasoning()
                 from .multimodal import build_user_content
                 text = event["data"].get("content", "")
@@ -330,8 +330,9 @@ class SessionManager:
                     "content": build_user_content(text, attachments),
                 })
 
-            elif t == "reasoning":
-                pending_reasoning.append(event["data"].get("content", "") or "")
+            elif t == "reasoning_complete":
+                # 一轮 LLM 思考的完整文本，挂到下一条 assistant message 上
+                pending_reasoning = event["data"].get("content", "") or None
 
             elif t == "tool_call":
                 pending_tool_calls.append({

@@ -46,6 +46,11 @@ class AgentLoop:
         self._event_loop = asyncio.get_event_loop()
         self._task = asyncio.create_task(self._consume())
 
+    def is_session_running(self, session_id: str) -> bool:
+        """该 session 是否有正在跑的 ReActAgent。AgentLoop 在 _run finally 里
+        必定 pop，所以这是"跑完没"的权威信号——不依赖 done 事件是否被发出。"""
+        return session_id in self._active_agents
+
     async def stop(self) -> None:
         """停止消费循环并中断所有正在运行的 Agent"""
         if self._task:
@@ -84,7 +89,7 @@ class AgentLoop:
     # 需要持久化的事件类型（小写，和 EventType 枚举值一致）
     PERSISTENT_EVENTS = {
         "message_complete",
-        "reasoning",
+        "reasoning_complete",
         "tool_call",
         "tool_result",
         "tool_cancel_requested",
@@ -182,6 +187,7 @@ class AgentLoop:
             "event_loop": self._event_loop,
             "bus": self.bus,
             "session_manager": self.session_manager,
+            "agent_loop": self,
             # workspace 是个 mutable dict：bash cd / set_workspace 工具会原地改 cwd，
             # 同 run 内后续 read/write/edit 立即看到。每个 run 一份，session 间不串。
             # 初始 cwd 从历史中恢复（最后一次成功的 set_workspace），找不到回落到 config 默认或进程 cwd。
@@ -383,6 +389,61 @@ class AgentLoop:
             logger.info(f"[govern] 丢弃 {dropped} 个孤立 tool 事件")
         return out
 
+    def _ensure_tool_call_result_adjacency(self, events: list) -> list:
+        """
+        保证每个 tool_call 紧跟着对应的 tool_result。
+
+        触发场景：tool_call 之后插入了 external_message 等事件，再之后才到达
+        tool_result（task 工具阻塞期间会有 cron 派发的 external_message 进来）。
+        to_openai_messages 把这种结构折成 OpenAI messages 时，tool_call 被先
+        flush 成 assistant message，后续 tool_result 跟它不再相邻 → LLM 投诉
+        'tool_call_ids did not have response messages'。
+
+        修复策略：扫一遍事件，对每个 tool_call 找到配对的 tool_result，把
+        tool_result 移到紧贴 tool_call 之后；中间被打断的事件（如
+        external_message）顺位后移。
+
+        没有打断时返回原列表（零拷贝）。
+        """
+        if not events:
+            return events
+
+        # 收集 (tool_call_idx, result_idx)
+        call_idx_by_id: dict[str, int] = {}
+        pairs: list[tuple[int, int]] = []
+        for i, ev in enumerate(events):
+            t = ev.get("type")
+            data = ev.get("data") or {}
+            tid = data.get("id", "")
+            if not tid:
+                continue
+            if t == "tool_call":
+                call_idx_by_id[tid] = i
+            elif t == "tool_result" and tid in call_idx_by_id:
+                call_i = call_idx_by_id.pop(tid)
+                if i != call_i + 1:
+                    # 不相邻才需要修复
+                    pairs.append((call_i, i))
+
+        if not pairs:
+            return events
+
+        # 重建：按原序遍历，遇到需要修复的 tool_call 时立刻插入它的 result，
+        # 跳过原位置的那条 result
+        result_indices_to_skip = {result_i for _, result_i in pairs}
+        moves: dict[int, int] = {call_i: result_i for call_i, result_i in pairs}
+
+        out: list = []
+        for i, ev in enumerate(events):
+            if i in result_indices_to_skip:
+                continue
+            out.append(ev)
+            if i in moves:
+                out.append(events[moves[i]])
+
+        logger.info(f"[govern] 修复 {len(pairs)} 对不相邻的 tool_call/tool_result")
+        return out
+
     def _govern_context(
         self,
         session_id: str,
@@ -390,7 +451,14 @@ class AgentLoop:
         config: AgentConfig,
     ) -> list:
         """
-        上下文治理：水位过高时裁剪老 tool_result 的输出，保护最近 N 轮。
+        上下文治理，分两步：
+
+        1) tool_call / tool_result 必须相邻（OpenAI 协议要求）。
+           中间被 external_message / 其他事件打断时，把 tool_result 提到
+           对应 tool_call 之后，保证 to_openai_messages 输出合规。
+
+        2) 水位 (total_tokens / context_window) > CONTEXT_PRESSURE_THRESHOLD
+           时，对最后 PROTECTED_ROUNDS 轮以外的 tool_result 做长度裁剪。
 
         裁剪规则：
         - 找到最后 PROTECTED_ROUNDS 个 USER_INPUT 之中最早的那个，作为保护边界
@@ -400,6 +468,9 @@ class AgentLoop:
 
         返回：可能被裁剪过的新 events 列表（不修改入参）
         """
+        # Step 1: 修复 tool_call / tool_result 相邻
+        events = self._ensure_tool_call_result_adjacency(events)
+
         cw = config.llm.context_window
         if not cw or cw <= 0 or not events:
             return events
