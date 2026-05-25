@@ -84,6 +84,7 @@ class AgentLoop:
     # 需要持久化的事件类型（小写，和 EventType 枚举值一致）
     PERSISTENT_EVENTS = {
         "message_complete",
+        "reasoning",
         "tool_call",
         "tool_result",
         "tool_cancel_requested",
@@ -107,7 +108,19 @@ class AgentLoop:
     def _run(self, inbound: BusMessage) -> None:
         """
         在线程中执行 Agent，事件逐条投递回 Bus。
+
+        流程：
+        - Step 1: 入参校验（content / session_id 不为空）
+        - Step 2: 鉴权（session 必须存在，且 channel 与消息来源一致）
+        - Step 3: 构造 user content（折叠多模态）+ 加载配置
+        - Step 4: 加载历史 + 拼接当前用户消息（含上下文治理）
+        - Step 5: 创建独立 Agent + 注入上下文
+        - Step 6: 持久化用户输入
+        - Step 7: 驱动 Agent 执行，逐事件持久化 + 推送
+        - Step 8: 异常兜底：保证一定有 done 事件投递
+        - Step 9: 清理 _active_agents 引用
         """
+        # Step 1: 入参校验
         content = inbound.data.get("content", "")
         attachments = inbound.data.get("attachments") or []
         if not content and not attachments:
@@ -118,17 +131,37 @@ class AgentLoop:
             logger.warning("[agent-loop] 收到无 session_id 的消息，忽略")
             return
 
-        # 把 (text, attachments) 折成 OpenAI user content
+        # Step 2: 鉴权 — session 必须真实存在，且 channel 与消息来源一致，
+        # 避免别的 channel 伪造 session_id 投递任务、或对已删除会话的残留消息执行
+        session = asyncio.run_coroutine_threadsafe(
+            self.session_manager.get_session(session_id),
+            self._event_loop,
+        ).result()
+        if session is None:
+            logger.warning(
+                f"[agent-loop] session 不存在，拒绝执行: "
+                f"channel={inbound.from_channel}, session={session_id}"
+            )
+            return
+        if session["channel_id"] != inbound.from_channel:
+            logger.warning(
+                f"[agent-loop] session 与 channel 不匹配，拒绝执行: "
+                f"session={session_id} (channel={session['channel_id']}), "
+                f"消息来自 channel={inbound.from_channel}"
+            )
+            return
+
+        # Step 3: 构造 user content + 加载配置
         # 无附件返回 str；有附件返回 list[part]
         user_content = build_user_content(content, attachments)
-
         # 每次都建一个独立 agent，彻底避免跨 session 串扰
         # 同时每次重新读取配置文件，UI 改 model/provider/system_prompt 立即生效
         config = self._load_current_config()
 
-        # Step 1: 加载历史 + 拼接当前用户消息（含上下文治理）
+        # Step 4: 加载历史 + 拼接当前用户消息（含上下文治理）
         messages = self._build_messages(session_id, user_content, config)
 
+        # Step 5: 创建独立 Agent + 注入运行时上下文
         agent = self._create_agent(config)
         agent.system_prompt = (
             config.system_prompt
@@ -136,13 +169,13 @@ class AgentLoop:
         )
         self._active_agents[session_id] = agent
 
-        # Step 2: 存储用户输入
+        # Step 6: 持久化用户输入
         asyncio.run_coroutine_threadsafe(
             self.session_manager.save_message(session_id, "USER_INPUT", inbound.data),
             self._event_loop,
         ).result()
 
-        # Step 3: 驱动 Agent 执行
+        # Step 7: 驱动 Agent 执行
         runtime_context = {
             "session_id": session_id,
             "channel_id": inbound.from_channel,
@@ -157,14 +190,14 @@ class AgentLoop:
 
         try:
             for event in agent.run(messages, runtime_context=runtime_context):
-                # Step 4: 持久事件存储
+                # Step 7a: 持久事件存储
                 if event.get("type") in self.PERSISTENT_EVENTS:
                     asyncio.run_coroutine_threadsafe(
                         self.session_manager.save_message(session_id, event["type"], event.get("data", {})),
                         self._event_loop,
                     ).result()
 
-                # Step 5: 推送给前端
+                # Step 7b: 推送给前端
                 out = BusMessage(
                     type="agent_event",
                     from_channel=inbound.from_channel,
@@ -175,7 +208,7 @@ class AgentLoop:
                 )
                 asyncio.run_coroutine_threadsafe(self.bus.publish_outbound(out), self._event_loop).result()
         except Exception:
-            # 保证一定有 done 事件投递，避免前端永远卡在"思考中"
+            # Step 8: 异常兜底 — 保证一定有 done 事件投递，避免前端永远卡在"思考中"
             logger.exception(f"[agent-loop] _run 异常 (session={session_id})")
             err_evt = BusMessage(
                 type="agent_event",
@@ -187,7 +220,7 @@ class AgentLoop:
             )
             asyncio.run_coroutine_threadsafe(self.bus.publish_outbound(err_evt), self._event_loop).result()
         finally:
-            # 清理活跃引用，让 GC 回收
+            # Step 9: 清理活跃引用，让 GC 回收
             if self._active_agents.get(session_id) is agent:
                 self._active_agents.pop(session_id, None)
 

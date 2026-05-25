@@ -59,14 +59,27 @@ def _try_handle_cd(command: str, ws: dict) -> str | None:
     return f"已切换到 {new_dir}"
 
 
-def _build_subprocess_args(command: str) -> tuple[list[str], bool]:
-    """根据平台显式选择 shell"""
+def _build_subprocess_args(
+    command: str,
+) -> tuple[str | list[str], bool, str | None]:
+    """
+    根据平台决定如何把 command 交给 shell。
+
+    返回 (args_or_command, shell_flag, executable)。
+
+    Windows 上使用 shell=True 让 subprocess 直接调用 cmd /c <command>，
+    避免 list2cmdline 把数组拼回命令行时把命令里的双引号 `\"` 转义成 cmd
+    不认识的 `\\\"`，导致 `git commit -m "msg"` 这类命令被拆词。
+
+    POSIX 上同样 shell=True，但显式用 /bin/bash（比 /bin/sh 功能多），
+    fallback 到 sh 由 subprocess 自动处理。
+    """
     if sys.platform == "win32":
-        return (["cmd.exe", "/s", "/c", command], False)
+        return (command, True, None)
     bash = "/bin/bash"
-    if not Path(bash).exists():
-        return (["/usr/bin/env", "bash", "-c", command], False)
-    return ([bash, "-c", command], False)
+    if Path(bash).exists():
+        return (command, True, bash)
+    return (command, True, None)
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
@@ -120,7 +133,7 @@ def create_bash_tool(timeout: int = 60) -> Tool:
             return cd_result
 
         # 2) 其他命令走 subprocess
-        args, shell_flag = _build_subprocess_args(command)
+        args, shell_flag, executable = _build_subprocess_args(command)
         cwd = ws["cwd"]
         popen_kwargs: dict = {
             "stdout": subprocess.PIPE,
@@ -128,6 +141,8 @@ def create_bash_tool(timeout: int = 60) -> Tool:
             "cwd": cwd,
             "shell": shell_flag,
         }
+        if executable is not None:
+            popen_kwargs["executable"] = executable
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
