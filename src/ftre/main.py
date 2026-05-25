@@ -8,7 +8,7 @@ import sys
 import asyncio
 
 from ftre.bus import EventBus
-from ftre.channel import WebSocketChannel, ChannelManager
+from ftre.channel import WebSocketChannel, SubagentChannel, ChannelManager
 from ftre.session import SessionManager
 from ftre.plugin import PluginManager
 from ftre.agent.loop import AgentLoop
@@ -40,6 +40,9 @@ async def run_gateway():
     # WebSocket Channel
     ws_channel = WebSocketChannel(bus)
     mgr.register(ws_channel)
+
+    # Subagent Channel — 静默通道，承载 task 工具派发的子任务
+    mgr.register(SubagentChannel(bus))
 
     # Plugin 管理器 — 加载外部插件（可注册 Channel 等）
     plugin_manager = PluginManager(bus=bus, channel_manager=mgr, session_manager=session_manager)

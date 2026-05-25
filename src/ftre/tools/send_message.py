@@ -25,6 +25,12 @@ def create_send_message_tool(channel_manager) -> Tool:
         bus=Injected("bus"),
         session_manager=Injected("session_manager"),
     ) -> str:
+        # subagent 不允许跨 session 通信，结果应通过 task 返回值传回
+        if caller_channel == "subagent":
+            return (
+                "[error] subagent 内不允许调用 send_message，"
+                "请通过你的最后一条消息总结结果给调用方"
+            )
         if channel_manager.get(channel_id) is None:
             return f"[error] 频道不存在: {channel_id}"
         if event_loop is None or bus is None or session_manager is None:
