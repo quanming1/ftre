@@ -7,6 +7,7 @@ Cron 工具 - 让 Agent 创建/管理定时任务
     "cron": "*/5 * * * *",
     "title": "每5分钟提醒",
     "prompt": "提醒我喝水",
+    "disabled": false,
     "created_at": 1700000000.0,
     "run_history": [1700000000.0, 1700000300.0, ...]
 }
@@ -154,6 +155,9 @@ class CronScheduler:
 
         now = time.time()
         for job in load_all_jobs():
+            if job.get("disabled"):
+                continue
+
             cron_expr = job.get("cron", "")
             if not cron_expr or not croniter.is_valid(cron_expr):
                 continue
@@ -195,15 +199,16 @@ class CronScheduler:
 CRON_TOOL_DESCRIPTION = """\
 管理定时任务。通过 action 参数分发不同操作：
 
-- action="create"  创建任务，必填: cron, title, prompt
+- action="create"  创建任务，必填: cron, title, prompt；可选: disabled
 - action="list"    列出所有任务
 - action="delete"  删除任务，必填: job_id
-- action="update"  更新任务字段，必填: job_id；可选: cron, title, prompt（任填一项）
+- action="update"  更新任务字段，必填: job_id；可选: cron, title, prompt, disabled（任填一项）
 
 cron 表达式（5 段：分 时 日 月 周）
   例：'*/5 * * * *' 每5分钟；'0 9 * * *' 每天9点；'0 */1 * * *' 每小时整点
 
 任务到期会触发 agent 在独立 cron session 中执行 prompt。
+disabled=true 时调度器会跳过该任务（保留任务定义和历史，可随时启用）。
 
 ⚠️ 关于 prompt 字段（重要！避免误解）：
 - prompt 是**每次到期单独触发**时发给 agent 的指令，描述"这一次要做的事"
@@ -222,6 +227,7 @@ def _cron(
     title: str = "",
     prompt: str = "",
     job_id: str = "",
+    disabled: bool | None = None,
     caller_channel: str = Injected("channel_id"),
 ) -> str:
     # 在 cron 触发的 session 中禁止再调用 cron 工具，避免无限套娃
@@ -241,14 +247,15 @@ def _cron(
             "cron": cron,
             "title": title,
             "prompt": prompt,
+            "disabled": bool(disabled),
             "created_at": now,
             "run_history": [],
         })
         next_run = croniter(cron, now).get_next(ret_type=float)
-        return (
-            f"已创建定时任务 {new_id}: {title}\n"
+        status = "已禁用，将不会触发" if disabled else (
             f"下次运行: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(next_run))}"
         )
+        return f"已创建定时任务 {new_id}: {title}\n{status}"
 
     if action == "list":
         jobs = load_all_jobs()
@@ -261,7 +268,8 @@ def _cron(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(history[-1]))
                 if history else "未运行"
             )
-            lines.append(f"- {j['id']} | {j['cron']} | {j.get('title', '')}")
+            status = "[已禁用]" if j.get("disabled") else "[启用]"
+            lines.append(f"- {j['id']} | {status} | {j['cron']} | {j.get('title', '')}")
             lines.append(f"  prompt: {j.get('prompt', '')[:80]}")
             lines.append(f"  上次运行: {last_str} | 累计运行: {len(history)} 次")
         return "\n".join(lines)
@@ -288,6 +296,8 @@ def _cron(
             job["title"] = title
         if prompt:
             job["prompt"] = prompt
+        if disabled is not None:
+            job["disabled"] = bool(disabled)
         save_job(job)
         return f"已更新 {job_id}"
 
@@ -304,6 +314,7 @@ def create_cron_tool() -> Tool:
             ToolParameter(name="title", type="string", description="任务标题（create/update 用）", required=False),
             ToolParameter(name="prompt", type="string", description="到期触发的提示词（create/update 用）。这是每次单独触发时发给 agent 的一次性指令，不要包含频率/周期词（'每隔X分钟'、'每天'、'连续'等），频率由 cron 表达式表达", required=False),
             ToolParameter(name="job_id", type="string", description="任务 ID（delete/update 用）", required=False),
+            ToolParameter(name="disabled", type="boolean", description="是否禁用任务（create/update 用）。true 时调度器跳过该任务，但任务定义和历史保留", required=False),
         ],
         func=_cron,
     )

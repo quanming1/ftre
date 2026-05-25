@@ -122,7 +122,7 @@ async def put_config(request: Request):
 # 提供 CRUD UI 用，行为语义与 cron 工具的 create/list/update/delete 对齐。
 
 # 允许前端 PATCH 修改的字段（白名单）
-_CRON_PATCH_FIELDS = {"cron", "title", "prompt"}
+_CRON_PATCH_FIELDS = {"cron", "title", "prompt", "disabled"}
 
 
 def _validate_cron_payload(
@@ -130,7 +130,7 @@ def _validate_cron_payload(
 ) -> tuple[dict, str | None]:
     """
     校验创建/更新时的 payload。
-    require_all=True 用于创建（cron/title/prompt 都必填）；
+    require_all=True 用于创建（cron/title/prompt 都必填，disabled 可选）；
     require_all=False 用于 PATCH（任填一项即可，但出现的字段必须合法）。
     返回 (cleaned_dict, error_message)；error_message 为 None 表示校验通过。
     """
@@ -162,8 +162,14 @@ def _validate_cron_payload(
     elif require_all:
         return {}, "缺少字段: prompt"
 
+    if "disabled" in payload:
+        v = payload["disabled"]
+        if not isinstance(v, bool):
+            return {}, "disabled 必须是布尔值"
+        cleaned["disabled"] = v
+
     if not require_all and not cleaned:
-        return {}, "至少需要更新 cron / title / prompt 中的一项"
+        return {}, "至少需要更新 cron / title / prompt / disabled 中的一项"
 
     return cleaned, None
 
@@ -210,6 +216,7 @@ async def create_cron_job(request: Request):
         "cron": cleaned["cron"],
         "title": cleaned["title"],
         "prompt": cleaned["prompt"],
+        "disabled": bool(cleaned.get("disabled", False)),
         "created_at": time.time(),
         "run_history": [],
     }
