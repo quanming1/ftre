@@ -111,22 +111,8 @@ class AgentLoop:
         # 无附件返回 str；有附件返回 list[part]
         user_content = build_user_content(content, attachments)
 
-        # Step 1: 加载该 session 的历史，构建消息
-        events = asyncio.run_coroutine_threadsafe(
-            self.session_manager.get_messages_by_session(session_id),
-            self._event_loop,
-        ).result()
-
-        if events:
-            history = SessionManager.to_openai_messages(events)
-            history.append({"role": "user", "content": user_content})
-            messages = history
-        else:
-            # 无历史时：纯文本走原有 str 路径，多模态需要包成 list[dict]
-            if isinstance(user_content, str):
-                messages = user_content
-            else:
-                messages = [{"role": "user", "content": user_content}]
+        # Step 1: 加载历史 + 拼接当前用户消息
+        messages = self._build_messages(session_id, user_content)
 
         # 每次都建一个独立 agent，彻底避免跨 session 串扰
         # 同时每次重新读取配置文件，UI 改 model/provider/system_prompt 立即生效
@@ -198,6 +184,34 @@ class AgentLoop:
         if self._injected_config is not None:
             return self._injected_config
         return load_config()
+
+    def _build_messages(
+        self, session_id: str, user_content: str | list[dict]
+    ) -> str | list[dict]:
+        """
+        构建一次 LLM 调用的输入消息。
+
+        - 有历史：回放历史事件为 OpenAI messages，再追加当前用户消息
+        - 无历史 + 纯文本 user_content：返回 str，走 ReActAgent 的快速路径
+        - 无历史 + 多模态 user_content：必须包一层 list[{role, content}]
+
+        独立成方法是为了给上下文治理（截断 / 摘要 / 滑动窗口等）留 hook：
+        将来加策略时只需在这里插入 events / messages 的处理。
+        """
+        events = asyncio.run_coroutine_threadsafe(
+            self.session_manager.get_messages_by_session(session_id),
+            self._event_loop,
+        ).result()
+
+        if events:
+            history = SessionManager.to_openai_messages(events)
+            history.append({"role": "user", "content": user_content})
+            return history
+
+        # 无历史快速路径：纯字符串直接返回；多模态必须包成 message
+        if isinstance(user_content, str):
+            return user_content
+        return [{"role": "user", "content": user_content}]
 
     def _create_agent(self, config: AgentConfig) -> ReActAgent:
         """根据配置创建 ReActAgent 实例"""
