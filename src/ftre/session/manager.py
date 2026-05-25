@@ -378,7 +378,7 @@ def _compute_token_usage(session_id: str, events: list[MessageModel]) -> dict:
 
     见 SessionManager.get_token_usage 文档。
     """
-    from .token_counter import estimate_event_tokens
+    from .token_counter import estimate_events_tokens
 
     # 倒序找最晚的"携带 usage 的事件"
     anchor_index = -1
@@ -409,7 +409,9 @@ def _compute_token_usage(session_id: str, events: list[MessageModel]) -> dict:
     else:
         pending_events = events
 
-    pending_estimated = sum(estimate_event_tokens(ev) for ev in pending_events)
+    # 批量估算：先折成 OpenAI messages 再算 token，复用 to_openai_messages
+    # 的合并规则（连续 tool_call 折叠 / external_message name 等）
+    pending_estimated = estimate_events_tokens(pending_events)
 
     if anchor_usage is not None:
         # total_tokens 不存在时回退到 prompt + completion
