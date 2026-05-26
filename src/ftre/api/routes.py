@@ -35,27 +35,50 @@ def set_session_manager(manager: SessionManager) -> None:
 
 
 @router.post("/sessions")
-async def create_session(channel_id: str, title: str = ""):
-    """创建新 session，返回带 channel 前缀的 session_id（如 'ws::sess_xxx'）"""
-    session_id = await _session_manager.create_session(channel_id=channel_id, title=title)
+async def create_session(channel_id: str, title: str = "", workspace: str = ""):
+    """创建新 session，返回带 channel 前缀的 session_id（如 'ws::sess_xxx'）。
+
+    workspace 可选；不传时由 agent_loop 在首次执行时回退到 config.workspace。
+    """
+    session_id = await _session_manager.create_session(
+        channel_id=channel_id, title=title, workspace=workspace
+    )
     return {"session_id": session_id}
 
 
 @router.get("/sessions")
-async def list_sessions(limit: int = 50, channel_id: str | None = None):
+async def list_sessions(
+    limit: int = 50,
+    offset: int = 0,
+    channel_id: str | None = None,
+):
     """
     获取会话列表（按最近活跃排序）。
-    可选 channel_id 过滤：仅返回指定 channel 的会话。
+
+    分页参数：limit（默认 50，最大 500）/ offset（默认 0）。
+    返回 { sessions, total, limit, offset }，前端按 (offset + sessions.length) < total 决定是否还有下一页。
     """
+    if limit <= 0:
+        limit = 50
+    if limit > 500:
+        limit = 500
+    if offset < 0:
+        offset = 0
     sessions = await _session_manager.list_sessions(
-        limit=limit, channel_id=channel_id
+        limit=limit, offset=offset, channel_id=channel_id
     )
-    return {"sessions": sessions}
+    total = await _session_manager.count_sessions(channel_id=channel_id)
+    return {
+        "sessions": sessions,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.put("/sessions/{session_id}")
 async def update_session(session_id: str, request: Request):
-    """更新 session（目前支持 title）"""
+    """更新 session 字段（title / workspace；任传一项即可）"""
     try:
         payload = await request.json()
     except json.JSONDecodeError as e:
@@ -67,11 +90,20 @@ async def update_session(session_id: str, request: Request):
     if title is not None and not isinstance(title, str):
         raise HTTPException(status_code=400, detail="title 必须是字符串")
 
+    workspace = payload.get("workspace")
+    if workspace is not None and not isinstance(workspace, str):
+        raise HTTPException(status_code=400, detail="workspace 必须是字符串")
+
+    if title is None and workspace is None:
+        raise HTTPException(status_code=400, detail="至少传入 title / workspace 之一")
+
     session = await _session_manager.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
 
-    await _session_manager.update_session(session_id, title=title)
+    await _session_manager.update_session(
+        session_id, title=title, workspace=workspace
+    )
     return {"status": "updated", "session_id": session_id}
 
 
