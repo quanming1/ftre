@@ -53,6 +53,38 @@ async def list_sessions(limit: int = 50, channel_id: str | None = None):
     return {"sessions": sessions}
 
 
+@router.put("/sessions/{session_id}")
+async def update_session(session_id: str, request: Request):
+    """更新 session（目前支持 title）"""
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"非法 JSON: {e}")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
+
+    title = payload.get("title")
+    if title is not None and not isinstance(title, str):
+        raise HTTPException(status_code=400, detail="title 必须是字符串")
+
+    session = await _session_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
+
+    await _session_manager.update_session(session_id, title=title)
+    return {"status": "updated", "session_id": session_id}
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """删除指定 session 及其所有消息"""
+    session = await _session_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
+    await _session_manager.delete_session(session_id)
+    return {"status": "deleted", "session_id": session_id}
+
+
 @router.get("/sessions/{session_id}/messages")
 async def get_messages(session_id: str):
     """获取指定 session 的全部消息（按时间正序）"""
