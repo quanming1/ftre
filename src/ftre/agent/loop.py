@@ -17,6 +17,7 @@ from ftre.config import AgentConfig, load_config
 from ftre.session import SessionManager
 from ftre.session.multimodal import build_user_content
 from ftre.tools import build_default_tools
+from ftre.tools._workspace import WorkspaceAccessor
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +194,13 @@ class AgentLoop:
         ).result()
 
         # Step 7: 驱动 Agent 执行
+        # workspace 是一个 WorkspaceAccessor —— 对 sessions.workspace 字段的同步外观。
+        # 工具拿到它后用 ws.get() / ws.set(...) 读写持久化的 cwd，不再有内存中转 dict。
+        # 默认值（DB 中 workspace 为空时回退）：config.workspace > 进程 cwd。
+        cfg_ws = (config.workspace or "").strip()
+        fallback = (
+            os.path.abspath(cfg_ws) if cfg_ws and os.path.isdir(cfg_ws) else os.getcwd()
+        )
         runtime_context = {
             "session_id": session_id,
             "channel_id": inbound.from_channel,
@@ -200,10 +208,12 @@ class AgentLoop:
             "bus": self.bus,
             "session_manager": self.session_manager,
             "agent_loop": self,
-            # workspace 是个 mutable dict：bash cd / set_workspace 工具会原地改 cwd，
-            # 同 run 内后续 read/write/edit 立即看到。每个 run 一份，session 间不串。
-            # 初始 cwd 从历史中恢复（最后一次成功的 set_workspace），找不到回落到 config 默认或进程 cwd。
-            "workspace": {"cwd": self._resolve_initial_workspace(session_id, config)},
+            "workspace": WorkspaceAccessor(
+                session_id=session_id,
+                session_manager=self.session_manager,
+                event_loop=self._event_loop,
+                fallback_cwd=fallback,
+            ),
         }
 
         try:
@@ -288,74 +298,6 @@ class AgentLoop:
         if isinstance(user_content, str):
             return user_content
         return [{"role": "user", "content": user_content}]
-
-    def _resolve_initial_workspace(self, session_id: str, config: AgentConfig) -> str:
-        """
-        从会话历史恢复工作区初始 cwd。
-
-        优先级（从高到低）：
-        1. 历史里最近一次成功的 set_workspace tool_result
-        2. config.workspace（agents.defaults.workspace）
-        3. os.getcwd() 兜底
-
-        bash cd 视为临时切换，不参与恢复。
-        """
-        events = asyncio.run_coroutine_threadsafe(
-            self.session_manager.get_messages_by_session(session_id),
-            self._event_loop,
-        ).result()
-
-        if events:
-            recovered = self._recover_workspace_from_events(events)
-            if recovered and os.path.isdir(recovered):
-                return recovered
-
-        # 配置默认值
-        cfg_ws = (config.workspace or "").strip()
-        if cfg_ws and os.path.isdir(cfg_ws):
-            return os.path.abspath(cfg_ws)
-
-        return os.getcwd()
-
-    def _recover_workspace_from_events(self, events: list) -> str | None:
-        """从事件流找最近一次成功的 set_workspace 路径，找不到返回 None"""
-        # 收集 set_workspace 的 tool_call.id
-        sw_call_ids: set[str] = set()
-        for ev in events:
-            if ev.get("type") != "tool_call":
-                continue
-            data = ev.get("data") or {}
-            if data.get("name") == "set_workspace":
-                sw_call_ids.add(data.get("id", ""))
-        if not sw_call_ids:
-            return None
-        # 倒序找配对的成功 result
-        for ev in reversed(events):
-            if ev.get("type") != "tool_result":
-                continue
-            data = ev.get("data") or {}
-            if data.get("id") not in sw_call_ids:
-                continue
-            result = data.get("result") or ""
-            if not isinstance(result, str) or result.startswith("[error]"):
-                continue
-            cwd = self._parse_set_workspace_result(result)
-            if cwd:
-                return cwd
-        return None
-
-    @staticmethod
-    def _parse_set_workspace_result(result: str) -> str | None:
-        """从 set_workspace 的 result 字符串解析出目标 cwd"""
-        # "工作区已切换: <old> → <new>"
-        idx = result.find("→")
-        if idx >= 0:
-            return result[idx + 1:].strip() or None
-        # "工作区未变化: <path>"
-        prefix = "工作区未变化:"
-        if result.startswith(prefix):
-            return result[len(prefix):].strip() or None
-        return None
 
     def _drop_orphan_tool_events(self, events: list) -> list:
         """

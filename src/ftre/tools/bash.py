@@ -1,5 +1,5 @@
 """
-bash 工具 - 执行 shell 命令（持久 cwd，由 runtime_context 承载）
+bash 工具 - 执行 shell 命令（cwd 来自 sessions 表的 workspace 字段）
 支持 RTK 自动重写以减少 token 消耗
 """
 import os
@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
+
+from ._workspace import WorkspaceAccessor
 
 
 # ============== RTK 集成 ==============
@@ -120,9 +122,9 @@ def _has_shell_operator(cmd: str) -> bool:
     return False
 
 
-def _try_handle_cd(command: str, ws: dict) -> str | None:
+def _try_handle_cd(command: str, ws: WorkspaceAccessor) -> str | None:
     """
-    检测纯 cd 命令并直接更新 ws['cwd']。
+    检测纯 cd 命令并直接更新会话工作区。
     返回 None 表示不是纯 cd（继续走 subprocess）；返回字符串表示已处理。
     """
     cmd = command.strip()
@@ -137,7 +139,7 @@ def _try_handle_cd(command: str, ws: dict) -> str | None:
         return None
 
     target = m.group(1)
-    cwd = Path(ws["cwd"])
+    cwd = Path(ws.get())
     if not target:
         new_dir = Path.home()
     else:
@@ -156,7 +158,7 @@ def _try_handle_cd(command: str, ws: dict) -> str | None:
     if not new_dir.is_dir():
         return f"[error] 不是目录: {new_dir}"
 
-    ws["cwd"] = str(new_dir)
+    ws.set(str(new_dir))
     return f"已切换到 {new_dir}"
 
 
@@ -218,8 +220,8 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
 def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
     """创建 bash 工具
 
-    cwd 由 runtime_context['workspace'] 承载（一个 {'cwd': str} dict）。
-    纯 cd 命令会持久切换 ws['cwd']；其他命令交给底层 shell 执行。
+    cwd 由当前会话的 workspace 字段承载（sessions 表）。纯 cd 命令会持久切换
+    DB 中的 workspace；其他命令交给底层 shell 执行（subprocess.cwd 从 DB 取）。
 
     RTK 集成：
     - 自动检测 rtk 是否安装
@@ -234,11 +236,11 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
     def bash(
         command: str,
         timeout: int = 0,
-        ws: dict = Injected("workspace"),
+        ws: WorkspaceAccessor = Injected("workspace"),
     ) -> str:
         if not command.strip():
             return "[error] 空命令"
-        if not isinstance(ws, dict) or "cwd" not in ws:
+        if not isinstance(ws, WorkspaceAccessor):
             return "[error] runtime_context.workspace 未注入"
 
         # timeout 处理：0/负数 → 用默认值；超过上限 → 钳位
@@ -247,23 +249,21 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
         else:
             effective_timeout = min(int(timeout), max_timeout)
 
-        # 1) 纯 cd → 持久切换
+        # 1) 纯 cd → 持久切换（写 DB）
         cd_result = _try_handle_cd(command, ws)
         if cd_result is not None:
             return cd_result
 
         # 2) RTK 重写（如果可用）
         actual_command = command
-        rtk_applied = False
         if not _should_skip_rtk(command):
             rewritten = _rtk_rewrite(command)
             if rewritten and rewritten != command:
                 actual_command = rewritten
-                rtk_applied = True
 
         # 3) 执行命令
         args, shell_flag, executable = _build_subprocess_args(actual_command)
-        cwd = ws["cwd"]
+        cwd = ws.get()
         popen_kwargs: dict = {
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
@@ -319,8 +319,8 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
         name="bash",
         description=(
             "执行 shell 命令并返回输出。\n"
-            "- cwd 由 runtime_context.workspace 承载，跨工具调用持久；\n"
-            "- 仅【纯 cd】命令（如 `cd src`、`cd /d D:\\proj`）会持久切换 cwd；\n"
+            "- cwd 来自当前会话的 workspace（持久到 DB），跨工具调用持久；\n"
+            "- 仅【纯 cd】命令（如 `cd src`、`cd /d D:\\proj`）会持久切换工作区；\n"
             "- 组合命令（如 `cd x && yyy`）由底层 shell 自行处理，不持久切换；\n"
             "- 平台：Windows 走 cmd /s /c，POSIX 走 /bin/bash -c；\n"
             f"- 默认超时 {default_timeout}s，可通过 timeout 参数延长（上限 {max_timeout}s）；\n"

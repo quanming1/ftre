@@ -22,6 +22,7 @@ class SessionModel(TypedDict):
     id: str              # 会话唯一标识（含 channel 前缀，如 'ws::sess_xxx'）
     channel_id: str      # 来源 channel（如 'ws' / 'cron' / 'cli'）
     title: str           # 对话标题
+    workspace: str       # 当前工作区绝对路径（cwd 来源；为空表示未设置）
     created_at: float    # 创建时间戳
     updated_at: float    # 最后活跃时间戳
 
@@ -59,6 +60,7 @@ class SessionManager:
                 id          TEXT PRIMARY KEY,
                 channel_id  TEXT NOT NULL DEFAULT '',
                 title       TEXT NOT NULL DEFAULT '',
+                workspace   TEXT NOT NULL DEFAULT '',
                 created_at  REAL NOT NULL,
                 updated_at  REAL NOT NULL
             );
@@ -74,9 +76,12 @@ class SessionManager:
             CREATE INDEX IF NOT EXISTS idx_messages_session
                 ON messages(session_id, timestamp ASC);
         """)
-        # 老库迁移：sessions 表存量没有 channel_id 列时补上
+        # 老库迁移：sessions 表存量没有这些列时补上
         await self._migrate_add_column(
             "sessions", "channel_id", "TEXT NOT NULL DEFAULT ''"
+        )
+        await self._migrate_add_column(
+            "sessions", "workspace", "TEXT NOT NULL DEFAULT ''"
         )
         # 索引：channel_id + updated_at（按 channel 过滤会话列表用）
         await self._db.execute(
@@ -117,16 +122,18 @@ class SessionManager:
     # Session CRUD
     # ============================================================
 
-    async def create_session(self, channel_id: str, title: str = "") -> str:
+    async def create_session(
+        self, channel_id: str, title: str = "", workspace: str = ""
+    ) -> str:
         """创建新 session，返回带 channel_id 前缀的 session_id（格式: '{channel_id}::sess_xxx'）"""
         if not channel_id:
             raise ValueError("channel_id 不能为空")
         sid = f"{channel_id}::{self.create_id()}"
         now = time.time()
         await self._db.execute(
-            "INSERT INTO sessions (id, channel_id, title, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (sid, channel_id, title, now, now),
+            "INSERT INTO sessions (id, channel_id, title, workspace, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (sid, channel_id, title, workspace, now, now),
         )
         await self._db.commit()
         return sid
@@ -143,23 +150,35 @@ class SessionManager:
             id=row["id"],
             channel_id=row["channel_id"],
             title=row["title"],
+            workspace=row["workspace"] if "workspace" in row.keys() else "",
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
 
-    async def update_session(self, session_id: str, title: str | None = None) -> None:
-        """更新 session（title 和/或 updated_at）"""
+    async def update_session(
+        self,
+        session_id: str,
+        title: str | None = None,
+        workspace: str | None = None,
+    ) -> None:
+        """
+        更新 session（title / workspace / updated_at）。
+        title 或 workspace 任一非 None 即更新对应字段；都为 None 时仅刷 updated_at。
+        """
         now = time.time()
+        sets: list[str] = []
+        params: list = []
         if title is not None:
-            await self._db.execute(
-                "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
-                (title, now, session_id),
-            )
-        else:
-            await self._db.execute(
-                "UPDATE sessions SET updated_at = ? WHERE id = ?",
-                (now, session_id),
-            )
+            sets.append("title = ?")
+            params.append(title)
+        if workspace is not None:
+            sets.append("workspace = ?")
+            params.append(workspace)
+        sets.append("updated_at = ?")
+        params.append(now)
+        params.append(session_id)
+        sql = f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?"
+        await self._db.execute(sql, tuple(params))
         await self._db.commit()
 
     async def delete_session(self, session_id: str) -> None:
@@ -169,22 +188,29 @@ class SessionManager:
         await self._db.commit()
 
     async def list_sessions(
-        self, limit: int = 200, channel_id: str | None = None
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        channel_id: str | None = None,
     ) -> list[SessionModel]:
         """
-        列出最近的 sessions（按 updated_at 倒序）。
-        channel_id 非空时仅返回该 channel 的会话。
+        列出 sessions（按 updated_at 倒序）。
+
+        Args:
+            limit:      返回数量上限
+            offset:     偏移量（分页用）
+            channel_id: 非空时仅返回该 channel
         """
         if channel_id:
             cursor = await self._db.execute(
                 "SELECT * FROM sessions WHERE channel_id = ? "
-                "ORDER BY updated_at DESC LIMIT ?",
-                (channel_id, limit),
+                "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (channel_id, limit, offset),
             )
         else:
             cursor = await self._db.execute(
-                "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
             )
         rows = await cursor.fetchall()
         return [
@@ -192,11 +218,24 @@ class SessionManager:
                 id=r["id"],
                 channel_id=r["channel_id"],
                 title=r["title"],
+                workspace=r["workspace"] if "workspace" in r.keys() else "",
                 created_at=r["created_at"],
                 updated_at=r["updated_at"],
             )
             for r in rows
         ]
+
+    async def count_sessions(self, channel_id: str | None = None) -> int:
+        """返回 sessions 总数（用于分页 total）"""
+        if channel_id:
+            cursor = await self._db.execute(
+                "SELECT COUNT(*) AS n FROM sessions WHERE channel_id = ?",
+                (channel_id,),
+            )
+        else:
+            cursor = await self._db.execute("SELECT COUNT(*) AS n FROM sessions")
+        row = await cursor.fetchone()
+        return int(row["n"]) if row else 0
 
     # ============================================================
     # Message（事件流）

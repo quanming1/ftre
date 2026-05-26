@@ -6,13 +6,14 @@ from pathlib import Path
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
 from ._io import read_text
+from ._workspace import WorkspaceAccessor
 
 
-def _resolve(path: str, ws: dict) -> Path:
-    """解析路径：相对路径基于 ws['cwd']，绝对路径直接用"""
+def _resolve(path: str, cwd: str) -> Path:
+    """解析路径：相对路径基于 cwd，绝对路径直接用"""
     p = Path(path).expanduser()
     if not p.is_absolute():
-        p = Path(ws["cwd"]) / p
+        p = Path(cwd) / p
     return p.resolve()
 
 
@@ -27,12 +28,13 @@ def create_read_tool(max_bytes: int = 256 * 1024) -> Tool:
         path: str,
         start_line: int = 0,
         end_line: int = 0,
-        ws: dict = Injected("workspace"),
+        ws: WorkspaceAccessor = Injected("workspace"),
     ) -> str:
         try:
-            if not isinstance(ws, dict) or "cwd" not in ws:
+            if not isinstance(ws, WorkspaceAccessor):
                 return "[error] runtime_context.workspace 未注入"
-            p = _resolve(path, ws)
+            cwd = ws.get()
+            p = _resolve(path, cwd)
             if not p.exists():
                 return f"[error] 文件不存在: {p}"
             if p.is_dir():
@@ -71,7 +73,7 @@ def create_read_tool(max_bytes: int = 256 * 1024) -> Tool:
     return Tool(
         name="read",
         description=(
-            "读取文件内容并返回带行号的文本。相对路径基于当前工作区目录。\n"
+            "读取文件内容并返回带行号的文本。相对路径基于当前会话的工作区目录。\n"
             "- 自动识别编码（utf-8 / utf-8-sig / gbk 等），非 utf-8 文件首行会显示 [encoding]\n"
             "- 可选 start_line / end_line 限定行范围（1-indexed，闭区间）\n"
             "- 超过 256KB 的文件必须传入行范围\n"
