@@ -52,6 +52,10 @@ class AgentConfig:
     # 一个 session 没有 set_workspace 历史时使用这个值；
     # 配置项位于 config.json 的 agents.defaults.workspace。
     workspace: str = ""
+    # 标题生成专用 LLM；None 表示沿用主 llm 配置。
+    # 配置项：agents.defaults.title_generation = {"provider": "...", "model": "..."}
+    # 设计动机：标题生成是高频小请求，独立挂到便宜/快的模型上，避免占用主对话的高级模型配额。
+    title_llm: LLMConfig | None = None
 
 
 def load_config_file() -> dict:
@@ -84,6 +88,35 @@ def _find_model_entry(provider: dict, model_id: str) -> dict:
     return {}
 
 
+def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfig:
+    """
+    根据顶层 config dict + provider + model id，构造一个 LLMConfig。
+
+    传入的 model_id 在 provider.models 里找不到就回到空 LLMConfig（model="" 表示未配置，
+    调用方据此决定是否启用相关功能）。
+    """
+    if not provider_name or not model_id:
+        return LLMConfig()
+    provider = data.get("providers", {}).get(provider_name, {})
+    if not provider:
+        return LLMConfig()
+    protocol = provider.get("api_protocol", "openai")
+    model_entry = _find_model_entry(provider, model_id)
+
+    cw = model_entry.get("context_window")
+    mo = model_entry.get("max_output")
+    return LLMConfig(
+        api_key=provider.get("api_key", ""),
+        api_base=provider.get("api_base", ""),
+        name=model_entry.get("name", ""),
+        id=model_id,
+        context_window=cw if isinstance(cw, int) else None,
+        max_output=mo if isinstance(mo, int) else None,
+        vision=bool(model_entry.get("vision", False)),
+        model=_build_model_name(model_id, protocol),
+    )
+
+
 def load_config() -> AgentConfig:
     """从配置文件加载 AgentConfig"""
     data = load_config_file()
@@ -93,27 +126,19 @@ def load_config() -> AgentConfig:
     defaults = data.get("agents", {}).get("defaults", {})
     model_id = defaults.get("model", "")
     provider_name = defaults.get("provider", "")
+    llm = _build_llm_config(data, provider_name, model_id)
 
-    provider = data.get("providers", {}).get(provider_name, {})
-    protocol = provider.get("api_protocol", "openai")
-    model_entry = _find_model_entry(provider, model_id)
-
-    cw = model_entry.get("context_window")
-    mo = model_entry.get("max_output")
-
-    llm = LLMConfig(
-        # provider 层
-        api_key=provider.get("api_key", ""),
-        api_base=provider.get("api_base", ""),
-        # model 条目层（与 config.json 字段同名）
-        name=model_entry.get("name", ""),
-        id=model_id,
-        context_window=cw if isinstance(cw, int) else None,
-        max_output=mo if isinstance(mo, int) else None,
-        vision=bool(model_entry.get("vision", False)),
-        # 派生
-        model=_build_model_name(model_id, protocol) if model_id else "",
-    )
+    # 标题生成模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
+    title_llm: LLMConfig | None = None
+    title_cfg = defaults.get("title_generation") or {}
+    if isinstance(title_cfg, dict):
+        t_provider = title_cfg.get("provider", "") or ""
+        t_model = title_cfg.get("model", "") or ""
+        if t_provider and t_model:
+            built = _build_llm_config(data, t_provider, t_model)
+            # 没找到 model 条目时 built.model 为空 —— 此时不启用，回到主 llm 兜底
+            if built.model:
+                title_llm = built
 
     workspace = defaults.get("workspace", "") or ""
     if not isinstance(workspace, str):
@@ -122,9 +147,10 @@ def load_config() -> AgentConfig:
     logger.warning(
         f"[config] model={llm.model}, provider={provider_name}, "
         f"context_window={llm.context_window}, max_output={llm.max_output}, "
-        f"workspace={workspace or '(default)'}"
+        f"workspace={workspace or '(default)'}, "
+        f"title_llm={title_llm.model if title_llm else '(fallback to main)'}"
     )
-    return AgentConfig(llm=llm, workspace=workspace)
+    return AgentConfig(llm=llm, workspace=workspace, title_llm=title_llm)
 
 
 DEFAULT_CONFIG = load_config()
