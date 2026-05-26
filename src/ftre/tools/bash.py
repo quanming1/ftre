@@ -1,14 +1,84 @@
 """
 bash 工具 - 执行 shell 命令（持久 cwd，由 runtime_context 承载）
+支持 RTK 自动重写以减少 token 消耗
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
+
+# ============== RTK 集成 ==============
+
+# 缓存 rtk 可执行文件路径（None=未检测，False=不可用，str=路径）
+_rtk_path_cache: str | bool | None = None
+
+
+def _find_rtk() -> str | None:
+    """查找 rtk 可执行文件路径，结果会被缓存"""
+    global _rtk_path_cache
+    if _rtk_path_cache is None:
+        path = shutil.which("rtk")
+        _rtk_path_cache = path if path else False
+    return _rtk_path_cache if _rtk_path_cache else None
+
+
+def _rtk_rewrite(command: str) -> str | None:
+    """
+    调用 rtk rewrite 判断命令是否需要重写。
+    返回重写后的命令，或 None 表示不需要重写。
+    """
+    rtk_path = _find_rtk()
+    if not rtk_path:
+        return None
+
+    try:
+        result = subprocess.run(
+            [rtk_path, "rewrite", command],
+            capture_output=True,
+            timeout=2,  # rtk rewrite 应该很快
+        )
+        # exit 0 或 3 表示需要重写，输出是重写后的命令
+        if result.returncode in (0, 3) and result.stdout.strip():
+            return result.stdout.decode("utf-8", errors="replace").strip()
+        return None
+    except Exception:
+        return None
+
+
+def _should_skip_rtk(command: str) -> bool:
+    """
+    判断命令是否应该跳过 RTK 重写。
+    某些命令不适合通过 RTK：
+    - 已经是 rtk 命令
+    - 纯 shell 内置命令（cd, set, export 等）
+    - 环境变量设置
+    """
+    cmd = command.strip()
+    cmd_lower = cmd.lower()
+
+    # 已经是 rtk 命令
+    if cmd_lower.startswith("rtk ") or cmd_lower == "rtk":
+        return True
+
+    # shell 内置命令（不产生大量输出）
+    skip_prefixes = (
+        "cd ", "set ", "export ", "unset ", "alias ", "source ",
+        "echo ", "printf ", "pwd", "exit ", "return ",
+        "setx ", "path ", "cls", "clear",
+    )
+    for prefix in skip_prefixes:
+        if cmd_lower.startswith(prefix) or cmd_lower == prefix.strip():
+            return True
+
+    return False
+
+
+# ============== 原有功能 ==============
 
 def _decode(b: bytes) -> str:
     """按系统常见编码解码 subprocess 输出"""
@@ -22,12 +92,43 @@ def _decode(b: bytes) -> str:
     return b.decode("utf-8", errors="replace")
 
 
+def _has_shell_operator(cmd: str) -> bool:
+    """
+    检查命令里是否包含引号外的 shell 操作符（&& || ; | > < &）。
+    用于判定"这是组合命令、还是纯 cd"——组合命令必须丢回 shell 跑。
+
+    简易状态机：跟踪单/双引号嵌套，操作符只在"两种引号都不在"时才计数。
+    不处理转义引号 / 反引号子命令（罕见到不值得为它写完整 shell 解析）。
+    """
+    in_single = False
+    in_double = False
+    i = 0
+    n = len(cmd)
+    while i < n:
+        c = cmd[i]
+        if c == "'" and not in_double:
+            in_single = not in_single
+        elif c == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            two = cmd[i : i + 2]
+            if two in ("&&", "||"):
+                return True
+            if c in ("|", ";", ">", "<", "&"):
+                return True
+        i += 1
+    return False
+
+
 def _try_handle_cd(command: str, ws: dict) -> str | None:
     """
     检测纯 cd 命令并直接更新 ws['cwd']。
     返回 None 表示不是纯 cd（继续走 subprocess）；返回字符串表示已处理。
     """
     cmd = command.strip()
+    # 含 shell 操作符的复合命令（如 `cd x && yyy`）一律走 shell，不在这里持久切换 cwd
+    if _has_shell_operator(cmd):
+        return None
     if sys.platform == "win32":
         m = re.match(r"^cd(?:\s+/d)?\s+(.+)$", cmd, re.IGNORECASE)
     else:
@@ -120,6 +221,11 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
     cwd 由 runtime_context['workspace'] 承载（一个 {'cwd': str} dict）。
     纯 cd 命令会持久切换 ws['cwd']；其他命令交给底层 shell 执行。
 
+    RTK 集成：
+    - 自动检测 rtk 是否安装
+    - 对支持的命令自动重写为 rtk 版本（如 git status → rtk git status）
+    - 减少命令输出的 token 消耗（60-90%）
+
     Args:
         default_timeout: LLM 不传 timeout 时的默认值（秒）
         max_timeout: LLM 可指定的上限（防止"无限挂起"）
@@ -146,8 +252,17 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
         if cd_result is not None:
             return cd_result
 
-        # 2) 其他命令走 subprocess
-        args, shell_flag, executable = _build_subprocess_args(command)
+        # 2) RTK 重写（如果可用）
+        actual_command = command
+        rtk_applied = False
+        if not _should_skip_rtk(command):
+            rewritten = _rtk_rewrite(command)
+            if rewritten and rewritten != command:
+                actual_command = rewritten
+                rtk_applied = True
+
+        # 3) 执行命令
+        args, shell_flag, executable = _build_subprocess_args(actual_command)
         cwd = ws["cwd"]
         popen_kwargs: dict = {
             "stdout": subprocess.PIPE,
@@ -209,7 +324,8 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
             "- 组合命令（如 `cd x && yyy`）由底层 shell 自行处理，不持久切换；\n"
             "- 平台：Windows 走 cmd /s /c，POSIX 走 /bin/bash -c；\n"
             f"- 默认超时 {default_timeout}s，可通过 timeout 参数延长（上限 {max_timeout}s）；\n"
-            "- 输出首行 [cwd] 显示当前工作目录，便于排错。"
+            "- 输出首行 [cwd] 显示当前工作目录，便于排错；\n"
+            "- RTK 集成：自动压缩 git/cargo/npm 等命令输出，减少 token 消耗。"
         ),
         parameters=[
             ToolParameter(
