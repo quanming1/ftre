@@ -9,6 +9,7 @@ AgentLoop - 全局单例，消费所有 session 的 inbound 消息
 import asyncio
 import logging
 import os
+import threading
 
 from ftre_agent_core.agent import ReActAgent
 from ftre.bus import BusMessage, EventBus
@@ -165,6 +166,17 @@ class AgentLoop:
 
         # Step 4: 加载历史 + 拼接当前用户消息（含上下文治理）
         messages = self._build_messages(session_id, user_content, config)
+
+        # Step 4.5: 首条用户消息 → 异步生成标题（不阻塞主流程）
+        # 判定"首条"：session 在 DB 中没有 title 且尚未持久化任何 USER_INPUT。
+        # 现在还没存当前帧的 USER_INPUT（Step 6），所以这里检查最干净。
+        # 失败/超时不影响 agent 执行，标题只是 UI 优化项。
+        if self._is_first_user_message(session, session_id):
+            self._spawn_title_generation(
+                session_id=session_id,
+                user_content=user_content,
+                config=config,
+            )
 
         # Step 5: 创建独立 Agent + 注入运行时上下文
         agent = self._create_agent(config)
@@ -541,3 +553,167 @@ class AgentLoop:
             tools=build_default_tools(channel_manager=self.channel_manager),
             max_iterations=c.max_iterations,
         )
+
+    # ============================================================
+    # 标题生成（首条用户消息）
+    # ============================================================
+
+    # 标题生成的 prompt（中文模型默认；不限制语言，按用户输入语言走）
+    TITLE_GEN_SYSTEM_PROMPT = (
+        "你是一个标题生成器。给定一段用户消息，给出一个 8 到 16 个字的简短标题，"
+        "概括用户的意图。只输出标题本身，不要引号、不要标点、不要前缀如『标题：』。"
+    )
+    # 截断长度：标题在 LLM 看到的输入也只取前 N 字符，避免大块代码 / 日志被全量塞进去
+    TITLE_GEN_INPUT_TRUNCATE = 1000
+    # 落库前对标题再做一道硬截断，防止模型不听话输出超长字符串
+    TITLE_MAX_CHARS = 40
+
+    def _is_first_user_message(self, session: dict | None, session_id: str) -> bool:
+        """
+        判断当前 inbound 是否是 session 的首条用户消息。
+
+        条件：session 存在 + title 为空 + DB 里还没有任何 USER_INPUT 事件。
+        title 已经有值时不再覆盖（避免重命名后的 session 被首条逻辑改回去）。
+        """
+        if not session:
+            return False
+        if (session.get("title") or "").strip():
+            return False
+        # 此时 Step 6 还没保存当前帧；如果一条 USER_INPUT 都没有 → 首条
+        events = asyncio.run_coroutine_threadsafe(
+            self.session_manager.get_messages_by_session(session_id),
+            self._event_loop,
+        ).result()
+        return not any(ev.get("type") == "USER_INPUT" for ev in events)
+
+    def _spawn_title_generation(
+        self,
+        session_id: str,
+        user_content: str | list[dict],
+        config: AgentConfig,
+    ) -> None:
+        """
+        起一个守护线程跑 LLM 生成标题，落库即可。
+        前端有 sessions 列表轮询，新 title 自然会刷新出来，
+        所以这里不主动推送事件。失败/取消静默吞掉。
+
+        实现细节：_run 本身已经在 executor 线程里，子线程不能再 asyncio.get_event_loop()
+        （Python 3.12 起会抛 RuntimeError）。直接 spawn 一个新线程，worker 内通过保留
+        的 self._event_loop 引用 + run_coroutine_threadsafe 回主 loop 落库。
+        """
+        # 取出文本部分；多模态 user_content 里可能没有 text，这种情况下用占位
+        text = self._extract_text_for_title(user_content)
+        if not text:
+            return
+        text = text[: self.TITLE_GEN_INPUT_TRUNCATE]
+
+        loop = self._event_loop
+
+        def worker() -> None:
+            try:
+                title = self._generate_title_via_llm(text, config)
+            except Exception:
+                logger.exception(f"[agent-loop] 生成标题失败 (session={session_id})")
+                return
+            if not title:
+                return
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self.session_manager.update_session(session_id, title=title),
+                    loop,
+                ).result()
+            except Exception:
+                logger.exception(f"[agent-loop] 写入标题失败 (session={session_id})")
+                return
+            logger.info(f"[agent-loop] 已生成标题 session={session_id} title={title!r}")
+
+        threading.Thread(
+            target=worker,
+            name=f"title-gen-{session_id}",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _extract_text_for_title(user_content: str | list[dict]) -> str:
+        """从 user_content 里提取纯文本部分；多模态时只看 text part。"""
+        if isinstance(user_content, str):
+            return user_content.strip()
+        if isinstance(user_content, list):
+            chunks: list[str] = []
+            for part in user_content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    t = part.get("text", "")
+                    if isinstance(t, str) and t:
+                        chunks.append(t)
+            return "\n".join(chunks).strip()
+        return ""
+
+    def _generate_title_via_llm(self, user_text: str, config: AgentConfig) -> str:
+        """
+        一次性 LLM 调用生成标题。无工具、不带历史、流式收集后拼接。
+
+        使用 config.title_llm（如果配置了），否则回退到主 llm。
+
+        Returns:
+            清洗后的标题字符串；若 LLM 没返回内容或被取消则返回空串。
+        """
+        # 优先用专门为标题生成配置的 LLM；没配则沿用主对话 LLM
+        llm_cfg = config.title_llm or config.llm
+        if not (llm_cfg and llm_cfg.model and llm_cfg.api_key):
+            return ""
+
+        from ftre_agent_core.llm import LLMHandler, LLMResponse, StreamDelta
+
+        handler = LLMHandler(
+            model=llm_cfg.model,
+            api_key=llm_cfg.api_key,
+            api_base=llm_cfg.api_base,
+            api_type=llm_cfg.api_type,
+        )
+        messages = [
+            {"role": "system", "content": self.TITLE_GEN_SYSTEM_PROMPT},
+            {"role": "user", "content": user_text},
+        ]
+        chunks: list[str] = []
+        for item in handler.stream(messages, tools=None):
+            if isinstance(item, StreamDelta) and item.content:
+                chunks.append(item.content)
+            elif isinstance(item, LLMResponse) and item.content:
+                # 极少数实现会一次性把内容塞 LLMResponse.content
+                chunks.append(item.content)
+        raw = "".join(chunks).strip()
+        return self._sanitize_title(raw)
+
+    @classmethod
+    def _sanitize_title(cls, raw: str) -> str:
+        """清洗 LLM 输出：去引号、去前缀、压缩空白、硬截断。"""
+        if not raw:
+            return ""
+        s = raw.strip()
+        # 取第一行 —— 模型偶尔多嘴写好几行
+        s = s.splitlines()[0].strip()
+        # 去掉外层成对引号 / 反引号 / 中文括号
+        # 同字符成对：" ' `
+        # 异字符配对：「」 “” ‘’ 《》 【】
+        same_pairs = ('"', "'", "`")
+        diff_pairs = (("「", "」"), ("“", "”"), ("‘", "’"), ("《", "》"), ("【", "】"))
+        for q in same_pairs:
+            if len(s) >= 2 and s.startswith(q) and s.endswith(q):
+                s = s[1:-1].strip()
+                break
+        else:
+            for left, right in diff_pairs:
+                if len(s) >= 2 and s.startswith(left) and s.endswith(right):
+                    s = s[1:-1].strip()
+                    break
+        # 去常见前缀
+        for prefix in ("标题：", "标题:", "Title:", "title:"):
+            if s.lower().startswith(prefix.lower()):
+                s = s[len(prefix):].strip()
+                break
+        # 末尾标点修剪
+        s = s.rstrip("。.!?！？,，;；:：")
+        # 硬截断
+        if len(s) > cls.TITLE_MAX_CHARS:
+            s = s[: cls.TITLE_MAX_CHARS]
+        return s
