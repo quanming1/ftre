@@ -1,9 +1,10 @@
 """
 ftre 内置工具集
 
-工具是无状态的工厂产物；当前工作区由 agent 每次 run 时通过
-runtime_context['workspace'] = {'cwd': str} 注入，
-工具通过 Injected("workspace") 取得这个 mutable dict 引用。
+工具是无状态的工厂产物。当前工作区是 sessions 表的一等字段，agent 每次 run
+通过 runtime_context['workspace'] = WorkspaceAccessor(...) 注入一个对 DB 的
+同步外观，工具用 Injected("workspace") 拿到它后调 ws.get() / ws.set(...)
+读写持久化的 cwd。
 """
 from ftre_agent_core.tool import Tool
 

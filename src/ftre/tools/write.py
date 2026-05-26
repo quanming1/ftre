@@ -5,6 +5,7 @@ from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
 from .read import _resolve
 from ._io import read_text, write_text_new, write_text_preserving
+from ._workspace import WorkspaceAccessor
 
 
 def create_write_tool() -> Tool:
@@ -15,11 +16,12 @@ def create_write_tool() -> Tool:
     - 新文件：utf-8 + LF
     """
 
-    def write(path: str, content: str, ws: dict = Injected("workspace")) -> str:
+    def write(path: str, content: str, ws: WorkspaceAccessor = Injected("workspace")) -> str:
         try:
-            if not isinstance(ws, dict) or "cwd" not in ws:
+            if not isinstance(ws, WorkspaceAccessor):
                 return "[error] runtime_context.workspace 未注入"
-            p = _resolve(path, ws)
+            cwd = ws.get()
+            p = _resolve(path, cwd)
             if p.exists() and p.is_dir():
                 return f"[error] 目标路径是目录: {p}"
 
@@ -40,7 +42,7 @@ def create_write_tool() -> Tool:
     return Tool(
         name="write",
         description=(
-            "创建新文件或覆盖现有文件。相对路径基于当前工作区目录。\n"
+            "创建新文件或覆盖现有文件。相对路径基于当前会话的工作区目录。\n"
             "- 父目录不存在会自动创建\n"
             "- 覆盖现有文件时保留原编码和换行风格（CRLF/LF）\n"
             "- 新建文件用 utf-8 + LF\n"

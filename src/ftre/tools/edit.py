@@ -5,6 +5,7 @@ from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
 from .read import _resolve
 from ._io import read_text, write_text_preserving
+from ._workspace import WorkspaceAccessor
 
 
 def _line_numbers_of_matches(text: str, needle: str, max_show: int = 5) -> list[int]:
@@ -57,12 +58,13 @@ def create_edit_tool() -> Tool:
         path: str,
         old_str: str,
         new_str: str,
-        ws: dict = Injected("workspace"),
+        ws: WorkspaceAccessor = Injected("workspace"),
     ) -> str:
         try:
-            if not isinstance(ws, dict) or "cwd" not in ws:
+            if not isinstance(ws, WorkspaceAccessor):
                 return "[error] runtime_context.workspace 未注入"
-            p = _resolve(path, ws)
+            cwd = ws.get()
+            p = _resolve(path, cwd)
             if not p.exists():
                 return f"[error] 文件不存在: {p}"
             if p.is_dir():
@@ -107,7 +109,7 @@ def create_edit_tool() -> Tool:
     return Tool(
         name="edit",
         description=(
-            "通过精确字符串替换修改文件。相对路径基于当前工作区目录。\n"
+            "通过精确字符串替换修改文件。相对路径基于当前会话的工作区目录。\n"
             "- old_str 必须在文件中【唯一】匹配（含缩进和换行）\n"
             "- 0 次匹配：会提示是否为缩进/空格不一致\n"
             "- 多次匹配：会列出行号，提示加更多上下文\n"
