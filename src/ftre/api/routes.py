@@ -118,10 +118,64 @@ async def delete_session(session_id: str):
 
 
 @router.get("/sessions/{session_id}/messages")
-async def get_messages(session_id: str):
-    """获取指定 session 的全部消息（按时间正序）"""
-    messages = await _session_manager.get_messages_by_session(session_id)
-    return {"messages": messages}
+async def get_messages(
+    session_id: str,
+    limit: int | None = None,
+    before_ts: float | None = None,
+    after_ts: float | None = None,
+):
+    """
+    获取指定 session 的消息（按 timestamp 正序）。
+
+    分页参数（全部可选）：
+      - limit:     最多返回多少条；不传返回全部
+      - before_ts: 仅返回 timestamp 严格小于该值的（"再翻一页历史"用）
+      - after_ts:  仅返回 timestamp 严格大于该值的（拉流式期间漏掉的增量用）
+
+    响应字段：
+      - messages:    本页消息（timestamp ASC）
+      - has_more:    本页之前是否还有更早的消息（用 limit 时基于 has_more=True 判断）
+      - total:       该 session 当前消息总数
+
+    无任何分页参数时 has_more 永远为 False（一次拿全）。
+    """
+    if limit is not None:
+        # 安全上限：防 LLM 写错把 limit 写成超大数撑爆 IO
+        if limit <= 0:
+            limit = 200
+        if limit > 1000:
+            limit = 1000
+
+    messages = await _session_manager.get_messages_by_session(
+        session_id, limit=limit, before_ts=before_ts, after_ts=after_ts
+    )
+    total = await _session_manager.count_messages_by_session(session_id)
+
+    # has_more 判定：本页起点之前是否还有更早的消息
+    if not messages:
+        has_more = False
+    elif limit is None:
+        has_more = False
+    else:
+        earliest_ts = messages[0]["timestamp"]
+        has_more = await _has_messages_before(session_id, earliest_ts)
+
+    return {
+        "messages": messages,
+        "has_more": has_more,
+        "total": total,
+    }
+
+
+async def _has_messages_before(session_id: str, ts: float) -> bool:
+    """该 session 是否还有 timestamp < ts 的消息"""
+    db = _session_manager._db  # noqa: SLF001 — manager 内部连接复用
+    cursor = await db.execute(
+        "SELECT 1 FROM messages WHERE session_id = ? AND timestamp < ? LIMIT 1",
+        (session_id, ts),
+    )
+    row = await cursor.fetchone()
+    return row is not None
 
 
 @router.get("/sessions/{session_id}/token_usage")

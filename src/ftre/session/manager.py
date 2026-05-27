@@ -260,13 +260,54 @@ class SessionManager:
         await self._db.commit()
         return msg_id
 
-    async def get_messages_by_session(self, session_id: str) -> list[MessageModel]:
-        """获取指定 session 的全部消息（按时间正序）"""
-        cursor = await self._db.execute(
-            "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
-            (session_id,),
-        )
-        rows = await cursor.fetchall()
+    async def get_messages_by_session(
+        self,
+        session_id: str,
+        limit: int | None = None,
+        before_ts: float | None = None,
+        after_ts: float | None = None,
+    ) -> list[MessageModel]:
+        """
+        获取指定 session 的消息（按时间正序）。
+
+        默认（不传任何分页参数）返回全部 —— 重建历史给 LLM 用的调用方依赖这个语义。
+        分页用法：
+          - limit:     最多返回多少条；默认不限。
+          - before_ts: 仅返回 timestamp < before_ts 的（取"再早一页"用）。
+          - after_ts:  仅返回 timestamp > after_ts 的（取"流式期间漏掉的尾部增量"）。
+          - 同时传 limit 和 before_ts：按 timestamp DESC 取最近 limit 条
+            （即最靠近 before_ts 的那段），返回时再 reverse 成 ASC 给前端。
+
+        典型调用：
+          - LLM 历史回放: get_messages_by_session(sid)            → 全量
+          - 首屏分页:    get_messages_by_session(sid, limit=200) → 末尾 200 条
+          - 加载更早:    get_messages_by_session(sid, limit=200, before_ts=earliest)
+        """
+        clauses = ["session_id = ?"]
+        params: list = [session_id]
+        if before_ts is not None:
+            clauses.append("timestamp < ?")
+            params.append(before_ts)
+        if after_ts is not None:
+            clauses.append("timestamp > ?")
+            params.append(after_ts)
+        where = " AND ".join(clauses)
+
+        if limit is not None and limit > 0:
+            # 取末尾 limit 条：先 DESC + LIMIT，再在 Python 侧 reverse
+            sql = (
+                f"SELECT * FROM messages WHERE {where} "
+                f"ORDER BY timestamp DESC LIMIT ?"
+            )
+            params.append(int(limit))
+            cursor = await self._db.execute(sql, tuple(params))
+            rows = await cursor.fetchall()
+            rows = list(reversed(rows))
+        else:
+            sql = f"SELECT * FROM messages WHERE {where} ORDER BY timestamp ASC"
+            cursor = await self._db.execute(sql, tuple(params))
+            rows = await cursor.fetchall()
+
         return [
             MessageModel(
                 id=r["id"],
@@ -277,6 +318,15 @@ class SessionManager:
             )
             for r in rows
         ]
+
+    async def count_messages_by_session(self, session_id: str) -> int:
+        """指定 session 的消息总数（用于分页 has_more 判断）"""
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) AS n FROM messages WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        return int(row["n"]) if row else 0
 
     # ============================================================
     # Token 用量（最近一次 LLM 实算 + 之后未计入事件的字符级粗估）
