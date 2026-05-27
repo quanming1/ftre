@@ -71,10 +71,36 @@ def load_config_file() -> dict:
 
 
 def _build_model_name(model_id: str, protocol: str) -> str:
-    """拼接 LiteLLM 模型名。已有 / 前缀的不重复加。"""
-    if "/" in model_id:
-        return model_id
-    prefix = {"openai": "openai", "anthropic": "anthropic", "gemini": "gemini", "azure": "azure", "bedrock": "bedrock"}.get(protocol, "openai")
+    """
+    拼接 LiteLLM 模型名。
+
+    LiteLLM 的模型名格式是 `<provider>/<model>`，provider 必须是它已知的列表
+    （openai / anthropic / azure / gemini / bedrock / groq ...）。
+
+    判定"是否已加前缀"必须用 provider 白名单，不能用 `"/" in model_id`：
+    很多网关侧的模型 id 本身就含 `/`（如 `mlamp/kimi-k2.6`、
+    `tencent/deepseek-v4-pro`），那个 `/` 是模型名的一部分，不是 provider 前缀。
+    把这种 id 直接当成"已带前缀"丢给 LiteLLM 会报
+    `LLM Provider NOT provided`。
+    """
+    prefix = {
+        "openai": "openai",
+        "anthropic": "anthropic",
+        "gemini": "gemini",
+        "azure": "azure",
+        "bedrock": "bedrock",
+    }.get(protocol, "openai")
+
+    # 已知的 LiteLLM provider 前缀；命中即说明 id 已带前缀，无需重复
+    KNOWN_LITELLM_PREFIXES = (
+        "openai/", "anthropic/", "azure/", "gemini/", "bedrock/",
+        "groq/", "vertex_ai/", "ollama/", "huggingface/", "cohere/",
+        "mistral/", "deepseek/", "together_ai/", "replicate/",
+    )
+    for p in KNOWN_LITELLM_PREFIXES:
+        if model_id.startswith(p):
+            return model_id
+
     return f"{prefix}/{model_id}"
 
 
