@@ -146,6 +146,7 @@ class WebSocketChannel(Channel):
             "type": msg.type,
             "data": msg.data,
             "metadata": {
+                **(msg.metadata or {}),
                 "channel_id": msg.to_channel,
                 "session_id": msg.to_session,
             },
@@ -277,17 +278,13 @@ class WebSocketChannel(Channel):
         metadata = frame.get("metadata") or {}
         if not isinstance(metadata, dict):
             metadata = {}
+        # 把客户端协议帧 id 装进 metadata.frame_id，AgentLoop echo 时
+        # 回填给前端，前端用它去重本地乐观占位。
+        frame_id = frame.get("id") or ""
+        if frame_id:
+            metadata = {**metadata, "frame_id": frame_id}
 
-        msg = BusMessage(
-            type=frame_type,
-            from_channel=self.channel_id,
-            to_channel=self.channel_id,
-            from_session=session_id,
-            to_session=session_id,
-            data=data,
-            metadata=metadata,
-        )
-        await self.bus.publish_inbound(msg)
+        await self.receive(session_id, data, metadata, kind=frame_type)
 
     async def _reject(self, ws: WebSocket, frame_id: str, session_id: str, reason: str) -> None:
         """向客户端回写一帧拒绝消息（不入 Bus）"""
