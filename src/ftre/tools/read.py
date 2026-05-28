@@ -6,6 +6,7 @@ from pathlib import Path
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
 from ._io import read_text
+from ._truncate import truncate_output
 from ._workspace import WorkspaceAccessor
 
 
@@ -66,7 +67,7 @@ def create_read_tool(max_bytes: int = 256 * 1024) -> Tool:
             header = ""
             if tf.encoding != "utf-8" and tf.encoding != "utf-8-sig":
                 header = f"[encoding] {tf.encoding}\n"
-            return header + "\n".join(numbered)
+            return truncate_output(header + "\n".join(numbered))
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}"
 

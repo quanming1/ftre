@@ -193,6 +193,23 @@ class AgentLoop:
             self._event_loop,
         ).result()
 
+        # Step 6.5: 把 user_input 也作为 agent_event 下行
+        # 这样目标 session 的前端无论是不是自己发的（如被 send_message 跨 session 唤起），
+        # 都能拿到这条用户消息渲染。inbound.metadata.frame_id 是发送端协议帧 id，
+        # 透传给前端作为占位去重 key（本地已有同 id 消息时丢弃，否则 push）。
+        echo = BusMessage(
+            type="agent_event",
+            from_channel=inbound.from_channel,
+            to_channel=inbound.to_channel,
+            from_session=inbound.from_session,
+            to_session=inbound.to_session,
+            data={"type": "user_input", "data": inbound.data},
+            metadata=inbound.metadata,
+        )
+        asyncio.run_coroutine_threadsafe(
+            self.bus.publish_outbound(echo), self._event_loop
+        ).result()
+
         # Step 7: 驱动 Agent 执行
         # workspace 是一个 WorkspaceAccessor —— 对 sessions.workspace 字段的同步外观。
         # 工具拿到它后用 ws.get() / ws.set(...) 读写持久化的 cwd，不再有内存中转 dict。

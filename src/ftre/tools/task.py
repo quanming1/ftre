@@ -106,10 +106,12 @@ def create_task_tool(channel_manager) -> Tool:
     def task(
         prompt: str,
         session_id: str = "",
+        working_dir: str = "",
         caller_channel: str = Injected("channel_id"),
         event_loop=Injected("event_loop"),
         session_manager=Injected("session_manager"),
         agent_loop=Injected("agent_loop"),
+        workspace=Injected("workspace"),
     ) -> str:
         if not prompt or not prompt.strip():
             return "[error] prompt 不能为空"
@@ -130,10 +132,22 @@ def create_task_tool(channel_manager) -> Tool:
 
             if not sid:
                 title = prompt.strip().splitlines()[0][:40] or "subagent task"
+                # 工作区优先级：显式 working_dir > 调用者当前 workspace
+                caller_workspace = ""
+                if working_dir.strip():
+                    caller_workspace = working_dir.strip()
+                else:
+                    try:
+                        from ._workspace import WorkspaceAccessor
+                        if isinstance(workspace, WorkspaceAccessor):
+                            caller_workspace = workspace.get()
+                    except Exception:
+                        pass
                 sid = _run_async(
                     session_manager.create_session(
                         channel_id=SUBAGENT_CHANNEL_ID,
                         title=title,
+                        workspace=caller_workspace,
                     ),
                     event_loop,
                 )
@@ -195,6 +209,11 @@ def create_task_tool(channel_manager) -> Tool:
             "  返回值首行格式：[session=<sid>, status=<...>]，sid 就是这次 task 的 session_id。\n"
             "  下一次想接着同一个 subagent 对话时，把这个 sid 原样填回 session_id 参数即可。\n"
             "\n"
+            "工作区继承：\n"
+            "- 新建 subagent session 时默认继承调用者当前的工作区目录\n"
+            "- 可通过 working_dir 参数显式指定（绝对路径），覆盖默认继承\n"
+            "- subagent 内的 bash/read/write 等工具开箱即用，无需再 cd 或 set_workspace\n"
+            "\n"
             "其它说明：\n"
             "- 阻塞调用：会等到目标 session 一轮跑完才返回（最长 10 分钟超时）\n"
             "- 适合拆解大任务交给独立 agent，避免污染当前会话上下文\n"
@@ -213,6 +232,15 @@ def create_task_tool(channel_manager) -> Tool:
                     "目标 session ID。留空则新建一个 subagent session 并在返回值中告知新 sid。"
                     "严禁自己编造 sid；只能填上一次 task 调用返回值首行 [session=...] 里的那个 sid，"
                     "用于让 subagent 在已有上下文上继续工作"
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="working_dir",
+                type="string",
+                description=(
+                    "subagent 的工作区目录（绝对路径）。留空则自动继承调用者当前工作区。"
+                    "仅在新建 session 时生效；复用已有 session 时忽略（已有 session 保留自己的工作区）"
                 ),
                 required=False,
             ),

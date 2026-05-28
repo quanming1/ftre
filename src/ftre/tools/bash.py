@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
+from ._truncate import truncate_output
 from ._workspace import WorkspaceAccessor
 
 
@@ -217,6 +218,33 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
             pass
 
 
+def _platform_hints() -> str:
+    """根据当前进程所在平台拼装一段提示，让 LLM 用对该平台的命令/路径/编码。"""
+    if sys.platform == "win32":
+        return (
+            "运行环境：Windows（cmd /c 执行）。\n"
+            "  - 路径分隔符 `\\`，盘符形式 `D:\\proj`；shell 通配符行为与 POSIX 不同；\n"
+            "  - 命令差异：列目录 `dir`（不是 `ls`），删文件 `del`/`rmdir /s /q`，复制 `copy`/`xcopy`，\n"
+            "    查看文件 `type`，环境变量 `set NAME=value`，PATH 用 `;` 分隔，行尾 CRLF；\n"
+            "  - 多命令串联用 `&&` 或 `&`（不是 `;`，cmd 里 `;` 是普通字符）；\n"
+            "  - 编码：cmd 默认 GBK/CP936，输出会按 GBK→UTF-8 顺序解码；\n"
+            "    给文件写中文请显式 `chcp 65001` 或直接用 PowerShell；\n"
+            "  - 想用类 Unix 命令时改走 `pwsh -c '<cmd>'` 或 `bash -c '<cmd>'`（如装了 Git Bash/WSL）。"
+        )
+    if sys.platform == "darwin":
+        return (
+            "运行环境：macOS（/bin/bash -c 执行）。\n"
+            "  - 路径分隔符 `/`；BSD 用户态工具（`sed`/`grep`/`awk`）选项与 GNU 版略有差异，\n"
+            "    例如 `sed -i ''` 需要空字符串占位（GNU 直接 `sed -i`）；\n"
+            "  - 编码默认 UTF-8；多命令串联 `&&`/`||`/`;`/`|` 行为标准。"
+        )
+    return (
+        "运行环境：Linux/POSIX（/bin/bash -c 执行；不存在时回退默认 sh）。\n"
+        "  - 路径分隔符 `/`，编码默认 UTF-8；GNU 用户态工具语义；\n"
+        "  - 多命令串联 `&&`/`||`/`;`/`|` 行为标准。"
+    )
+
+
 def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
     """创建 bash 工具
 
@@ -309,7 +337,7 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
                 output_lines.append(f"[stderr]\n{stderr.rstrip()}")
             if proc.returncode != 0:
                 output_lines.append(f"[exit_code] {proc.returncode}")
-            return "\n".join(output_lines)
+            return truncate_output("\n".join(output_lines))
         except FileNotFoundError as e:
             return f"[error] 未找到 shell: {e}"
         except Exception as e:
@@ -319,12 +347,15 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
         name="bash",
         description=(
             "执行 shell 命令并返回输出。\n"
+            f"{_platform_hints()}\n"
+            "通用规则：\n"
             "- cwd 来自当前会话的 workspace（持久到 DB），跨工具调用持久；\n"
             "- 仅【纯 cd】命令（如 `cd src`、`cd /d D:\\proj`）会持久切换工作区；\n"
             "- 组合命令（如 `cd x && yyy`）由底层 shell 自行处理，不持久切换；\n"
-            "- 平台：Windows 走 cmd /s /c，POSIX 走 /bin/bash -c；\n"
             f"- 默认超时 {default_timeout}s，可通过 timeout 参数延长（上限 {max_timeout}s）；\n"
             "- 输出首行 [cwd] 显示当前工作目录，便于排错；\n"
+            "- 字节输出按平台默认编码解码（Windows 优先 GBK 再退 UTF-8；其他平台 UTF-8），\n"
+            "  解码失败的字节会被替换字符占位，必要时让程序直接输出 UTF-8；\n"
             "- RTK 集成：自动压缩 git/cargo/npm 等命令输出，减少 token 消耗。"
         ),
         parameters=[
