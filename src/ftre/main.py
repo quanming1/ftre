@@ -10,7 +10,7 @@ import asyncio
 from ftre.bus import EventBus
 from ftre.channel import WebSocketChannel, SubagentChannel, ChannelManager
 from ftre.session import SessionManager
-from ftre.plugin import PluginManager
+from ftre.plugin import PluginManager, HookManager
 from ftre.agent.loop import AgentLoop
 from ftre.config import load_config_file
 from ftre.tools.cron import CronScheduler
@@ -33,8 +33,16 @@ async def run_gateway():
     # Channel 管理器
     mgr = ChannelManager(bus)
 
+    # Hook 管理器 — 让插件能挂到内部生命周期挂点
+    hook_manager = HookManager()
+
     # 全局 AgentLoop（消费所有 session 的消息）
-    agent_loop = AgentLoop(bus=bus, session_manager=session_manager, channel_manager=mgr)
+    agent_loop = AgentLoop(
+        bus=bus,
+        session_manager=session_manager,
+        channel_manager=mgr,
+        hook_manager=hook_manager,
+    )
     agent_loop.start()
 
     # WebSocket Channel
@@ -44,8 +52,13 @@ async def run_gateway():
     # Subagent Channel — 静默通道，承载 task 工具派发的子任务
     mgr.register(SubagentChannel(bus))
 
-    # Plugin 管理器 — 加载外部插件（可注册 Channel 等）
-    plugin_manager = PluginManager(bus=bus, channel_manager=mgr, session_manager=session_manager)
+    # Plugin 管理器 — 加载外部插件（可注册 Channel / Hook 等）
+    plugin_manager = PluginManager(
+        bus=bus,
+        channel_manager=mgr,
+        session_manager=session_manager,
+        hook_manager=hook_manager,
+    )
     config_data = load_config_file()
     plugin_manager.load_all(config_data)
 
