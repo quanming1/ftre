@@ -15,10 +15,12 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ftre.bus import EventBus
 from ftre.channel import Channel, ChannelManager
+
+from .hook_manager import HookManager
 
 if TYPE_CHECKING:
     from ftre.session import SessionManager
@@ -32,15 +34,32 @@ PLUGINS_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "plug
 class FtrePluginApi:
     """ftre 暴露给插件的 API"""
 
-    def __init__(self, bus: EventBus, channel_manager: ChannelManager, session_manager: "SessionManager", config: dict):
+    def __init__(
+        self,
+        bus: EventBus,
+        channel_manager: ChannelManager,
+        session_manager: "SessionManager",
+        hook_manager: HookManager,
+        config: dict,
+    ):
         self.bus = bus
         self.session_manager = session_manager
+        self.channel_manager = channel_manager
         self.config = config
-        self._channel_manager = channel_manager
+        self._hook_manager = hook_manager
 
     def register_channel(self, channel: Channel) -> None:
         """注册 Channel"""
-        self._channel_manager.register(channel)
+        self.channel_manager.register(channel)
+
+    def register_hook(self, point: str, fn: Callable) -> None:
+        """
+        在指定 hook point 注册一个 hook 函数。
+
+        见 plugin/hook_manager.py 的 hook point 常量与 Context 定义。
+        hook 函数签名：(ctx) -> ctx，hook 内部抛异常会被捕获不影响主流程。
+        """
+        self._hook_manager.register(point, fn)
 
 
 class Plugin:
@@ -59,10 +78,17 @@ class Plugin:
 class PluginManager:
     """插件生命周期管理"""
 
-    def __init__(self, bus: EventBus, channel_manager: ChannelManager, session_manager: "SessionManager"):
+    def __init__(
+        self,
+        bus: EventBus,
+        channel_manager: ChannelManager,
+        session_manager: "SessionManager",
+        hook_manager: HookManager,
+    ):
         self._bus = bus
         self._channel_manager = channel_manager
         self._session_manager = session_manager
+        self._hook_manager = hook_manager
         self._plugins: dict[str, Plugin] = {}
 
     def load_all(self, config_data: dict = None) -> None:
@@ -110,6 +136,7 @@ class PluginManager:
             bus=self._bus,
             channel_manager=self._channel_manager,
             session_manager=self._session_manager,
+            hook_manager=self._hook_manager,
             config=config,
         )
 
