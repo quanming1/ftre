@@ -192,6 +192,7 @@ class SessionManager:
         limit: int = 50,
         offset: int = 0,
         channel_id: str | None = None,
+        workspace: str | None = None,
     ) -> list[SessionModel]:
         """
         列出 sessions（按 updated_at 倒序）。
@@ -200,18 +201,23 @@ class SessionManager:
             limit:      返回数量上限
             offset:     偏移量（分页用）
             channel_id: 非空时仅返回该 channel
+            workspace:  非 None 时仅返回该 workspace（空串 "" = 未设置工作区的会话）
         """
+        conditions: list[str] = []
+        params: list = []
         if channel_id:
-            cursor = await self._db.execute(
-                "SELECT * FROM sessions WHERE channel_id = ? "
-                "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                (channel_id, limit, offset),
-            )
-        else:
-            cursor = await self._db.execute(
-                "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            )
+            conditions.append("channel_id = ?")
+            params.append(channel_id)
+        if workspace is not None:
+            conditions.append("workspace = ?")
+            params.append(workspace)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.extend([limit, offset])
+        cursor = await self._db.execute(
+            f"SELECT * FROM sessions {where} "
+            "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            tuple(params),
+        )
         rows = await cursor.fetchall()
         return [
             SessionModel(
@@ -225,17 +231,61 @@ class SessionManager:
             for r in rows
         ]
 
-    async def count_sessions(self, channel_id: str | None = None) -> int:
+    async def count_sessions(
+        self,
+        channel_id: str | None = None,
+        workspace: str | None = None,
+    ) -> int:
         """返回 sessions 总数（用于分页 total）"""
+        conditions: list[str] = []
+        params: list = []
         if channel_id:
-            cursor = await self._db.execute(
-                "SELECT COUNT(*) AS n FROM sessions WHERE channel_id = ?",
-                (channel_id,),
-            )
-        else:
-            cursor = await self._db.execute("SELECT COUNT(*) AS n FROM sessions")
+            conditions.append("channel_id = ?")
+            params.append(channel_id)
+        if workspace is not None:
+            conditions.append("workspace = ?")
+            params.append(workspace)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT COUNT(*) AS n FROM sessions {where}",
+            tuple(params),
+        )
         row = await cursor.fetchone()
         return int(row["n"]) if row else 0
+
+    async def list_workspaces(self, channel_id: str | None = None) -> list[dict]:
+        """
+        枚举所有出现过的 workspace，按各自最新活跃时间倒序。
+
+        每个 workspace 返回：
+        - workspace: 工作区路径（"" = 未设置）
+        - session_count: 该工作区下的会话数
+        - latest_at: 该工作区下最新会话的 updated_at
+
+        Args:
+            channel_id: 非空时仅统计该 channel（如 "ws"）下的工作区
+        """
+        conditions: list[str] = []
+        params: list = []
+        if channel_id:
+            conditions.append("channel_id = ?")
+            params.append(channel_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT workspace, COUNT(*) AS n, MAX(updated_at) AS latest "
+            f"FROM sessions {where} "
+            "GROUP BY workspace ORDER BY latest DESC",
+            tuple(params),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "workspace": r["workspace"] or "",
+                "session_count": int(r["n"]),
+                "latest_at": r["latest"] or 0,
+            }
+            for r in rows
+        ]
 
     # ============================================================
     # Message（事件流）
@@ -414,6 +464,18 @@ class SessionManager:
                     "name": _safe_name(src),
                     "content": f"[来自 {src} 的消息] {d.get('content', '')}",
                 })
+
+            elif t == "context_compact":
+                # 压缩事件：丢弃之前所有 messages，用 summary 作为新起点
+                _flush_tool_calls()
+                _take_reasoning()
+                summary = (event["data"] or {}).get("summary", "")
+                messages = []
+                if summary:
+                    messages.append({
+                        "role": "user",
+                        "content": f"[历史上下文摘要]\n{summary}",
+                    })
 
         _flush_tool_calls()
         return messages

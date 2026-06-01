@@ -46,16 +46,36 @@ async def create_session(channel_id: str, title: str = "", workspace: str = ""):
     return {"session_id": session_id}
 
 
+@router.get("/workspaces")
+async def list_workspaces(channel_id: str | None = "ws"):
+    """
+    枚举所有工作区（按各自最新活跃时间倒序）。
+
+    默认只统计 ws channel 下的工作区（前端侧边栏按工作区分组用）。
+    传 channel_id="" 或省略过滤可统计全部。
+    返回 { workspaces: [{ workspace, session_count, latest_at }] }
+    """
+    # channel_id 传空串时视为不过滤
+    ch = channel_id or None
+    workspaces = await _session_manager.list_workspaces(channel_id=ch)
+    return {"workspaces": workspaces}
+
+
 @router.get("/sessions")
 async def list_sessions(
     limit: int = 50,
     offset: int = 0,
     channel_id: str | None = None,
+    workspace: str | None = None,
 ):
     """
     获取会话列表（按最近活跃排序）。
 
     分页参数：limit（默认 50，最大 500）/ offset（默认 0）。
+    过滤参数：
+    - channel_id：仅返回该 channel
+    - workspace：仅返回该 workspace（传空串 "" 表示"未设置工作区"的会话；
+                 不传该参数则不按 workspace 过滤）
     返回 { sessions, total, limit, offset }，前端按 (offset + sessions.length) < total 决定是否还有下一页。
     """
     if limit <= 0:
@@ -65,9 +85,11 @@ async def list_sessions(
     if offset < 0:
         offset = 0
     sessions = await _session_manager.list_sessions(
-        limit=limit, offset=offset, channel_id=channel_id
+        limit=limit, offset=offset, channel_id=channel_id, workspace=workspace
     )
-    total = await _session_manager.count_sessions(channel_id=channel_id)
+    total = await _session_manager.count_sessions(
+        channel_id=channel_id, workspace=workspace
+    )
     return {
         "sessions": sessions,
         "total": total,
