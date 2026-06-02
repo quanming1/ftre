@@ -365,9 +365,16 @@ class SessionManager:
     # ============================================================
 
     @staticmethod
-    def to_openai_messages(events: list[MessageModel]) -> list[dict]:
+    def to_openai_messages(
+        events: list[MessageModel],
+        *,
+        config: dict | None = None,
+    ) -> list[dict]:
         """
         将事件流重建为 OpenAI 格式消息列表。
+
+        config 可传入当前模型配置；当 config["llm"]["vision"] 为 false 时，
+        历史用户消息里的图片附件会被降级成文本提示。
 
         转换规则：
         - USER_INPUT          → {"role": "user", "content": ...}
@@ -383,6 +390,8 @@ class SessionManager:
         messages: list[dict] = []
         pending_tool_calls: list[dict] = []
         pending_reasoning: str | None = None
+        llm_config = (config or {}).get("llm") or {}
+        include_images = bool(llm_config.get("vision", True))
 
         def _take_reasoning() -> str | None:
             nonlocal pending_reasoning
@@ -416,7 +425,11 @@ class SessionManager:
                 attachments = event["data"].get("attachments") or []
                 messages.append({
                     "role": "user",
-                    "content": build_user_content(text, attachments),
+                    "content": build_user_content(
+                        text,
+                        attachments,
+                        include_images=include_images,
+                    ),
                 })
 
             elif t == "reasoning_complete":
