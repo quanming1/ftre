@@ -137,8 +137,7 @@ class AgentLoop:
             )
             return
 
-        # Step 3: 构造 user content + 加载配置
-        user_content = build_user_content(content, attachments)
+        # Step 3: 加载配置
         config = self._load_current_config()
 
         # Step 4: 加载历史 + hook + 上下文治理
@@ -148,7 +147,8 @@ class AgentLoop:
         )
         messages, hook_config = self._build_messages(
             session_id,
-            user_content,
+            content,
+            attachments,
             config,
             inbound_data=inbound.data,
             channel_id=inbound.from_channel,
@@ -240,7 +240,8 @@ class AgentLoop:
     def _build_messages(
         self,
         session_id: str,
-        user_content: str | list[dict],
+        content: str,
+        attachments: list[dict],
         config: AgentConfig,
         *,
         inbound_data: dict | None = None,
@@ -270,8 +271,17 @@ class AgentLoop:
             hook_config = ctx.config
             events = ctx.events
 
+        user_content = build_user_content(
+            content,
+            attachments,
+            include_images=hook_config.llm.vision,
+        )
+
         if events:
-            history = SessionManager.to_openai_messages(events)
+            history = SessionManager.to_openai_messages(
+                events,
+                config={"llm": {"vision": hook_config.llm.vision}},
+            )
             history.append({"role": "user", "content": user_content})
             return history, hook_config
 
