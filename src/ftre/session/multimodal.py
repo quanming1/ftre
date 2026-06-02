@@ -16,7 +16,15 @@
 from __future__ import annotations
 
 
-def build_user_content(text: str, attachments: list[dict] | None) -> str | list[dict]:
+IMAGE_OMITTED_NOTICE = "[图片附件已省略：当前模型不支持视觉输入]"
+
+
+def build_user_content(
+    text: str,
+    attachments: list[dict] | None,
+    *,
+    include_images: bool = True,
+) -> str | list[dict]:
     """
     根据文本 + 附件构造 OpenAI user message 的 content。
 
@@ -30,6 +38,11 @@ def build_user_content(text: str, attachments: list[dict] | None) -> str | list[
     """
     if not attachments:
         return text or ""
+
+    if not include_images:
+        parts = [text] if text else []
+        parts.append(IMAGE_OMITTED_NOTICE)
+        return "\n\n".join(parts)
 
     parts: list[dict] = []
     if text:
