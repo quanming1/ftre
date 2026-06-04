@@ -16,7 +16,7 @@ from ftre.bus import BusMessage, EventBus
 from ftre.config import AgentConfig, load_config
 from ftre.session import SessionManager
 from ftre.session.multimodal import build_user_content
-from ftre.tools import build_default_tools
+from ftre.tools import ToolRegistry, build_default_tools
 from ftre.tools._workspace import WorkspaceAccessor
 
 logger = logging.getLogger(__name__)
@@ -38,11 +38,13 @@ class AgentLoop:
         channel_manager=None,
         config: AgentConfig = None,
         hook_manager=None,
+        tool_registry: ToolRegistry | None = None,
     ):
         self.bus = bus
         self.session_manager = session_manager
         self.channel_manager = channel_manager
         self.hook_manager = hook_manager
+        self.tool_registry = tool_registry
         self._injected_config = config
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -301,7 +303,10 @@ class AgentLoop:
         """根据配置创建 ReActAgent 实例。"""
         c = config
         if tools is None:
-            tools = build_default_tools(channel_manager=self.channel_manager)
+            tools = build_default_tools(
+                channel_manager=self.channel_manager,
+                tool_registry=self.tool_registry,
+            )
         return ReActAgent(
             model=c.llm.model,
             api_key=c.llm.api_key,
