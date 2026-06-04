@@ -224,7 +224,7 @@ def _platform_hints() -> str:
         return (
             "运行环境：Windows（cmd /c 执行）。\n"
             "  - 路径分隔符 `\\`，盘符形式 `D:\\proj`；shell 通配符行为与 POSIX 不同；\n"
-            "  - 命令差异：列目录 `dir`（不是 `ls`），删文件 `del`/`rmdir /s /q`，复制 `copy`/`xcopy`，\n"
+            "  - 命令差异：列目录 `dir`（不是 `ls`），删文件 `del`/`rmdir /s /q`，复制 `copy`/`xcopy`,\n"
             "    查看文件 `type`，环境变量 `set NAME=value`，PATH 用 `;` 分隔，行尾 CRLF；\n"
             "  - 多命令串联用 `&&` 或 `&`（不是 `;`，cmd 里 `;` 是普通字符）；\n"
             "  - 编码：cmd 默认 GBK/CP936，输出会按 GBK→UTF-8 顺序解码；\n"
@@ -242,6 +242,75 @@ def _platform_hints() -> str:
         "运行环境：Linux/POSIX（/bin/bash -c 执行；不存在时回退默认 sh）。\n"
         "  - 路径分隔符 `/`，编码默认 UTF-8；GNU 用户态工具语义；\n"
         "  - 多命令串联 `&&`/`||`/`;`/`|` 行为标准。"
+    )
+
+
+# 缓存 semble 检测结果（None=未检测，False=不可用，str=路径）
+_semble_path_cache: str | bool | None = None
+
+
+def _find_semble() -> str | None:
+    """查找 semble 可执行文件路径，结果会被缓存。
+
+    优先在 PATH 中查找；找不到再看是否能通过 `uvx --from "semble[mcp]" semble` 调用
+    （即检测 uvx 是否可用，作为降级方案）。本函数只判断主路径，降级方案由调用方决定。
+    """
+    global _semble_path_cache
+    if _semble_path_cache is not None:
+        return _semble_path_cache if isinstance(_semble_path_cache, str) else None
+
+    path = shutil.which("semble")
+    _semble_path_cache = path if path else False
+    return path
+
+
+def _semble_hints() -> str:
+    """检测到 semble 已安装时，生成一段代码检索使用建议；否则返回空串。
+
+    提示词假定 LLM 完全不认识 semble，先讲清"它是什么/为什么用/怎么调"，
+    再给具体示例和反例，让 LLM 在『按行为/功能找代码』场景下优先用它。
+    """
+    if not _find_semble():
+        return ""
+    return (
+        "\n\n"
+        "【代码检索建议：本机已安装 semble，强烈优先使用】\n"
+        "semble 是什么：一个为 AI agent 设计的语义代码检索 CLI（已在本机 PATH 中可直接调用）。\n"
+        "  它把代码库切成 tree-sitter 感知的 chunk，做混合检索（语义嵌入 + BM25 关键词 + RRF 融合），\n"
+        "  返回最相关的几段代码而不是整个文件。索引在首次查询时自动构建并缓存，\n"
+        "  文件变化会自动失效重建。全程 CPU、无 API key、无外部服务。\n"
+        "为什么强烈推荐它替代 grep/findstr/rg：\n"
+        "  - token 消耗约为 grep+read 的 2%（只返回相关片段，不返回整文件）；\n"
+        "  - 自然语言查询，不需要先猜函数/变量/类名；\n"
+        "  - 跨语言、跨文件类型，对 TS/Python/Rust/Go 等都开箱即用；\n"
+        "  - 返回结果带 file_path 和行号，可直接用 read 工具继续查看上下文。\n"
+        "常用调用方式（都通过本 bash 工具执行；路径省略时默认当前目录）：\n"
+        "  1) 按行为/功能找代码（最常用）：\n"
+        "       semble search \"how authentication is handled\" .\n"
+        "       semble search \"websocket reconnect logic\" .\n"
+        "       semble search \"model selector dropdown button\" .\n"
+        "       semble search \"...\" . --top-k 10           # 默认 10，可调整\n"
+        "  2) 找与某段已知代码相似的实现（探索同类组件 / 找重复代码）：\n"
+        "       semble find-related src/auth.py 42 .\n"
+        "       （第二个参数是行号，定位到一个具体 chunk 作为种子）\n"
+        "  3) 搜文档或配置（默认只搜代码）：\n"
+        "       semble search \"deployment guide\" . --content docs\n"
+        "       semble search \"database host port\" . --content config\n"
+        "       semble search \"...\"               . --content all\n"
+        "  4) 搜远程仓库（自动浅克隆 + 索引 + 缓存）：\n"
+        "       semble search \"save model\" https://github.com/MinishLab/model2vec\n"
+        "查询要点（实测有效）：\n"
+        "  · 用英文自然语言描述行为，结果显著更准（底层模型偏英文）；\n"
+        "  · 直接描述『这段代码在做什么』，无需先猜命名；\n"
+        "  · 首次索引可能十几秒，后续查询毫秒级，不要因为首次慢就放弃；\n"
+        "  · 结果是 JSON 数组，每条带 chunk.file_path / start_line / end_line / content / score。\n"
+        "下列情况才回退到 grep/findstr/rg：\n"
+        "  · 要改某个字面字符串前，需要穷尽所有出现位置；\n"
+        "  · 重命名 API / 移除引用，需要列出全部 caller；\n"
+        "  · 只是验证某个固定字符串是否存在。\n"
+        "反例（请避免）：用 `findstr WorkspaceGroup` 猜变量名翻代码——\n"
+        "  这种场景一次 `semble search \"workspace group sidebar\" .` 就能命中，\n"
+        "  且不需要事先知道组件叫什么名字。"
     )
 
 
@@ -357,6 +426,7 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
             "- 字节输出按平台默认编码解码（Windows 优先 GBK 再退 UTF-8；其他平台 UTF-8），\n"
             "  解码失败的字节会被替换字符占位，必要时让程序直接输出 UTF-8；\n"
             "- RTK 集成：自动压缩 git/cargo/npm 等命令输出，减少 token 消耗。"
+            f"{_semble_hints()}"
         ),
         parameters=[
             ToolParameter(
