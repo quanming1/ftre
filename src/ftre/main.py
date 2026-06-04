@@ -13,6 +13,7 @@ from ftre.session import SessionManager
 from ftre.plugin import PluginManager, HookManager
 from ftre.agent.loop import AgentLoop
 from ftre.config import load_config_file
+from ftre.tools import ToolRegistry
 from ftre.tools.cron import CronScheduler
 
 
@@ -36,12 +37,25 @@ async def run_gateway():
     # Hook 管理器 — 让插件能挂到内部生命周期挂点
     hook_manager = HookManager()
 
+    # Tool 注册表 — 插件注册工具，Agent 构建工具集时读取
+    tool_registry = ToolRegistry()
+
+    # Plugin 管理器 — 加载内置/外部插件（可注册 Channel / Hook / Tool 等）
+    plugin_manager = PluginManager(
+        bus=bus,
+        channel_manager=mgr,
+        session_manager=session_manager,
+        hook_manager=hook_manager,
+        tool_registry=tool_registry,
+    )
+
     # 全局 AgentLoop（消费所有 session 的消息）
     agent_loop = AgentLoop(
         bus=bus,
         session_manager=session_manager,
         channel_manager=mgr,
         hook_manager=hook_manager,
+        tool_registry=tool_registry,
     )
     agent_loop.start()
 
@@ -52,13 +66,6 @@ async def run_gateway():
     # Subagent Channel — 静默通道，承载 task 工具派发的子任务
     mgr.register(SubagentChannel(bus))
 
-    # Plugin 管理器 — 加载外部插件（可注册 Channel / Hook 等）
-    plugin_manager = PluginManager(
-        bus=bus,
-        channel_manager=mgr,
-        session_manager=session_manager,
-        hook_manager=hook_manager,
-    )
     config_data = load_config_file()
     plugin_manager.load_all(config_data)
 
