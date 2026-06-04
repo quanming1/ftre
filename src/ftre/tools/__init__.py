@@ -15,19 +15,41 @@ from .read import create_read_tool
 from .send_message import create_send_message_tool
 from .set_workspace import create_set_workspace_tool
 from .task import create_task_tool
-from .think import create_think_tool
 from .write import create_write_tool
 
 
-def build_default_tools(channel_manager=None) -> list[Tool]:
-    """构建默认工具集：think + bash + read + write + edit + set_workspace + cron
+class ToolRegistry:
+    """运行时工具注册表，供插件注册额外 Tool。"""
+
+    def __init__(self) -> None:
+        self._tools: list[Tool] = []
+
+    def register(self, tool: Tool) -> None:
+        """注册一个工具；工具名不能重复。"""
+        if any(getattr(t, "name", None) == getattr(tool, "name", None) for t in self._tools):
+            raise ValueError(f"tool already registered: {getattr(tool, 'name', '')}")
+        self._tools.append(tool)
+
+    def snapshot(self) -> list[Tool]:
+        """返回当前已注册工具的快照。"""
+        return list(self._tools)
+
+    def truncate(self, size: int) -> None:
+        """回滚到指定大小，用于插件 setup 失败时清理。"""
+        del self._tools[size:]
+
+    def __len__(self) -> int:
+        return len(self._tools)
+
+
+def build_default_tools(channel_manager=None, tool_registry: ToolRegistry | None = None) -> list[Tool]:
+    """构建默认工具集：bash + read + write + edit + set_workspace + cron
     + task + send_message
 
     Args:
         channel_manager: ChannelManager 实例（用于 send_message 工具）
     """
     tools = [
-        create_think_tool(),
         create_bash_tool(),
         create_read_tool(),
         create_write_tool(),
@@ -39,5 +61,8 @@ def build_default_tools(channel_manager=None) -> list[Tool]:
     if channel_manager:
         tools.append(create_task_tool(channel_manager))
         tools.append(create_send_message_tool(channel_manager))
+
+    if tool_registry is not None:
+        tools.extend(tool_registry.snapshot())
 
     return tools

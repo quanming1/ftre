@@ -10,6 +10,8 @@ ftre Plugin 体系
 - 找到 Plugin 子类自动实例化并加载
 - 配置文件 ~/.ftre/config.json 的 plugins 数组提供每个插件的 config
 """
+from __future__ import annotations
+
 import importlib
 import logging
 import os
@@ -19,6 +21,8 @@ from typing import TYPE_CHECKING, Callable
 
 from ftre.bus import EventBus
 from ftre.channel import Channel, ChannelManager
+from ftre_agent_core.tool import Tool
+from ftre.tools import ToolRegistry
 
 from .hook_manager import HookManager
 
@@ -41,16 +45,26 @@ class FtrePluginApi:
         session_manager: "SessionManager",
         hook_manager: HookManager,
         config: dict,
+        tool_registry: ToolRegistry,
     ):
         self.bus = bus
         self.session_manager = session_manager
         self.channel_manager = channel_manager
         self.config = config
         self._hook_manager = hook_manager
+        self._tool_registry = tool_registry
 
     def register_channel(self, channel: Channel) -> None:
         """注册 Channel"""
         self.channel_manager.register(channel)
+
+    def register_tool(self, tool: Tool) -> None:
+        """注册 Tool，让它进入 Agent 的默认工具集。"""
+        self._tool_registry.register(tool)
+
+    def registerTool(self, tool: Tool) -> None:
+        """register_tool 的 camelCase 别名。"""
+        self.register_tool(tool)
 
     def register_hook(self, point: str, fn: Callable) -> None:
         """
@@ -84,12 +98,14 @@ class PluginManager:
         channel_manager: ChannelManager,
         session_manager: "SessionManager",
         hook_manager: HookManager,
+        tool_registry: ToolRegistry | None = None,
     ):
         self._bus = bus
         self._channel_manager = channel_manager
         self._session_manager = session_manager
         self._hook_manager = hook_manager
         self._plugins: dict[str, Plugin] = {}
+        self._tool_registry = tool_registry if tool_registry is not None else ToolRegistry()
 
     def load_all(self, config_data: dict = None) -> None:
         """
@@ -138,13 +154,16 @@ class PluginManager:
             session_manager=self._session_manager,
             hook_manager=self._hook_manager,
             config=config,
+            tool_registry=self._tool_registry,
         )
 
+        tool_count = len(self._tool_registry)
         try:
             plugin.setup()
             self._plugins[plugin.name] = plugin
             logger.warning(f"[plugin] 已加载: {plugin.name} v{plugin.version}")
         except Exception as e:
+            self._tool_registry.truncate(tool_count)
             logger.error(f"[plugin] {plugin.name} setup 失败: {e}")
 
     def unload(self, name: str) -> None:
@@ -154,3 +173,12 @@ class PluginManager:
 
     def list(self) -> list[dict]:
         return [{"name": p.name, "version": p.version} for p in self._plugins.values()]
+
+    def tools(self) -> list[Tool]:
+        """返回插件注册的工具。"""
+        return self._tool_registry.snapshot()
+
+    @property
+    def tool_registry(self) -> ToolRegistry:
+        """插件工具注册表。"""
+        return self._tool_registry
