@@ -2,12 +2,14 @@
 WebSocket Channel
 
 启动时创建 FastAPI + WebSocket 端点。
+多个客户端连接共享同一个全局 AgentLoop。
 
-连接模型：
-- 这是桌面单用户、本机 ws 场景，连接通常只有一条。
-- 服务端不维护 session 订阅表：所有 outbound 帧广播给当前所有 ws 连接，
-  前端按帧里的 metadata.session_id 自行路由到对应 store。
-- 不存在 attach / detach 帧。
+连接 / session 模型：
+- 一个客户端 = 一条物理 WebSocket。
+- 一条 WebSocket 可以 attach 到多个 session（前端同时关注多个会话）。
+- session_id → set[WebSocket]：同一个 session 也允许被多个客户端 attach（多端同步）。
+- 客户端必须显式发送 attach 帧（或在 user_input/cancel 时隐式 attach 当前 session），
+  后端才会把这条 ws 加入 session 的推送目标。
 """
 import base64
 import binascii
@@ -100,9 +102,10 @@ class WebSocketChannel(Channel):
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        # 当前所有活跃的 ws 连接；outbound 帧广播给所有连接，
-        # 业务路由（按 session_id）由前端完成。
-        self._connections: set[WebSocket] = set()
+        # session_id → 关注该 session 的 ws 连接集合
+        self._connections: dict[str, set[WebSocket]] = {}
+        # 反向索引：ws → 它 attach 过的所有 session_id（断开时清理用）
+        self._ws_sessions: dict[WebSocket, set[str]] = {}
         self._server = None
         self._server_task: asyncio.Task | None = None
 
@@ -133,11 +136,9 @@ class WebSocketChannel(Channel):
         logger.info("[ws-channel] stopped")
 
     async def send(self, msg: BusMessage) -> None:
-        """Bus outbound → 广播给所有 ws 连接。
-
-        前端拿到帧后按 metadata.session_id 自行路由到对应 store。
-        """
-        if not self._connections:
+        """Bus outbound → 推送给所有 attach 该 session 的 ws"""
+        targets = self._connections.get(msg.to_session)
+        if not targets:
             return
 
         payload = {
@@ -154,14 +155,14 @@ class WebSocketChannel(Channel):
 
         # 拷贝一份再迭代，避免发送过程中其它路径改动 set
         dead: list[WebSocket] = []
-        for ws in list(self._connections):
+        for ws in list(targets):
             try:
                 await ws.send_text(text)
             except Exception as e:
                 logger.debug(f"[ws-channel] send 失败，准备关闭: {e}")
                 dead.append(ws)
 
-        # 主动关闭坏连接，receive 循环 finally 会兜底从 _connections 移除
+        # 主动关闭坏连接，receive 循环 finally 会兜底清理索引
         for ws in dead:
             try:
                 await ws.close()
@@ -175,7 +176,8 @@ class WebSocketChannel(Channel):
     async def _ws_endpoint(self, ws: WebSocket) -> None:
         """WebSocket 连接入口"""
         await ws.accept()
-        self._connections.add(ws)
+        self._ws_sessions[ws] = set()
+
         logger.info("[ws-channel] connection established")
 
         try:
@@ -187,8 +189,34 @@ class WebSocketChannel(Channel):
         except Exception as e:
             logger.warning(f"[ws-channel] connection error: {e}")
         finally:
-            self._connections.discard(ws)
-            logger.info("[ws-channel] connection closed")
+            attached = self._ws_sessions.get(ws, set())
+            logger.info(f"[ws-channel] connection closed (sessions={list(attached)})")
+            self._detach_all(ws)
+
+    # ============================================================
+    # 连接登记
+    # ============================================================
+
+    def _attach(self, session_id: str, ws: WebSocket) -> None:
+        if not session_id:
+            return
+        self._connections.setdefault(session_id, set()).add(ws)
+        self._ws_sessions.setdefault(ws, set()).add(session_id)
+
+    def _detach(self, session_id: str, ws: WebSocket) -> None:
+        conns = self._connections.get(session_id)
+        if conns:
+            conns.discard(ws)
+            if not conns:
+                self._connections.pop(session_id, None)
+        sids = self._ws_sessions.get(ws)
+        if sids:
+            sids.discard(session_id)
+
+    def _detach_all(self, ws: WebSocket) -> None:
+        for sid in list(self._ws_sessions.get(ws, ())):
+            self._detach(sid, ws)
+        self._ws_sessions.pop(ws, None)
 
     # ============================================================
     # 上行帧处理
@@ -201,8 +229,10 @@ class WebSocketChannel(Channel):
         上行帧格式: {id, type, data: {...}, metadata?}
 
         type:
-        - user_input 用户消息
-        - cancel     取消生成
+        - attach     声明这条 ws 关心的 session（data.session_id）
+        - detach     取消关心（data.session_id）
+        - user_input 用户消息（隐式 attach data.session_id）
+        - cancel     取消生成（隐式 attach data.session_id）
         """
         try:
             frame = json.loads(raw)
@@ -216,6 +246,14 @@ class WebSocketChannel(Channel):
         if not isinstance(data, dict):
             return
         session_id = data.get("session_id", "")
+
+        if frame_type == "attach":
+            self._attach(session_id, ws)
+            return
+
+        if frame_type == "detach":
+            self._detach(session_id, ws)
+            return
 
         if frame_type not in ("user_input", "cancel"):
             logger.debug(f"[ws-channel] unknown frame type: {frame_type}")
@@ -232,6 +270,9 @@ class WebSocketChannel(Channel):
                 logger.warning(f"[ws-channel] user_input 附件非法: {err}")
                 await self._reject(ws, frame.get("id", ""), session_id, err)
                 return
+
+        # user_input / cancel 隐式 attach（保持向后兼容）
+        self._attach(session_id, ws)
 
         metadata = frame.get("metadata") or {}
         if not isinstance(metadata, dict):
