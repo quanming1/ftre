@@ -421,12 +421,12 @@ class SessionManager:
                 # user 消息边界：丢弃可能残留的 reasoning
                 _take_reasoning()
                 from .multimodal import build_user_content
-                text = event["data"].get("content", "")
+                content = event["data"].get("content", "")
                 attachments = event["data"].get("attachments") or []
                 messages.append({
                     "role": "user",
                     "content": build_user_content(
-                        text,
+                        content,
                         attachments,
                         include_images=include_images,
                     ),
