@@ -22,6 +22,7 @@ content 支持两种形态（向下兼容）：
 """
 from __future__ import annotations
 
+from xml.sax.saxutils import escape
 
 IMAGE_OMITTED_NOTICE = "[图片附件已省略：当前模型不支持视觉输入]"
 
@@ -42,7 +43,11 @@ def _content_to_text(content: str | list[dict]) -> str:
         elif t == "skill":
             name = part.get("data", "")
             if name:
-                parts.append(f"[已选择 Skill: {name}]")
+                parts.append(
+                    f"<selected_skill name=\"{escape(name)}\">\n"
+                    f"请调用 loadSkill 加载此 Skill 的完整内容。\n"
+                    f"</selected_skill>"
+                )
     return "\n".join(parts)
 
 
