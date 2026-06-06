@@ -89,12 +89,13 @@ def _build_model_name(model_id: str, protocol: str) -> str:
         "gemini": "gemini",
         "azure": "azure",
         "bedrock": "bedrock",
+        "minimax": "minimax",
     }.get(protocol, "openai")
 
     # 已知的 LiteLLM provider 前缀；命中即说明 id 已带前缀，无需重复
     KNOWN_LITELLM_PREFIXES = (
         "openai/", "anthropic/", "azure/", "gemini/", "bedrock/",
-        "groq/", "vertex_ai/", "ollama/", "huggingface/", "cohere/",
+        "minimax/", "groq/", "vertex_ai/", "ollama/", "huggingface/", "cohere/",
         "mistral/", "deepseek/", "together_ai/", "replicate/",
     )
     for p in KNOWN_LITELLM_PREFIXES:
