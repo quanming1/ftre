@@ -55,12 +55,19 @@ for %%P in ("%PNPM%") do set "PNPM_DIR=%%~dpP"
 REM /k 让前端闪退也保留窗口看错误
 start "ftre-frontend" cmd /k "set "PATH=%PNPM_DIR%;%PATH%" && "%PNPM%" dev"
 
+echo [ftre] Starting docs site...
+cd /d E:\ftre-docs
+REM /k 让文档站闪退也保留窗口看错误
+start "ftre-docs" cmd /k "set "PATH=%PNPM_DIR%;%PATH%" && "%PNPM%" dev"
+
 echo [ftre] All started
 echo   Backend: ws://127.0.0.1:18790/
 echo   Frontend: pnpm dev (Electron)
+echo   Docs: http://localhost:5173/
 echo.
 echo Press any key to stop all...
 pause >nul
 
 taskkill /fi "WINDOWTITLE eq ftre-gateway" /f >nul 2>&1
 taskkill /fi "WINDOWTITLE eq ftre-frontend" /f >nul 2>&1
+taskkill /fi "WINDOWTITLE eq ftre-docs" /f >nul 2>&1
