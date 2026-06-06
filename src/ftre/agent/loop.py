@@ -201,10 +201,13 @@ class AgentLoop:
         config = self._load_current_config()
 
         # Step 4: 加载历史 + hook + 上下文治理
-        cfg_ws = (config.workspace or "").strip()
-        fallback = (
-            os.path.abspath(cfg_ws) if cfg_ws and os.path.isdir(cfg_ws) else os.getcwd()
-        )
+        # 工作区优先级：session 字段 > config 默认值 > 当前目录
+        session_ws = (session.get("workspace") or "").strip()
+        if session_ws and os.path.isdir(session_ws):
+            workspace = os.path.abspath(session_ws)
+        else:
+            cfg_ws = (config.workspace or "").strip()
+            workspace = os.path.abspath(cfg_ws) if cfg_ws and os.path.isdir(cfg_ws) else os.getcwd()
         messages, hook_config = self._build_messages(
             session_id,
             content,
@@ -212,7 +215,7 @@ class AgentLoop:
             config,
             inbound_data=inbound.data,
             channel_id=inbound.from_channel,
-            workspace=fallback,
+            workspace=workspace,
         )
 
         # Step 5: 创建独立 Agent
@@ -256,7 +259,7 @@ class AgentLoop:
                 session_id=session_id,
                 session_manager=self.session_manager,
                 event_loop=self._event_loop,
-                fallback_cwd=fallback,
+                fallback_cwd=workspace,
             ),
         }
 
