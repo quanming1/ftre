@@ -30,6 +30,7 @@ router = APIRouter()
 _session_manager: SessionManager | None = None
 # AgentLoop 实例由外部注入（启动时设置），用于查询 session 是否在跑
 _agent_loop: AgentLoop | None = None
+_command_manager = None
 
 
 def set_session_manager(manager: SessionManager) -> None:
@@ -42,6 +43,12 @@ def set_agent_loop(loop: AgentLoop) -> None:
     """注入 AgentLoop 实例（启动时调用）"""
     global _agent_loop
     _agent_loop = loop
+
+
+def set_command_manager(cmd) -> None:
+    """注入 CommandManager 实例（启动时调用）"""
+    global _command_manager
+    _command_manager = cmd
 
 
 @router.post("/sessions")
@@ -511,3 +518,11 @@ async def remove_skill(name: str):
 @router.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@router.get("/commands")
+async def list_commands():
+    """返回已注册的斜杠指令列表，供前端命令面板渲染。"""
+    if _command_manager is None:
+        return {"commands": []}
+    return {"commands": _command_manager.list_commands()}
