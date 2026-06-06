@@ -59,6 +59,10 @@ async def run_gateway():
     )
     agent_loop.start()
 
+    # 注入到 API 路由（用于 list_sessions 标注 running 状态）
+    from ftre.api.routes import set_agent_loop
+    set_agent_loop(agent_loop)
+
     # WebSocket Channel
     ws_channel = WebSocketChannel(bus)
     mgr.register(ws_channel)

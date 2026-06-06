@@ -12,7 +12,7 @@ import logging
 import os
 
 from ftre_agent_core.agent import ReActAgent
-from ftre.bus import BusMessage, EventBus
+from ftre.bus import BusMessage, EventBus, GLOBAL_CHANNEL, GLOBAL_SESSION
 from ftre.config import AgentConfig, load_config
 from ftre.session import SessionManager
 from ftre.session.multimodal import build_user_content
@@ -164,6 +164,7 @@ class AgentLoop:
             + f"\n\n[当前上下文] channel_id={inbound.from_channel}, session_id={session_id}"
         )
         self._active_agents[session_id] = agent
+        self._publish_session_status(session_id, "running")
 
         # Step 6: 持久化用户输入
         asyncio.run_coroutine_threadsafe(
@@ -232,6 +233,29 @@ class AgentLoop:
         finally:
             if self._active_agents.get(session_id) is agent:
                 self._active_agents.pop(session_id, None)
+                self._publish_session_status(session_id, "idle")
+
+    def _publish_session_status(self, session_id: str, status: str) -> None:
+        """广播 session 运行态变化（全局事件，扇出给所有连接）。
+
+        消费者是会话列表等全局视图，它们不一定 attach 了该 session，
+        所以走 GLOBAL_CHANNEL / GLOBAL_SESSION 广播而非 per-session 推送。
+        status: "running" | "idle"
+        """
+        evt = BusMessage(
+            type="global_event",
+            from_channel=GLOBAL_CHANNEL,
+            to_channel=GLOBAL_CHANNEL,
+            from_session=GLOBAL_SESSION,
+            to_session=GLOBAL_SESSION,
+            data={
+                "type": "session_status",
+                "data": {"session_id": session_id, "status": status},
+            },
+        )
+        asyncio.run_coroutine_threadsafe(
+            self.bus.publish_outbound(evt), self._event_loop
+        ).result()
 
     def _load_current_config(self) -> AgentConfig:
         """读取当前生效的配置"""

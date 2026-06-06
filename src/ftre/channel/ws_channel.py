@@ -20,7 +20,7 @@ import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from ftre.bus import BusMessage, EventBus
+from ftre.bus import BusMessage, EventBus, GLOBAL_SESSION
 from .base import Channel
 
 logger = logging.getLogger(__name__)
@@ -136,8 +136,20 @@ class WebSocketChannel(Channel):
         logger.info("[ws-channel] stopped")
 
     async def send(self, msg: BusMessage) -> None:
-        """Bus outbound → 推送给所有 attach 该 session 的 ws"""
-        targets = self._connections.get(msg.to_session)
+        """Bus outbound → 推送给 ws 连接。
+
+        - 普通消息：按 to_session 推给所有 attach 该 session 的 ws。
+        - 全局广播（to_session == GLOBAL_SESSION）：扇出给所有活跃 ws，
+          无视 attach 关系（用于 session 状态等全局控制信号）。
+        """
+        if msg.to_session == GLOBAL_SESSION:
+            targets = list(self._ws_sessions.keys())
+        else:
+            conns = self._connections.get(msg.to_session)
+            if not conns:
+                return
+            targets = list(conns)
+
         if not targets:
             return
 
@@ -155,7 +167,7 @@ class WebSocketChannel(Channel):
 
         # 拷贝一份再迭代，避免发送过程中其它路径改动 set
         dead: list[WebSocket] = []
-        for ws in list(targets):
+        for ws in targets:
             try:
                 await ws.send_text(text)
             except Exception as e:
