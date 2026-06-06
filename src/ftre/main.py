@@ -49,6 +49,10 @@ async def run_gateway():
         tool_registry=tool_registry,
     )
 
+    # Command 管理器 — 注册斜杠指令
+    from ftre.command import CommandManager
+    cmd = CommandManager()
+
     # 全局 AgentLoop（消费所有 session 的消息）
     agent_loop = AgentLoop(
         bus=bus,
@@ -56,12 +60,14 @@ async def run_gateway():
         channel_manager=mgr,
         hook_manager=hook_manager,
         tool_registry=tool_registry,
+        command_manager=cmd,
     )
     agent_loop.start()
 
     # 注入到 API 路由（用于 list_sessions 标注 running 状态）
-    from ftre.api.routes import set_agent_loop
+    from ftre.api.routes import set_agent_loop, set_command_manager
     set_agent_loop(agent_loop)
+    set_command_manager(cmd)
 
     # WebSocket Channel
     ws_channel = WebSocketChannel(bus)

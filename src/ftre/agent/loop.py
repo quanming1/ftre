@@ -18,6 +18,7 @@ from ftre.session import SessionManager
 from ftre.session.multimodal import build_user_content
 from ftre.tools import ToolRegistry, build_default_tools
 from ftre.tools._workspace import WorkspaceAccessor
+from ftre.utils import Pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +40,44 @@ class AgentLoop:
         config: AgentConfig = None,
         hook_manager=None,
         tool_registry: ToolRegistry | None = None,
+        command_manager=None,
     ):
         self.bus = bus
         self.session_manager = session_manager
         self.channel_manager = channel_manager
         self.hook_manager = hook_manager
         self.tool_registry = tool_registry
+        self.command_manager = command_manager
         self._injected_config = config
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._active_agents: dict[str, ReActAgent] = {}
+
+        self._pipeline = Pipeline("consume")
+        self._pipeline.use(self._step_command, name="command")
+        self._pipeline.use(self._step_run, name="run")
+
+        self._register_commands()
+
+    def _register_commands(self) -> None:
+        """注册内置斜杠指令。"""
+        if self.command_manager is None:
+            return
+        # /cancel：直接替换 meta["inbound"]，pipeline 下一步会拿到新 inbound
+        self.command_manager.register(
+            "/cancel",
+            lambda ctx: ctx.meta.update(
+                inbound=BusMessage(
+                    type="cancel",
+                    from_channel=ctx.meta["inbound"].from_channel,
+                    from_session=ctx.meta["inbound"].from_session,
+                    to_channel=ctx.meta["inbound"].to_channel,
+                    to_session=ctx.meta["inbound"].to_session,
+                    data={"session_id": ctx.meta["inbound"].from_session},
+                )
+            ),
+            description="取消当前会话执行",
+        )
 
     def start(self) -> None:
         """启动消费循环"""
@@ -72,22 +101,51 @@ class AgentLoop:
         self._active_agents.clear()
 
     async def _consume(self) -> None:
-        """消费循环：user_input → _run()，cancel → 取消 Agent"""
+        """消费循环：Pipeline 路由 (command / cancel / user_input)。"""
         try:
             async for msg in self.bus.subscribe_inbound():
-                if msg.type == "user_input":
-                    asyncio.ensure_future(
-                        asyncio.get_event_loop().run_in_executor(None, self._run, msg)
-                    )
-                elif msg.type == "cancel":
-                    sid = msg.from_session or msg.data.get("session_id", "")
-                    agent = self._active_agents.get(sid)
-                    if agent is not None:
-                        agent.cancel_nowait()
-                    else:
-                        logger.warning(f"[agent-loop] cancel: 未找到活跃 agent (session={sid})")
+                try:
+                    self._pipeline.run({"inbound": msg})
+                except Exception:
+                    # 单条消息处理异常不能拖垮整个 consume 循环，否则后续消息全卡死
+                    logger.exception("[agent-loop] pipeline 异常，已丢弃该消息")
         except asyncio.CancelledError:
             pass
+
+    @staticmethod
+    def _extract_text_content(content) -> str:
+        """从 user_input.content 抽取首段纯文本，兼容字符串与多模态分段数组。"""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            for seg in content:
+                if isinstance(seg, dict) and seg.get("type") == "text":
+                    return str(seg.get("data", "") or "")
+        return ""
+
+    def _step_command(self, data: dict) -> bool:
+        """指令预处理：/ 开头的 user_input 交给 CommandManager（handler 可改 inbound）。"""
+        inbound = data["inbound"]
+        if inbound.type != "user_input" or self.command_manager is None:
+            return True
+        text = self._extract_text_content(inbound.data.get("content", ""))
+        if text.startswith("/"):
+            self.command_manager.dispatch(text, meta=data)
+        return True
+
+    def _step_run(self, data: dict) -> bool:
+        """按最终 inbound 类型派发。"""
+        inbound = data["inbound"]
+        if inbound.type == "cancel":
+            sid = inbound.from_session or inbound.data.get("session_id", "")
+            agent = self._active_agents.get(sid)
+            if agent:
+                agent.cancel_nowait()
+        elif inbound.type == "user_input":
+            asyncio.ensure_future(
+                asyncio.get_event_loop().run_in_executor(None, self._run, inbound)
+            )
+        return False
 
     # 需要持久化的事件类型
     PERSISTENT_EVENTS = {
@@ -108,10 +166,10 @@ class AgentLoop:
         # Step 1: 入参校验
         content = inbound.data.get("content", "")
         attachments = inbound.data.get("attachments") or []
+        session_id = inbound.data.get("session_id", "")
+
         if not content and not attachments:
             return
-
-        session_id = inbound.data.get("session_id", "")
         if not session_id:
             logger.warning("[agent-loop] 收到无 session_id 的消息，忽略")
             return
