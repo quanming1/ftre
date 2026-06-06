@@ -4,7 +4,7 @@ ChannelManager - Channel 注册、生命周期、outbound 分发
 import asyncio
 import logging
 
-from ftre.bus import EventBus, BusMessage
+from ftre.bus import EventBus, BusMessage, GLOBAL_CHANNEL
 from .base import Channel
 
 logger = logging.getLogger(__name__)
@@ -47,9 +47,17 @@ class ChannelManager:
         logger.info("[channel-manager] stopped")
 
     async def _dispatch_loop(self) -> None:
-        """从 Bus 消费 outbound，按 to_channel 分发"""
+        """从 Bus 消费 outbound，按 to_channel 分发。
+
+        to_channel == GLOBAL_CHANNEL 时为全局广播：分发给所有已注册 Channel，
+        由各 Channel 的 send() 自行决定如何扇出给它管理的连接。
+        """
         try:
             async for msg in self.bus.subscribe_outbound():
+                if msg.to_channel == GLOBAL_CHANNEL:
+                    for channel in list(self._channels.values()):
+                        await channel.send(msg)
+                    continue
                 channel = self._channels.get(msg.to_channel)
                 if channel:
                     await channel.send(msg)

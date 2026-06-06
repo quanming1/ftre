@@ -10,6 +10,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Request
 
+from ftre.agent.loop import AgentLoop
 from ftre.session import SessionManager
 from ftre.config import CONFIG_PATH
 from ftre.tools.cron import (
@@ -27,12 +28,20 @@ router = APIRouter()
 
 # SessionManager 实例由外部注入（启动时设置）
 _session_manager: SessionManager | None = None
+# AgentLoop 实例由外部注入（启动时设置），用于查询 session 是否在跑
+_agent_loop: AgentLoop | None = None
 
 
 def set_session_manager(manager: SessionManager) -> None:
     """注入 SessionManager 实例（启动时调用）"""
     global _session_manager
     _session_manager = manager
+
+
+def set_agent_loop(loop: AgentLoop) -> None:
+    """注入 AgentLoop 实例（启动时调用）"""
+    global _agent_loop
+    _agent_loop = loop
 
 
 @router.post("/sessions")
@@ -91,6 +100,10 @@ async def list_sessions(
     total = await _session_manager.count_sessions(
         channel_id=channel_id, workspace=workspace
     )
+    # 标注每个 session 是否有正在执行的 ReActAgent（O(1) dict 查询）
+    if _agent_loop is not None:
+        for s in sessions:
+            s["running"] = _agent_loop.is_session_running(s["id"])
     return {
         "sessions": sessions,
         "total": total,
