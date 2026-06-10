@@ -15,7 +15,7 @@ if not defined PY (
     )
 )
 
-echo [ftre] Starting gateway (port 18790)...
+echo [ftre] Starting gateway (port 19470)...
 echo        Python: %PY%
 set PYTHONPATH=E:\ftre\src
 REM /k 让 gateway 闪退时窗口保留，能看到错误信息
@@ -24,7 +24,7 @@ start "ftre-gateway" cmd /k ""%PY%" -m ftre.main gateway"
 echo [ftre] Waiting for backend...
 :wait_backend
 timeout /t 1 /nobreak >nul
-powershell -NoProfile -Command "if (Test-NetConnection 127.0.0.1 -Port 18790 -InformationLevel Quiet -WarningAction SilentlyContinue) { exit 0 } else { exit 1 }" >nul 2>&1
+powershell -NoProfile -Command "if (Test-NetConnection 127.0.0.1 -Port 19470 -InformationLevel Quiet -WarningAction SilentlyContinue) { exit 0 } else { exit 1 }" >nul 2>&1
 if errorlevel 1 goto wait_backend
 echo [ftre] Backend ready
 
@@ -61,7 +61,7 @@ REM /k 让文档站闪退也保留窗口看错误
 start "ftre-docs" cmd /k "set "PATH=%PNPM_DIR%;%PATH%" && "%PNPM%" dev"
 
 echo [ftre] All started
-echo   Backend: ws://127.0.0.1:18790/
+echo   Backend: ws://127.0.0.1:19470/
 echo   Frontend: pnpm dev (Electron)
 echo   Docs: http://localhost:5173/
 echo.

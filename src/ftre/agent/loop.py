@@ -162,7 +162,11 @@ class AgentLoop:
     }
 
     def _run(self, inbound: BusMessage) -> None:
-        """在线程中执行 Agent，事件逐条投递回 Bus。"""
+        """在线程中执行 Agent（sync wrapper → async）。"""
+        asyncio.run(self._run_async(inbound))
+
+    async def _run_async(self, inbound: BusMessage) -> None:
+        """异步执行 Agent，事件逐条投递回 Bus。"""
         # Step 1: 入参校验
         content = inbound.data.get("content", "")
         attachments = inbound.data.get("attachments") or []
@@ -264,7 +268,7 @@ class AgentLoop:
         }
 
         try:
-            for event in agent.run(messages, runtime_context=runtime_context):
+            async for event in agent.run(messages, runtime_context=runtime_context):
                 if event.get("type") in self.PERSISTENT_EVENTS:
                     asyncio.run_coroutine_threadsafe(
                         self.session_manager.save_message(session_id, event["type"], event.get("data", {})),
