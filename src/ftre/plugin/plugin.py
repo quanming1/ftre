@@ -46,6 +46,8 @@ class FtrePluginApi:
         hook_manager: HookManager,
         config: dict,
         tool_registry: ToolRegistry,
+        event_loop: Callable | None = None,
+        command_manager: object | None = None,
     ):
         self.bus = bus
         self.session_manager = session_manager
@@ -53,6 +55,20 @@ class FtrePluginApi:
         self.config = config
         self._hook_manager = hook_manager
         self._tool_registry = tool_registry
+        self._event_loop = event_loop
+        self._command_manager = command_manager
+
+    @property
+    def event_loop(self):
+        """主 asyncio 事件循环引用，用于 run_coroutine_threadsafe。"""
+        if callable(self._event_loop):
+            return self._event_loop()
+        return self._event_loop
+
+    @property
+    def command_manager(self):
+        """Command 管理器。"""
+        return self._command_manager
 
     def register_channel(self, channel: Channel) -> None:
         """注册 Channel"""
@@ -99,6 +115,8 @@ class PluginManager:
         session_manager: "SessionManager",
         hook_manager: HookManager,
         tool_registry: ToolRegistry | None = None,
+        event_loop: Callable | None = None,
+        command_manager: object | None = None,
     ):
         self._bus = bus
         self._channel_manager = channel_manager
@@ -106,6 +124,8 @@ class PluginManager:
         self._hook_manager = hook_manager
         self._plugins: dict[str, Plugin] = {}
         self._tool_registry = tool_registry if tool_registry is not None else ToolRegistry()
+        self._event_loop = event_loop
+        self._command_manager = command_manager
 
     def load_all(self, config_data: dict = None) -> None:
         """
@@ -155,6 +175,8 @@ class PluginManager:
             hook_manager=self._hook_manager,
             config=config,
             tool_registry=self._tool_registry,
+            event_loop=self._event_loop,
+            command_manager=self._command_manager,
         )
 
         tool_count = len(self._tool_registry)
