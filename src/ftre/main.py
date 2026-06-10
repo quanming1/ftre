@@ -64,6 +64,9 @@ async def run_gateway():
     )
     agent_loop.start()
 
+    # 注入 event_loop 到 plugin_manager，供插件使用 run_coroutine_threadsafe
+    plugin_manager._event_loop = agent_loop._event_loop
+
     # 注入到 API 路由（用于 list_sessions 标注 running 状态）
     from ftre.api.routes import set_agent_loop, set_command_manager
     set_agent_loop(agent_loop)
