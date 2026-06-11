@@ -143,7 +143,7 @@ class AgentLoop:
                 agent.cancel_nowait()
         elif inbound.type == "user_input":
             asyncio.ensure_future(
-                asyncio.get_event_loop().run_in_executor(None, self._run, inbound)
+                self._event_loop.run_in_executor(None, self._run, inbound)
             )
         return False
 
@@ -380,22 +380,13 @@ class AgentLoop:
             return user_content, hook_config
         return [{"role": "user", "content": user_content}], hook_config
 
-    def _get_total_tokens(self, session_id: str) -> int:
-        """从 SessionManager 取该 session 的 token 总量"""
-        usage = asyncio.run_coroutine_threadsafe(
-            self.session_manager.get_token_usage(session_id),
-            self._event_loop,
-        ).result()
-        return int(usage.get("total", 0) or 0)
-
-    def _create_agent(self, config: AgentConfig, tools: list | None = None) -> ReActAgent:
+    def _create_agent(self, config: AgentConfig) -> ReActAgent:
         """根据配置创建 ReActAgent 实例。"""
         c = config
-        if tools is None:
-            tools = build_default_tools(
-                channel_manager=self.channel_manager,
-                tool_registry=self.tool_registry,
-            )
+        tools = build_default_tools(
+            channel_manager=self.channel_manager,
+            tool_registry=self.tool_registry,
+        )
         return ReActAgent(
             model=c.llm.model,
             api_key=c.llm.api_key,
