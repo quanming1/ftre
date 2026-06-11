@@ -5,7 +5,43 @@ ftre CLI 入口
   ftre gateway    启动 WebSocket 网关服务
 """
 import sys
+import os
 import asyncio
+import logging
+
+# Windows CMD 默认不认 ANSI 转义码，激活虚拟终端支持
+if sys.platform == "win32":
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+
+# 带颜色的日志格式
+class ColorFormatter(logging.Formatter):
+    COLORS = {
+        'DEBUG': '\033[94m',     # 亮蓝
+        'INFO': '\033[92m',      # 亮绿
+        'WARNING': '\033[93m',   # 亮黄
+        'ERROR': '\033[91m',     # 亮红
+        'CRITICAL': '\033[95m',  # 亮紫
+    }
+    RESET = '\033[0m'
+
+    def format(self, record):
+        color = self.COLORS.get(record.levelname, '')
+        record.levelname = f"{color}{record.levelname:<8}{self.RESET}"
+        record.name = f"\033[37m{record.name}{self.RESET}"  # 白色模块名
+        return super().format(record)
+
+# 配置日志：输出到控制台，级别 INFO，带颜色
+handler = logging.StreamHandler()
+handler.setFormatter(ColorFormatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s'))
+logging.root.addHandler(handler)
+logging.root.setLevel(logging.INFO)
+
+# uvicorn HTTP 请求日志默认 INFO 刷屏，提到 WARNING
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+# httpx 的 HTTP 请求日志也刷屏
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 from ftre.bus import EventBus
 from ftre.channel import WebSocketChannel, SubagentChannel, ChannelManager

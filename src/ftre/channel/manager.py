@@ -9,6 +9,9 @@ from .base import Channel
 
 logger = logging.getLogger(__name__)
 
+WS_CHANNEL_ID = "ws"
+MIRROR_TO_WS_CHANNELS = {"cron"}
+
 
 class ChannelManager:
     """
@@ -61,6 +64,10 @@ class ChannelManager:
                 channel = self._channels.get(msg.to_channel)
                 if channel:
                     await channel.send(msg)
+                    if msg.to_channel in MIRROR_TO_WS_CHANNELS:
+                        ws_channel = self._channels.get(WS_CHANNEL_ID)
+                        if ws_channel is not None and ws_channel is not channel:
+                            await ws_channel.send(msg)
                 else:
                     logger.warning(f"[channel-manager] 未知 to_channel: {msg.to_channel}")
         except asyncio.CancelledError:
