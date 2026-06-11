@@ -119,7 +119,10 @@ class WebSocketChannel(Channel):
     async def start(self) -> None:
         """启动 WebSocket 服务"""
         import uvicorn
-        config = uvicorn.Config(self.app, host=self.host, port=self.port, log_level="info")
+        config = uvicorn.Config(
+            self.app, host=self.host, port=self.port,
+            log_level="warning", log_config=None,
+        )
         self._server = uvicorn.Server(config)
         self._server_task = asyncio.create_task(self._server.serve())
         logger.info(f"[ws-channel] listening on ws://{self.host}:{self.port}/")
