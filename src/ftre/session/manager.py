@@ -381,12 +381,20 @@ class SessionManager:
         events: list[MessageModel],
         *,
         config: dict | None = None,
+        prune: dict | None = None,
     ) -> list[dict]:
         """
         将事件流重建为 OpenAI 格式消息列表。
 
         config 可传入当前模型配置；当 config["llm"]["vision"] 为 false 时，
         历史用户消息里的图片附件会被降级成文本提示。
+
+        prune 参数（L1 工具输出修剪，对喂给 LLM 的视图生效，不改 DB）：
+        - prune={"protect_turns": 2, "max_chars": 2000, "head_chars": 1000, "tail_chars": 1000}
+        - 最近 protect_turns 个 USER_INPUT 之内的 tool_result 不截断（AI 最近动作要看到全文）
+        - 之外的 tool_result：单条超过 max_chars 就截断为 head_chars + 占位 + tail_chars
+        - error 非空的失败结果不截断（通常很短且关键）
+        - 历史回放（GET /messages）等场景不传 prune，保留完整原文给前端
 
         转换规则：
         - USER_INPUT          → {"role": "user", "content": ...}
@@ -404,6 +412,40 @@ class SessionManager:
         pending_reasoning: str | None = None
         llm_config = (config or {}).get("llm") or {}
         include_images = bool(llm_config.get("vision", True))
+
+        # ─── L1 prune 预处理：算出"受保护索引集"（最近 N 个 USER_INPUT 内）───
+        # 受保护索引内的 tool_result 不修剪。这之外的 tool_result 单条超 max_chars 就截断。
+        prune_protected: set[int] = set()
+        prune_max_chars = 0
+        prune_head_chars = 0
+        prune_tail_chars = 0
+        if prune:
+            prune_max_chars = int(prune.get("max_chars", 2000) or 0)
+            prune_head_chars = int(prune.get("head_chars", 1000) or 0)
+            prune_tail_chars = int(prune.get("tail_chars", 1000) or 0)
+            protect_turns = int(prune.get("protect_turns", 2) or 0)
+            if prune_max_chars > 0 and protect_turns > 0:
+                # 倒序扫，遇到第 protect_turns 个 USER_INPUT 即停。其后的所有索引都受保护。
+                seen_user = 0
+                for i in range(len(events) - 1, -1, -1):
+                    prune_protected.add(i)
+                    if events[i]["type"] == "USER_INPUT":
+                        seen_user += 1
+                        if seen_user >= protect_turns:
+                            break
+
+        def _maybe_prune_tool_result(idx: int, result: str, error) -> str:
+            """对 tool_result 做 head/tail 截断（只对超长且不在保护区内的）。"""
+            if not prune_max_chars or idx in prune_protected:
+                return result
+            if error:  # 失败结果通常很短且关键，不截
+                return result
+            if not isinstance(result, str) or len(result) <= prune_max_chars:
+                return result
+            cut = len(result) - prune_head_chars - prune_tail_chars
+            head = result[:prune_head_chars]
+            tail = result[-prune_tail_chars:] if prune_tail_chars else ""
+            return f"{head}\n…[L1 修剪 {cut} 字符]…\n{tail}"
 
         def _take_reasoning() -> str | None:
             nonlocal pending_reasoning
@@ -425,7 +467,7 @@ class SessionManager:
                 messages.append(msg)
                 pending_tool_calls = []
 
-        for event in events:
+        for idx, event in enumerate(events):
             t = event["type"]
 
             if t == "USER_INPUT":
@@ -460,10 +502,14 @@ class SessionManager:
 
             elif t == "tool_result":
                 _flush_tool_calls()
+                result_content = event["data"].get("result", "")
+                error = event["data"].get("error")
+                if prune_max_chars > 0:
+                    result_content = _maybe_prune_tool_result(idx, result_content, error)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": event["data"].get("id", ""),
-                    "content": event["data"].get("result", ""),
+                    "content": result_content,
                 })
 
             elif t == "message_complete":

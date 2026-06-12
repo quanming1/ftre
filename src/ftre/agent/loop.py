@@ -68,6 +68,7 @@ class AgentLoop:
             threshold=self._initial_context_cfg().threshold,
             consolidation_ratio=self._initial_context_cfg().consolidation_ratio,
             safety_buffer=self._initial_context_cfg().safety_buffer,
+            preemptive_threshold=self._initial_context_cfg().preemptive_threshold,
         )
 
         self._register_commands()
@@ -151,14 +152,18 @@ class AgentLoop:
         async def _run_compact() -> None:
             await _emit_status("running")
             try:
-                # 手动 /compact：可见、走 subagent（高质量），传 config 启用 head/tail。
-                # 用 functools.partial 包装，run_in_executor 才能传 keyword 参数。
+                # 手动 /compact：用户主动触发，可见（silent=False）+ 走 subagent
+                # 高质量长摘要（use_subagent=True，分钟级，含工具循环）。
+                # 自动压缩（关键路径 + idle 后台）走默认直调 LLM 即可，subagent
+                # 仅留给手动场景。
                 from functools import partial
                 config = self._load_current_config()
                 fn = partial(
                     self.compact_handler.compact,
                     session_id, channel_id,
-                    fast=False, config=config, silent=False,
+                    config=config,
+                    silent=False,
+                    use_subagent=True,
                 )
                 await self._event_loop.run_in_executor(None, fn)
             except Exception:
@@ -328,21 +333,21 @@ class AgentLoop:
             )
             return
 
-        # Step 2.8: 关键路径压缩（用户正等着回复，走 fast=True 本地 raw 兜底）。
+        # Step 2.8: 关键路径压缩。
         # 这里是安全窗口：_step_run 已 fire-and-forget 派发本协程并让消费循环回到
         # 空闲，压缩派发的 subagent 能被主消费循环正常处理，不会死锁。
         # 压缩把 context_compact 事件写入历史，紧接着的 _build_messages 会读到它。
         #
-        # ⚠️ 关键路径绝不在此派慢 subagent 卡住用户——高质量 subagent 压缩交给
-        # 每轮结束后的后台空闲压缩（见 finally 的 _schedule_idle_compact）。
-        # 传入 config 启用 head/tail 边界切分（保留最近若干轮原文）；silent=True
-        # 让前端不渲染气泡，对用户完全无感。
+        # 摘要器选择：直调 LLM（默认，秒级）。比 raw 机械裁剪质量高，比 subagent 快两个数量级。
+        # silent=True 让前端不渲染气泡，用户最多感觉到稍微慢一拍。
+        # 直调 LLM 失败时 _do_compact 内部会自动退到 raw 兜底，仍能继续。
+        # 启用 head/tail 边界切分（保留最近若干轮原文）。
         config = self._load_current_config()
         if need_compact:
             try:
                 self.compact_handler.compact(
                     session_id, inbound.from_channel,
-                    fast=True, config=config,
+                    config=config,
                     silent=getattr(config.context, "silent", True),
                 )
             except Exception:
@@ -457,26 +462,30 @@ class AgentLoop:
                         logger.debug("[agent-loop] 调度 idle 压缩失败", exc_info=True)
 
     async def _schedule_idle_compact(self, session_id: str, channel_id: str) -> None:
-        """主事件循环里：判水位 → 需要时 fire-and-forget 到 executor 跑后台压缩。
+        """主事件循环里：水位 ≥ preemptive_threshold（默认 0.6）或上次 raw → 后台压缩。
+
+        预测性触发：比关键路径阈值（0.8）更低，让后台 idle 时段提前压缩，使用户
+        关键路径几乎撞不到水位。还兼顾"上次是 raw 兜底"的情况，自动升级为 LLM 摘要。
 
         ⚠️ 必须由主循环跑，不能在 _run_async 的临时事件循环里 ensure_future——那个
         循环 finally 后即关闭，任务会被取消（文档 5.2 节陷阱）。
-        ⚠️ should_compact 是只读 DB 的轻量操作，绝不在此派 subagent；派发由 executor
-        线程里的 compact() 完成（与现有 _step_compact / _run_async 同款规避手法）。
+        ⚠️ should_preemptive_compact 是只读 DB 的轻量操作，绝不在此调 LLM；
+        派发由 executor 线程里的 compact() 完成。
         """
         try:
             config = self._load_current_config()
             if not getattr(config.context, "idle_compaction", True):
                 return  # 用户禁用了后台空闲压缩
-            need = await self.compact_handler.should_compact(session_id, channel_id, config)
+            need = await self.compact_handler.should_preemptive_compact(
+                session_id, channel_id, config
+            )
             if not need:
                 return
-            # 后台压缩：subagent 高质量、silent 由 config 决定，提交到默认 executor。
+            # 后台压缩：直调 LLM（秒级，无工具）。silent 由 config 决定。
             from functools import partial
             fn = partial(
                 self.compact_handler.compact,
                 session_id, channel_id,
-                fast=False,
                 config=config,
                 silent=getattr(config.context, "silent", True),
             )
@@ -554,9 +563,19 @@ class AgentLoop:
         )
 
         if events:
+            # L1 prune：在喂给 LLM 的视图里截断老的超长 tool_result，持续抑制 token 上涨。
+            # 不改 DB；前端历史回放（GET /messages）走 to_openai_messages 时不传 prune，
+            # 仍然能看到完整原文。protect_turns 默认 2，留住最近两轮工具结果给 AI 看全。
+            prune_opts = {
+                "protect_turns": 2,
+                "max_chars": 2000,
+                "head_chars": 1000,
+                "tail_chars": 1000,
+            }
             history = SessionManager.to_openai_messages(
                 events,
                 config={"llm": {"vision": hook_config.llm.vision}},
+                prune=prune_opts,
             )
             history.append({"role": "user", "content": user_content})
             return history, hook_config

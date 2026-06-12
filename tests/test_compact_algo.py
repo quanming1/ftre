@@ -233,3 +233,87 @@ def test_count_user_turns():
     assert _count_user_turns(events) == 3
     assert _count_user_turns([]) == 0
     assert _count_user_turns([{"type": "message_complete", "data": {}}]) == 0
+
+
+
+# ─── L1 prune 修剪测试 ────────────────────────────────────────────
+
+
+def _events_with_long_tool(*, big_chars: int = 5000):
+    """构造：3 轮，每轮含一个 tool_call/tool_result（result 很长）。"""
+    big = "x" * big_chars
+    out = []
+    for i in range(3):
+        out.append({"type": "USER_INPUT", "data": {"content": f"q{i}"}})
+        out.append({
+            "type": "tool_call",
+            "data": {"id": f"c{i}", "name": "bash", "arguments": {}},
+        })
+        out.append({
+            "type": "tool_result",
+            "data": {"id": f"c{i}", "result": big, "error": None},
+        })
+        out.append({"type": "message_complete", "data": {"content": "done"}})
+    return out
+
+
+def test_prune_protects_recent_turns():
+    """最近 protect_turns 个 USER_INPUT 内的 tool_result 不截断。"""
+    from ftre.session.manager import SessionManager
+    events = _events_with_long_tool(big_chars=5000)
+    msgs = SessionManager.to_openai_messages(
+        events,
+        prune={"protect_turns": 2, "max_chars": 2000, "head_chars": 1000, "tail_chars": 1000},
+    )
+    tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+    # 共 3 个 tool 消息：第 0 个（最老）应被截断；第 1、2 个（最近 2 轮内）保留原文
+    assert len(tool_msgs[0]["content"]) < 5000  # 截断了
+    assert "[L1 修剪" in tool_msgs[0]["content"]
+    assert len(tool_msgs[1]["content"]) == 5000  # 受保护
+    assert len(tool_msgs[2]["content"]) == 5000  # 受保护
+
+
+def test_prune_no_action_when_below_max_chars():
+    """tool_result 短于 max_chars 时不动它。"""
+    from ftre.session.manager import SessionManager
+    events = _events_with_long_tool(big_chars=500)  # 远短于 max_chars=2000
+    msgs = SessionManager.to_openai_messages(
+        events,
+        prune={"protect_turns": 2, "max_chars": 2000, "head_chars": 1000, "tail_chars": 1000},
+    )
+    tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+    for m in tool_msgs:
+        assert len(m["content"]) == 500
+        assert "[L1 修剪" not in m["content"]
+
+
+def test_prune_preserves_failed_results():
+    """error 非空的失败结果不修剪。"""
+    from ftre.session.manager import SessionManager
+    big = "x" * 5000
+    events = [
+        {"type": "USER_INPUT", "data": {"content": "q"}},
+        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {}}},
+        {"type": "tool_result", "data": {"id": "c1", "result": big, "error": "权限拒绝"}},
+        {"type": "USER_INPUT", "data": {"content": "q2"}},
+        {"type": "USER_INPUT", "data": {"content": "q3"}},
+        {"type": "USER_INPUT", "data": {"content": "q4"}},
+    ]
+    msgs = SessionManager.to_openai_messages(
+        events,
+        prune={"protect_turns": 1, "max_chars": 2000, "head_chars": 500, "tail_chars": 500},
+    )
+    tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+    assert len(tool_msgs[0]["content"]) == 5000  # 失败不截
+    assert "[L1 修剪" not in tool_msgs[0]["content"]
+
+
+def test_prune_disabled_when_not_passed():
+    """不传 prune 参数 = 历史回放场景，全部保留原文。"""
+    from ftre.session.manager import SessionManager
+    events = _events_with_long_tool(big_chars=10000)
+    msgs = SessionManager.to_openai_messages(events)  # 无 prune
+    tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+    for m in tool_msgs:
+        assert len(m["content"]) == 10000
+        assert "[L1 修剪" not in m["content"]
