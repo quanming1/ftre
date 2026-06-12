@@ -65,9 +65,26 @@ class AgentLoop:
             channel_manager=self.channel_manager,
             bus=self.bus,
             loop_getter=lambda: self._event_loop,
+            threshold=self._initial_context_cfg().threshold,
+            consolidation_ratio=self._initial_context_cfg().consolidation_ratio,
+            safety_buffer=self._initial_context_cfg().safety_buffer,
         )
 
         self._register_commands()
+
+    def _initial_context_cfg(self):
+        """实例化时读一次 ContextConfig 用于 CompactHandler 默认参数。
+
+        运行时每次压缩仍会读最新 config 决定 silent / idle 开关 / 边界算 budget，
+        所以这里只用于设定 CompactHandler 的“默认行为常数”（threshold / ratio /
+        safety_buffer），改这些需要重启进程。
+        """
+        try:
+            cfg = self._load_current_config()
+            return cfg.context
+        except Exception:
+            from ftre.config import ContextConfig
+            return ContextConfig()
 
     def _register_commands(self) -> None:
         """注册内置斜杠指令。"""
@@ -325,7 +342,8 @@ class AgentLoop:
             try:
                 self.compact_handler.compact(
                     session_id, inbound.from_channel,
-                    fast=True, config=config, silent=True,
+                    fast=True, config=config,
+                    silent=getattr(config.context, "silent", True),
                 )
             except Exception:
                 logger.exception(f"[agent-loop] 关键路径压缩失败 session={session_id}")
@@ -448,15 +466,19 @@ class AgentLoop:
         """
         try:
             config = self._load_current_config()
+            if not getattr(config.context, "idle_compaction", True):
+                return  # 用户禁用了后台空闲压缩
             need = await self.compact_handler.should_compact(session_id, channel_id, config)
             if not need:
                 return
-            # 后台压缩：subagent 高质量、silent 不渲染气泡，提交到默认 executor。
+            # 后台压缩：subagent 高质量、silent 由 config 决定，提交到默认 executor。
             from functools import partial
             fn = partial(
                 self.compact_handler.compact,
                 session_id, channel_id,
-                fast=False, config=config, silent=True,
+                fast=False,
+                config=config,
+                silent=getattr(config.context, "silent", True),
             )
             self._event_loop.run_in_executor(None, fn)
             logger.info(f"[agent-loop] idle 后台压缩已派发 session={session_id}")
