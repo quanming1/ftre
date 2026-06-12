@@ -8,6 +8,7 @@ from __future__ import annotations
 from ftre.agent.compact_handler import (
     DEFAULT_CONSOLIDATION_RATIO,
     DEFAULT_SAFETY_BUFFER,
+    _count_user_turns,
     calculate_budget_target,
     get_cursor_index,
     get_previous_summary,
@@ -191,6 +192,27 @@ def test_raw_archive_inlines_previous_summary():
     assert "之前的历史摘要" in out
 
 
+def test_raw_archive_previous_summary_param():
+    # previous_summary 作为独立参数注入（head 不含旧 compact 事件的场景）
+    chunk = [
+        {"type": "USER_INPUT", "data": {"content": "新内容"}},
+    ]
+    out = raw_archive_chunk(chunk, previous_summary="## 上一份摘要正文")
+    assert "## 上一份摘要正文" in out
+    assert "之前的历史摘要" in out
+    assert "新内容" in out
+
+
+def test_raw_archive_only_previous_summary_no_chunk():
+    # chunk 空但有 previous_summary：仍应产出非空
+    out = raw_archive_chunk([], previous_summary="## 仅旧摘要")
+    assert "## 仅旧摘要" in out
+
+
+def test_raw_archive_empty_with_no_summary():
+    assert raw_archive_chunk([], previous_summary=None) == ""
+
+
 def test_raw_archive_handles_multimodal_user_content():
     # USER_INPUT 的 content 可能是 list（多模态 v2 协议）
     chunk = [
@@ -201,3 +223,13 @@ def test_raw_archive_handles_multimodal_user_content():
     ]
     out = raw_archive_chunk(chunk)
     assert "看下这张图" in out
+
+
+# ─── _count_user_turns ────────────────────────────────────────────────
+
+
+def test_count_user_turns():
+    events = _make_turn("a") + _make_turn("b") + _make_turn("c")
+    assert _count_user_turns(events) == 3
+    assert _count_user_turns([]) == 0
+    assert _count_user_turns([{"type": "message_complete", "data": {}}]) == 0
