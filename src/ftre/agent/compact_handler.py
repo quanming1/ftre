@@ -28,7 +28,9 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
+import weakref
 from typing import Callable
 
 from ftre.bus import BusMessage
@@ -198,6 +200,8 @@ class CompactHandler:
         loop_getter: Callable[[], asyncio.AbstractEventLoop],
         threshold: float = DEFAULT_COMPACT_THRESHOLD,
         timeout: int = DEFAULT_TIMEOUT,
+        consolidation_ratio: float = DEFAULT_CONSOLIDATION_RATIO,
+        safety_buffer: int = DEFAULT_SAFETY_BUFFER,
     ):
         self.session_manager = session_manager
         self.channel_manager = channel_manager
@@ -205,6 +209,23 @@ class CompactHandler:
         self._loop_getter = loop_getter
         self._threshold = threshold
         self._timeout = timeout
+        self._consolidation_ratio = consolidation_ratio
+        self._safety_buffer = safety_buffer
+        # 每 session 一把压缩锁，防止 idle 压缩与关键路径兜底压缩、或同 session
+        # 连续 idle 压缩撞车导致游标错乱。WeakValueDictionary 让无人持有的锁自动回收。
+        self._locks: weakref.WeakValueDictionary[str, threading.Lock] = (
+            weakref.WeakValueDictionary()
+        )
+        self._locks_guard = threading.Lock()
+
+    def _get_lock(self, session_id: str) -> threading.Lock:
+        """返回某 session 的压缩锁（线程级，compact 跑在 executor 线程里）。"""
+        with self._locks_guard:
+            lock = self._locks.get(session_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[session_id] = lock
+            return lock
 
     @property
     def _loop(self) -> asyncio.AbstractEventLoop:
@@ -241,28 +262,107 @@ class CompactHandler:
         )
         return True
 
-    def compact(self, session_id: str, channel_id: str) -> str | None:
+    def compact(
+        self,
+        session_id: str,
+        channel_id: str,
+        *,
+        fast: bool = False,
+        config=None,
+        silent: bool = False,
+    ) -> str | None:
         """同步执行压缩，返回摘要或 None。
 
         ⚠️ 此方法预期在 run_in_executor 线程里调用，且调用时主消费循环必须空闲：
         压缩会派发 subagent 并轮询等待，而 subagent 的 inbound 需要主消费循环处理。
         若在主循环里同步等待会造成自依赖死锁。
 
-        自动压缩与 /compact 共用此方法，无条件压缩当前会话。
+        参数：
+        - fast:   True → 用本地 raw 兜底摘要（毫秒级，关键路径用）；
+                  False → 派 subagent 摘要（慢、质量高，后台空闲压缩用）。
+        - config: 传入则用 budget/target 算法选 user-turn 边界、保留 tail；
+                  None 则退回旧的"全量压缩"行为（兼容手动 /compact 无 config 场景）。
+        - silent: True → context_compact 事件标记 silent，前端不渲染气泡。
+
+        自动压缩与 /compact 共用此方法。每 session 加锁防并发撞车。
         """
-        events = self._get_events(session_id)
-        if not events:
-            logger.info(f"[compact] 会话无事件，跳过 session={session_id}")
+        lock = self._get_lock(session_id)
+        if not lock.acquire(blocking=False):
+            logger.info(f"[compact] session={session_id} 已有压缩在跑，跳过本次")
             return None
-        total = self._get_total_tokens(session_id)
-        self._notify(session_id, channel_id, "context_compact_start", {
-            "events": len(events),
-            "tokens": total,
-            "threshold": self._threshold,
-        })
-        return self._do_compact(
-            session_id, channel_id, events, tokens_before=total or None
+        try:
+            events = self._get_events(session_id)
+            if not events:
+                logger.info(f"[compact] 会话无事件，跳过 session={session_id}")
+                return None
+            total = self._get_total_tokens(session_id)
+
+            # 选边界：有 config 走 budget/target 算法切 head/tail；否则全量压缩。
+            cursor_idx = get_cursor_index(events)
+            boundary_idx = self._select_boundary(events, cursor_idx, total, config)
+
+            if boundary_idx is None:
+                # 无法按边界切（无 config / 选不出安全边界）→ 退回全量压缩旧行为：
+                # head = cursor 之后全部，tail 为空。
+                head_events = events[cursor_idx:]
+                tail_turns = 0
+                boundary_ts = None
+            else:
+                head_events = events[cursor_idx:boundary_idx]
+                tail_turns = _count_user_turns(events[boundary_idx:])
+                boundary_ts = events[boundary_idx].get("timestamp")
+
+            if not head_events:
+                logger.info(f"[compact] head 为空，无需压缩 session={session_id}")
+                return None
+
+            self._notify(session_id, channel_id, "context_compact_start", {
+                "events": len(head_events),
+                "tokens": total,
+                "threshold": self._threshold,
+            }, silent=silent)
+
+            previous_summary = get_previous_summary(events)
+            return self._do_compact(
+                session_id,
+                channel_id,
+                head_events,
+                tokens_before=total or None,
+                fast=fast,
+                previous_summary=previous_summary,
+                boundary_ts=boundary_ts,
+                tail_turns=tail_turns,
+                silent=silent,
+            )
+        finally:
+            lock.release()
+
+    def _select_boundary(
+        self,
+        events: list,
+        cursor_idx: int,
+        total_tokens: int,
+        config,
+    ) -> int | None:
+        """按 budget/target 算出待移除 token，再选 user-turn 边界。
+
+        返回边界事件索引（其前为 head/摘要、其后为 tail/保留）；
+        无 config / 上下文窗口无效 / 选不出安全边界时返回 None（调用方退回全量）。
+        """
+        if config is None:
+            return None
+        cw = getattr(getattr(config, "llm", None), "context_window", 0) or 0
+        max_output = getattr(getattr(config, "llm", None), "max_output", None)
+        budget, target = calculate_budget_target(
+            cw,
+            max_output,
+            safety_buffer=self._safety_buffer,
+            consolidation_ratio=self._consolidation_ratio,
         )
+        if budget <= 0:
+            return None
+        tokens_to_remove = max(1, total_tokens - target)
+        return pick_compaction_boundary(events, cursor_idx, tokens_to_remove)
 
     # ─── 压缩核心 ────────────────────────────────────────────────
 
@@ -270,47 +370,116 @@ class CompactHandler:
         self,
         session_id: str,
         channel_id: str,
-        events: list,
+        head_events: list,
         tokens_before: int | None = None,
+        *,
+        fast: bool = False,
+        previous_summary: str | None = None,
+        boundary_ts: float | None = None,
+        tail_turns: int = 0,
+        silent: bool = False,
     ) -> str | None:
-        """派发 subagent → 取摘要 → 写 DB → 通知前端。返回摘要或 None。"""
-        workspace = self._get_workspace(session_id)
-        try:
-            summary = self._run_compact_subagent(events, workspace)
-        except Exception:
-            logger.exception(f"[compact] 压缩失败 session={session_id}")
-            self._notify(session_id, channel_id, "context_compact_failed",
-                         {"reason": "subagent 执行失败"})
-            return None
+        """摘要 head_events → 写 context_compact 游标 → 通知前端。返回摘要或 None。
+
+        摘要器选择（mode）：
+        - fast=True：直接本地 raw 兜底（毫秒级）。
+        - fast=False：派 subagent；失败/未产出合格摘要时退回 raw（不放弃）。
+
+        游标写入：boundary_ts 非 None 时，context_compact 的 timestamp 设为
+        boundary_ts - EPSILON，使其按 ASC 排在边界事件之前、tail 起点之上，
+        从而 to_openai_messages 重建时保留 tail 原文。
+        """
+        mode = "raw"
+        summary: str | None = None
+
+        if fast:
+            summary = raw_archive_chunk(
+                self._slim_events(head_events), previous_summary=previous_summary
+            )
+        else:
+            workspace = self._get_workspace(session_id)
+            try:
+                summary = self._run_compact_subagent(
+                    head_events, workspace, previous_summary=previous_summary
+                )
+            except Exception:
+                logger.exception(f"[compact] subagent 压缩异常 session={session_id}")
+                summary = None
+            if summary:
+                mode = "subagent"
+            else:
+                # subagent 失败/超时/未产出合格摘要 → 退回 raw 兜底，不放弃，游标照常前进。
+                logger.warning(
+                    f"[compact] subagent 未产出合格摘要，退回 raw 兜底 session={session_id}"
+                )
+                summary = raw_archive_chunk(
+                    self._slim_events(head_events), previous_summary=previous_summary
+                )
 
         if not summary:
-            logger.warning(f"[compact] subagent 未返回摘要 session={session_id}")
+            logger.warning(f"[compact] 摘要为空 session={session_id}")
             self._notify(session_id, channel_id, "context_compact_failed",
-                         {"reason": "subagent 未输出摘要"})
+                         {"reason": "摘要为空"}, silent=silent)
             return None
 
-        payload = {"summary": summary, "events_before": len(events)}
+        # 并入上一份摘要（anchored）：raw 路径下 raw_archive_chunk 已把 previous_summary
+        # 通过 head_events 里的 context_compact 事件并入；subagent 路径由 prompt 并入。
+        payload = {
+            "summary": summary,
+            "events_before": len(head_events),
+            "mode": mode,
+            "tail_turns": tail_turns,
+        }
         if tokens_before is not None:
             payload["tokens_before"] = tokens_before
+        if silent:
+            payload["silent"] = True
+
+        # 游标 timestamp：插到边界之前，使 tail 落在游标之后。
+        cursor_ts = None
+        if boundary_ts is not None:
+            cursor_ts = float(boundary_ts) - CURSOR_TIMESTAMP_EPSILON
         try:
             self._await(self.session_manager.save_message(
-                session_id, "context_compact", payload))
+                session_id, "context_compact", payload, timestamp=cursor_ts))
         except Exception:
             logger.exception(f"[compact] 写入 DB 失败 session={session_id}")
             return None
 
-        done_data = {"events_before": len(events), "summary": summary}
+        done_data = {
+            "events_before": len(head_events),
+            "summary": summary,
+            "mode": mode,
+            "tail_turns": tail_turns,
+        }
         if tokens_before is not None:
             done_data["tokens_before"] = tokens_before
-        self._notify(session_id, channel_id, "context_compact_done", done_data)
+        if silent:
+            done_data["silent"] = True
+        self._notify(session_id, channel_id, "context_compact_done", done_data, silent=silent)
 
         logger.info(
-            f"[compact] session={session_id} 压缩完成，摘要 {len(summary)} 字符"
+            f"[compact] session={session_id} 压缩完成 mode={mode} "
+            f"tail_turns={tail_turns}，摘要 {len(summary)} 字符"
         )
         return summary
 
-    def _run_compact_subagent(self, events: list, workspace: str) -> str | None:
-        """导出 JSON → 新建 subagent → 投递 prompt → 轮询等完成 → 取结果。"""
+    @staticmethod
+    def _slim_events(events: list) -> list:
+        """把 MessageModel 列表瘦身成 raw_archive_chunk 需要的 {type,data} 形态。"""
+        return [
+            {"type": ev.get("type", ""), "data": ev.get("data") or {}}
+            for ev in events
+        ]
+
+    def _run_compact_subagent(
+        self, events: list, workspace: str, *, previous_summary: str | None = None
+    ) -> str | None:
+        """导出 JSON → 新建 subagent → 投递 prompt → 轮询等完成 → 取结果。
+
+        previous_summary 非空时并入 prompt（anchored）：让 subagent 在旧摘要基础上
+        更新，避免多次压缩后早期信息漂移丢失。
+        """
         json_path = self._export_events_json(events)
         try:
             sid = self._await(self.session_manager.create_session(
@@ -325,6 +494,18 @@ class CompactHandler:
                 return None
 
             prompt = COMPACT_PROMPT_TEMPLATE.format(json_path=json_path)
+            if previous_summary:
+                prompt += (
+                    "\n\n═══════════════════════════════════════\n"
+                    "已有的历史摘要（必须并入更新，不要丢）\n"
+                    "═══════════════════════════════════════\n"
+                    "下面是之前压缩产出的摘要。本次请在它的基础上**更新合并**："
+                    "把上面 JSON 事件流里的新信息并进去，保留旧摘要里仍然成立的内容，"
+                    "更新已过时的部分。最终输出一份完整的、自洽的新摘要（同样的结构）。\n\n"
+                    "<previous-summary>\n"
+                    f"{previous_summary}\n"
+                    "</previous-summary>"
+                )
             self._await(subagent_channel.receive(
                 session_id=sid,
                 data={"content": prompt, "session_id": sid},
@@ -460,16 +641,24 @@ class CompactHandler:
             raise
         return path
 
-    def _notify(self, session_id: str, channel_id: str, event_type: str, data: dict) -> None:
-        """派发 outbound 事件通知前端。"""
+    def _notify(self, session_id: str, channel_id: str, event_type: str, data: dict,
+                *, silent: bool = False) -> None:
+        """派发 outbound 事件通知前端。
+
+        silent=True 时在事件 data 里打上 silent 标记，前端据此不渲染气泡
+        （后台空闲压缩 / 关键路径兜底压缩用，实现"无感"）。
+        """
         try:
+            payload = dict(data)
+            if silent:
+                payload["silent"] = True
             msg = BusMessage(
                 type="agent_event",
                 from_channel=channel_id,
                 to_channel=channel_id,
                 from_session=session_id,
                 to_session=session_id,
-                data={"type": event_type, "data": data},
+                data={"type": event_type, "data": payload},
             )
             self._await(self.bus.publish_outbound(msg), timeout=5)
         except Exception:
@@ -576,7 +765,12 @@ def pick_compaction_boundary(
     return last_safe
 
 
-def raw_archive_chunk(chunk: list[dict], *, tool_result_max: int = 500) -> str:
+def raw_archive_chunk(
+    chunk: list[dict],
+    *,
+    tool_result_max: int = 500,
+    previous_summary: str | None = None,
+) -> str:
     """本地兜底摘要：subagent 失败 / 关键路径需要快速压缩时使用。
 
     规则（与 COMPACT_PROMPT_TEMPLATE 的"什么是重要内容"对齐，但纯本地、无 LLM）：
@@ -586,13 +780,20 @@ def raw_archive_chunk(chunk: list[dict], *, tool_result_max: int = 500) -> str:
     - context_compact：原样并入（previous summary）
     - 其他：忽略
 
+    previous_summary 非空时并入开头（anchored）——raw 路径下 head 不含旧 compact 事件，
+    需由调用方显式传入，避免丢失早期摘要。
+
     输出 markdown 形态的纯文本摘要，含 "## " 标题以通过下游 _get_final_content
     的合格判定（虽然 raw 摘要不会经过该校验，保持格式一致便于阅读）。
     """
-    if not chunk:
+    if not chunk and not previous_summary:
         return ""
 
     lines: list[str] = ["## 历史摘要（本地兜底）", ""]
+    if previous_summary:
+        lines.append("### 之前的历史摘要（沿用）")
+        lines.append(previous_summary)
+        lines.append("")
     turn_idx = 0
     for ev in chunk:
         t = ev.get("type", "")
@@ -659,3 +860,8 @@ def get_previous_summary(events: list[dict]) -> str | None:
         if events[i].get("type") == "context_compact":
             return ((events[i].get("data") or {}).get("summary") or None)
     return None
+
+
+def _count_user_turns(events: list[dict]) -> int:
+    """统计一段事件里 USER_INPUT 的数量（= user-turn 数）。"""
+    return sum(1 for ev in events if ev.get("type") == "USER_INPUT")
