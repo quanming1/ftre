@@ -1,28 +1,30 @@
 """
-Pipeline — 可注册处理器 / 可短路的通用管线。
+Pipeline — 可注册处理器 / 可短路的通用管线（异步执行）。
 
-handler 接收一个 dict，返回 True 继续、False 短路::
+handler 接收一个 dict，返回 True 继续、False 短路。handler 可以是同步函数，
+也可以是协程函数（async def）；两者都由 run() 统一 await::
 
     from ftre.utils import Pipeline
 
     pipe = Pipeline("govern")
     pipe.use(lambda d: d.get("ok") is not False, name="guard")
-    pipe.use(lambda d: d.update(result="done") or True, name="work")
+    pipe.use(work_async, name="work")              # async def work_async(d): ...
 
     ctx = {"input": "hello"}
-    pipe.run(ctx)
+    await pipe.run(ctx)
     print(ctx.get("result"))  # "done"
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+import inspect
+from typing import Any, Awaitable, Callable
 
-Handler = Callable[[dict[str, Any]], bool]
-"""处理器：(data) -> True 继续 / False 短路"""
+Handler = Callable[[dict[str, Any]], bool | Awaitable[bool]]
+"""处理器：(data) -> True 继续 / False 短路；可同步可异步。"""
 
 
 class Pipeline:
-    """顺序执行处理器，返回 False 立即短路。"""
+    """顺序执行处理器，返回 False 立即短路。支持同步与异步 handler。"""
 
     def __init__(self, name: str = "") -> None:
         self.name = name
@@ -37,10 +39,13 @@ class Pipeline:
         self._steps.sort(key=key or (lambda s: -len(s[0])))
         return self
 
-    def run(self, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def run(self, data: dict[str, Any] | None = None) -> dict[str, Any]:
         data = data or {}
         for name, handler in self._steps:
-            if not handler(data):
+            result = handler(data)
+            if inspect.isawaitable(result):
+                result = await result
+            if not result:
                 break
         return data
 

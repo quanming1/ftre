@@ -25,7 +25,7 @@ class LLMConfig:
     - 来自 providers[provider].models[] 中匹配 default model 的条目：
       name / id / context_window / max_output / vision
 
-    `model` 是派生字段：把 id 加上 LiteLLM 需要的 provider 前缀（如 'openai/'），
+    `model` 是派生字段，当前由 `_build_model_name()` 直接返回 `model_id`（不做前缀拼接），
     供 ReActAgent 直接使用。原始 id 保留在 `id` 里，避免上层重复解析。
     """
     # provider 层
