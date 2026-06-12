@@ -43,6 +43,23 @@ DEFAULT_TIMEOUT = 600
 POLL_INTERVAL = 0.5
 STARTUP_TIMEOUT = 30
 
+# 预算与目标（步骤 3 算法工具用）：
+# - budget = context_window - max_output - SAFETY_BUFFER
+# - target = budget * CONSOLIDATION_RATIO
+# 一次 compact 选边界把 prompt 估算降到 target 以下；ftre 不做多轮 subagent
+# 循环（与 Nanobot 的差异：Nanobot 单次 LLM 摘要秒级、可多轮，ftre subagent
+# 单次几分钟、多轮串行不可行）。多轮压缩摊到多次空闲窗口，由游标只进不退保证
+# 不重做。详见 docs/context-management.md 第 3.4 节。
+DEFAULT_CONSOLIDATION_RATIO = 0.7  # 贴近触发阈值 0.8，留更多 tail
+DEFAULT_SAFETY_BUFFER = 1024
+# context_window 配置缺省时 max_output 的兜底比例
+_FALLBACK_MAX_OUTPUT_RATIO = 0.2
+
+# 游标 timestamp 偏移：写 context_compact 时 ts = boundary.timestamp - EPSILON，
+# 使其按 ASC 排序排在边界事件之前、tail 起点之上。EPSILON 必须 > sqlite REAL
+# 精度的最小可分辨增量；这里取 1ms 量级足够安全（事件实际间隔通常 ≥ 数十 ms）。
+CURSOR_TIMESTAMP_EPSILON = 0.001
+
 COMPACT_PROMPT_TEMPLATE = """\
 [Subagent 上下文]
 你是一个上下文压缩助手，由系统自动派发执行。
@@ -457,3 +474,188 @@ class CompactHandler:
             self._await(self.bus.publish_outbound(msg), timeout=5)
         except Exception:
             logger.debug(f"[compact] 通知前端失败: {event_type}")
+
+
+# ─── 模块级算法工具（纯函数，可单测，不依赖 CompactHandler 实例） ───────────
+
+
+def calculate_budget_target(
+    context_window: int,
+    max_output: int | None,
+    *,
+    safety_buffer: int = DEFAULT_SAFETY_BUFFER,
+    consolidation_ratio: float = DEFAULT_CONSOLIDATION_RATIO,
+) -> tuple[int, int]:
+    """计算可用输入预算与压缩目标。
+
+    budget = context_window - max_output - safety_buffer
+    target = budget * consolidation_ratio
+
+    - max_output 为 None / 0 / 负数时退回 context_window * 0.2 兜底。
+    - context_window <= 0 时返回 (0, 0)（调用方据此放弃压缩）。
+    - 数值过小（budget < 1024）时仍返回，但调用方应当结合 should_compact 和
+      边界选取的 None 返回判断是否真要执行压缩。
+    """
+    if context_window <= 0:
+        return 0, 0
+    mo = int(max_output) if max_output and max_output > 0 else int(context_window * _FALLBACK_MAX_OUTPUT_RATIO)
+    budget = max(0, context_window - mo - safety_buffer)
+    target = int(budget * consolidation_ratio)
+    return budget, target
+
+
+def pick_compaction_boundary(
+    events: list[dict],
+    cursor_idx: int,
+    tokens_to_remove: int,
+) -> int | None:
+    """在 events[cursor_idx:] 范围内选一个 user-turn 起点作为压缩边界。
+
+    Args:
+        events: 完整事件流（按 timestamp 升序，由 SessionManager 给出）。
+        cursor_idx: 上次游标（最新 context_compact 的位置 + 1）；首次压缩为 0。
+        tokens_to_remove: 期望本次压缩移除的 token 数。
+
+    Returns:
+        边界事件在 events 中的索引（该边界之前是 head/被摘要、之后是 tail/保留）。
+        - 累计移除 token ≥ tokens_to_remove 时返回首个达标的 user-turn 起点。
+        - 扫到尾仍不够：返回最后一个合法 user-turn 起点（能压多少压多少），
+          但前提是它后面至少还有一个 user-turn（保证 tail 非空、不退化为全切）。
+        - 找不到任何合法边界（如就一轮且超长，或 cursor 之后没有 user-turn）：
+          返回 None。
+
+    保证：返回索引 i 满足 events[i]["type"] == "USER_INPUT"，从而：
+        - assistant 的 tool_calls 不会与 tool 的 tool_result 被切开（tool 配对不变量）。
+    """
+    from ftre.session.token_counter import _estimate_message
+    from ftre.session.manager import SessionManager
+
+    if cursor_idx >= len(events) or tokens_to_remove <= 0:
+        return None
+
+    # 收集 cursor_idx 之后所有 USER_INPUT 索引（user-turn 起点）
+    user_turn_indices: list[int] = []
+    for i in range(cursor_idx, len(events)):
+        if events[i].get("type") == "USER_INPUT":
+            user_turn_indices.append(i)
+
+    if len(user_turn_indices) < 2:
+        # 至少要有 2 个 USER_INPUT 才能切：第 1 个 ≠ tail 起点（否则 tail 为空 = 全切）。
+        # 也覆盖了"就一轮且超长"的退化情况。
+        return None
+
+    # 最末 USER_INPUT 永远不能作为边界——切在那里 tail 为空 = 全切。
+    # 候选边界范围：cursor 之后、但不含最末 USER_INPUT。
+    last_user_idx = user_turn_indices[-1]
+    candidates = [idx for idx in user_turn_indices if idx != last_user_idx]
+    if not candidates:
+        return None
+
+    # 增量估算：从 cursor 一段一段累加到每个 user-turn 起点之前的 token 数。
+    # 估算单条事件的 token 用 to_openai_messages + _estimate_message；这里直接复用
+    # estimate_events_tokens 的子集逻辑，按 chunk 估算更精确。
+    removed = 0
+    last_safe: int | None = None
+    cur = cursor_idx
+    for boundary_idx in candidates:
+        if boundary_idx == cursor_idx:
+            # 第一个 user-turn 起点就是 cursor 自身（典型情况），跳过——
+            # 切在这里等于不切，没意义。
+            continue
+        chunk = events[cur:boundary_idx]
+        # 估算这段 chunk 折成 messages 后的 token
+        chunk_msgs = SessionManager.to_openai_messages(chunk)
+        chunk_tokens = sum(_estimate_message(m) for m in chunk_msgs)
+        removed += chunk_tokens
+        last_safe = boundary_idx
+        if removed >= tokens_to_remove:
+            return boundary_idx
+        cur = boundary_idx
+
+    # 扫完了仍不够；返回最后一个合法边界（已保证 != 最末 USER_INPUT，故 tail 至少含一轮）。
+    return last_safe
+
+
+def raw_archive_chunk(chunk: list[dict], *, tool_result_max: int = 500) -> str:
+    """本地兜底摘要：subagent 失败 / 关键路径需要快速压缩时使用。
+
+    规则（与 COMPACT_PROMPT_TEMPLATE 的"什么是重要内容"对齐，但纯本地、无 LLM）：
+    - USER_INPUT / message_complete / reasoning_complete：原文保留
+    - tool_call：保留 name + 参数（参数过长截 300 字符）
+    - tool_result：截 tool_result_max（默认 500 字符）
+    - context_compact：原样并入（previous summary）
+    - 其他：忽略
+
+    输出 markdown 形态的纯文本摘要，含 "## " 标题以通过下游 _get_final_content
+    的合格判定（虽然 raw 摘要不会经过该校验，保持格式一致便于阅读）。
+    """
+    if not chunk:
+        return ""
+
+    lines: list[str] = ["## 历史摘要（本地兜底）", ""]
+    turn_idx = 0
+    for ev in chunk:
+        t = ev.get("type", "")
+        d = ev.get("data") or {}
+        if t == "USER_INPUT":
+            turn_idx += 1
+            content = d.get("content", "")
+            if isinstance(content, list):
+                # 多模态 user_input：抽 text 段
+                content = "\n".join(
+                    str(p.get("data", "") or "")
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            lines.append(f"### 第 {turn_idx} 轮")
+            lines.append(f"**用户**：{content}")
+        elif t == "message_complete":
+            lines.append(f"**AI**：{d.get('content', '')}")
+        elif t == "reasoning_complete":
+            content = d.get("content", "")
+            if content:
+                lines.append(f"**思考**：{content}")
+        elif t == "tool_call":
+            name = d.get("name", "")
+            args = d.get("arguments", {})
+            args_str = json.dumps(args, ensure_ascii=False) if not isinstance(args, str) else args
+            if len(args_str) > 300:
+                args_str = args_str[:300] + "...[截断]"
+            lines.append(f"**工具调用**：{name}({args_str})")
+        elif t == "tool_result":
+            result = d.get("result", "")
+            if not isinstance(result, str):
+                result = str(result)
+            if len(result) > tool_result_max:
+                result = result[:tool_result_max] + f"...[截断 {len(result) - tool_result_max} 字符]"
+            lines.append(f"**工具结果**：{result}")
+        elif t == "context_compact":
+            # 之前的摘要并入
+            prev = d.get("summary", "")
+            if prev:
+                lines.append("")
+                lines.append("### 之前的历史摘要（沿用）")
+                lines.append(prev)
+                lines.append("")
+        # 其他类型（external_message / usage_update 等）忽略
+
+    return "\n".join(lines).strip()
+
+
+def get_cursor_index(events: list[dict]) -> int:
+    """返回最新 context_compact 事件之后的索引（即 tail 起点）。
+
+    无 context_compact 时返回 0（首次压缩，从头开始）。
+    """
+    for i in range(len(events) - 1, -1, -1):
+        if events[i].get("type") == "context_compact":
+            return i + 1
+    return 0
+
+
+def get_previous_summary(events: list[dict]) -> str | None:
+    """返回最新 context_compact 事件的 summary（用于 anchored 摘要并入）。"""
+    for i in range(len(events) - 1, -1, -1):
+        if events[i].get("type") == "context_compact":
+            return ((events[i].get("data") or {}).get("summary") or None)
+    return None
