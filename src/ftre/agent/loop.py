@@ -13,6 +13,7 @@ import os
 
 from ftre_agent_core.agent import ReActAgent
 from ftre.bus import BusMessage, EventBus, GLOBAL_CHANNEL, GLOBAL_SESSION
+from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 from ftre.config import AgentConfig, load_config
 from ftre.session import SessionManager
 from ftre.session.multimodal import build_user_content
@@ -133,9 +134,16 @@ class AgentLoop:
         async def _run_compact() -> None:
             await _emit_status("running")
             try:
-                await self._event_loop.run_in_executor(
-                    None, self.compact_handler.compact, session_id, channel_id
+                # 手动 /compact：可见、走 subagent（高质量），传 config 启用 head/tail。
+                # 用 functools.partial 包装，run_in_executor 才能传 keyword 参数。
+                from functools import partial
+                config = self._load_current_config()
+                fn = partial(
+                    self.compact_handler.compact,
+                    session_id, channel_id,
+                    fast=False, config=config, silent=False,
                 )
+                await self._event_loop.run_in_executor(None, fn)
             except Exception:
                 logger.exception(f"[agent-loop] /compact 执行异常 session={session_id}")
             finally:
@@ -303,18 +311,24 @@ class AgentLoop:
             )
             return
 
-        # Step 2.8: 自动压缩（在本线程里同步执行）。
+        # Step 2.8: 关键路径压缩（用户正等着回复，走 fast=True 本地 raw 兜底）。
         # 这里是安全窗口：_step_run 已 fire-and-forget 派发本协程并让消费循环回到
         # 空闲，压缩派发的 subagent 能被主消费循环正常处理，不会死锁。
         # 压缩把 context_compact 事件写入历史，紧接着的 _build_messages 会读到它。
+        #
+        # ⚠️ 关键路径绝不在此派慢 subagent 卡住用户——高质量 subagent 压缩交给
+        # 每轮结束后的后台空闲压缩（见 finally 的 _schedule_idle_compact）。
+        # 传入 config 启用 head/tail 边界切分（保留最近若干轮原文）；silent=True
+        # 让前端不渲染气泡，对用户完全无感。
+        config = self._load_current_config()
         if need_compact:
             try:
-                self.compact_handler.compact(session_id, inbound.from_channel)
+                self.compact_handler.compact(
+                    session_id, inbound.from_channel,
+                    fast=True, config=config, silent=True,
+                )
             except Exception:
-                logger.exception(f"[agent-loop] 自动压缩失败 session={session_id}")
-
-        # Step 3: 加载配置
-        config = self._load_current_config()
+                logger.exception(f"[agent-loop] 关键路径压缩失败 session={session_id}")
 
         # Step 4: 加载历史 + hook + 上下文治理
         # 工作区优先级：session 字段 > config 默认值 > 当前目录
@@ -411,6 +425,43 @@ class AgentLoop:
             if self._active_agents.get(session_id) is agent:
                 self._active_agents.pop(session_id, None)
                 self._publish_session_status(session_id, "idle")
+                # 步骤 5（无感）：本轮结束后调度后台空闲压缩。
+                # 提交回主事件循环（不是当前 _run_async 的临时循环——它马上要关），
+                # 由主循环 _schedule_idle_compact 判水位 + 派 subagent 慢摘高质量。
+                # 用户下次发消息时上下文已压好，零等待 → 实现"无感"。
+                if inbound.from_channel != SUBAGENT_CHANNEL_ID:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            self._schedule_idle_compact(session_id, inbound.from_channel),
+                            self._event_loop,
+                        )
+                    except Exception:
+                        logger.debug("[agent-loop] 调度 idle 压缩失败", exc_info=True)
+
+    async def _schedule_idle_compact(self, session_id: str, channel_id: str) -> None:
+        """主事件循环里：判水位 → 需要时 fire-and-forget 到 executor 跑后台压缩。
+
+        ⚠️ 必须由主循环跑，不能在 _run_async 的临时事件循环里 ensure_future——那个
+        循环 finally 后即关闭，任务会被取消（文档 5.2 节陷阱）。
+        ⚠️ should_compact 是只读 DB 的轻量操作，绝不在此派 subagent；派发由 executor
+        线程里的 compact() 完成（与现有 _step_compact / _run_async 同款规避手法）。
+        """
+        try:
+            config = self._load_current_config()
+            need = await self.compact_handler.should_compact(session_id, channel_id, config)
+            if not need:
+                return
+            # 后台压缩：subagent 高质量、silent 不渲染气泡，提交到默认 executor。
+            from functools import partial
+            fn = partial(
+                self.compact_handler.compact,
+                session_id, channel_id,
+                fast=False, config=config, silent=True,
+            )
+            self._event_loop.run_in_executor(None, fn)
+            logger.info(f"[agent-loop] idle 后台压缩已派发 session={session_id}")
+        except Exception:
+            logger.exception(f"[agent-loop] idle 压缩调度异常 session={session_id}")
 
     def _publish_session_status(self, session_id: str, status: str) -> None:
         """广播 session 运行态变化（全局事件，扇出给所有连接）。
