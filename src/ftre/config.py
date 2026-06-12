@@ -43,6 +43,26 @@ class LLMConfig:
 
 
 @dataclass
+class ContextConfig:
+    """上下文管理（压缩）配置 —— 对应 config.json 的 agents.defaults.context。
+
+    所有字段都有默认值，缺省即沿用代码内常量；旧配置零改动可用。
+    详细设计见文档 docs/context-management.md。
+    """
+    # 触发水位（compact_handler.DEFAULT_COMPACT_THRESHOLD）；超过此比例自动压缩
+    threshold: float = 0.8
+    # 压缩目标比例：target = budget * consolidation_ratio
+    # 0.7 贴近触发阈值，留更多 tail（与 Nanobot 0.5 不同，详见文档 3.2）
+    consolidation_ratio: float = 0.7
+    # 预算安全垫：budget = context_window - max_output - safety_buffer
+    safety_buffer: int = 1024
+    # 是否开启后台空闲压缩（每轮 done 后异步派 subagent 高质量摘要）
+    idle_compaction: bool = True
+    # 压缩事件是否标记 silent（前端不渲染气泡，对用户无感）
+    silent: bool = True
+
+
+@dataclass
 class AgentConfig:
     """Agent 配置"""
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -56,6 +76,8 @@ class AgentConfig:
     # 配置项：agents.defaults.title_generation = {"provider": "...", "model": "..."}
     # 设计动机：标题生成是高频小请求，独立挂到便宜/快的模型上，避免占用主对话的高级模型配额。
     title_llm: LLMConfig | None = None
+    # 上下文管理配置（步骤 6）
+    context: ContextConfig = field(default_factory=ContextConfig)
 
 
 def load_config_file() -> dict:
@@ -140,13 +162,36 @@ def load_config() -> AgentConfig:
     if not isinstance(workspace, str):
         workspace = ""
 
+    # 上下文管理配置：agents.defaults.context（缺省即代码内默认值）
+    ctx_raw = defaults.get("context") or {}
+    if not isinstance(ctx_raw, dict):
+        ctx_raw = {}
+
+    def _f(key_camel: str, key_snake: str, default):
+        # 兼容 camelCase 与 snake_case，前者优先
+        if key_camel in ctx_raw:
+            return ctx_raw[key_camel]
+        return ctx_raw.get(key_snake, default)
+
+    context_cfg = ContextConfig(
+        threshold=float(_f("threshold", "threshold", 0.8)),
+        consolidation_ratio=float(_f("consolidationRatio", "consolidation_ratio", 0.7)),
+        safety_buffer=int(_f("safetyBuffer", "safety_buffer", 1024)),
+        idle_compaction=bool(_f("idleCompaction", "idle_compaction", True)),
+        silent=bool(_f("silent", "silent", True)),
+    )
+
     logger.warning(
         f"[config] model={llm.model}, provider={provider_name}, "
         f"context_window={llm.context_window}, max_output={llm.max_output}, "
         f"workspace={workspace or '(default)'}, "
-        f"title_llm={title_llm.model if title_llm else '(fallback to main)'}"
+        f"title_llm={title_llm.model if title_llm else '(fallback to main)'}, "
+        f"context: ratio={context_cfg.consolidation_ratio}, "
+        f"idle={context_cfg.idle_compaction}, silent={context_cfg.silent}"
     )
-    return AgentConfig(llm=llm, workspace=workspace, title_llm=title_llm)
+    return AgentConfig(
+        llm=llm, workspace=workspace, title_llm=title_llm, context=context_cfg
+    )
 
 
 DEFAULT_CONFIG = load_config()
