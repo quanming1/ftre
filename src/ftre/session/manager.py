@@ -291,17 +291,29 @@ class SessionManager:
     # Message（事件流）
     # ============================================================
 
-    async def save_message(self, session_id: str, type: str, data: dict[str, Any]) -> str:
+    async def save_message(
+        self,
+        session_id: str,
+        type: str,
+        data: dict[str, Any],
+        *,
+        timestamp: float | None = None,
+    ) -> str:
         """
         保存一条消息/事件到指定 session。
         同时更新 session 的 updated_at。
         返回生成的 message id。
+
+        timestamp 可选：传入则消息行用该值（用于把 context_compact 等"游标"事件
+        插到历史中间——按 ASC 排序时排在某个边界事件之前）。session.updated_at
+        始终用真实当前时间，不会因游标回插而错乱会话列表排序。
         """
         msg_id = uuid.uuid4().hex[:16]
         now = time.time()
+        ts = now if timestamp is None else float(timestamp)
         await self._db.execute(
             "INSERT INTO messages (id, session_id, type, data, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (msg_id, session_id, type, json.dumps(data, ensure_ascii=False), now),
+            (msg_id, session_id, type, json.dumps(data, ensure_ascii=False), ts),
         )
         await self._db.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?",
@@ -479,7 +491,12 @@ class SessionManager:
                 })
 
             elif t == "context_compact":
-                # 压缩事件：丢弃之前所有 messages，用 summary 作为新起点
+                # 压缩事件 = 游标。按事件顺序处理：
+                # - 清空之前累积的 messages，注入 summary 作为新起点；
+                # - 该事件之后的事件照常重建 → 自动形成 tail（最近原文）。
+                # - 多条 context_compact 时后一条会再次清空 messages，等价于"以最后
+                #   一条为准 + 保留其后 tail"。
+                # 现状（无 head/tail 切分）等价于：context_compact 永远在末尾、tail 为空。
                 _flush_tool_calls()
                 _take_reasoning()
                 summary = (event["data"] or {}).get("summary", "")
