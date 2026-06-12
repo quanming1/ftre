@@ -18,8 +18,12 @@ if not defined PY (
 echo [ftre] Starting gateway (port 19470)...
 echo        Python: %PY%
 set PYTHONPATH=E:\ftre\src
-REM /k 让 gateway 闪退时窗口保留，能看到错误信息
-start "ftre-gateway" cmd /k ""%PY%" -m ftre.main gateway"
+REM /k 让 gateway 闪退时窗口保留，能看到错误信息。
+REM 用 `cmd /k call ""%PY%" -m ftre.main gateway"` 形式：
+REM cmd /k 后面整体被一对双引号包住时，cmd 会用"剥掉首尾引号"的规则解析内层，
+REM 但只有内层**第一个 token 也带引号**时这条规则才能正确处理含空格/中文的路径。
+REM 这里直接用 cd /d 切目录 + 把命令放在 && 后，绕开嵌套引号陷阱。
+start "ftre-gateway" cmd /k "cd /d E:\ftre && "%PY%" -m ftre.main gateway"
 
 echo [ftre] Waiting for backend...
 :wait_backend

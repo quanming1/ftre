@@ -32,6 +32,7 @@ def test_context_defaults_when_missing(fake_config):
     assert cfg.context.safety_buffer == 1024
     assert cfg.context.idle_compaction is True
     assert cfg.context.silent is True
+    assert cfg.context.preemptive_threshold == 0.6
 
 
 def test_context_camel_case(fake_config):
@@ -43,6 +44,7 @@ def test_context_camel_case(fake_config):
                     "safetyBuffer": 2048,
                     "idleCompaction": False,
                     "silent": False,
+                    "preemptiveThreshold": 0.5,
                 }
             }
         }
@@ -51,6 +53,7 @@ def test_context_camel_case(fake_config):
     assert cfg.context.safety_buffer == 2048
     assert cfg.context.idle_compaction is False
     assert cfg.context.silent is False
+    assert cfg.context.preemptive_threshold == 0.5
 
 
 def test_context_snake_case_also_works(fake_config):
