@@ -33,6 +33,8 @@ import time
 import weakref
 from typing import Callable
 
+from ftre_agent_core.llm import LLMHandler, StepFinish, TextDelta
+
 from ftre.bus import BusMessage
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 
@@ -61,6 +63,41 @@ _FALLBACK_MAX_OUTPUT_RATIO = 0.2
 # 使其按 ASC 排序排在边界事件之前、tail 起点之上。EPSILON 必须 > sqlite REAL
 # 精度的最小可分辨增量；这里取 1ms 量级足够安全（事件实际间隔通常 ≥ 数十 ms）。
 CURSOR_TIMESTAMP_EPSILON = 0.001
+
+# 直调 LLM 摘要的 system prompt——比 subagent 的 COMPACT_PROMPT_TEMPLATE 简洁得多：
+# 不让它写脚本读文件、不让它跑工具，直接看内联文本输出 markdown。秒级返回。
+COMPACT_LLM_SYSTEM_PROMPT = """\
+你是一个对话历史压缩助手。下面 user 消息里附带一段对话事件流文本，你需要把它整理成
+"交接文档"——目标是让一个完全没看过原始对话的 AI 读完后能无缝接着干活。
+
+核心原则：
+1. 用户原话（USER_INPUT/用户）——一字不漏照搬
+2. AI 关键决策（选了什么方案、放弃了什么、原因）——原样保留
+3. 关键技术事实（文件路径、函数签名、配置值、报错原文、关键代码片段）——原样引用
+4. 探索性动作 / 反复试错 / 啰嗦解释——可压缩成一句结论
+5. 拿不准时一律保留
+
+输出格式（必须严格遵守，前端识别这个结构）：
+
+## 轮次摘要
+
+### 第 N 轮
+**用户原话：** （完整保留）
+**AI 关键决策：** （原样保留决策内容）
+**做了什么：** （重要步骤照实写，纯流水账才概括）
+**产出：** （改了什么 / 得出什么结论 / 卡在哪）
+**关键技术事实：** （函数签名、代码片段、报错、配置、路径——原样保留）
+
+## 交接状态
+
+**已落地的成果：** （带完整路径与改动要点）
+**关键技术事实：** （后续必须知道的硬信息）
+**重要代码/片段：** （核心部分原样保留）
+**已确定的决策：** （选定的方案、否决的方案及原因）
+**待办与悬而未决：** （下一步做什么、遗留 bug、等待确认的点）
+
+直接输出摘要本身，不要任何前言、解释或元评论。
+"""
 
 COMPACT_PROMPT_TEMPLATE = """\
 [Subagent 上下文]
@@ -202,6 +239,7 @@ class CompactHandler:
         timeout: int = DEFAULT_TIMEOUT,
         consolidation_ratio: float = DEFAULT_CONSOLIDATION_RATIO,
         safety_buffer: int = DEFAULT_SAFETY_BUFFER,
+        preemptive_threshold: float = 0.6,
     ):
         self.session_manager = session_manager
         self.channel_manager = channel_manager
@@ -211,6 +249,7 @@ class CompactHandler:
         self._timeout = timeout
         self._consolidation_ratio = consolidation_ratio
         self._safety_buffer = safety_buffer
+        self._preemptive_threshold = preemptive_threshold
         # 每 session 一把压缩锁，防止 idle 压缩与关键路径兜底压缩、或同 session
         # 连续 idle 压缩撞车导致游标错乱。WeakValueDictionary 让无人持有的锁自动回收。
         self._locks: weakref.WeakValueDictionary[str, threading.Lock] = (
@@ -262,6 +301,54 @@ class CompactHandler:
         )
         return True
 
+    async def should_preemptive_compact(
+        self, session_id: str, channel_id: str, config
+    ) -> bool:
+        """预测性后台压缩判断：水位 ≥ preemptive_threshold（默认 0.6）即触发。
+
+        比 should_compact 的 0.8 阈值低，让后台 idle 提前压缩、用户关键路径几乎
+        撞不到水位。或者最新一条 context_compact 是 raw 兜底——升级为 LLM 摘要。
+
+        ⚠️ 同 should_compact，只读 DB，绝不派 subagent / 调 LLM。
+        """
+        if channel_id == SUBAGENT_CHANNEL_ID:
+            return False
+        cw = getattr(config.llm, "context_window", 0) or 0
+        if cw <= 0:
+            return False
+        try:
+            usage = await self.session_manager.get_token_usage(session_id)
+            events = await self.session_manager.get_messages_by_session(session_id)
+        except Exception:
+            return False
+
+        total = int(usage.get("total", 0) or 0)
+        ratio = total / cw if cw else 0
+
+        # 条件 1：水位 ≥ preemptive_threshold（提前压）
+        if ratio >= self._preemptive_threshold:
+            logger.info(
+                f"[compact] session={session_id} 预测性触发 水位 {ratio:.0%} "
+                f"({total}/{cw}) ≥ {self._preemptive_threshold:.0%}"
+            )
+            return True
+
+        # 条件 2：上次是 raw 兜底（关键路径快摘要），现在升级为 LLM 摘要
+        if events:
+            for i in range(len(events) - 1, -1, -1):
+                ev = events[i]
+                if ev.get("type") == "context_compact":
+                    mode = (ev.get("data") or {}).get("mode")
+                    if mode == "raw":
+                        logger.info(
+                            f"[compact] session={session_id} 升级触发 "
+                            f"上次 mode=raw → 升级为 LLM 摘要"
+                        )
+                        return True
+                    break  # 只看最新一条
+
+        return False
+
     def compact(
         self,
         session_id: str,
@@ -270,6 +357,7 @@ class CompactHandler:
         fast: bool = False,
         config=None,
         silent: bool = False,
+        use_subagent: bool = False,
     ) -> str | None:
         """同步执行压缩，返回摘要或 None。
 
@@ -277,14 +365,16 @@ class CompactHandler:
         压缩会派发 subagent 并轮询等待，而 subagent 的 inbound 需要主消费循环处理。
         若在主循环里同步等待会造成自依赖死锁。
 
-        参数：
-        - fast:   True → 用本地 raw 兜底摘要（毫秒级，关键路径用）；
-                  False → 派 subagent 摘要（慢、质量高，后台空闲压缩用）。
-        - config: 传入则用 budget/target 算法选 user-turn 边界、保留 tail；
-                  None 则退回旧的"全量压缩"行为（兼容手动 /compact 无 config 场景）。
-        - silent: True → context_compact 事件标记 silent，前端不渲染气泡。
+        参数（摘要器选择优先级 fast > use_subagent > 默认 LLM）：
+        - fast:         True → 本地 raw 兜底（毫秒级，关键路径用）
+        - use_subagent: True → 派 subagent（分钟级，含工具循环；/compact 用）
+        - 默认（fast=False, use_subagent=False） → 直调 LLM（秒级，无工具）
+        - config:       传入则用 budget/target 算法选 user-turn 边界、保留 tail；
+                        None 则退回旧的"全量压缩"行为。LLM 直调路径**必须**传 config
+                        （需要 llm.api_key/api_base 等）。
+        - silent:       True → context_compact 事件标记 silent，前端不渲染气泡。
 
-        自动压缩与 /compact 共用此方法。每 session 加锁防并发撞车。
+        每 session 加锁防并发撞车；非阻塞抢锁，抢不到则跳过本次。
         """
         lock = self._get_lock(session_id)
         if not lock.acquire(blocking=False):
@@ -329,6 +419,8 @@ class CompactHandler:
                 head_events,
                 tokens_before=total or None,
                 fast=fast,
+                use_subagent=use_subagent,
+                config=config,
                 previous_summary=previous_summary,
                 boundary_ts=boundary_ts,
                 tail_turns=tail_turns,
@@ -374,6 +466,8 @@ class CompactHandler:
         tokens_before: int | None = None,
         *,
         fast: bool = False,
+        use_subagent: bool = False,
+        config=None,
         previous_summary: str | None = None,
         boundary_ts: float | None = None,
         tail_turns: int = 0,
@@ -383,7 +477,9 @@ class CompactHandler:
 
         摘要器选择（mode）：
         - fast=True：直接本地 raw 兜底（毫秒级）。
-        - fast=False：派 subagent；失败/未产出合格摘要时退回 raw（不放弃）。
+        - use_subagent=True：派 subagent（分钟级，含工具循环）。
+        - 默认：直调 LLM 摘要（秒级，无工具，质量介于 raw 与 subagent 之间）。
+        - 任一路径失败 → 退回 raw 兜底，游标照常前进（不放弃）。
 
         游标写入：boundary_ts 非 None 时，context_compact 的 timestamp 设为
         boundary_ts - EPSILON，使其按 ASC 排在边界事件之前、tail 起点之上，
@@ -396,7 +492,7 @@ class CompactHandler:
             summary = raw_archive_chunk(
                 self._slim_events(head_events), previous_summary=previous_summary
             )
-        else:
+        elif use_subagent:
             workspace = self._get_workspace(session_id)
             try:
                 summary = self._run_compact_subagent(
@@ -408,9 +504,26 @@ class CompactHandler:
             if summary:
                 mode = "subagent"
             else:
-                # subagent 失败/超时/未产出合格摘要 → 退回 raw 兜底，不放弃，游标照常前进。
                 logger.warning(
                     f"[compact] subagent 未产出合格摘要，退回 raw 兜底 session={session_id}"
+                )
+                summary = raw_archive_chunk(
+                    self._slim_events(head_events), previous_summary=previous_summary
+                )
+        else:
+            # 默认路径：直调 LLM（无工具，秒级）。无 config / 无 LLM 配置时退回 raw。
+            try:
+                summary = self._run_compact_llm(
+                    head_events, config=config, previous_summary=previous_summary
+                )
+            except Exception:
+                logger.exception(f"[compact] 直调 LLM 压缩异常 session={session_id}")
+                summary = None
+            if summary:
+                mode = "llm"
+            else:
+                logger.warning(
+                    f"[compact] 直调 LLM 未产出合格摘要，退回 raw 兜底 session={session_id}"
                 )
                 summary = raw_archive_chunk(
                     self._slim_events(head_events), previous_summary=previous_summary
@@ -471,6 +584,107 @@ class CompactHandler:
             {"type": ev.get("type", ""), "data": ev.get("data") or {}}
             for ev in events
         ]
+
+    def _run_compact_llm(
+        self,
+        head_events: list,
+        *,
+        config,
+        previous_summary: str | None = None,
+    ) -> str | None:
+        """直调 LLM 摘要（无工具，秒级）。
+
+        与 subagent 的本质区别：
+        - subagent：派一个完整 agent session → 它自己写脚本读 JSON → 多轮 ReAct
+          → 最后输出。耗时分钟级，但能处理超大 JSON。
+        - 直调 LLM：把事件流文本**内联进 prompt** → 一次 chat completion → 出摘要。
+          秒级返回；缺点是输入受 LLM 上下文窗口限制，超大 head 会被字符级截断。
+
+        实现要点：
+        - 在当前 executor 线程里用 asyncio.run() 创建临时 loop 跑 LLMHandler.stream()
+          （与 _run_compact_subagent 跨主 loop 派发不同：直调 LLM 完全独立、不需要
+          主消费循环介入）。
+        - 用 raw_archive_chunk 把事件流转成结构化文本作为 LLM 的 user 消息。
+        - tools=None 强制无工具调用，杜绝多轮循环。
+        - 失败抛异常给上层 _do_compact 路由到 raw 兜底。
+        """
+        if config is None:
+            logger.warning("[compact-llm] 缺 config，无法直调 LLM")
+            return None
+        llm = getattr(config, "llm", None)
+        if llm is None or not getattr(llm, "model", None) or not getattr(llm, "api_key", None):
+            logger.warning("[compact-llm] config.llm 不完整（缺 model 或 api_key）")
+            return None
+
+        # 把 head 转成 LLM 看的纯文本（复用 raw 渲染规则，但目的是给 LLM 摘要而非
+        # 直接给前端）。previous_summary 也在这里并入，让 LLM 知道"在旧摘要基础上更新"。
+        body = raw_archive_chunk(
+            self._slim_events(head_events), previous_summary=previous_summary
+        )
+        if not body:
+            return None
+
+        # 字符级截断防止 prompt 超 LLM 上下文。budget 用 80% 留 prompt（其余给 system + 输出）。
+        cw = int(getattr(llm, "context_window", 0) or 0) or 32_000
+        char_budget = int(cw * 4 * 0.8)  # tokens * 4 ≈ chars，再保留 20%
+        if len(body) > char_budget:
+            kept = body[:char_budget]
+            logger.warning(
+                f"[compact-llm] 输入截断 {len(body)} → {char_budget} 字符（cw={cw}）"
+            )
+            body = kept + "\n\n... [输入超长已截断]"
+
+        user_prompt = (
+            "请按下面的事件流文本生成交接文档式摘要。\n\n"
+            "═══════════ 事件流开始 ═══════════\n"
+            f"{body}\n"
+            "═══════════ 事件流结束 ═══════════"
+        )
+
+        async def _run() -> str:
+            handler = LLMHandler(
+                model=llm.model,
+                api_key=llm.api_key,
+                api_base=getattr(llm, "api_base", None) or None,
+                api_type=getattr(llm, "api_type", "completions"),
+                timeout=120.0,
+                max_retries=2,
+            )
+            chunks: list[str] = []
+            async for ev in handler.stream(
+                messages=[
+                    {"role": "system", "content": COMPACT_LLM_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                tools=None,
+            ):
+                if isinstance(ev, TextDelta):
+                    chunks.append(ev.text)
+                elif isinstance(ev, StepFinish):
+                    if ev.finish_reason not in ("stop", "length"):
+                        logger.warning(
+                            f"[compact-llm] 异常 finish_reason={ev.finish_reason}"
+                        )
+            return "".join(chunks)
+
+        try:
+            t0 = time.time()
+            content = asyncio.run(_run())
+            elapsed = time.time() - t0
+        except Exception:
+            logger.exception("[compact-llm] LLM 调用失败")
+            return None
+
+        # 合格判定（同 subagent 摘要的 _get_final_content）
+        if not content or len(content) < 300 or "## " not in content:
+            logger.warning(
+                f"[compact-llm] 摘要不合格 len={len(content) if content else 0} "
+                f"has_heading={('## ' in content) if content else False}，丢弃"
+            )
+            return None
+
+        logger.info(f"[compact-llm] 完成 耗时 {elapsed:.1f}s 摘要 {len(content)} 字符")
+        return content
 
     def _run_compact_subagent(
         self, events: list, workspace: str, *, previous_summary: str | None = None
