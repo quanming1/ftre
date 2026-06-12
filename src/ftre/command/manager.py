@@ -9,11 +9,13 @@ dispatch 返回是否命中了一条指令。
     cmd = CommandManager()
     cmd.register("/help", lambda ctx: ctx.meta.update(result="帮助信息"))
     cmd.register("/cancel", lambda ctx: ...)  # 修改 ctx.meta["inbound"]
+    cmd.register("/compact", compact_handler)  # async def compact_handler(ctx): ...
 """
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 
 @dataclass
@@ -33,8 +35,11 @@ class CommandContext:
     meta: dict[str, Any] = field(default_factory=dict)  # pipeline data，handler 可修改
 
 
-Handler = Callable[[CommandContext], None]
-"""指令处理函数。通过 ctx.meta 回写结果（如 meta["result"]、meta["inbound"] 等）。"""
+Handler = Callable[[CommandContext], None | Awaitable[None]]
+"""指令处理函数。通过 ctx.meta 回写结果（如 meta["result"]、meta["inbound"] 等）。
+
+可以是同步函数，也可以是协程函数（async def）；dispatch 会统一 await。
+"""
 
 
 class CommandManager:
@@ -61,10 +66,11 @@ class CommandManager:
         return [{"command": d.command, "description": d.description,
                  "args_hint": d.args_hint} for d, _ in self._entries]
 
-    def dispatch(self, raw: str | None, meta: dict[str, Any] | None = None) -> bool:
+    async def dispatch(self, raw: str | None, meta: dict[str, Any] | None = None) -> bool:
         """匹配指令并调用 handler。返回 True 表示命中。
 
         handler 通过 ctx.meta 回写结果，不需要返回值。
+        handler 可同步可异步（async def），异步 handler 会被 await。
         """
         if not raw:
             return False
@@ -72,8 +78,13 @@ class CommandManager:
         for d, handler in self._entries:
             if cmd == d.command or cmd.startswith(d.command + " "):
                 args = cmd[len(d.command):].strip() or None
+                # 注意：用 `meta if meta is not None else {}` 而非 `meta or {}`，
+                # 否则传入空 dict（falsy）时会被换成新 dict，handler 对 meta 的
+                # 修改（如 command_hit / inbound 替换）就回写不到调用方。
                 ctx = CommandContext(raw=raw, command=d.command, args=args,
-                                     meta=meta or {})
-                handler(ctx)
+                                     meta=meta if meta is not None else {})
+                result = handler(ctx)
+                if inspect.isawaitable(result):
+                    await result
                 return True
         return False

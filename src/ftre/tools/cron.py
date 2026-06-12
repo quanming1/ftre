@@ -12,7 +12,7 @@ Cron 工具 - 让 Agent 创建/管理定时任务
     "run_history": [1700000000.0, 1700000300.0, ...]
 }
 
-调度由 AgentLoop._cron_loop 协程负责：每分钟扫描目录，
+调度由 CronScheduler._loop 协程负责：默认每 30 秒扫描目录，
 对到期任务生成 user_input 投递到 Bus（在独立 cron session 中执行）。
 """
 import json
