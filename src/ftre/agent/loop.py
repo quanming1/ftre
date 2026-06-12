@@ -19,6 +19,7 @@ from ftre.session.multimodal import build_user_content
 from ftre.tools import ToolRegistry, build_default_tools
 from ftre.tools._workspace import WorkspaceAccessor
 from ftre.utils import Pipeline
+from .compact_handler import CompactHandler
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,15 @@ class AgentLoop:
 
         self._pipeline = Pipeline("consume")
         self._pipeline.use(self._step_command, name="command")
+        self._pipeline.use(self._step_compact, name="compact")
         self._pipeline.use(self._step_run, name="run")
+
+        self.compact_handler = CompactHandler(
+            session_manager=self.session_manager,
+            channel_manager=self.channel_manager,
+            bus=self.bus,
+            loop_getter=lambda: self._event_loop,
+        )
 
         self._register_commands()
 
@@ -78,6 +87,61 @@ class AgentLoop:
             ),
             description="取消当前会话执行",
         )
+        # /compact：手动压缩当前会话上下文（异步 handler，在线程里执行压缩）
+        self.command_manager.register(
+            "/compact",
+            self._cmd_compact,
+            description="压缩当前会话上下文",
+        )
+
+    async def _cmd_compact(self, ctx) -> None:
+        """/compact 指令：fire-and-forget 派发压缩到后台执行。
+
+        绝不能在此 await 压缩完成：dispatch 跑在唯一的 inbound 消费循环里，
+        压缩要派发 subagent 并等它跑完，而 subagent 的 inbound 也要靠这个消费
+        循环处理。一旦在这里阻塞等待 → 消费循环卡死 → subagent 永远不被执行
+        → 死锁。这里只投递到后台任务，立即返回。
+
+        前端 isBusy 由全局 session_status 事件控制（running ↔ idle）：
+        - sendMessage 时前端本地立即置 busy=true
+        - 后端 _run_async 的 finally 会发 idle 解除
+        但 /compact 是命令短路、不走 _run_async，必须在此手动补发 idle，
+        否则前端 loading 转圈永不停止。
+
+        注意：直接用 bus.publish_outbound 而不是 _publish_session_status，
+        后者用 run_coroutine_threadsafe(...).result() 只能从线程调用，从
+        主循环协程里调会自死锁。
+        """
+        inbound = ctx.meta["inbound"]
+        session_id = inbound.from_session
+        channel_id = inbound.from_channel
+
+        async def _emit_status(status: str) -> None:
+            evt = BusMessage(
+                type="global_event",
+                from_channel=GLOBAL_CHANNEL,
+                to_channel=GLOBAL_CHANNEL,
+                from_session=GLOBAL_SESSION,
+                to_session=GLOBAL_SESSION,
+                data={
+                    "type": "session_status",
+                    "data": {"session_id": session_id, "status": status},
+                },
+            )
+            await self.bus.publish_outbound(evt)
+
+        async def _run_compact() -> None:
+            await _emit_status("running")
+            try:
+                await self._event_loop.run_in_executor(
+                    None, self.compact_handler.compact, session_id, channel_id
+                )
+            except Exception:
+                logger.exception(f"[agent-loop] /compact 执行异常 session={session_id}")
+            finally:
+                await _emit_status("idle")
+
+        asyncio.ensure_future(_run_compact())
 
     def start(self) -> None:
         """启动消费循环"""
@@ -105,7 +169,7 @@ class AgentLoop:
         try:
             async for msg in self.bus.subscribe_inbound():
                 try:
-                    self._pipeline.run({"inbound": msg})
+                    await self._pipeline.run({"inbound": msg})
                 except Exception:
                     # 单条消息处理异常不能拖垮整个 consume 循环，否则后续消息全卡死
                     logger.exception("[agent-loop] pipeline 异常，已丢弃该消息")
@@ -123,14 +187,47 @@ class AgentLoop:
                     return str(seg.get("data", "") or "")
         return ""
 
-    def _step_command(self, data: dict) -> bool:
+    async def _step_command(self, data: dict) -> bool:
         """指令预处理：/ 开头的 user_input 交给 CommandManager（handler 可改 inbound）。"""
         inbound = data["inbound"]
         if inbound.type != "user_input" or self.command_manager is None:
             return True
         text = self._extract_text_content(inbound.data.get("content", ""))
         if text.startswith("/"):
-            self.command_manager.dispatch(text, meta=data)
+            hit = await self.command_manager.dispatch(text, meta=data)
+            logger.info(f"[agent-loop] 指令派发 text={text!r} hit={hit}")
+            # 命中指令：标记 command_hit。若 handler 未替换 inbound 类型（仍是
+            # user_input，如 /compact），后续阶段据此短路，避免把指令文本当消息跑 LLM。
+            # /cancel 会把 inbound 换成 cancel 类型，由 _step_run 的 cancel 分支处理。
+            if hit:
+                data["command_hit"] = True
+        return True
+
+    async def _step_compact(self, data: dict) -> bool:
+        """压缩阶段：只判断是否需要自动压缩，把结论写入 data['need_compact']。
+
+        ⚠️ 这里只做轻量判断（读 DB / token），绝不在此执行压缩：本阶段运行在唯一
+        的 inbound 消费循环里，而压缩要派发 subagent 并等它跑完——subagent 的
+        inbound 也要靠这个消费循环处理。若在此执行/等待压缩 → 消费循环卡死 →
+        subagent 永不被执行 → 死锁（曾导致压缩会话空空如也）。
+
+        真正的压缩执行下沉到 _run_async 线程里（此时消费循环已空闲，能正常消费
+        subagent）。
+        """
+        inbound = data["inbound"]
+        if inbound.type != "user_input" or data.get("command_hit"):
+            return True
+        session_id = inbound.data.get("session_id", "") or inbound.from_session
+        if not session_id:
+            return True
+        config = self._load_current_config()
+        try:
+            data["need_compact"] = await self.compact_handler.should_compact(
+                session_id, inbound.from_channel, config
+            )
+        except Exception:
+            logger.exception(f"[agent-loop] 压缩判断异常 session={session_id}")
+            data["need_compact"] = False
         return True
 
     def _step_run(self, data: dict) -> bool:
@@ -141,9 +238,14 @@ class AgentLoop:
             agent = self._active_agents.get(sid)
             if agent:
                 agent.cancel_nowait()
-        elif inbound.type == "user_input":
+        elif inbound.type == "user_input" and not data.get("command_hit"):
+            # fire-and-forget 到线程：消费循环立即回到空闲，subagent 才能被消费。
+            # need_compact 透传给 _run，让压缩在这个空闲窗口里安全执行。
+            need_compact = bool(data.get("need_compact"))
             asyncio.ensure_future(
-                self._event_loop.run_in_executor(None, self._run, inbound)
+                self._event_loop.run_in_executor(
+                    None, self._run, inbound, need_compact
+                )
             )
         return False
 
@@ -161,11 +263,11 @@ class AgentLoop:
         "done",
     }
 
-    def _run(self, inbound: BusMessage) -> None:
+    def _run(self, inbound: BusMessage, need_compact: bool = False) -> None:
         """在线程中执行 Agent（sync wrapper → async）。"""
-        asyncio.run(self._run_async(inbound))
+        asyncio.run(self._run_async(inbound, need_compact))
 
-    async def _run_async(self, inbound: BusMessage) -> None:
+    async def _run_async(self, inbound: BusMessage, need_compact: bool = False) -> None:
         """异步执行 Agent，事件逐条投递回 Bus。"""
         # Step 1: 入参校验
         content = inbound.data.get("content", "")
@@ -200,6 +302,16 @@ class AgentLoop:
                 f"[agent-loop] session 正在运行，静默丢弃并发消息: session={session_id}"
             )
             return
+
+        # Step 2.8: 自动压缩（在本线程里同步执行）。
+        # 这里是安全窗口：_step_run 已 fire-and-forget 派发本协程并让消费循环回到
+        # 空闲，压缩派发的 subagent 能被主消费循环正常处理，不会死锁。
+        # 压缩把 context_compact 事件写入历史，紧接着的 _build_messages 会读到它。
+        if need_compact:
+            try:
+                self.compact_handler.compact(session_id, inbound.from_channel)
+            except Exception:
+                logger.exception(f"[agent-loop] 自动压缩失败 session={session_id}")
 
         # Step 3: 加载配置
         config = self._load_current_config()
