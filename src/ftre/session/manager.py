@@ -322,6 +322,23 @@ class SessionManager:
         await self._db.commit()
         return msg_id
 
+    async def update_message_data(self, message_id: str, data: dict[str, Any]) -> None:
+        """更新一条事件的 data，不改变 timestamp。"""
+        now = time.time()
+        await self._db.execute(
+            "UPDATE messages SET data = ? WHERE id = ?",
+            (json.dumps(data, ensure_ascii=False), message_id),
+        )
+        await self._db.execute(
+            """
+            UPDATE sessions
+            SET updated_at = ?
+            WHERE id = (SELECT session_id FROM messages WHERE id = ?)
+            """,
+            (now, message_id),
+        )
+        await self._db.commit()
+
     async def get_messages_by_session(self, session_id: str) -> list[MessageModel]:
         """获取指定 session 的全部消息（按时间正序）"""
         cursor = await self._db.execute(
@@ -542,10 +559,13 @@ class SessionManager:
                 # - 该事件之后的事件照常重建 → 自动形成 tail（最近原文）。
                 # - 多条 context_compact 时后一条会再次清空 messages，等价于"以最后
                 #   一条为准 + 保留其后 tail"。
-                # 现状（无 head/tail 切分）等价于：context_compact 永远在末尾、tail 为空。
+                # - enabled=false 的 pending 压缩事件只是预生成摘要，不参与上下文重建。
+                data = event["data"] or {}
+                if data.get("enabled", True) is not True:
+                    continue
                 _flush_tool_calls()
                 _take_reasoning()
-                summary = (event["data"] or {}).get("summary", "")
+                summary = data.get("summary", "")
                 messages = []
                 if summary:
                     messages.append({
