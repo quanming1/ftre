@@ -54,6 +54,8 @@ from ftre.tools.cron import CronScheduler
 
 
 async def run_gateway():
+    event_loop = asyncio.get_running_loop()
+
     """启动网关：Bus + SessionManager + AgentLoop + WebSocket Channel + ChannelManager"""
 
     # Session 管理器（SQLite）
@@ -76,6 +78,10 @@ async def run_gateway():
     # Tool 注册表 — 插件注册工具，Agent 构建工具集时读取
     tool_registry = ToolRegistry()
 
+    # Command 管理器 — 注册斜杠指令
+    from ftre.command import CommandManager
+    cmd = CommandManager()
+
     # Plugin 管理器 — 加载内置/外部插件（可注册 Channel / Hook / Tool 等）
     plugin_manager = PluginManager(
         bus=bus,
@@ -83,11 +89,9 @@ async def run_gateway():
         session_manager=session_manager,
         hook_manager=hook_manager,
         tool_registry=tool_registry,
+        event_loop=lambda: event_loop,
+        command_manager=cmd,
     )
-
-    # Command 管理器 — 注册斜杠指令
-    from ftre.command import CommandManager
-    cmd = CommandManager()
 
     # 全局 AgentLoop（消费所有 session 的消息）
     agent_loop = AgentLoop(
@@ -99,9 +103,6 @@ async def run_gateway():
         command_manager=cmd,
     )
     agent_loop.start()
-
-    # 注入 event_loop 到 plugin_manager，供插件使用 run_coroutine_threadsafe
-    plugin_manager._event_loop = agent_loop._event_loop
 
     # 注入到 API 路由（用于 list_sessions 标注 running 状态）
     from ftre.api.routes import set_agent_loop, set_command_manager
