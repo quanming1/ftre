@@ -58,7 +58,8 @@ class Channel(ABC):
             data:       payload
             metadata:   附加元数据（如外部协议帧 id 通过 metadata["frame_id"] 携带，
                         AgentLoop echo 时回填到 outbound 帧给前端做占位去重）
-            kind:       BusMessage.type，目前可取 "user_input" / "cancel"
+            kind:       BusMessage.type，目前只取 "user_input"
+                        （前端 cancel 帧在 ws_channel 层已转为 /cancel user_input）
         """
         msg = BusMessage(
             type=kind,
