@@ -11,8 +11,10 @@ from ftre.agent.compact_handler import (
     get_cursor_index,
     get_pending_compact_index,
     get_previous_summary,
-    _format_events_for_llm,
+    _serialize_events,
+    _build_prompt,
     _compact_enabled,
+    SUMMARY_TEMPLATE,
 )
 
 
@@ -80,74 +82,88 @@ def test_pending_compact_index_no_pending():
     assert get_pending_compact_index(events) is None
 
 
-# ─── _format_events_for_llm ────────────────────────────────────────────
+# ─── _serialize_events ────────────────────────────────────────────
 
 
-def test_format_events_empty():
-    assert _format_events_for_llm([]) == ""
+def test_serialize_empty():
+    assert _serialize_events([]) == ""
 
 
-def test_format_events_preserves_user_full_text():
+def test_serialize_preserves_user_full_text():
     chunk = [
         {"type": "USER_INPUT", "data": {"content": "请按文档第 3 节实现压缩算法，注意游标只进不退"}},
         {"type": "message_complete", "data": {"content": "好的"}},
     ]
-    out = _format_events_for_llm(chunk)
+    out = _serialize_events(chunk)
     assert "请按文档第 3 节实现压缩算法，注意游标只进不退" in out
-    assert "## " in out
+    assert "[User]:" in out
+    assert "[Assistant]:" in out
 
 
-def test_format_events_truncates_long_tool_result():
-    big = "x" * 2000
+def test_serialize_truncates_long_tool_result():
+    big = "x" * 3000
     chunk = [
         {"type": "USER_INPUT", "data": {"content": "go"}},
         {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {}}},
         {"type": "tool_result", "data": {"id": "c1", "result": big}},
     ]
-    out = _format_events_for_llm(chunk)
-    assert "x" * 500 in out
-    assert "x" * 600 not in out
-    assert "[截断" in out
+    out = _serialize_events(chunk)
+    # 默认 tool_output_max_chars=2000，所以 3000 字符的结果会被截断
+    assert "x" * 1500 in out  # 前 2000 字符在
+    assert "[truncated]" in out
+    assert "x" * 2500 not in out  # 超出 2000 的部分不在
 
 
-def test_format_events_context_compact_via_previous_summary():
-    # context_compact 不在 head 里内联，通过 previous_summary 参数注入
-    chunk = [
-        {"type": "USER_INPUT", "data": {"content": "新一轮"}},
-    ]
-    out = _format_events_for_llm(chunk, previous_summary="## 旧摘要内容")
-    assert "旧摘要内容" in out
-    assert "之前的历史摘要" in out
-
-
-def test_format_events_previous_summary_param():
-    chunk = [
-        {"type": "USER_INPUT", "data": {"content": "新内容"}},
-    ]
-    out = _format_events_for_llm(chunk, previous_summary="## 上一份摘要正文")
-    assert "## 上一份摘要正文" in out
-    assert "之前的历史摘要" in out
-    assert "新内容" in out
-
-
-def test_format_events_only_previous_summary_no_chunk():
-    out = _format_events_for_llm([], previous_summary="## 仅旧摘要")
-    assert "## 仅旧摘要" in out
-
-
-def test_format_events_empty_with_no_summary():
-    assert _format_events_for_llm([], previous_summary=None) == ""
-
-
-def test_format_events_handles_multimodal_user_content():
+def test_serialize_handles_multimodal_user_content():
     chunk = [
         {
             "type": "USER_INPUT",
             "data": {"content": [{"type": "text", "data": "看下这张图"}]},
         },
     ]
-    out = _format_events_for_llm(chunk)
+    out = _serialize_events(chunk)
     assert "看下这张图" in out
+
+
+def test_serialize_formats_tool_call():
+    chunk = [
+        {"type": "USER_INPUT", "data": {"content": "go"}},
+        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {"command": "ls"}}},
+        {"type": "tool_result", "data": {"id": "c1", "result": "file1\nfile2"}},
+    ]
+    out = _serialize_events(chunk)
+    assert "[Assistant tool call]: bash(" in out
+    assert "[Tool result]:" in out
+
+
+def test_serialize_reasoning():
+    chunk = [
+        {"type": "reasoning_complete", "data": {"content": "我在想这个问题..."}},
+    ]
+    out = _serialize_events(chunk)
+    assert "[Assistant reasoning]: 我在想这个问题..." in out
+
+
+# ─── _build_prompt ────────────────────────────────────────────
+
+
+def test_build_prompt_first_time():
+    prompt = _build_prompt(context=["[User]: hello\n\n[Assistant]: hi"])
+    assert "创建一份新的锚定摘要" in prompt
+    assert SUMMARY_TEMPLATE in prompt
+    assert "[User]: hello" in prompt
+
+
+def test_build_prompt_incremental():
+    prompt = _build_prompt(
+        previous_summary="## 目标\n- 做某事",
+        context=["[User]: hello\n\n[Assistant]: hi"],
+    )
+    assert "更新下方的锚定摘要" in prompt
+    assert "<previous-summary>" in prompt
+    assert "## 目标\n- 做某事" in prompt
+    assert "</previous-summary>" in prompt
+    assert SUMMARY_TEMPLATE in prompt
 
 
 # ─── L1 prune 修剪测试 ────────────────────────────────────────────
@@ -274,8 +290,8 @@ async def test_run_compact_llm_collects_stream(monkeypatch):
 
         async def stream(self, messages):
             assert messages
-            yield TextDelta(text="## Summary\n")
-            yield TextDelta(text=("details " * 60))
+            yield TextDelta(text="## 目标\n")
+            yield TextDelta(text=("- 做某事" * 60))
             yield StepFinish(finish_reason="stop")
 
     handler = object.__new__(compact_module.CompactHandler)
@@ -297,4 +313,4 @@ async def test_run_compact_llm_collects_stream(monkeypatch):
 
     summary = await handler._run_compact_llm(events, config=config)
 
-    assert summary.startswith("## Summary")
+    assert summary.startswith("## 目标")
