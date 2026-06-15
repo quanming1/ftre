@@ -33,39 +33,50 @@ logger = logging.getLogger(__name__)
 DEFAULT_PRECOMPACT_THRESHOLD = 0.5
 DEFAULT_COMPACT_THRESHOLD = 0.6
 
-# LLM 直调摘要的 system prompt
+# ─── 摘要模板（源自 OpenCode 7 段锚定结构，中文本地化） ──────────────────────
+SUMMARY_TEMPLATE = """\
+输出严格按照 <template> 内的 Markdown 结构，保持段落顺序不变。不要在输出中包含 <template> 标签。
+<template>
+## 目标
+- [一句话任务摘要]
+
+## 约束与偏好
+- [用户约束、偏好、规格，或 "(无)"]
+
+## 进度
+### 已完成
+- [已完成的工作，或 "(无)"]
+
+### 进行中
+- [当前进行的工作，或 "(无)"]
+
+### 受阻
+- [阻塞项，或 "(无)"]
+
+## 关键决策
+- [决策及原因，或 "(无)"]
+
+## 下一步
+- [有序的下一步行动，或 "(无)"]
+
+## 关键上下文
+- [重要技术事实、错误信息、开放问题，或 "(无)"]
+
+## 相关文件
+- [文件或目录路径：为什么重要，或 "(无)"]
+</template>
+
+规则：
+- 每个段落都必须保留，即使内容为空也写 "(无)"。
+- 使用简洁要点，不要写成段落散文。
+- 保留精确的文件路径、命令、错误字符串和标识符。
+- 不要提及压缩过程本身，不要说"上下文已被压缩"之类的话。"""
+
+# LLM 摘要的 system prompt
 COMPACT_LLM_SYSTEM_PROMPT = """\
-你是一个对话历史压缩助手。下面 user 消息里附带一段对话事件流文本，你需要把它整理成
-"交接文档"——目标是让一个完全没看过原始对话的 AI 读完后能无缝接着干活。
+你是一个对话历史压缩助手。你需要把对话历史整理成一份"交接摘要"——目标是让一个完全没看过原始对话的 AI 读完后能无缝接着干活。
 
-核心原则：
-1. 用户原话（USER_INPUT/用户）——一字不漏照搬
-2. AI 关键决策（选了什么方案、放弃了什么、原因）——原样保留
-3. 关键技术事实（文件路径、函数签名、配置值、报错原文、关键代码片段）——原样引用
-4. 探索性动作 / 反复试错 / 啰嗦解释——可压缩成一句结论
-5. 拿不准时一律保留
-
-输出格式（必须严格遵守，前端识别这个结构）：
-
-## 轮次摘要
-
-### 第 N 轮
-**用户原话：** （完整保留）
-**AI 关键决策：** （原样保留决策内容）
-**做了什么：** （重要步骤照实写，纯流水账才概括）
-**产出：** （改了什么 / 得出什么结论 / 卡在哪）
-**关键技术事实：** （函数签名、代码片段、报错、配置、路径——原样保留）
-
-## 交接状态
-
-**已落地的成果：** （带完整路径与改动要点）
-**关键技术事实：** （后续必须知道的硬信息）
-**重要代码/片段：** （核心部分原样保留）
-**已确定的决策：** （选定的方案、否决的方案及原因）
-**待办与悬而未决：** （下一步做什么、遗留 bug、等待确认的点）
-
-直接输出摘要本身，不要任何前言、解释或元评论。
-"""
+严格遵守上面给出的摘要模板结构，每个段落都要有内容。"""
 
 
 class CompactHandler:
@@ -313,16 +324,24 @@ class CompactHandler:
         config,
         previous_summary: str | None = None,
     ) -> str | None:
-        """调用 LLM 生成摘要（异步）。"""
+        """调用 LLM 生成摘要（异步）。
+
+        采用 OpenCode 的 serialize → select → buildPrompt 模式：
+        1. 序列化 head 事件为纯文本（截断 tool 输出至 2000 字符）
+        2. buildPrompt() 拼接：[增量指令/首次指令] + SUMMARY_TEMPLATE + 序列化文本
+        3. 把拼接结果作为 user message 发给 LLM
+        """
         try:
-            text = _format_events_for_llm(head_events, previous_summary=previous_summary)
-            if not text.strip():
+            context = _serialize_events(head_events)
+            if not context.strip():
                 logger.debug("[compact] 事件文本为空，跳过 LLM 调用")
                 return None
 
+            prompt_text = _build_prompt(previous_summary=previous_summary, context=[context])
+
             messages = [
                 {"role": "system", "content": COMPACT_LLM_SYSTEM_PROMPT},
-                {"role": "user", "content": text},
+                {"role": "user", "content": prompt_text},
             ]
 
             handler = LLMHandler(
@@ -338,7 +357,7 @@ class CompactHandler:
                     collected.append(ev.text)
 
             summary = "".join(collected).strip()
-            if not summary or len(summary) < 300 or "## " not in summary:
+            if not summary or len(summary) < 200 or "## " not in summary:
                 logger.warning(f"[compact] LLM 摘要不合格 len={len(summary)}")
                 return None
             return summary
@@ -376,35 +395,30 @@ class CompactHandler:
 # ─── 模块级纯函数（可单测） ───────────────────────────────────────────
 
 
-def _format_events_for_llm(
+def _serialize_events(
     chunk: list[dict],
     *,
-    previous_summary: str | None = None,
-    max_chars: int = 60000,
+    tool_output_max_chars: int = 2000,
 ) -> str:
-    """把事件流格式化为 LLM 可读的 markdown 文本。
+    """把事件流序列化为 LLM 可读的纯文本（源自 OpenCode serialize 模式）。
 
-    max_chars: 输出文本总长度上限。超过时对中间轮次只保留标题行
-    （用户原话），详细内容只保留前 3 轮和最近 5 轮。
+    规则（对齐 OpenCode）：
+    - 用户消息：[User]: 内容
+    - AI 回复：[Assistant]: 内容
+    - AI 思考：[Assistant reasoning]: 内容
+    - 工具调用：[Assistant tool call]: name(args)
+    - 工具结果：[Tool result]: 输出（截断至 tool_output_max_chars）
+    - 工具错误：[Tool error]: 错误信息
+    - 多条消息之间用 \\n\\n 分隔
     """
-    if not chunk and not previous_summary:
-        return ""
-
-    # 先正常格式化，然后如果超过 max_chars，对中间轮次裁剪
-    # 需要按轮次分组
-    turn_idx = 0
-    turns: list[tuple[int, list[str]]] = []  # (turn_number, lines)
-    current_turn_lines: list[str] = []
+    TOOL_OUTPUT_MAX_CHARS = tool_output_max_chars
+    parts: list[str] = []
 
     for ev in chunk:
         t = ev.get("type", "")
         d = ev.get("data") or {}
+
         if t == "USER_INPUT":
-            # 上一个轮次结束
-            if current_turn_lines:
-                turns.append((turn_idx, current_turn_lines))
-                current_turn_lines = []
-            turn_idx += 1
             content = d.get("content", "")
             if isinstance(content, list):
                 content = "\n".join(
@@ -412,76 +426,65 @@ def _format_events_for_llm(
                     for p in content
                     if isinstance(p, dict) and p.get("type") == "text"
                 )
-            current_turn_lines.append(f"### 第 {turn_idx} 轮")
-            current_turn_lines.append(f"**用户**：{content}")
+            # 附件（图片/文件）用占位符
+            attachments = d.get("attachments") or []
+            att_lines = [
+                f"[附件 {a.get('mime', '未知')}: {a.get('name', a.get('uri', ''))}]"
+                for a in attachments if isinstance(a, dict)
+            ]
+            lines = [f"[User]: {content}"] + att_lines
+            parts.append("\n".join(lines))
+
         elif t == "message_complete":
-            current_turn_lines.append(f"**AI**：{d.get('content', '')}")
+            parts.append(f"[Assistant]: {d.get('content', '')}")
+
         elif t == "reasoning_complete":
             content = d.get("content", "")
             if content:
-                current_turn_lines.append(f"**思考**：{content}")
+                parts.append(f"[Assistant reasoning]: {content}")
+
         elif t == "tool_call":
             name = d.get("name", "")
             args = d.get("arguments", {})
             args_str = json.dumps(args, ensure_ascii=False) if not isinstance(args, str) else args
-            if len(args_str) > 300:
-                args_str = args_str[:300] + "...[截断]"
-            current_turn_lines.append(f"**工具调用**：{name}({args_str})")
+            # 输入不截断（OpenCode 也不截断 tool input）
+            parts.append(f"[Assistant tool call]: {name}({args_str})")
+
         elif t == "tool_result":
             result = d.get("result", "")
             if not isinstance(result, str):
                 result = str(result)
-            if len(result) > 500:
-                result = result[:500] + f"...[截断 {len(result) - 500} 字符]"
-            current_turn_lines.append(f"**工具结果**：{result}")
-    # 最后一轮
-    if current_turn_lines:
-        turns.append((turn_idx, current_turn_lines))
+            # 对齐 OpenCode：tool 输出截断至 TOOL_OUTPUT_MAX_CHARS
+            if len(result) > TOOL_OUTPUT_MAX_CHARS:
+                result = result[:TOOL_OUTPUT_MAX_CHARS] + "\n[truncated]"
+            parts.append(f"[Tool result]: {result}")
 
-    # 组装输出
-    lines: list[str] = ["## 对话事件流", ""]
+    return "\n\n".join(parts)
+
+
+def _build_prompt(
+    *,
+    previous_summary: str | None = None,
+    context: list[str] | None = None,
+) -> str:
+    """构建 LLM 摘要 prompt（源自 OpenCode buildPrompt 模式）。
+
+    首次压缩：Create a new anchored summary from the conversation history.
+    增量压缩：Update the anchored summary below using the conversation history above.
+              Preserve still-true details, remove stale details, and merge in the new facts.
+
+    拼接顺序：[指令 + previous-summary] + SUMMARY_TEMPLATE + context文本
+    """
     if previous_summary:
-        lines.append("### 之前的历史摘要（沿用）")
-        lines.append(previous_summary)
-        lines.append("")
+        instruction = (
+            "根据上方的对话历史，更新下方的锚定摘要。\n"
+            "保留仍然正确的细节，移除过时的细节，合并新的事实。\n"
+            f"<previous-summary>\n{previous_summary}\n</previous-summary>"
+        )
+    else:
+        instruction = "根据对话历史，创建一份新的锚定摘要。"
 
-    total_len = len("\n".join(lines))
-    keep_head = 3  # 保留前 3 轮完整内容
-    keep_tail = 5  # 保留最近 5 轮完整内容
-    total_turns = len(turns)
-
-    for i, (num, turn_lines) in enumerate(turns):
-        keep_full = (i < keep_head) or (i >= total_turns - keep_tail)
-        turn_text = "\n".join(turn_lines)
-
-        if keep_full:
-            lines.append(turn_text)
-        else:
-            # 中间轮次：只保留标题行（第一行 = "### 第 N 轮"）和用户原话行
-            title = turn_lines[0] if turn_lines else ""
-            user_line = turn_lines[1] if len(turn_lines) > 1 else ""
-            lines.append(title)
-            lines.append(user_line)
-            lines.append("**AI**：[中间轮次已省略，仅保留用户原话]")
-            lines.append("")
-            turn_text = "\n".join([title, user_line, "**AI**：[中间轮次已省略]", ""])
-
-        total_len += len(turn_text) + 1
-        if total_len > max_chars and i >= keep_head:
-            # 即使是 keep_tail 的轮次也截断
-            break
-
-    # 如果还有没写完的轮次（keep_tail），追加它们
-    if total_turns > keep_head + keep_tail:
-        remaining_tail = turns[total_turns - keep_tail:]
-        for num, turn_lines in remaining_tail:
-            lines.append("\n".join(turn_lines))
-
-    result = "\n".join(lines).strip()
-    if len(result) > max_chars:
-        result = result[:max_chars] + "\n\n[整体截断：文本过长，只保留前半部分]"
-
-    return result
+    return "\n\n".join([instruction, SUMMARY_TEMPLATE, *(context or [])])
 
 
 def get_cursor_index(events: list[dict]) -> int:
