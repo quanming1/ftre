@@ -11,9 +11,10 @@ from ftre.agent.compact_handler import (
     _count_user_turns,
     calculate_budget_target,
     get_cursor_index,
+    get_pending_compact_index,
     get_previous_summary,
     pick_compaction_boundary,
-    raw_archive_chunk,
+    _format_events_for_llm,
 )
 
 
@@ -78,6 +79,19 @@ def test_cursor_with_multiple_compacts_takes_latest():
     ]
     assert get_cursor_index(events) == 4
     assert get_previous_summary(events) == "v2"
+
+
+def test_pending_compact_does_not_advance_cursor():
+    events = [
+        {"type": "USER_INPUT", "data": {"content": "a"}},
+        {"type": "context_compact", "data": {"summary": "v1", "enabled": True}},
+        {"type": "USER_INPUT", "data": {"content": "b"}},
+        {"type": "context_compact", "data": {"summary": "pending", "enabled": False}},
+        {"type": "USER_INPUT", "data": {"content": "c"}},
+    ]
+    assert get_cursor_index(events) == 2
+    assert get_previous_summary(events) == "v1"
+    assert get_pending_compact_index(events) == 3
 
 
 # ─── pick_compaction_boundary ─────────────────────────────────────────
@@ -150,70 +164,70 @@ def test_boundary_lands_on_user_turn_start_preserving_tool_pairs():
     assert events[boundary]["type"] == "USER_INPUT"
 
 
-# ─── raw_archive_chunk ────────────────────────────────────────────────
+# ─── _format_events_for_llm ────────────────────────────────────────────
 
 
-def test_raw_archive_empty():
-    assert raw_archive_chunk([]) == ""
+def test_format_events_empty():
+    assert _format_events_for_llm([]) == ""
 
 
-def test_raw_archive_preserves_user_full_text():
+def test_format_events_preserves_user_full_text():
     # 用户原话必须一字不漏
     chunk = [
         {"type": "USER_INPUT", "data": {"content": "请按文档第 3 节实现压缩算法，注意游标只进不退"}},
         {"type": "message_complete", "data": {"content": "好的"}},
     ]
-    out = raw_archive_chunk(chunk)
+    out = _format_events_for_llm(chunk)
     assert "请按文档第 3 节实现压缩算法，注意游标只进不退" in out
     assert "## " in out  # 含 markdown 标题
 
 
-def test_raw_archive_truncates_long_tool_result():
+def test_format_events_truncates_long_tool_result():
     big = "x" * 2000
     chunk = [
         {"type": "USER_INPUT", "data": {"content": "go"}},
         {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {}}},
         {"type": "tool_result", "data": {"id": "c1", "result": big}},
     ]
-    out = raw_archive_chunk(chunk, tool_result_max=500)
+    out = _format_events_for_llm(chunk)
     # tool_result 被截到 500 + 截断标记
     assert "x" * 500 in out
     assert "x" * 600 not in out
     assert "[截断" in out
 
 
-def test_raw_archive_inlines_previous_summary():
+def test_format_events_inlines_context_compact():
     chunk = [
         {"type": "context_compact", "data": {"summary": "## 旧摘要内容"}},
         {"type": "USER_INPUT", "data": {"content": "新一轮"}},
     ]
-    out = raw_archive_chunk(chunk)
+    out = _format_events_for_llm(chunk)
     assert "## 旧摘要内容" in out
     assert "之前的历史摘要" in out
 
 
-def test_raw_archive_previous_summary_param():
+def test_format_events_previous_summary_param():
     # previous_summary 作为独立参数注入（head 不含旧 compact 事件的场景）
     chunk = [
         {"type": "USER_INPUT", "data": {"content": "新内容"}},
     ]
-    out = raw_archive_chunk(chunk, previous_summary="## 上一份摘要正文")
+    out = _format_events_for_llm(chunk, previous_summary="## 上一份摘要正文")
     assert "## 上一份摘要正文" in out
     assert "之前的历史摘要" in out
     assert "新内容" in out
 
 
-def test_raw_archive_only_previous_summary_no_chunk():
+def test_format_events_only_previous_summary_no_chunk():
     # chunk 空但有 previous_summary：仍应产出非空
-    out = raw_archive_chunk([], previous_summary="## 仅旧摘要")
+    out = _format_events_for_llm([], previous_summary="## 仅旧摘要")
     assert "## 仅旧摘要" in out
 
 
-def test_raw_archive_empty_with_no_summary():
-    assert raw_archive_chunk([], previous_summary=None) == ""
+def test_format_events_empty_with_no_summary():
+    assert _format_events_for_llm([], previous_summary=None) == ""
 
 
-def test_raw_archive_handles_multimodal_user_content():
+def test_format_events_handles_multimodal_user_content():
     # USER_INPUT 的 content 可能是 list（多模态 v2 协议）
     chunk = [
         {
@@ -221,7 +235,7 @@ def test_raw_archive_handles_multimodal_user_content():
             "data": {"content": [{"type": "text", "data": "看下这张图"}]},
         },
     ]
-    out = raw_archive_chunk(chunk)
+    out = _format_events_for_llm(chunk)
     assert "看下这张图" in out
 
 
@@ -317,3 +331,34 @@ def test_prune_disabled_when_not_passed():
     for m in tool_msgs:
         assert len(m["content"]) == 10000
         assert "[L1 修剪" not in m["content"]
+
+
+def test_to_openai_messages_ignores_disabled_compact():
+    """pending compact 事件不影响上下文重建。"""
+    from ftre.session.manager import SessionManager
+    events = [
+        {"type": "USER_INPUT", "data": {"content": "old"}},
+        {"type": "message_complete", "data": {"content": "old answer"}},
+        {"type": "context_compact", "data": {"summary": "## pending", "enabled": False}},
+        {"type": "USER_INPUT", "data": {"content": "new"}},
+    ]
+    msgs = SessionManager.to_openai_messages(events)
+    joined = "\n".join(str(m.get("content", "")) for m in msgs)
+    assert "old" in joined
+    assert "## pending" not in joined
+
+
+def test_to_openai_messages_uses_enabled_compact():
+    """enabled compact 事件启用 summary + tail 视图。"""
+    from ftre.session.manager import SessionManager
+    events = [
+        {"type": "USER_INPUT", "data": {"content": "old"}},
+        {"type": "message_complete", "data": {"content": "old answer"}},
+        {"type": "context_compact", "data": {"summary": "## enabled", "enabled": True}},
+        {"type": "USER_INPUT", "data": {"content": "new"}},
+    ]
+    msgs = SessionManager.to_openai_messages(events)
+    joined = "\n".join(str(m.get("content", "")) for m in msgs)
+    assert "## enabled" in joined
+    assert "new" in joined
+    assert "old answer" not in joined

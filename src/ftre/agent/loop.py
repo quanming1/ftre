@@ -65,10 +65,9 @@ class AgentLoop:
             channel_manager=self.channel_manager,
             bus=self.bus,
             loop_getter=lambda: self._event_loop,
-            threshold=self._initial_context_cfg().threshold,
+            threshold=self._initial_context_cfg().compact_threshold,
             consolidation_ratio=self._initial_context_cfg().consolidation_ratio,
             safety_buffer=self._initial_context_cfg().safety_buffer,
-            preemptive_threshold=self._initial_context_cfg().preemptive_threshold,
         )
 
         self._register_commands()
@@ -117,19 +116,14 @@ class AgentLoop:
         """/compact 指令：fire-and-forget 派发压缩到后台执行。
 
         绝不能在此 await 压缩完成：dispatch 跑在唯一的 inbound 消费循环里，
-        压缩要派发 subagent 并等它跑完，而 subagent 的 inbound 也要靠这个消费
-        循环处理。一旦在这里阻塞等待 → 消费循环卡死 → subagent 永远不被执行
-        → 死锁。这里只投递到后台任务，立即返回。
+        压缩完成后要写事件 + 广播通知，一旦阻塞等待 → 消费循环卡死。
+        这里只投递到后台任务，立即返回。
 
         前端 isBusy 由全局 session_status 事件控制（running ↔ idle）：
         - sendMessage 时前端本地立即置 busy=true
         - 后端 _run_async 的 finally 会发 idle 解除
         但 /compact 是命令短路、不走 _run_async，必须在此手动补发 idle，
         否则前端 loading 转圈永不停止。
-
-        注意：直接用 bus.publish_outbound 而不是 _publish_session_status，
-        后者用 run_coroutine_threadsafe(...).result() 只能从线程调用，从
-        主循环协程里调会自死锁。
         """
         inbound = ctx.meta["inbound"]
         session_id = inbound.from_session
@@ -152,10 +146,7 @@ class AgentLoop:
         async def _run_compact() -> None:
             await _emit_status("running")
             try:
-                # 手动 /compact：用户主动触发，可见（silent=False）+ 走 subagent
-                # 高质量长摘要（use_subagent=True，分钟级，含工具循环）。
-                # 自动压缩（关键路径 + idle 后台）走默认直调 LLM 即可，subagent
-                # 仅留给手动场景。
+                # 手动 /compact：用户主动触发，可见（silent=False）+ LLM 直调摘要。
                 from functools import partial
                 config = self._load_current_config()
                 fn = partial(
@@ -163,7 +154,8 @@ class AgentLoop:
                     session_id, channel_id,
                     config=config,
                     silent=False,
-                    use_subagent=True,
+                    enabled=True,
+                    mode="manual",
                 )
                 await self._event_loop.run_in_executor(None, fn)
             except Exception:
@@ -236,13 +228,9 @@ class AgentLoop:
     async def _step_compact(self, data: dict) -> bool:
         """压缩阶段：只判断是否需要自动压缩，把结论写入 data['need_compact']。
 
-        ⚠️ 这里只做轻量判断（读 DB / token），绝不在此执行压缩：本阶段运行在唯一
-        的 inbound 消费循环里，而压缩要派发 subagent 并等它跑完——subagent 的
-        inbound 也要靠这个消费循环处理。若在此执行/等待压缩 → 消费循环卡死 →
-        subagent 永不被执行 → 死锁（曾导致压缩会话空空如也）。
-
-        真正的压缩执行下沉到 _run_async 线程里（此时消费循环已空闲，能正常消费
-        subagent）。
+        ⚠️ 这里只做轻量判断（读 DB / token），绝不在此执行压缩：
+        本阶段运行在唯一的 inbound 消费循环里，压缩的 LLM 调用需要时间。
+        真正的压缩执行下沉到 _run_async 线程里。
         """
         inbound = data["inbound"]
         if inbound.type != "user_input" or data.get("command_hit"):
@@ -253,7 +241,10 @@ class AgentLoop:
         config = self._load_current_config()
         try:
             data["need_compact"] = await self.compact_handler.should_compact(
-                session_id, inbound.from_channel, config
+                session_id,
+                inbound.from_channel,
+                config,
+                threshold=getattr(config.context, "compact_threshold", 0.6),
             )
         except Exception:
             logger.exception(f"[agent-loop] 压缩判断异常 session={session_id}")
@@ -334,22 +325,25 @@ class AgentLoop:
             return
 
         # Step 2.8: 关键路径压缩。
-        # 这里是安全窗口：_step_run 已 fire-and-forget 派发本协程并让消费循环回到
-        # 空闲，压缩派发的 subagent 能被主消费循环正常处理，不会死锁。
-        # 压缩把 context_compact 事件写入历史，紧接着的 _build_messages 会读到它。
-        #
-        # 摘要器选择：直调 LLM（默认，秒级）。比 raw 机械裁剪质量高，比 subagent 快两个数量级。
-        # silent=True 让前端不渲染气泡，用户最多感觉到稍微慢一拍。
-        # 直调 LLM 失败时 _do_compact 内部会自动退到 raw 兜底，仍能继续。
-        # 启用 head/tail 边界切分（保留最近若干轮原文）。
+        # 这里是安全窗口：消费循环已空闲，压缩可以安全执行。
+        # 只用 LLM 直调（秒级），silent=True 让前端不渲染气泡。
         config = self._load_current_config()
         if need_compact:
             try:
-                self.compact_handler.compact(
+                silent = getattr(config.context, "silent", True)
+                enabled = self.compact_handler.enable_pending_compact(
                     session_id, inbound.from_channel,
                     config=config,
-                    silent=getattr(config.context, "silent", True),
+                    silent=silent,
                 )
+                if not enabled:
+                    self.compact_handler.compact(
+                        session_id, inbound.from_channel,
+                        config=config,
+                        silent=silent,
+                        enabled=True,
+                        mode="force",
+                    )
             except Exception:
                 logger.exception(f"[agent-loop] 关键路径压缩失败 session={session_id}")
 
@@ -433,6 +427,14 @@ class AgentLoop:
                     data=event,
                 )
                 asyncio.run_coroutine_threadsafe(self.bus.publish_outbound(out), self._event_loop).result()
+                if event.get("type") == "usage_update" and inbound.from_channel != SUBAGENT_CHANNEL_ID:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            self._schedule_idle_compact(session_id, inbound.from_channel),
+                            self._event_loop,
+                        )
+                    except Exception:
+                        logger.debug("[agent-loop] 调度 usage 压缩失败", exc_info=True)
         except Exception:
             logger.exception(f"[agent-loop] _run 异常 (session={session_id})")
             err_evt = BusMessage(
@@ -462,32 +464,37 @@ class AgentLoop:
                         logger.debug("[agent-loop] 调度 idle 压缩失败", exc_info=True)
 
     async def _schedule_idle_compact(self, session_id: str, channel_id: str) -> None:
-        """主事件循环里：水位 ≥ preemptive_threshold（默认 0.6）或上次 raw → 后台压缩。
+        """主事件循环里：水位 ≥ threshold → 后台压缩。
 
-        预测性触发：比关键路径阈值（0.8）更低，让后台 idle 时段提前压缩，使用户
-        关键路径几乎撞不到水位。还兼顾"上次是 raw 兜底"的情况，自动升级为 LLM 摘要。
+        每轮对话结束后检查，需要就派发 LLM 直调摘要到 executor 线程。
+        用户下次发消息时上下文已压好，零等待 → 无感。
 
         ⚠️ 必须由主循环跑，不能在 _run_async 的临时事件循环里 ensure_future——那个
-        循环 finally 后即关闭，任务会被取消（文档 5.2 节陷阱）。
-        ⚠️ should_preemptive_compact 是只读 DB 的轻量操作，绝不在此调 LLM；
+        循环 finally 后即关闭，任务会被取消。
+        ⚠️ should_compact 是只读 DB 的轻量操作，绝不在此调 LLM；
         派发由 executor 线程里的 compact() 完成。
         """
         try:
             config = self._load_current_config()
             if not getattr(config.context, "idle_compaction", True):
                 return  # 用户禁用了后台空闲压缩
-            need = await self.compact_handler.should_preemptive_compact(
-                session_id, channel_id, config
+            need = await self.compact_handler.should_compact(
+                session_id,
+                channel_id,
+                config,
+                threshold=getattr(config.context, "precompact_threshold", 0.5),
             )
             if not need:
                 return
-            # 后台压缩：直调 LLM（秒级，无工具）。silent 由 config 决定。
+            # 后台预压缩：LLM 直调（秒级），先写 enabled=false，达到强制水位后再启用。
             from functools import partial
             fn = partial(
                 self.compact_handler.compact,
                 session_id, channel_id,
                 config=config,
                 silent=getattr(config.context, "silent", True),
+                enabled=False,
+                mode="prepare",
             )
             self._event_loop.run_in_executor(None, fn)
             logger.info(f"[agent-loop] idle 后台压缩已派发 session={session_id}")

@@ -49,17 +49,15 @@ class ContextConfig:
     所有字段都有默认值，缺省即沿用代码内常量；旧配置零改动可用。
     详细设计见文档 docs/context-management.md。
     """
-    # 关键路径触发水位（compact_handler.DEFAULT_COMPACT_THRESHOLD）；超过自动压缩
-    threshold: float = 0.8
-    # 预测性后台压缩水位：水位 ≥ 此值即在 idle 时段后台压（比 threshold 更低）
-    # 让用户关键路径几乎撞不到 0.8。
-    preemptive_threshold: float = 0.6
+    # 预压缩水位：estimated_tokens / context_window ≥ 此值时后台准备摘要
+    precompact_threshold: float = 0.5
+    # 启用压缩水位：estimated_tokens / context_window ≥ 此值时启用已准备的摘要
+    compact_threshold: float = 0.6
     # 压缩目标比例：target = budget * consolidation_ratio
-    # 0.7 贴近触发阈值，留更多 tail（与 Nanobot 0.5 不同，详见文档 3.2）
-    consolidation_ratio: float = 0.7
+    consolidation_ratio: float = 0.5
     # 预算安全垫：budget = context_window - max_output - safety_buffer
     safety_buffer: int = 1024
-    # 是否开启后台空闲压缩（每轮 done 后异步派 subagent 高质量摘要）
+    # 是否开启后台空闲压缩（每轮 done 后异步 LLM 摘要）
     idle_compaction: bool = True
     # 压缩事件是否标记 silent（前端不渲染气泡，对用户无感）
     silent: bool = True
@@ -177,9 +175,9 @@ def load_config() -> AgentConfig:
         return ctx_raw.get(key_snake, default)
 
     context_cfg = ContextConfig(
-        threshold=float(_f("threshold", "threshold", 0.8)),
-        preemptive_threshold=float(_f("preemptiveThreshold", "preemptive_threshold", 0.6)),
-        consolidation_ratio=float(_f("consolidationRatio", "consolidation_ratio", 0.7)),
+        precompact_threshold=float(_f("precompactThreshold", "precompact_threshold", 0.5)),
+        compact_threshold=float(_f("compactThreshold", "compact_threshold", _f("threshold", "threshold", 0.6))),
+        consolidation_ratio=float(_f("consolidationRatio", "consolidation_ratio", 0.5)),
         safety_buffer=int(_f("safetyBuffer", "safety_buffer", 1024)),
         idle_compaction=bool(_f("idleCompaction", "idle_compaction", True)),
         silent=bool(_f("silent", "silent", True)),
@@ -191,7 +189,8 @@ def load_config() -> AgentConfig:
         f"workspace={workspace or '(default)'}, "
         f"title_llm={title_llm.model if title_llm else '(fallback to main)'}, "
         f"context: ratio={context_cfg.consolidation_ratio}, "
-        f"preemptive={context_cfg.preemptive_threshold}, "
+        f"precompact={context_cfg.precompact_threshold}, "
+        f"compact={context_cfg.compact_threshold}, "
         f"idle={context_cfg.idle_compaction}, silent={context_cfg.silent}"
     )
     return AgentConfig(
