@@ -2,8 +2,8 @@
 CompactHandler — 上下文压缩处理器
 
 设计：
-- 50% 水位：idle 时预压缩 → compact(enabled=False)，写 pending compact event
-- 60% 水位：关键路径 → enable_pending_compact() 启用 pending，没有则 compact(enabled=True)
+- 50% 水位：idle 时隐形压缩 → compact(enabled=True)，直接写入已启用 compact event
+- 60% 水位：关键路径 → enable_pending_compact() 启用历史 pending，没有则 compact(enabled=True)
 - /compact 手动：先 enable_pending_compact()，没有则 compact(enabled=True, silent=False)
 
 每次压缩：从上一个 enabled=True 的 compact 到现在，全量 LLM 摘要，
@@ -201,7 +201,7 @@ class CompactHandler:
         """异步执行压缩。
 
         Args:
-            enabled: False → 预压缩（50% 水位），写 pending compact
+            enabled: False → 兼容历史预压缩，写 pending compact
                      True  → 直接压缩（/compact 手动 或 60% 无 pending 时）
         """
         # 已有 pending compact 时不重复预压缩

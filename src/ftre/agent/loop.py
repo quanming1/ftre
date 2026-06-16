@@ -55,6 +55,7 @@ class AgentLoop:
         hook_manager=None,
         tool_registry: ToolRegistry | None = None,
         command_manager=None,
+        mcp_manager=None,
     ):
         self.bus = bus
         self.session_manager = session_manager
@@ -62,6 +63,7 @@ class AgentLoop:
         self.hook_manager = hook_manager
         self.tool_registry = tool_registry
         self.command_manager = command_manager
+        self.mcp_manager = mcp_manager
         self._injected_config = config
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -527,14 +529,14 @@ class AgentLoop:
                 logger.debug(f"[agent-loop] session={session_id} 已有后台压缩在飞，跳过")
                 return
 
-            # 后台预压缩：enabled=False，写 pending compact event
+            # 后台隐形压缩：直接启用 compact event，让下一轮上下文立刻使用摘要。
             async def _do_compact():
                 try:
                     await self.compact_handler.compact(
                         session_id, channel_id,
                         config=config,
                         silent=getattr(config.context, "silent", True),
-                        enabled=False,
+                        enabled=True,
                     )
                 finally:
                     self._compact_tasks.pop(session_id, None)
@@ -630,12 +632,20 @@ class AgentLoop:
             channel_manager=self.channel_manager,
             tool_registry=self.tool_registry,
         )
+
+        # MCP 工具提示词注入
+        system_prompt = c.system_prompt
+        if self.mcp_manager:
+            mcp_hint = self.mcp_manager.build_system_hint()
+            if mcp_hint:
+                system_prompt = system_prompt + mcp_hint
+
         return ReActAgent(
             model=c.llm.model,
             api_key=c.llm.api_key,
             api_base=c.llm.api_base,
             api_type=c.llm.api_type,
-            system_prompt=c.system_prompt,
+            system_prompt=system_prompt,
             tools=tools,
             max_iterations=c.max_iterations,
         )
