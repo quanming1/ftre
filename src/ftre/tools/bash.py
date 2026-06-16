@@ -15,6 +15,52 @@ from ._truncate import truncate_output
 from ._workspace import WorkspaceAccessor
 
 
+# ============== 用户级 PATH 补全 ==============
+
+# 后台进程的 PATH 可能缺少用户级目录（~/.local/bin 等），
+# 导致 shutil.which() 找不到 rtk/semble 等用户安装的工具。
+# 这里列出常见的用户级 bin 目录，作为 fallback。
+
+def _user_bin_dirs() -> list[str]:
+    """返回常见的用户级可执行文件目录（仅返回实际存在的）"""
+    home = Path.home()
+    candidates = []
+    if sys.platform == "win32":
+        appdata_local = home / "AppData" / "Local"
+        appdata_roaming = home / "AppData" / "Roaming"
+        candidates = [
+            home / ".local" / "bin",
+            home / ".mavis" / "bin",
+            appdata_local / "Programs" / "uv",
+            appdata_roaming / "uv",
+            appdata_roaming / "uv" / "tools",
+        ]
+    else:
+        candidates = [
+            home / ".local" / "bin",
+            home / ".cargo" / "bin",
+            home / "go" / "bin",
+        ]
+    return [str(p) for p in candidates if p.is_dir()]
+
+
+def _which_with_user_paths(name: str) -> str | None:
+    """shutil.which() + 用户级 PATH fallback"""
+    # 先试 shutil.which（走当前进程 PATH）
+    result = shutil.which(name)
+    if result:
+        return result
+    # fallback：遍历用户级 bin 目录
+    for d in _user_bin_dirs():
+        if sys.platform == "win32":
+            candidate = os.path.join(d, f"{name}.exe")
+        else:
+            candidate = os.path.join(d, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 # ============== RTK 集成 ==============
 
 # 缓存 rtk 可执行文件路径（None=未检测，False=不可用，str=路径）
@@ -25,7 +71,7 @@ def _find_rtk() -> str | None:
     """查找 rtk 可执行文件路径，结果会被缓存"""
     global _rtk_path_cache
     if _rtk_path_cache is None:
-        path = shutil.which("rtk")
+        path = _which_with_user_paths("rtk")
         _rtk_path_cache = path if path else False
     return _rtk_path_cache if _rtk_path_cache else None
 
@@ -252,16 +298,38 @@ _semble_path_cache: str | bool | None = None
 def _find_semble() -> str | None:
     """查找 semble 可执行文件路径，结果会被缓存。
 
-    优先在 PATH 中查找；找不到再看是否能通过 `uvx --from "semble[mcp]" semble` 调用
-    （即检测 uvx 是否可用，作为降级方案）。本函数只判断主路径，降级方案由调用方决定。
+    优先在 PATH 中查找（含用户级目录 fallback）；找不到再看 uvx 是否可用，
+    尝试通过 `uvx --from "semble[mcp]" semble` 调用作为降级方案。
     """
     global _semble_path_cache
     if _semble_path_cache is not None:
         return _semble_path_cache if isinstance(_semble_path_cache, str) else None
 
-    path = shutil.which("semble")
-    _semble_path_cache = path if path else False
-    return path
+    # 主路径：shutil.which + 用户级 PATH fallback
+    path = _which_with_user_paths("semble")
+    if path:
+        _semble_path_cache = path
+        return path
+
+    # 降级方案：尝试通过 uvx 调用
+    uvx_path = _which_with_user_paths("uvx")
+    if uvx_path:
+        try:
+            # 用 --help 快速检测 uvx 能否拉起 semble（不真正执行索引）
+            test_result = subprocess.run(
+                [uvx_path, "--from", "semble[mcp]", "semble", "--help"],
+                capture_output=True,
+                timeout=15,
+            )
+            if test_result.returncode == 0:
+                # uvx 可以拉起 semble，缓存 uvx 调用模板
+                _semble_path_cache = f"{uvx_path} --from \"semble[mcp]\" semble"
+                return _semble_path_cache
+        except Exception:
+            pass
+
+    _semble_path_cache = False
+    return None
 
 
 def _semble_hints() -> str:
@@ -272,10 +340,22 @@ def _semble_hints() -> str:
     """
     if not _find_semble():
         return ""
+
+    semble_path = _find_semble()
+    # 判断是直接安装还是 uvx 降级调用
+    is_uvx = semble_path and "uvx" in semble_path and "--from" in semble_path
+    cmd_prefix = semble_path if is_uvx else "semble"
+
+    install_hint = (
+        f"（通过 uvx 调用：{cmd_prefix}）"
+        if is_uvx
+        else "（已在本机 PATH 中可直接调用）"
+    )
+
     return (
         "\n\n"
-        "【代码检索建议：本机已安装 semble，强烈优先使用】\n"
-        "semble 是什么：一个为 AI agent 设计的语义代码检索 CLI（已在本机 PATH 中可直接调用）。\n"
+        f"【代码检索建议：本机已安装 semble，强烈优先使用】\n"
+        f"semble 是什么：一个为 AI agent 设计的语义代码检索 CLI{install_hint}。\n"
         "  它把代码库切成 tree-sitter 感知的 chunk，做混合检索（语义嵌入 + BM25 关键词 + RRF 融合），\n"
         "  返回最相关的几段代码而不是整个文件。索引在首次查询时自动构建并缓存，\n"
         "  文件变化会自动失效重建。全程 CPU、无 API key、无外部服务。\n"
@@ -286,19 +366,19 @@ def _semble_hints() -> str:
         "  - 返回结果带 file_path 和行号，可直接用 read 工具继续查看上下文。\n"
         "常用调用方式（都通过本 bash 工具执行；路径省略时默认当前目录）：\n"
         "  1) 按行为/功能找代码（最常用）：\n"
-        "       semble search \"how authentication is handled\" .\n"
-        "       semble search \"websocket reconnect logic\" .\n"
-        "       semble search \"model selector dropdown button\" .\n"
-        "       semble search \"...\" . --top-k 10           # 默认 10，可调整\n"
+        f"       {cmd_prefix} search \"how authentication is handled\" .\n"
+        f"       {cmd_prefix} search \"websocket reconnect logic\" .\n"
+        f"       {cmd_prefix} search \"model selector dropdown button\" .\n"
+        f"       {cmd_prefix} search \"...\" . --top-k 10           # 默认 10，可调整\n"
         "  2) 找与某段已知代码相似的实现（探索同类组件 / 找重复代码）：\n"
-        "       semble find-related src/auth.py 42 .\n"
+        f"       {cmd_prefix} find-related src/auth.py 42 .\n"
         "       （第二个参数是行号，定位到一个具体 chunk 作为种子）\n"
         "  3) 搜文档或配置（默认只搜代码）：\n"
-        "       semble search \"deployment guide\" . --content docs\n"
-        "       semble search \"database host port\" . --content config\n"
-        "       semble search \"...\"               . --content all\n"
+        f"       {cmd_prefix} search \"deployment guide\" . --content docs\n"
+        f"       {cmd_prefix} search \"database host port\" . --content config\n"
+        f"       {cmd_prefix} search \"...\"               . --content all\n"
         "  4) 搜远程仓库（自动浅克隆 + 索引 + 缓存）：\n"
-        "       semble search \"save model\" https://github.com/MinishLab/model2vec\n"
+        f"       {cmd_prefix} search \"save model\" https://github.com/MinishLab/model2vec\n"
         "查询要点（实测有效）：\n"
         "  · 用英文自然语言描述行为，结果显著更准（底层模型偏英文）；\n"
         "  · 直接描述『这段代码在做什么』，无需先猜命名；\n"
@@ -309,7 +389,7 @@ def _semble_hints() -> str:
         "  · 重命名 API / 移除引用，需要列出全部 caller；\n"
         "  · 只是验证某个固定字符串是否存在。\n"
         "反例（请避免）：用 `findstr WorkspaceGroup` 猜变量名翻代码——\n"
-        "  这种场景一次 `semble search \"workspace group sidebar\" .` 就能命中，\n"
+        f"  这种场景一次 `{cmd_prefix} search \"workspace group sidebar\" .` 就能命中，\n"
         "  且不需要事先知道组件叫什么名字。"
     )
 
