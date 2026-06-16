@@ -183,7 +183,7 @@ def load_config() -> AgentConfig:
         silent=bool(_f("silent", "silent", True)),
     )
 
-    logger.warning(
+    logger.info(
         f"[config] model={llm.model}, provider={provider_name}, "
         f"context_window={llm.context_window}, max_output={llm.max_output}, "
         f"workspace={workspace or '(default)'}, "
