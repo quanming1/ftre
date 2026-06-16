@@ -66,6 +66,7 @@ async def _watch_mcp_config(
     每 3 秒检查一次文件修改时间，避免引入第三方文件监听依赖。
     """
     from ftre.config import CONFIG_PATH
+    _wlog = logging.getLogger("ftre.mcp.watch")
     last_mtime: float = 0.0
     last_mcp_json: str = ""  # 序列化后的 mcp 段，用于内容比对
 
@@ -94,7 +95,7 @@ async def _watch_mcp_config(
             last_mcp_json = mcp_json
 
             # mcp 段变了，热重载
-            logger.info("[mcp-config] 检测到 config.json mcp 段变化，开始热重载…")
+            _wlog.info("[mcp-config] 检测到 config.json mcp 段变化，开始热重载…")
             new_configs = parse_mcp_config(raw.get("mcp", {}))
             await mcp_manager.reload(new_configs)
 
@@ -109,10 +110,10 @@ async def _watch_mcp_config(
                     tool_registry.register(tool)
                 except ValueError:
                     pass  # 已注册则跳过
-            logger.info(f"[mcp-config] 热重载完成，注册 {len(mcp_tools)} 个 MCP 工具")
+            _wlog.info(f"[mcp-config] 热重载完成，注册 {len(mcp_tools)} 个 MCP 工具")
 
         except Exception as e:
-            logger.warning(f"[mcp-config] 热重载异常: {e}")
+            _wlog.warning(f"[mcp-config] 热重载异常: {e}")
 
 
 async def run_gateway():
