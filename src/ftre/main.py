@@ -8,6 +8,7 @@ import sys
 import os
 import asyncio
 import logging
+import json
 
 # Windows CMD 默认不认 ANSI 转义码，激活虚拟终端支持
 if sys.platform == "win32":
@@ -51,6 +52,67 @@ from ftre.agent.loop import AgentLoop
 from ftre.config import load_config_file
 from ftre.tools import ToolRegistry
 from ftre.tools.cron import CronScheduler
+from ftre.mcp import McpManager
+from ftre.mcp.config import parse_mcp_config
+from ftre.mcp.adapter import build_mcp_tools
+
+
+async def _watch_mcp_config(
+    mcp_manager: McpManager,
+    tool_registry: ToolRegistry,
+) -> None:
+    """后台协程：轮询 config.json 的 mtime，检测 mcp 段变化后热重连。
+
+    每 3 秒检查一次文件修改时间，避免引入第三方文件监听依赖。
+    """
+    from ftre.config import CONFIG_PATH
+    last_mtime: float = 0.0
+    last_mcp_json: str = ""  # 序列化后的 mcp 段，用于内容比对
+
+    if CONFIG_PATH.exists():
+        last_mtime = CONFIG_PATH.stat().st_mtime
+        try:
+            raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            last_mcp_json = json.dumps(raw.get("mcp", {}), sort_keys=True)
+        except Exception:
+            pass
+
+    while True:
+        await asyncio.sleep(3)
+        try:
+            if not CONFIG_PATH.exists():
+                continue
+            mtime = CONFIG_PATH.stat().st_mtime
+            if mtime == last_mtime:
+                continue
+            last_mtime = mtime
+
+            raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            mcp_json = json.dumps(raw.get("mcp", {}), sort_keys=True)
+            if mcp_json == last_mcp_json:
+                continue
+            last_mcp_json = mcp_json
+
+            # mcp 段变了，热重载
+            logger.info("[mcp-config] 检测到 config.json mcp 段变化，开始热重载…")
+            new_configs = parse_mcp_config(raw.get("mcp", {}))
+            await mcp_manager.reload(new_configs)
+
+            # 刷新 tool_registry 里的 mcp 工具
+            tool_registry._tools = [
+                t for t in tool_registry._tools
+                if not getattr(t, "name", "").startswith("mcp__")
+            ]
+            mcp_tools = await build_mcp_tools(mcp_manager)
+            for tool in mcp_tools:
+                try:
+                    tool_registry.register(tool)
+                except ValueError:
+                    pass  # 已注册则跳过
+            logger.info(f"[mcp-config] 热重载完成，注册 {len(mcp_tools)} 个 MCP 工具")
+
+        except Exception as e:
+            logger.warning(f"[mcp-config] 热重载异常: {e}")
 
 
 async def run_gateway():
@@ -93,20 +155,8 @@ async def run_gateway():
         command_manager=cmd,
     )
 
-    # 全局 AgentLoop（消费所有 session 的消息）
-    agent_loop = AgentLoop(
-        bus=bus,
-        session_manager=session_manager,
-        channel_manager=mgr,
-        hook_manager=hook_manager,
-        tool_registry=tool_registry,
-        command_manager=cmd,
-    )
-    agent_loop.start()
-
-    # 注入到 API 路由（用于 list_sessions 标注 running 状态）
-    from ftre.api.routes import set_agent_loop, set_command_manager
-    set_agent_loop(agent_loop)
+    # 注入到 API 路由
+    from ftre.api.routes import set_agent_loop, set_command_manager, set_mcp_manager
     set_command_manager(cmd)
 
     # WebSocket Channel
@@ -118,6 +168,35 @@ async def run_gateway():
 
     config_data = load_config_file()
     plugin_manager.load_all(config_data)
+
+    # ── MCP 服务器连接 ──
+    # 从 config.json 的 "mcp" 段解析配置，连接服务器，发现并注册工具
+    mcp_manager = McpManager()
+    mcp_configs = parse_mcp_config(config_data.get("mcp", {}))
+    if mcp_configs:
+        await mcp_manager.start(mcp_configs)
+        mcp_tools = await build_mcp_tools(mcp_manager)
+        for tool in mcp_tools:
+            tool_registry.register(tool)
+
+    # 注入 McpManager 到 API 路由
+    set_mcp_manager(mcp_manager)
+
+    # 后台协程：监听 config.json mcp 段变化，热重连 MCP 服务器
+    asyncio.create_task(_watch_mcp_config(mcp_manager, tool_registry))
+
+    # 全局 AgentLoop（消费所有 session 的消息）
+    agent_loop = AgentLoop(
+        bus=bus,
+        session_manager=session_manager,
+        channel_manager=mgr,
+        hook_manager=hook_manager,
+        tool_registry=tool_registry,
+        command_manager=cmd,
+        mcp_manager=mcp_manager,
+    )
+    agent_loop.start()
+    set_agent_loop(agent_loop)
 
     # 启动所有 Channel + 分发循环
     await mgr.start()
@@ -135,6 +214,7 @@ async def run_gateway():
     finally:
         await cron_scheduler.stop()
         await agent_loop.stop()
+        await mcp_manager.stop()
         await mgr.stop()
         await session_manager.close()
 

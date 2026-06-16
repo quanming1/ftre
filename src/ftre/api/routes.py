@@ -20,6 +20,8 @@ from ftre.tools.cron import (
     _job_path,
 )
 from ftre.api import skill as skill_store
+from ftre.mcp.manager import McpManager
+from ftre.mcp.config import parse_mcp_config
 from croniter import croniter
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,8 @@ _session_manager: SessionManager | None = None
 # AgentLoop 实例由外部注入（启动时设置），用于查询 session 是否在跑
 _agent_loop: AgentLoop | None = None
 _command_manager = None
+# McpManager 实例由外部注入（启动时设置）
+_mcp_manager: McpManager | None = None
 
 
 def set_session_manager(manager: SessionManager) -> None:
@@ -49,6 +53,12 @@ def set_command_manager(cmd) -> None:
     """注入 CommandManager 实例（启动时调用）"""
     global _command_manager
     _command_manager = cmd
+
+
+def set_mcp_manager(mgr: McpManager) -> None:
+    """注入 McpManager 实例（启动时调用）"""
+    global _mcp_manager
+    _mcp_manager = mgr
 
 
 @router.post("/sessions")
@@ -526,3 +536,236 @@ async def list_commands():
     if _command_manager is None:
         return {"commands": []}
     return {"commands": _command_manager.list_commands()}
+
+
+# ─────────────────────────────────────────────────────────────
+# MCP 服务器管理
+# ─────────────────────────────────────────────────────────────
+#
+# MCP 配置存储在 ~/.ftre/config.json 的 "mcp" 段。
+# API 操作：读配置 → 改内存 → 写回 config.json → 热重连 McpManager。
+# 这样前端设置页可以直接增删改 MCP 服务器，无需重启网关。
+
+
+def _read_config_json() -> dict:
+    """读取 config.json 原始内容"""
+    if not CONFIG_PATH.exists():
+        return {}
+    return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+def _write_config_json(data: dict) -> None:
+    """原子写入 config.json"""
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".config.", suffix=".tmp", dir=str(CONFIG_PATH.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, CONFIG_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _validate_mcp_server(payload: dict) -> tuple[dict, str | None]:
+    """校验单个 MCP 服务器配置，返回 (cleaned, error)"""
+    if not isinstance(payload, dict):
+        return {}, "配置必须是 JSON 对象"
+
+    server_type = payload.get("type", "")
+    if server_type not in ("local", "remote"):
+        return {}, "type 必须是 'local' 或 'remote'"
+
+    disabled = bool(payload.get("disabled", False))
+
+    if server_type == "local":
+        command = payload.get("command", [])
+        if not isinstance(command, list) or not command:
+            return {}, "local 类型必须提供非空 command 数组"
+        if not all(isinstance(c, str) for c in command):
+            return {}, "command 数组元素必须是字符串"
+        env = payload.get("environment")
+        if env is not None and not isinstance(env, dict):
+            return {}, "environment 必须是 dict"
+        return {
+            "type": "local",
+            "command": command,
+            "environment": env or {},
+            "disabled": disabled,
+            "timeout": int(payload.get("timeout", 30_000)),
+        }, None
+
+    elif server_type == "remote":
+        url = payload.get("url", "")
+        if not isinstance(url, str) or not url:
+            return {}, "remote 类型必须提供 url"
+        headers = payload.get("headers")
+        if headers is not None and not isinstance(headers, dict):
+            return {}, "headers 必须是 dict"
+        return {
+            "type": "remote",
+            "url": url,
+            "headers": headers or {},
+            "disabled": disabled,
+            "timeout": int(payload.get("timeout", 30_000)),
+        }, None
+
+    return {}, "未知 type"
+
+
+@router.get("/mcp")
+async def list_mcp_servers():
+    """列出所有 MCP 服务器配置及连接状态
+
+    返回 { servers: [{ name, type, ...config, status }] }
+    """
+    config_data = _read_config_json()
+    mcp_raw = config_data.get("mcp", {})
+
+    # 连接状态
+    status_map = _mcp_manager.get_status() if _mcp_manager else {}
+
+    servers = []
+    for name, cfg in (mcp_raw or {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        entry = {**cfg, "name": name}
+        entry["status"] = status_map.get(name, "disconnected")
+        servers.append(entry)
+
+    return {"servers": servers}
+
+
+@router.post("/mcp", status_code=201)
+async def create_mcp_server(request: Request):
+    """添加 MCP 服务器
+
+    body: {"name": "...", "type": "local", "command": [...], ...}
+    """
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"非法 JSON: {e}")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
+
+    name = payload.get("name", "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name 不能为空")
+    if not all(c.isalnum() or c in "-_" for c in name):
+        raise HTTPException(status_code=400, detail="name 只允许字母、数字、连字符、下划线")
+
+    cleaned, err = _validate_mcp_server(payload)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    # 写入 config.json
+    config_data = _read_config_json()
+    mcp = config_data.setdefault("mcp", {})
+    if name in mcp:
+        raise HTTPException(status_code=409, detail=f"MCP 服务器已存在: {name}")
+    mcp[name] = cleaned
+    _write_config_json(config_data)
+
+    # 热连接新服务器
+    if _mcp_manager and not cleaned.get("disabled"):
+        from ftre.mcp.config import McpServerConfig
+        configs = parse_mcp_config({name: cleaned})
+        if configs:
+            from ftre.mcp.adapter import build_mcp_tools
+            await _mcp_manager.start(configs)
+            tools = await build_mcp_tools(_mcp_manager)
+            if _agent_loop and _agent_loop.tool_registry:
+                for tool in tools:
+                    try:
+                        _agent_loop.tool_registry.register(tool)
+                    except ValueError:
+                        pass  # 已注册则跳过
+
+    return {"name": name, **cleaned, "status": "connected" if not cleaned.get("disabled") else "disabled"}
+
+
+@router.patch("/mcp/{name}")
+async def update_mcp_server(name: str, request: Request):
+    """局部更新 MCP 服务器配置
+
+    可修改：command / environment / url / headers / disabled / timeout
+    修改后自动重连该服务器。
+    """
+    config_data = _read_config_json()
+    mcp = config_data.get("mcp", {})
+    if name not in mcp:
+        raise HTTPException(status_code=404, detail=f"MCP 服务器不存在: {name}")
+
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"非法 JSON: {e}")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
+
+    # 合并后完整校验
+    merged = {**mcp[name], **payload}
+    cleaned, err = _validate_mcp_server(merged)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    mcp[name] = cleaned
+    _write_config_json(config_data)
+
+    # 增量重连
+    if _mcp_manager:
+        all_configs = parse_mcp_config(mcp)
+        await _mcp_manager.reload(all_configs)
+        # 重新注册所有 MCP 工具
+        if _agent_loop and _agent_loop.tool_registry:
+            from ftre.mcp.adapter import build_mcp_tools
+            _agent_loop.tool_registry._tools = [
+                t for t in _agent_loop.tool_registry._tools
+                if not getattr(t, "name", "").startswith("mcp__")
+            ]
+            tools = await build_mcp_tools(_mcp_manager)
+            for tool in tools:
+                try:
+                    _agent_loop.tool_registry.register(tool)
+                except ValueError:
+                    pass
+
+    return {"name": name, **cleaned}
+
+
+@router.delete("/mcp/{name}", status_code=204)
+async def delete_mcp_server(name: str):
+    """删除 MCP 服务器配置"""
+    config_data = _read_config_json()
+    mcp = config_data.get("mcp", {})
+    if name not in mcp:
+        raise HTTPException(status_code=404, detail=f"MCP 服务器不存在: {name}")
+
+    del mcp[name]
+    _write_config_json(config_data)
+
+    # 增量重连
+    if _mcp_manager:
+        all_configs = parse_mcp_config(mcp) if mcp else []
+        await _mcp_manager.reload(all_configs)
+        if _agent_loop and _agent_loop.tool_registry:
+            from ftre.mcp.adapter import build_mcp_tools
+            _agent_loop.tool_registry._tools = [
+                t for t in _agent_loop.tool_registry._tools
+                if not getattr(t, "name", "").startswith("mcp__")
+            ]
+            if _mcp_manager:
+                tools = await build_mcp_tools(_mcp_manager)
+                for tool in tools:
+                    try:
+                        _agent_loop.tool_registry.register(tool)
+                    except ValueError:
+                        pass
+
+    return None
