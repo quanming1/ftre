@@ -83,6 +83,10 @@ class AgentLoop:
         # stop() 时可以统一 cancel，防止任务飞丢。
         self._dispatch_tasks: set[asyncio.Task] = set()
 
+        # 后台 idle compact task 去重：session_id → asyncio.Task
+        # 同一 session 同一时间只允许一个 compact task 在飞
+        self._compact_tasks: dict[str, asyncio.Task] = {}
+
         # ─── pipeline ─────────────────────────────────────────
         self._pipeline = Pipeline("consume")
         self._pipeline.use(self._step_command, name="command")
@@ -400,6 +404,7 @@ class AgentLoop:
         await self.session_manager.save_message(session_id, "USER_INPUT", inbound.data)
 
         # Step 6.5: echo user_input 给前端
+        # 透传 inbound.metadata（含 frame_id），前端用 frame_id 与本地乐观占位去重
         echo = BusMessage(
             type="agent_event",
             from_channel=inbound.from_channel,
@@ -407,6 +412,7 @@ class AgentLoop:
             from_session=inbound.from_session,
             to_session=inbound.to_session,
             data={"type": "user_input", "data": inbound.data},
+            metadata=inbound.metadata,
         )
         await self.bus.publish_outbound(echo)
 
@@ -445,6 +451,9 @@ class AgentLoop:
                     data=event,
                 )
                 await self.bus.publish_outbound(out)
+                # usage_update 时检查是否需要预压缩。
+                # _compact_tasks 去重保护确保同一 session 只有一个 compact task 在飞，
+                # 所以即使 usage_update 频繁也不会反复调度。
                 if event.get("type") == "usage_update" and inbound.from_channel != SUBAGENT_CHANNEL_ID:
                     try:
                         await self._schedule_idle_compact(session_id, inbound.from_channel)
@@ -495,7 +504,11 @@ class AgentLoop:
     # ─── idle 压缩调度 ──────────────────────────────────────
 
     async def _schedule_idle_compact(self, session_id: str, channel_id: str) -> None:
-        """主事件循环里：水位 ≥ threshold → 后台压缩。"""
+        """主事件循环里：水位 ≥ threshold → 后台压缩。
+
+        去重：同一 session 同一时间只允许一个后台 compact task 在飞。
+        如果上一个还没完成就不再派发，避免 cron session 连续触发导致反复压缩。
+        """
         try:
             config = self._load_current_config()
             if not getattr(config.context, "idle_compaction", True):
@@ -508,16 +521,26 @@ class AgentLoop:
             )
             if not need:
                 return
+
+            # 去重：同一 session 已有后台 compact 在飞则跳过
+            if session_id in self._compact_tasks:
+                logger.debug(f"[agent-loop] session={session_id} 已有后台压缩在飞，跳过")
+                return
+
             # 后台预压缩：enabled=False，写 pending compact event
-            # 用 asyncio.create_task 让它在后台跑，不阻塞当前流程
-            asyncio.create_task(
-                self.compact_handler.compact(
-                    session_id, channel_id,
-                    config=config,
-                    silent=getattr(config.context, "silent", True),
-                    enabled=False,
-                )
-            )
+            async def _do_compact():
+                try:
+                    await self.compact_handler.compact(
+                        session_id, channel_id,
+                        config=config,
+                        silent=getattr(config.context, "silent", True),
+                        enabled=False,
+                    )
+                finally:
+                    self._compact_tasks.pop(session_id, None)
+
+            task = asyncio.create_task(_do_compact())
+            self._compact_tasks[session_id] = task
             logger.info(f"[agent-loop] idle 后台压缩已派发 session={session_id}")
         except Exception:
             logger.exception(f"[agent-loop] idle 压缩调度异常 session={session_id}")
