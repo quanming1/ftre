@@ -672,20 +672,10 @@ async def create_mcp_server(request: Request):
     mcp[name] = cleaned
     _write_config_json(config_data)
 
-    # 热连接新服务器
+    # 热连接新服务器（通过统一入口，自带并发锁）
     if _mcp_manager and not cleaned.get("disabled"):
-        from ftre.mcp.config import McpServerConfig
-        configs = parse_mcp_config({name: cleaned})
-        if configs:
-            from ftre.mcp.adapter import build_mcp_tools
-            await _mcp_manager.start(configs)
-            tools = await build_mcp_tools(_mcp_manager)
-            if _agent_loop and _agent_loop.tool_registry:
-                for tool in tools:
-                    try:
-                        _agent_loop.tool_registry.register(tool)
-                    except ValueError:
-                        pass  # 已注册则跳过
+        from ftre.main import mcp_reload_and_register
+        await mcp_reload_and_register({name: cleaned}, source="api-create")
 
     return {"name": name, **cleaned, "status": "connected" if not cleaned.get("disabled") else "disabled"}
 
@@ -718,23 +708,10 @@ async def update_mcp_server(name: str, request: Request):
     mcp[name] = cleaned
     _write_config_json(config_data)
 
-    # 增量重连
+    # 增量重连（通过统一入口，自带并发锁）
     if _mcp_manager:
-        all_configs = parse_mcp_config(mcp)
-        await _mcp_manager.reload(all_configs)
-        # 重新注册所有 MCP 工具
-        if _agent_loop and _agent_loop.tool_registry:
-            from ftre.mcp.adapter import build_mcp_tools
-            _agent_loop.tool_registry._tools = [
-                t for t in _agent_loop.tool_registry._tools
-                if not getattr(t, "name", "").startswith("mcp__")
-            ]
-            tools = await build_mcp_tools(_mcp_manager)
-            for tool in tools:
-                try:
-                    _agent_loop.tool_registry.register(tool)
-                except ValueError:
-                    pass
+        from ftre.main import mcp_reload_and_register
+        await mcp_reload_and_register(mcp, source="api-update")
 
     return {"name": name, **cleaned}
 
@@ -750,22 +727,9 @@ async def delete_mcp_server(name: str):
     del mcp[name]
     _write_config_json(config_data)
 
-    # 增量重连
+    # 增量重连（通过统一入口，自带并发锁）
     if _mcp_manager:
-        all_configs = parse_mcp_config(mcp) if mcp else []
-        await _mcp_manager.reload(all_configs)
-        if _agent_loop and _agent_loop.tool_registry:
-            from ftre.mcp.adapter import build_mcp_tools
-            _agent_loop.tool_registry._tools = [
-                t for t in _agent_loop.tool_registry._tools
-                if not getattr(t, "name", "").startswith("mcp__")
-            ]
-            if _mcp_manager:
-                tools = await build_mcp_tools(_mcp_manager)
-                for tool in tools:
-                    try:
-                        _agent_loop.tool_registry.register(tool)
-                    except ValueError:
-                        pass
+        from ftre.main import mcp_reload_and_register
+        await mcp_reload_and_register(mcp, source="api-delete")
 
     return None
