@@ -3,28 +3,33 @@ MCP 连接管理器
 
 职责：
 1. 根据 McpServerConfig 连接 MCP 服务器（stdio / streamable HTTP）
-2. 发现工具（listTools）
+2. 发现工具（listTools）并注册到 ToolRegistry
 3. 提供 callTool 能力给 McpToolAdapter
 4. 生命周期管理（启动/停止/重连）
+5. 监听 config.json 变化，自动热重载
+6. 热重载 + 工具注册的统一入口，自带并发锁
 
 设计原则：
 - 全异步，所有 IO 操作走 asyncio
-- McpManager 实例在 main.py 创建，注入到 AgentLoop
-- Agent 运行前从 McpManager 拿到工具列表，注册到 ToolRegistry
+- McpManager 实例在 main.py 创建，注入到 AgentLoop / API routes
 - MCP 连接失败不影响主流程，只 log 警告
-- disconnect 时直接 terminate 子进程，绕过 anyio cancel scope 跨 task 限制
+- disconnect 时通知专属 task 自行退出，绕过 anyio cancel scope 跨 task 限制
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from mcp import ClientSession, Tool as McpToolDef
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.streamable_http import streamablehttp_client
 
 from .config import McpServerConfig
+
+if TYPE_CHECKING:
+    from ftre.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -158,22 +163,120 @@ class McpConnection:
 
 
 class McpManager:
-    """MCP 连接管理器 — 管理所有 MCP 服务器连接"""
+    """MCP 连接管理器 — 管理所有 MCP 服务器连接、工具注册和配置热重载。
 
-    def __init__(self):
+    使用方式：
+        mcp_manager = McpManager(tool_registry=tool_registry)
+        await mcp_manager.start_and_register(config_data.get("mcp", {}))
+        mcp_manager.start_config_watcher()  # 启动后台监听 config.json 变化
+
+    外部只需调 reload_and_register() 触发热重载（API 路由等场景），
+    config watcher 和 reload 共享同一个 asyncio.Lock，避免并发重复注册。
+    """
+
+    def __init__(self, tool_registry: ToolRegistry | None = None):
         self._connections: dict[str, McpConnection] = {}
+        self._tool_registry = tool_registry
+        self._reload_lock = asyncio.Lock()
+        self._watcher_task: asyncio.Task | None = None
 
-    async def start(self, configs: list[McpServerConfig]) -> None:
-        """根据配置列表启动所有 MCP 连接"""
+    # ─── 启动 / 停止 ──────────────────────────────────────────
+
+    async def start_and_register(self, raw_mcp: dict) -> None:
+        """解析配置、连接服务器、注册工具 — 启动时调用一次。"""
+        configs = parse_mcp_config(raw_mcp)
         if not configs:
             logger.info("[mcp] 无 MCP 服务器配置")
             return
+        await self.start(configs)
+        await self._register_tools()
 
+    async def stop(self) -> None:
+        """断开所有连接、停止 config watcher。"""
+        if self._watcher_task and not self._watcher_task.done():
+            self._watcher_task.cancel()
+            try:
+                await self._watcher_task
+            except asyncio.CancelledError:
+                pass
+            self._watcher_task = None
+        for conn in self._connections.values():
+            await conn.disconnect()
+        self._connections.clear()
+        logger.info("[mcp] 所有连接已断开")
+
+    # ─── 热重载 + 工具注册（统一入口）──────────────────────────
+
+    async def reload_and_register(self, raw_mcp: dict, source: str = "unknown") -> None:
+        """MCP 热重载 + 工具注册的统一入口。
+
+        任何路径（API 路由、config watcher）需要触发重载时都调这个方法。
+        加锁防并发，避免工具重复注册。
+        """
+        if self._reload_lock.locked():
+            logger.debug(f"[mcp] 已有重载在进行中（来源: {source}），跳过")
+            return
+        async with self._reload_lock:
+            new_configs = parse_mcp_config(raw_mcp)
+            await self.reload(new_configs)
+            await self._register_tools()
+            logger.info(f"[mcp] 热重载完成（来源: {source}），注册 {len([c for c in self._connections.values() if c.is_connected])} 个连接")
+
+    # ─── Config Watcher ──────────────────────────────────────
+
+    def start_config_watcher(self) -> None:
+        """启动后台协程，每 3 秒轮询 config.json 的 mcp 段变化，自动热重载。"""
+        if self._watcher_task and not self._watcher_task.done():
+            return
+        self._watcher_task = asyncio.create_task(self._watch_config())
+
+    async def _watch_config(self) -> None:
+        """后台协程：轮询 config.json mtime，检测 mcp 段变化后热重连。"""
+        from ftre.config import CONFIG_PATH
+        last_mtime: float = 0.0
+        last_mcp_json: str = ""
+
+        if CONFIG_PATH.exists():
+            last_mtime = CONFIG_PATH.stat().st_mtime
+            try:
+                raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                last_mcp_json = json.dumps(raw.get("mcp", {}), sort_keys=True)
+            except Exception:
+                pass
+
+        while True:
+            await asyncio.sleep(3)
+            try:
+                if not CONFIG_PATH.exists():
+                    continue
+                mtime = CONFIG_PATH.stat().st_mtime
+                if mtime == last_mtime:
+                    continue
+                last_mtime = mtime
+
+                raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                mcp_json = json.dumps(raw.get("mcp", {}), sort_keys=True)
+                if mcp_json == last_mcp_json:
+                    continue
+                last_mcp_json = mcp_json
+
+                # mcp 段变了，通过统一入口热重载
+                logger.info("[mcp] 检测到 config.json mcp 段变化，开始热重载…")
+                await self.reload_and_register(raw.get("mcp", {}), source="watcher")
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[mcp] config watcher 异常: {e}")
+
+    # ─── 连接管理（内部）────────────────────────────────────
+
+    async def start(self, configs: list[McpServerConfig]) -> None:
+        """根据配置列表启动所有 MCP 连接"""
         for cfg in configs:
             conn = McpConnection(cfg)
             self._connections[cfg.name] = conn
 
-        # 并发连接所有服务器
         results = await asyncio.gather(
             *(conn.connect() for conn in self._connections.values()),
             return_exceptions=True,
@@ -183,10 +286,7 @@ class McpManager:
         logger.info(f"[mcp] 连接完成: {success}/{len(results)} 成功")
 
     async def reload(self, configs: list[McpServerConfig]) -> None:
-        """热重载：对比新旧配置，断开新增/变更/删除的服务器，保留未变的连接。
-
-        相比 stop() + start()，避免了所有服务器短暂中断。
-        """
+        """热重载：对比新旧配置，断开新增/变更/删除的服务器，保留未变的连接。"""
         new_names = {cfg.name for cfg in configs}
         old_names = set(self._connections.keys())
 
@@ -196,7 +296,7 @@ class McpManager:
             logger.info(f"[mcp] 移除服务器: {name}")
             await self._connections.pop(name).disconnect()
 
-        # ── 2. 断开配置变更的（命令/url/headers 等变了需要重连） ──
+        # ── 2. 断开配置变更的 ──
         old_map = {cfg.name: cfg for cfg in self._current_configs()}
         for cfg in configs:
             old_cfg = old_map.get(cfg.name)
@@ -221,46 +321,37 @@ class McpManager:
                 return_exceptions=True,
             )
             success = sum(1 for r in results if r is True)
-            logger.info(f"[mcp] 热重载完成: {success}/{len(to_connect)} 连接成功")
+            logger.info(f"[mcp] 热重载: {success}/{len(to_connect)} 连接成功")
 
         # ── 4. disabled 的标记断开但保留条目 ──
         for cfg in configs:
             if cfg.disabled and cfg.name in self._connections:
                 await self._connections[cfg.name].disconnect()
 
-    async def stop(self) -> None:
-        """断开所有 MCP 连接"""
-        for conn in self._connections.values():
-            await conn.disconnect()
-        self._connections.clear()
-        logger.info("[mcp] 所有连接已断开")
+    # ─── 工具注册（内部）────────────────────────────────────
 
-    # ─── 内部辅助 ──────────────────────────────────────
+    async def _register_tools(self) -> None:
+        """刷新 tool_registry 里的 MCP 工具（先移除旧的，再注册新的）。"""
+        if self._tool_registry is None:
+            return
+        from .adapter import build_mcp_tools
 
-    def _current_configs(self) -> list[McpServerConfig]:
-        """收集当前所有连接的配置"""
-        return [conn.config for conn in self._connections.values()]
+        self._tool_registry._tools = [
+            t for t in self._tool_registry._tools
+            if not getattr(t, "name", "").startswith("mcp__")
+        ]
+        mcp_tools = await build_mcp_tools(self)
+        for tool in mcp_tools:
+            try:
+                self._tool_registry.register(tool)
+            except ValueError:
+                pass  # 已注册则跳过
+        logger.info(f"[mcp] 注册 {len(mcp_tools)} 个 MCP 工具")
 
-    @staticmethod
-    def _config_equals(a: McpServerConfig, b: McpServerConfig) -> bool:
-        """判断两份配置是否等价（变更需重连）"""
-        return (
-            a.name == b.name
-            and a.type == b.type
-            and a.command == b.command
-            and a.environment == b.environment
-            and a.url == b.url
-            and a.headers == b.headers
-            and a.disabled == b.disabled
-            and a.timeout == b.timeout
-        )
+    # ─── 外部查询接口 ─────────────────────────────────────────
 
     async def list_all_tools(self) -> list[tuple[str, McpToolDef]]:
-        """返回所有已连接服务器的工具列表。
-
-        Returns:
-            [(server_name, mcp_tool_def), ...]
-        """
+        """返回所有已连接服务器的工具列表。"""
         all_tools: list[tuple[str, McpToolDef]] = []
         for name, conn in self._connections.items():
             if not conn.is_connected:
@@ -289,14 +380,10 @@ class McpManager:
         }
 
     def build_system_hint(self) -> str:
-        """生成 MCP 工具的系统提示词片段，注入到 Agent 系统提示词中。
-
-        让 LLM 知道有哪些 MCP 工具可用，以及工具命名规则。
-        """
+        """生成 MCP 工具的系统提示词片段，注入到 Agent 系统提示词中。"""
         servers = self.get_connected_servers()
         if not servers:
             return ""
-
         lines = [
             "",
             "## MCP 工具",
@@ -305,3 +392,21 @@ class McpManager:
             "调用 MCP 工具时，参数会自动传递给对应的 MCP 服务器处理。",
         ]
         return "\n".join(lines)
+
+    # ─── 内部辅助 ─────────────────────────────────────────────
+
+    def _current_configs(self) -> list[McpServerConfig]:
+        return [conn.config for conn in self._connections.values()]
+
+    @staticmethod
+    def _config_equals(a: McpServerConfig, b: McpServerConfig) -> bool:
+        return (
+            a.name == b.name
+            and a.type == b.type
+            and a.command == b.command
+            and a.environment == b.environment
+            and a.url == b.url
+            and a.headers == b.headers
+            and a.disabled == b.disabled
+            and a.timeout == b.timeout
+        )

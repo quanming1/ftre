@@ -21,7 +21,6 @@ from ftre.tools.cron import (
 )
 from ftre.api import skill as skill_store
 from ftre.mcp.manager import McpManager
-from ftre.mcp.config import parse_mcp_config
 from croniter import croniter
 
 logger = logging.getLogger(__name__)
@@ -672,10 +671,9 @@ async def create_mcp_server(request: Request):
     mcp[name] = cleaned
     _write_config_json(config_data)
 
-    # 热连接新服务器（通过统一入口，自带并发锁）
+    # 热连接新服务器（McpManager 统一入口，自带并发锁）
     if _mcp_manager and not cleaned.get("disabled"):
-        from ftre.main import mcp_reload_and_register
-        await mcp_reload_and_register({name: cleaned}, source="api-create")
+        await _mcp_manager.reload_and_register({name: cleaned}, source="api-create")
 
     return {"name": name, **cleaned, "status": "connected" if not cleaned.get("disabled") else "disabled"}
 
@@ -708,10 +706,9 @@ async def update_mcp_server(name: str, request: Request):
     mcp[name] = cleaned
     _write_config_json(config_data)
 
-    # 增量重连（通过统一入口，自带并发锁）
+    # 增量重连（McpManager 统一入口，自带并发锁）
     if _mcp_manager:
-        from ftre.main import mcp_reload_and_register
-        await mcp_reload_and_register(mcp, source="api-update")
+        await _mcp_manager.reload_and_register(mcp, source="api-update")
 
     return {"name": name, **cleaned}
 
@@ -727,9 +724,8 @@ async def delete_mcp_server(name: str):
     del mcp[name]
     _write_config_json(config_data)
 
-    # 增量重连（通过统一入口，自带并发锁）
+    # 增量重连（McpManager 统一入口，自带并发锁）
     if _mcp_manager:
-        from ftre.main import mcp_reload_and_register
-        await mcp_reload_and_register(mcp, source="api-delete")
+        await _mcp_manager.reload_and_register(mcp, source="api-delete")
 
     return None
