@@ -15,6 +15,7 @@
 - 后端路径：E:\ftre\src\ftre\
 - 前端路径：E:\binn\ftre-desktop\
 - 文档路径：E:\ftre-docs\
+- Agent 核心库：E:\ftre-agent-core\
 - 配置目录：C:\Users\蒋全明\.ftre\
 - 使用 Python 3.12 + TypeScript
 - 日志统一用 logging（Python）、console（前端）
