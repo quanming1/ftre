@@ -28,6 +28,7 @@ from ftre_agent_core.agent.event import (
     ToolCallEvent,
     ToolResultEvent,
     UsageUpdateEvent,
+    UserMessageEvent,
 )
 from ftre.bus import BusMessage, EventBus, GLOBAL_CHANNEL, GLOBAL_SESSION
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
@@ -326,6 +327,7 @@ class AgentLoop:
         DoneEvent,
         UsageUpdateEvent,
         ErrorEvent,
+        UserMessageEvent,
     )
 
     async def _run_async(self, inbound: BusMessage, need_compact: bool = False) -> None:
