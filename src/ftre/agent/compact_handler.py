@@ -24,6 +24,13 @@ import json
 import logging
 import time
 
+from ftre_agent_core.agent.event import (
+    AgentEvent,
+    MessageCompleteEvent,
+    ReasoningCompleteEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from ftre_agent_core.llm import LLMHandler, TextDelta
 
 from ftre.bus import BusMessage
@@ -417,6 +424,33 @@ def _serialize_events(
     parts: list[str] = []
 
     for ev in chunk:
+        # 尝试转为 AgentEvent class；非 Agent 事件（USER_INPUT, context_compact）保留 dict
+        agent_ev: AgentEvent | None = None
+        try:
+            agent_ev = AgentEvent.from_dict(ev) if ev.get("type", "") not in (
+                "USER_INPUT", "context_compact", "context_compact_enabled",
+                "context_compact_failed", "user_input",
+            ) else None
+        except (KeyError, ValueError):
+            agent_ev = None
+
+        if agent_ev is not None:
+            if isinstance(agent_ev, MessageCompleteEvent):
+                parts.append(f"[Assistant]: {agent_ev.content}")
+            elif isinstance(agent_ev, ReasoningCompleteEvent):
+                if agent_ev.content:
+                    parts.append(f"[Assistant reasoning]: {agent_ev.content}")
+            elif isinstance(agent_ev, ToolCallEvent):
+                args_str = json.dumps(agent_ev.arguments, ensure_ascii=False)
+                parts.append(f"[Assistant tool call]: {agent_ev.tool_name}({args_str})")
+            elif isinstance(agent_ev, ToolResultEvent):
+                result = agent_ev.result
+                if len(result) > TOOL_OUTPUT_MAX_CHARS:
+                    result = result[:TOOL_OUTPUT_MAX_CHARS] + "\n[truncated]"
+                parts.append(f"[Tool result]: {result}")
+            continue
+
+        # ─── 非 Agent 事件（USER_INPUT 等）仍用 dict 访问 ──────
         t = ev.get("type", "")
         d = ev.get("data") or {}
 
@@ -436,30 +470,6 @@ def _serialize_events(
             ]
             lines = [f"[User]: {content}"] + att_lines
             parts.append("\n".join(lines))
-
-        elif t == "message_complete":
-            parts.append(f"[Assistant]: {d.get('content', '')}")
-
-        elif t == "reasoning_complete":
-            content = d.get("content", "")
-            if content:
-                parts.append(f"[Assistant reasoning]: {content}")
-
-        elif t == "tool_call":
-            name = d.get("name", "")
-            args = d.get("arguments", {})
-            args_str = json.dumps(args, ensure_ascii=False) if not isinstance(args, str) else args
-            # 输入不截断（OpenCode 也不截断 tool input）
-            parts.append(f"[Assistant tool call]: {name}({args_str})")
-
-        elif t == "tool_result":
-            result = d.get("result", "")
-            if not isinstance(result, str):
-                result = str(result)
-            # 对齐 OpenCode：tool 输出截断至 TOOL_OUTPUT_MAX_CHARS
-            if len(result) > TOOL_OUTPUT_MAX_CHARS:
-                result = result[:TOOL_OUTPUT_MAX_CHARS] + "\n[truncated]"
-            parts.append(f"[Tool result]: {result}")
 
     return "\n\n".join(parts)
 
