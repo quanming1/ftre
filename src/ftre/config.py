@@ -85,6 +85,15 @@ class AgentConfig:
     context: ContextConfig = field(default_factory=ContextConfig)
 
 
+# ─── 配置缓存 ──────────────────────────────────────────────────────
+# load_config() 被高频调用（每条消息派发、usage_update、compact 调度都会触发），
+# 每次都读文件+打日志会刷屏。用 _last_config 缓存 + mtime 检测变更：
+# - 首次加载 / 文件变更 → INFO 日志
+# - 重复加载同一文件 → DEBUG 日志（不再刷屏）
+_last_config: AgentConfig | None = None
+_last_mtime: float = 0.0
+
+
 def load_config_file() -> dict:
     """读取 ~/.ftre/config.json 原始内容"""
     if not CONFIG_PATH.exists():
@@ -141,9 +150,23 @@ def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfi
 
 
 def load_config() -> AgentConfig:
-    """从配置文件加载 AgentConfig"""
+    """从配置文件加载 AgentConfig（带缓存，文件变更时才重新解析并 INFO 日志）"""
+    global _last_config, _last_mtime
+
+    # mtime 检测：文件没变就直接返回缓存
+    try:
+        current_mtime = CONFIG_PATH.stat().st_mtime
+    except OSError:
+        current_mtime = 0.0
+
+    if _last_config is not None and current_mtime == _last_mtime:
+        logger.debug("[config] 缓存命中，跳过重新解析")
+        return _last_config
+
+    # ─── 重新解析 ──────────────────────────────────────────────
     data = load_config_file()
     if not data:
+        # 文件不存在/空时返回默认配置（不缓存，下次文件出现会重新加载）
         return AgentConfig()
 
     defaults = data.get("agents", {}).get("defaults", {})
@@ -198,7 +221,12 @@ def load_config() -> AgentConfig:
         silent=bool(_f("silent", "silent", True)),
     )
 
-    logger.info(
+    # 日志：首次加载或配置变更时 INFO，否则 DEBUG
+    is_first_load = _last_config is None
+    config_changed = not is_first_load and current_mtime != _last_mtime
+
+    log_fn = logger.info if (is_first_load or config_changed) else logger.debug
+    log_fn(
         f"[config] model={llm.model}, provider={provider_name}, "
         f"context_window={llm.context_window}, max_output={llm.max_output}, "
         f"workspace={workspace or '(default)'}, "
@@ -208,10 +236,18 @@ def load_config() -> AgentConfig:
         f"precompact={context_cfg.precompact_threshold}, "
         f"compact={context_cfg.compact_threshold}, "
         f"idle={context_cfg.idle_compaction}, silent={context_cfg.silent}"
+        + (" (重新加载)" if config_changed else "")
     )
-    return AgentConfig(
+
+    result = AgentConfig(
         llm=llm, workspace=workspace, title_llm=title_llm, compact_llm=compact_llm, context=context_cfg
     )
+
+    # 更新缓存
+    _last_config = result
+    _last_mtime = current_mtime
+
+    return result
 
 
 DEFAULT_CONFIG = load_config()
