@@ -20,6 +20,7 @@ from ftre_agent_core.agent.event import (
     ReasoningCompleteEvent,
     ToolCallEvent,
     ToolResultEvent,
+    UserMessageEvent,
 )
 from ftre.config import CONFIG_PATH
 
@@ -553,6 +554,11 @@ class SessionManager:
                 if reasoning:
                     msg["reasoning_content"] = reasoning
                 messages.append(msg)
+
+            elif isinstance(_ae, UserMessageEvent):
+                _flush_tool_calls()
+                _take_reasoning()
+                messages.append(_ae.to_openai_message())
 
             elif _t == "external_message":
                 _flush_tool_calls()
