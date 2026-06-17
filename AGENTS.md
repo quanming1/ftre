@@ -8,6 +8,13 @@
 - 使用 Python 3.12 + TypeScript
 - 日志统一用 logging（Python）、console（前端）
 
+## Git 规范
+
+- **禁止私自 commit / push**：除非用户明确要求（如"commit"、"push"、"提交"），否则只改代码不提交
+- **回滚需确认**：回滚前必须告知用户回滚的内容、范围和影响，得到确认后再执行
+- **push 前先 commit**：不要把未 commit 的改动直接 push
+- **多仓库联动**：改 core 后同步验证 ftre 后端，改前端后同步验证后端 API
+
 ## 仓库关系
 
 ```
