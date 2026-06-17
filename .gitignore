@@ -11,3 +11,4 @@ _*.py
 tmp_*.py
 fetch_*.py
 debug_*.py
+.playwright-mcp/ 
