@@ -65,6 +65,9 @@ def _compress(data: bytes, mime: str) -> tuple[bytes, str]:
         img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
 
     fmt = img.format or "JPEG"
+    # 统一转为 JPEG（兼容性最好；PNG/GIF/WEBP 等格式部分 provider 不支持）
+    if fmt not in ("JPEG",):
+        fmt = "JPEG"
     buf = io.BytesIO()
     if fmt in ("JPEG", "WEBP"):
         img.save(buf, format=fmt, quality=70, optimize=True)
@@ -122,7 +125,7 @@ async def see_img(path: str) -> str | UserMessageEvent:
     return user_message_event(
         content=[{
             "type": "image_url",
-            "image_url": {"url": data_uri, "detail": "auto"},
+            "image_url": {"url": data_uri},
         }],
         metadata={"hide": True, "path": path, "mime": mime, "size": len(data)},
     )

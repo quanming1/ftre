@@ -23,7 +23,7 @@ from ftre_agent_core.agent.event import (
     DoneEvent,
     DoneReason,
     ErrorEvent,
-    MessageCompleteEvent,
+    AssistantMessageCompleteEvent,
     ReasoningCompleteEvent,
     ToolCallEvent,
     ToolResultEvent,
@@ -320,7 +320,7 @@ class AgentLoop:
 
     # 需要持久化的事件类型（dataclass 类型，用 isinstance 检查）
     _PERSISTENT_CLASSES: tuple[type, ...] = (
-        MessageCompleteEvent,
+        AssistantMessageCompleteEvent,
         ReasoningCompleteEvent,
         ToolCallEvent,
         ToolResultEvent,
@@ -414,7 +414,15 @@ class AgentLoop:
         await self._publish_session_status_async(session_id, "running")
 
         # Step 6: 持久化用户输入
-        await self.session_manager.save_message(session_id, "USER_INPUT", inbound.data)
+        await self.session_manager.save_message(
+            session_id,
+            "user_message",
+            {
+                "content": inbound.data.get("content", ""),
+                "attachments": inbound.data.get("attachments") or [],
+                "metadata": {"hide": False},
+            },
+        )
 
         # Step 6.5: echo user_input 给前端
         # 透传 inbound.metadata（含 frame_id），前端用 frame_id 与本地乐观占位去重
@@ -642,6 +650,7 @@ class AgentLoop:
         tools = build_default_tools(
             channel_manager=self.channel_manager,
             tool_registry=self.tool_registry,
+            llm_config=c.llm,
         )
 
         # MCP 工具提示词注入
