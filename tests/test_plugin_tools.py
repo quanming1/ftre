@@ -1,4 +1,7 @@
+from types import SimpleNamespace
+
 import pytest
+
 from ftre_agent_core.tool import Tool
 
 from ftre.plugin import HookManager, Plugin, PluginManager
@@ -32,6 +35,24 @@ def test_build_default_tools_includes_registry_tools():
     names = [tool.name for tool in build_default_tools(tool_registry=registry)]
 
     assert "extra" in names
+
+
+def test_build_default_tools_omits_see_img_without_vision():
+    names = [
+        tool.name
+        for tool in build_default_tools(llm_config=SimpleNamespace(vision=False))
+    ]
+
+    assert "see_img" not in names
+
+
+def test_build_default_tools_includes_see_img_with_vision():
+    names = [
+        tool.name
+        for tool in build_default_tools(llm_config=SimpleNamespace(vision=True))
+    ]
+
+    assert "see_img" in names
 
 
 def test_plugin_manager_rolls_back_tools_when_setup_fails():

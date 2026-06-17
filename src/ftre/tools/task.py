@@ -92,14 +92,14 @@ def _final_content_after(
             break
         # 优先用 AgentEvent class 解包
         try:
-            from ftre_agent_core.agent.event import AgentEvent, MessageCompleteEvent
+            from ftre_agent_core.agent.event import AgentEvent, AssistantMessageCompleteEvent
             agent_ev = AgentEvent.from_dict(ev)
-            if isinstance(agent_ev, MessageCompleteEvent):
+            if isinstance(agent_ev, AssistantMessageCompleteEvent):
                 return agent_ev.content
         except (KeyError, ValueError):
             pass
         # 兜底：旧式 dict 访问
-        if ev.get("type") == "message_complete":
+        if ev.get("type") == "assistant_message_complete":
             return (ev.get("data") or {}).get("content") or ""
     return None
 

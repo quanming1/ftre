@@ -16,7 +16,7 @@ import aiosqlite
 
 from ftre_agent_core.agent.event import (
     AgentEvent,
-    MessageCompleteEvent,
+    AssistantMessageCompleteEvent,
     ReasoningCompleteEvent,
     ToolCallEvent,
     ToolResultEvent,
@@ -39,7 +39,7 @@ class MessageModel(TypedDict):
     """事件/消息记录"""
     id: str              # 消息唯一标识
     session_id: str      # 所属会话 ID
-    type: str            # 事件类型（USER_INPUT / TOOL_CALL / TOOL_RESULT / MESSAGE_COMPLETE / ...）
+    type: str            # 事件类型（user_message / TOOL_CALL / TOOL_RESULT / MESSAGE_COMPLETE / ...）
     data: dict[str, Any] # 事件数据（JSON）
     timestamp: float     # 事件时间戳
 
@@ -416,13 +416,13 @@ class SessionManager:
 
         prune 参数（L1 工具输出修剪，对喂给 LLM 的视图生效，不改 DB）：
         - prune={"protect_turns": 2, "max_chars": 2000, "head_chars": 1000, "tail_chars": 1000}
-        - 最近 protect_turns 个 USER_INPUT 之内的 tool_result 不截断（AI 最近动作要看到全文）
+        - 最近 protect_turns 个可见 user_message 之内的 tool_result 不截断（AI 最近动作要看到全文）
         - 之外的 tool_result：单条超过 max_chars 就截断为 head_chars + 占位 + tail_chars
         - error 非空的失败结果不截断（通常很短且关键）
         - 历史回放（GET /messages）等场景不传 prune，保留完整原文给前端
 
         转换规则：
-        - USER_INPUT          → {"role": "user", "content": ...}
+        - user_message        → {"role": "user", "content": ...}
         - TOOL_CALL           → 连续的合并为 {"role": "assistant", "tool_calls": [...]}
         - TOOL_RESULT         → {"role": "tool", "tool_call_id": ..., "content": ...}
         - MESSAGE_COMPLETE    → {"role": "assistant", "content": ...}
@@ -436,9 +436,8 @@ class SessionManager:
         pending_tool_calls: list[dict] = []
         pending_reasoning: str | None = None
         llm_config = (config or {}).get("llm") or {}
-        include_images = bool(llm_config.get("vision", True))
-
-        # ─── L1 prune 预处理：算出"受保护索引集"（最近 N 个 USER_INPUT 内）───
+        include_images = bool(llm_config.get("vision", False))
+        # ─── L1 prune 预处理：算出"受保护索引集"（最近 N 个可见 user_message 内）───
         # 受保护索引内的 tool_result 不修剪。这之外的 tool_result 单条超 max_chars 就截断。
         prune_protected: set[int] = set()
         prune_max_chars = 0
@@ -450,11 +449,14 @@ class SessionManager:
             prune_tail_chars = int(prune.get("tail_chars", 1000) or 0)
             protect_turns = int(prune.get("protect_turns", 2) or 0)
             if prune_max_chars > 0 and protect_turns > 0:
-                # 倒序扫，遇到第 protect_turns 个 USER_INPUT 即停。其后的所有索引都受保护。
+                # 倒序扫，遇到第 protect_turns 个可见 user_message 即停。其后的所有索引都受保护。
                 seen_user = 0
                 for i in range(len(events) - 1, -1, -1):
                     prune_protected.add(i)
-                    if events[i]["type"] == "USER_INPUT":
+                    if (
+                        events[i]["type"] == "user_message"
+                        and not ((events[i].get("data") or {}).get("metadata") or {}).get("hide", False)
+                    ):
                         seen_user += 1
                         if seen_user >= protect_turns:
                             break
@@ -478,6 +480,27 @@ class SessionManager:
             pending_reasoning = None
             return text
 
+        def _coerce_user_message_content(content: Any) -> str | list[dict]:
+            if include_images or not isinstance(content, list):
+                return content
+
+            text_parts: list[str] = []
+            omitted_image = False
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text = part.get("text") or part.get("data") or ""
+                    if text:
+                        text_parts.append(str(text))
+                elif part.get("type") == "image_url":
+                    omitted_image = True
+
+            if omitted_image:
+                from .multimodal import IMAGE_OMITTED_NOTICE
+                text_parts.append(IMAGE_OMITTED_NOTICE)
+            return "\n\n".join(text_parts)
+
         def _flush_tool_calls():
             nonlocal pending_tool_calls
             if pending_tool_calls:
@@ -496,29 +519,13 @@ class SessionManager:
             # 尝试转为 AgentEvent class（Agent 事件用类型安全方式访问）
             _ae: AgentEvent | None = None
             _t = event["type"]
-            if _t not in ("USER_INPUT", "context_compact", "external_message"):
+            if _t not in ("context_compact", "external_message"):
                 try:
                     _ae = AgentEvent.from_dict(event)
                 except (KeyError, ValueError):
                     _ae = None
 
-            if _t == "USER_INPUT":
-                _flush_tool_calls()
-                # user 消息边界：丢弃可能残留的 reasoning
-                _take_reasoning()
-                from .multimodal import build_user_content
-                content = event["data"].get("content", "")
-                attachments = event["data"].get("attachments") or []
-                messages.append({
-                    "role": "user",
-                    "content": build_user_content(
-                        content,
-                        attachments,
-                        include_images=include_images,
-                    ),
-                })
-
-            elif isinstance(_ae, ReasoningCompleteEvent):
+            if isinstance(_ae, ReasoningCompleteEvent):
                 # 一轮 LLM 思考的完整文本，挂到下一条 assistant message 上
                 pending_reasoning = _ae.content or None
 
@@ -544,7 +551,7 @@ class SessionManager:
                     "content": result_content,
                 })
 
-            elif isinstance(_ae, MessageCompleteEvent):
+            elif isinstance(_ae, AssistantMessageCompleteEvent):
                 _flush_tool_calls()
                 msg: dict = {
                     "role": "assistant",
@@ -558,7 +565,20 @@ class SessionManager:
             elif isinstance(_ae, UserMessageEvent):
                 _flush_tool_calls()
                 _take_reasoning()
-                messages.append(_ae.to_openai_message())
+                data = event["data"]
+                content = _ae.content
+                attachments = data.get("attachments") or []
+                if attachments:
+                    from .multimodal import build_user_content
+                    content = build_user_content(
+                        content,
+                        attachments,
+                        include_images=include_images,
+                    )
+                messages.append({
+                    "role": "user",
+                    "content": _coerce_user_message_content(content),
+                })
 
             elif _t == "external_message":
                 _flush_tool_calls()
