@@ -414,12 +414,20 @@ class AgentLoop:
         await self._publish_session_status_async(session_id, "running")
 
         # Step 6: 持久化用户输入
+        # 归一化 content 格式：前端上行帧可能是 parts 数组（[{"type":"text","data":"..."}]），
+        # 统一转为 LLM API 格式（str 或 multimodal list）后再存 DB，
+        # 确保 DB 中 UserMessageEvent.content 与 core 层（see_img 等）产出格式一致。
+        stored_content = build_user_content(
+            content,
+            attachments,
+            include_images=config.llm.vision,
+        )
         await self.session_manager.save_message(
             session_id,
             "user_message",
             {
-                "content": inbound.data.get("content", ""),
-                "attachments": inbound.data.get("attachments") or [],
+                "content": stored_content,
+                "attachments": attachments,
                 "metadata": {"hide": False},
             },
         )
