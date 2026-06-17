@@ -344,11 +344,13 @@ class CompactHandler:
                 {"role": "user", "content": prompt_text},
             ]
 
+            # 优先使用 compact_llm，未配置则回退到主 llm
+            llm_cfg = config.compact_llm or config.llm
             handler = LLMHandler(
-                model=config.llm.model,
-                api_key=config.llm.api_key,
-                api_base=config.llm.api_base,
-                api_type=config.llm.api_type,
+                model=llm_cfg.model,
+                api_key=llm_cfg.api_key,
+                api_base=llm_cfg.api_base,
+                api_type=llm_cfg.api_type,
             )
 
             collected: list[str] = []

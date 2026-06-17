@@ -77,6 +77,10 @@ class AgentConfig:
     # 配置项：agents.defaults.title_generation = {"provider": "...", "model": "..."}
     # 设计动机：标题生成是高频小请求，独立挂到便宜/快的模型上，避免占用主对话的高级模型配额。
     title_llm: LLMConfig | None = None
+    # 上下文压缩专用 LLM；None 表示沿用主 llm 配置。
+    # 配置项：agents.defaults.compact_generation = {"provider": "...", "model": "..."}
+    # 设计动机：压缩是后台高频长上下文调用，可用便宜/大窗口模型降低成本。
+    compact_llm: LLMConfig | None = None
     # 上下文管理配置（步骤 6）
     context: ContextConfig = field(default_factory=ContextConfig)
 
@@ -159,6 +163,17 @@ def load_config() -> AgentConfig:
             if built.model:
                 title_llm = built
 
+    # 上下文压缩模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
+    compact_llm: LLMConfig | None = None
+    compact_cfg = defaults.get("compact_generation") or {}
+    if isinstance(compact_cfg, dict):
+        c_provider = compact_cfg.get("provider", "") or ""
+        c_model = compact_cfg.get("model", "") or ""
+        if c_provider and c_model:
+            built = _build_llm_config(data, c_provider, c_model)
+            if built.model:
+                compact_llm = built
+
     workspace = defaults.get("workspace", "") or ""
     if not isinstance(workspace, str):
         workspace = ""
@@ -188,13 +203,14 @@ def load_config() -> AgentConfig:
         f"context_window={llm.context_window}, max_output={llm.max_output}, "
         f"workspace={workspace or '(default)'}, "
         f"title_llm={title_llm.model if title_llm else '(fallback to main)'}, "
+        f"compact_llm={compact_llm.model if compact_llm else '(fallback to main)'}, "
         f"context: ratio={context_cfg.consolidation_ratio}, "
         f"precompact={context_cfg.precompact_threshold}, "
         f"compact={context_cfg.compact_threshold}, "
         f"idle={context_cfg.idle_compaction}, silent={context_cfg.silent}"
     )
     return AgentConfig(
-        llm=llm, workspace=workspace, title_llm=title_llm, context=context_cfg
+        llm=llm, workspace=workspace, title_llm=title_llm, compact_llm=compact_llm, context=context_cfg
     )
 
 
