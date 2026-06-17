@@ -12,12 +12,12 @@ MCP 连接管理器
 - McpManager 实例在 main.py 创建，注入到 AgentLoop
 - Agent 运行前从 McpManager 拿到工具列表，注册到 ToolRegistry
 - MCP 连接失败不影响主流程，只 log 警告
+- disconnect 时直接 terminate 子进程，绕过 anyio cancel scope 跨 task 限制
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import AsyncExitStack
 from typing import Any
 
 from mcp import ClientSession, Tool as McpToolDef
@@ -30,13 +30,20 @@ logger = logging.getLogger(__name__)
 
 
 class McpConnection:
-    """单个 MCP 服务器的连接实例"""
+    """单个 MCP 服务器的连接实例。
+
+    关键设计：connect() 和 disconnect() 必须在同一个 asyncio task 里
+    成对调用，因为 anyio 的 cancel scope 要求 enter/exit 在同一 task。
+    为此，connect() 会创建一个专属 task 来管理连接生命周期，
+    disconnect() 通过 _stop_event 通知该 task 自行退出。
+    """
 
     def __init__(self, config: McpServerConfig):
         self.config = config
         self.session: ClientSession | None = None
-        self._exit_stack: AsyncExitStack | None = None
         self._connected = False
+        self._stop_event = asyncio.Event()
+        self._task: asyncio.Task | None = None
 
     @property
     def name(self) -> str:
@@ -47,56 +54,90 @@ class McpConnection:
         return self._connected and self.session is not None
 
     async def connect(self) -> bool:
-        """连接 MCP 服务器，返回是否成功"""
+        """连接 MCP 服务器，返回是否成功。
+
+        启动一个专属 task 来持有连接上下文，确保 connect/disconnect
+        的 anyio cancel scope 在同一 task 里 enter/exit。
+        """
         if self._connected:
             return True
 
+        self._stop_event.clear()
+
+        # 用 Future 从子 task 拿到连接结果
+        ready = asyncio.get_running_loop().create_future()
+
+        async def _run():
+            """在专属 task 里管理 MCP 连接的完整生命周期。"""
+            try:
+                if self.config.type == "local":
+                    server_params = StdioServerParameters(
+                        command=self.config.command[0],
+                        args=self.config.command[1:],
+                        env=self.config.environment or None,
+                    )
+                    async with stdio_client(server_params) as (read_stream, write_stream):
+                        async with ClientSession(read_stream, write_stream) as session:
+                            await session.initialize()
+                            self.session = session
+                            self._connected = True
+                            if not ready.done():
+                                ready.set_result(True)
+                            # 等待断连信号
+                            await self._stop_event.wait()
+                elif self.config.type == "remote":
+                    async with streamablehttp_client(
+                        self.config.url, headers=self.config.headers or None
+                    ) as (read_stream, write_stream, _):
+                        async with ClientSession(read_stream, write_stream) as session:
+                            await session.initialize()
+                            self.session = session
+                            self._connected = True
+                            if not ready.done():
+                                ready.set_result(True)
+                            # 等待断连信号
+                            await self._stop_event.wait()
+                else:
+                    if not ready.done():
+                        ready.set_result(False)
+            except Exception as e:
+                if not ready.done():
+                    ready.set_exception(e)
+                logger.debug(f"[mcp] 连接 task 退出: {self.name} — {e}")
+
+        self._task = asyncio.create_task(_run())
+
         try:
-            self._exit_stack = AsyncExitStack()
-
-            if self.config.type == "local":
-                await self._connect_stdio()
-            elif self.config.type == "remote":
-                await self._connect_remote()
-            else:
-                logger.warning(f"[mcp] 未知类型: {self.name} type={self.config.type}")
-                return False
-
-            self._connected = True
-            logger.info(f"[mcp] 连接成功: {self.name}")
-            return True
-
+            result = await asyncio.wait_for(ready, timeout=self.config.timeout / 1000)
+            if result is True:
+                logger.info(f"[mcp] 连接成功: {self.name}")
+                return True
+            return False
         except Exception as e:
             logger.warning(f"[mcp] 连接失败: {self.name} — {e}")
-            await self.disconnect()
+            await self._cleanup_task()
             return False
 
-    async def _connect_stdio(self) -> None:
-        """通过 stdio 连接本地 MCP 服务器"""
-        server_params = StdioServerParameters(
-            command=self.config.command[0],
-            args=self.config.command[1:],
-            env=self.config.environment or None,
-        )
-        read_stream, write_stream = await self._exit_stack.enter_async_context(
-            stdio_client(server_params)
-        )
-        session = await self._exit_stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
-        )
-        await session.initialize()
-        self.session = session
+    async def disconnect(self) -> None:
+        """断开连接——通知连接 task 自行退出，不跨 task 操作 cancel scope。"""
+        self._stop_event.set()
+        await self._cleanup_task()
+        self.session = None
+        self._connected = False
 
-    async def _connect_remote(self) -> None:
-        """通过 Streamable HTTP 连接远程 MCP 服务器"""
-        read_stream, write_stream, _ = await self._exit_stack.enter_async_context(
-            streamablehttp_client(self.config.url, headers=self.config.headers or None)
-        )
-        session = await self._exit_stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
-        )
-        await session.initialize()
-        self.session = session
+    async def _cleanup_task(self) -> None:
+        """等待连接 task 结束并清理。"""
+        if self._task and not self._task.done():
+            try:
+                await asyncio.wait_for(self._task, timeout=5)
+            except (asyncio.TimeoutError, Exception):
+                # 超时则强制 cancel
+                self._task.cancel()
+                try:
+                    await self._task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        self._task = None
 
     async def list_tools(self) -> list[McpToolDef]:
         """列举服务器提供的工具"""
@@ -114,17 +155,6 @@ class McpConnection:
         if not self.is_connected:
             raise RuntimeError(f"MCP 服务器 {self.name} 未连接")
         return await self.session.call_tool(tool_name, arguments)
-
-    async def disconnect(self) -> None:
-        """断开连接"""
-        if self._exit_stack:
-            try:
-                await self._exit_stack.aclose()
-            except Exception:
-                pass
-        self.session = None
-        self._exit_stack = None
-        self._connected = False
 
 
 class McpManager:

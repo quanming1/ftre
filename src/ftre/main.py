@@ -56,6 +56,43 @@ from ftre.mcp import McpManager
 from ftre.mcp.config import parse_mcp_config
 from ftre.mcp.adapter import build_mcp_tools
 
+# ── 全局 MCP 重载锁 + 函数 ──────────────────────────────────────
+# API 路由和 _watch_mcp_config 都会触发重载，用锁防止并发，
+# 确保同时只有一条路径在执行 reload + register。
+_mcp_reload_lock = asyncio.Lock()
+_mcp_manager_ref: McpManager | None = None
+_tool_registry_ref: ToolRegistry | None = None
+_wlog = logging.getLogger("ftre.mcp.watch")
+
+
+async def mcp_reload_and_register(raw_mcp: dict, source: str = "unknown") -> None:
+    """MCP 热重载 + 工具注册的统一入口。
+
+    任何路径（API 路由、config watcher）需要触发重载时都调这个函数。
+    加全局锁防并发，避免工具重复注册。
+    """
+    if _mcp_manager_ref is None or _tool_registry_ref is None:
+        return
+    if _mcp_reload_lock.locked():
+        _wlog.debug(f"[mcp-config] 已有重载在进行中（来源: {source}），跳过")
+        return
+    async with _mcp_reload_lock:
+        new_configs = parse_mcp_config(raw_mcp)
+        await _mcp_manager_ref.reload(new_configs)
+
+        # 刷新 tool_registry 里的 mcp 工具（先移除旧的，再注册新的）
+        _tool_registry_ref._tools = [
+            t for t in _tool_registry_ref._tools
+            if not getattr(t, "name", "").startswith("mcp__")
+        ]
+        mcp_tools = await build_mcp_tools(_mcp_manager_ref)
+        for tool in mcp_tools:
+            try:
+                _tool_registry_ref.register(tool)
+            except ValueError:
+                pass  # 已注册则跳过
+        _wlog.info(f"[mcp-config] 热重载完成（来源: {source}），注册 {len(mcp_tools)} 个 MCP 工具")
+
 
 async def _watch_mcp_config(
     mcp_manager: McpManager,
@@ -64,11 +101,11 @@ async def _watch_mcp_config(
     """后台协程：轮询 config.json 的 mtime，检测 mcp 段变化后热重连。
 
     每 3 秒检查一次文件修改时间，避免引入第三方文件监听依赖。
+    通过全局 mcp_reload_and_register() 统一入口执行，自带并发锁。
     """
     from ftre.config import CONFIG_PATH
-    _wlog = logging.getLogger("ftre.mcp.watch")
     last_mtime: float = 0.0
-    last_mcp_json: str = ""  # 序列化后的 mcp 段，用于内容比对
+    last_mcp_json: str = ""
 
     if CONFIG_PATH.exists():
         last_mtime = CONFIG_PATH.stat().st_mtime
@@ -94,23 +131,9 @@ async def _watch_mcp_config(
                 continue
             last_mcp_json = mcp_json
 
-            # mcp 段变了，热重载
+            # mcp 段变了，通过统一入口热重载
             _wlog.info("[mcp-config] 检测到 config.json mcp 段变化，开始热重载…")
-            new_configs = parse_mcp_config(raw.get("mcp", {}))
-            await mcp_manager.reload(new_configs)
-
-            # 刷新 tool_registry 里的 mcp 工具
-            tool_registry._tools = [
-                t for t in tool_registry._tools
-                if not getattr(t, "name", "").startswith("mcp__")
-            ]
-            mcp_tools = await build_mcp_tools(mcp_manager)
-            for tool in mcp_tools:
-                try:
-                    tool_registry.register(tool)
-                except ValueError:
-                    pass  # 已注册则跳过
-            _wlog.info(f"[mcp-config] 热重载完成，注册 {len(mcp_tools)} 个 MCP 工具")
+            await mcp_reload_and_register(raw.get("mcp", {}), source="watcher")
 
         except Exception as e:
             _wlog.warning(f"[mcp-config] 热重载异常: {e}")
@@ -179,6 +202,11 @@ async def run_gateway():
         mcp_tools = await build_mcp_tools(mcp_manager)
         for tool in mcp_tools:
             tool_registry.register(tool)
+
+    # 设置全局引用，供 mcp_reload_and_register() 使用
+    global _mcp_manager_ref, _tool_registry_ref
+    _mcp_manager_ref = mcp_manager
+    _tool_registry_ref = tool_registry
 
     # 注入 McpManager 到 API 路由
     set_mcp_manager(mcp_manager)
