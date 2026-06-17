@@ -27,3 +27,12 @@ ftre-docs          文档站（React + Vite）
                     Markdown 源文件在 src/content/，侧边栏自动渲染
                     独立部署，不依赖后端
 ```
+
+### 一键启动
+
+`E:\ftre\start.bat` 依次启动三个服务：
+1. Gateway 后端 → `ws://127.0.0.1:19470/`
+2. Desktop 前端 → Electron pnpm dev
+3. Docs 文档站 → `http://localhost:5173/`
+
+按任意键停止所有进程。
