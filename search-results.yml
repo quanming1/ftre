@@ -1,0 +1,157 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Skip to content" [ref=e4] [cursor=pointer]:
+      - /url: "#start-of-content"
+    - banner [ref=e6]:
+      - heading "Navigation Menu" [level=2] [ref=e7]
+      - generic [ref=e8]:
+        - link "Homepage" [ref=e10] [cursor=pointer]:
+          - /url: /
+          - img [ref=e11]
+        - generic [ref=e13]:
+          - navigation "Global" [ref=e16]:
+            - list [ref=e17]:
+              - listitem [ref=e18]:
+                - button "Platform" [ref=e20] [cursor=pointer]:
+                  - text: Platform
+                  - img [ref=e21]
+              - listitem [ref=e23]:
+                - button "Solutions" [ref=e25] [cursor=pointer]:
+                  - text: Solutions
+                  - img [ref=e26]
+              - listitem [ref=e28]:
+                - button "Resources" [ref=e30] [cursor=pointer]:
+                  - text: Resources
+                  - img [ref=e31]
+              - listitem [ref=e33]:
+                - button "Open Source" [ref=e35] [cursor=pointer]:
+                  - text: Open Source
+                  - img [ref=e36]
+              - listitem [ref=e38]:
+                - button "Enterprise" [ref=e40] [cursor=pointer]:
+                  - text: Enterprise
+                  - img [ref=e41]
+              - listitem [ref=e43]:
+                - link "Pricing" [ref=e44] [cursor=pointer]:
+                  - /url: https://github.com/pricing
+                  - generic [ref=e45]: Pricing
+          - generic [ref=e46]:
+            - button "Search or jump to…" [ref=e49] [cursor=pointer]:
+              - img [ref=e51]
+              - generic [ref=e53]: Search or jump to...
+              - img [ref=e55]
+            - link "Sign in" [ref=e59] [cursor=pointer]:
+              - /url: /login?return_to=https%3A%2F%2Fgithub.com%2Fsearch%3Fq%3Drepo%253Alangchain-ai%252Flanggraph%2Btool_node%26type%3Dcode
+            - link "Sign up" [ref=e60] [cursor=pointer]:
+              - /url: /signup?ref_cta=Sign+up&ref_loc=header+logged+out&ref_page=%2Fsearch&source=header
+            - button "Appearance settings" [ref=e63] [cursor=pointer]:
+              - img
+  - main [ref=e66]:
+    - generic [ref=e69]:
+      - heading "code Search Results · repo:langchain-ai/langgraph tool_node" [level=1] [ref=e70]
+      - generic [ref=e73]:
+        - generic [ref=e74]:
+          - generic [ref=e75]:
+            - heading "Filter by" [level=2] [ref=e76]
+            - list "Filter by" [ref=e81]:
+              - listitem [ref=e82]:
+                - list [ref=e83]:
+                  - listitem [ref=e84]:
+                    - link "Code (...) results" [ref=e147] [cursor=pointer]:
+                      - /url: https://github.com/search?q=repo%3Alangchain-ai%2Flanggraph+tool_node&type=code
+                      - generic:
+                        - img
+                      - generic [ref=e148]:
+                        - generic [ref=e149]: Code
+                        - generic:
+                          - generic: ...
+                          - generic: (...)
+                          - generic: results
+                  - listitem [ref=e88]:
+                    - link "Issues (62) results" [ref=e150] [cursor=pointer]:
+                      - /url: https://github.com/search?q=repo%3Alangchain-ai%2Flanggraph+tool_node&type=issues
+                      - generic:
+                        - img
+                      - generic [ref=e151]:
+                        - generic [ref=e152]: Issues
+                        - generic:
+                          - generic: "62"
+                          - generic: (62)
+                          - generic: results
+                  - listitem [ref=e92]:
+                    - link "Pull requests (11) results" [ref=e153] [cursor=pointer]:
+                      - /url: https://github.com/search?q=repo%3Alangchain-ai%2Flanggraph+tool_node&type=pullrequests
+                      - generic:
+                        - img
+                      - generic [ref=e154]:
+                        - generic [ref=e155]: Pull requests
+                        - generic:
+                          - generic: "11"
+                          - generic: (11)
+                          - generic: results
+                  - listitem [ref=e96]:
+                    - link "Discussions (0) results" [ref=e156] [cursor=pointer]:
+                      - /url: https://github.com/search?q=repo%3Alangchain-ai%2Flanggraph+tool_node&type=discussions
+                      - generic:
+                        - img
+                      - generic [ref=e157]:
+                        - generic [ref=e158]: Discussions
+                        - generic:
+                          - generic: "0"
+                          - generic: (0)
+                          - generic: results
+                  - listitem [ref=e100]:
+                    - link "Commits (33) results" [ref=e159] [cursor=pointer]:
+                      - /url: https://github.com/search?q=repo%3Alangchain-ai%2Flanggraph+tool_node&type=commits
+                      - generic:
+                        - img
+                      - generic [ref=e160]:
+                        - generic [ref=e161]: Commits
+                        - generic:
+                          - generic: "33"
+                          - generic: (33)
+                          - generic: results
+                  - listitem [ref=e104]:
+                    - link "Packages (0) results" [ref=e162] [cursor=pointer]:
+                      - /url: https://github.com/search?q=repo%3Alangchain-ai%2Flanggraph+tool_node&type=registrypackages
+                      - generic:
+                        - img
+                      - generic [ref=e163]:
+                        - generic [ref=e164]: Packages
+                        - generic:
+                          - generic: "0"
+                          - generic: (0)
+                          - generic: results
+                  - listitem [ref=e108]:
+                    - link "Wikis (0) results" [ref=e165] [cursor=pointer]:
+                      - /url: https://github.com/search?q=repo%3Alangchain-ai%2Flanggraph+tool_node&type=wikis
+                      - generic:
+                        - img
+                      - generic [ref=e166]:
+                        - generic [ref=e167]: Wikis
+                        - generic:
+                          - generic: "0"
+                          - generic: (0)
+                          - generic: results
+              - listitem [ref=e112]
+              - listitem [ref=e113]:
+                - link "Advanced search" [ref=e114] [cursor=pointer]:
+                  - /url: /search/advanced
+                  - generic:
+                    - img
+                  - generic [ref=e116]: Advanced search
+          - slider "Draggable pane splitter" [ref=e118]
+        - generic [ref=e122]:
+          - button "Open column options" [ref=e127] [cursor=pointer]:
+            - img [ref=e128]
+          - generic [ref=e132]:
+            - img "Mona looking through a globe hologram for code" [ref=e134]
+            - generic [ref=e135]: Sign in to search code on GitHub
+            - generic [ref=e136]: Before you can access our code search functionality please sign in or create a free account.
+            - generic [ref=e137]:
+              - link "Sign in" [ref=e138] [cursor=pointer]:
+                - /url: /login?return_to=https%3A%2F%2Fgithub.com%2Fsearch%3Fq%3Drepo%253Alangchain-ai%252Flanggraph%2Btool_node%26type%3Dcode
+                - generic [ref=e140]: Sign in
+              - link "Sign up" [ref=e141] [cursor=pointer]:
+                - /url: /signup?source=code_search_results
+                - generic [ref=e143]: Sign up

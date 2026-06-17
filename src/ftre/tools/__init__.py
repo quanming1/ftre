@@ -12,6 +12,7 @@ from .bash import create_bash_tool
 from .cron import create_cron_tool
 from .edit import create_edit_tool
 from .read import create_read_tool
+from .see_img import create_see_img_tool
 from .send_message import create_send_message_tool
 from .set_workspace import create_set_workspace_tool
 from .task import create_task_tool
@@ -56,6 +57,7 @@ def build_default_tools(channel_manager=None, tool_registry: ToolRegistry | None
         create_edit_tool(),
         create_set_workspace_tool(),
         create_cron_tool(),
+        create_see_img_tool(),
     ]
 
     if channel_manager:
