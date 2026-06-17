@@ -1,32 +1,17 @@
-"""
-MCP 连接管理器
-
-职责：
-1. 根据 McpServerConfig 连接 MCP 服务器（stdio / streamable HTTP）
-2. 发现工具（listTools）并注册到 ToolRegistry
-3. 提供 callTool 能力给 McpToolAdapter
-4. 生命周期管理（启动/停止/重连）
-5. 监听 config.json 变化，自动热重载
-6. 热重载 + 工具注册的统一入口，自带并发锁
-
-设计原则：
-- 全异步，所有 IO 操作走 asyncio
-- McpManager 实例在 main.py 创建，注入到 AgentLoop / API routes
-- MCP 连接失败不影响主流程，只 log 警告
-- disconnect 时通知专属 task 自行退出，绕过 anyio cancel scope 跨 task 限制
-"""
+"""MCP 连接管理器：连接服务器、注册工具并监听配置热重载。"""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+from contextlib import suppress
 from typing import Any, TYPE_CHECKING
 
 from mcp import ClientSession, Tool as McpToolDef
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.streamable_http import streamablehttp_client
 
-from .config import McpServerConfig
+from .config import McpServerConfig, parse_mcp_config
 
 if TYPE_CHECKING:
     from ftre.tools import ToolRegistry
@@ -46,9 +31,9 @@ class McpConnection:
     def __init__(self, config: McpServerConfig):
         self.config = config
         self.session: ClientSession | None = None
-        self._connected = False
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._connect_lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
@@ -56,7 +41,7 @@ class McpConnection:
 
     @property
     def is_connected(self) -> bool:
-        return self._connected and self.session is not None
+        return self.session is not None
 
     async def connect(self) -> bool:
         """连接 MCP 服务器，返回是否成功。
@@ -64,92 +49,93 @@ class McpConnection:
         启动一个专属 task 来持有连接上下文，确保 connect/disconnect
         的 anyio cancel scope 在同一 task 里 enter/exit。
         """
-        if self._connected:
-            return True
+        async with self._connect_lock:
+            if self.is_connected:
+                return True
 
-        self._stop_event.clear()
+            if self._task and not self._task.done():
+                await self._cleanup_task()
 
-        # 用 Future 从子 task 拿到连接结果
-        ready = asyncio.get_running_loop().create_future()
+            self._stop_event.clear()
+            ready = asyncio.get_running_loop().create_future()
+            self._task = asyncio.create_task(self._run_connection(ready))
 
-        async def _run():
-            """在专属 task 里管理 MCP 连接的完整生命周期。"""
             try:
-                if self.config.type == "local":
-                    server_params = StdioServerParameters(
-                        command=self.config.command[0],
-                        args=self.config.command[1:],
-                        env=self.config.environment or None,
-                    )
-                    async with stdio_client(server_params) as (read_stream, write_stream):
-                        async with ClientSession(read_stream, write_stream) as session:
-                            await session.initialize()
-                            self.session = session
-                            self._connected = True
-                            if not ready.done():
-                                ready.set_result(True)
-                            # 等待断连信号
-                            await self._stop_event.wait()
-                elif self.config.type == "remote":
-                    async with streamablehttp_client(
-                        self.config.url, headers=self.config.headers or None
-                    ) as (read_stream, write_stream, _):
-                        async with ClientSession(read_stream, write_stream) as session:
-                            await session.initialize()
-                            self.session = session
-                            self._connected = True
-                            if not ready.done():
-                                ready.set_result(True)
-                            # 等待断连信号
-                            await self._stop_event.wait()
-                else:
-                    if not ready.done():
-                        ready.set_result(False)
+                result = await asyncio.wait_for(ready, timeout=self.config.timeout / 1000)
             except Exception as e:
-                if not ready.done():
-                    ready.set_exception(e)
-                logger.debug(f"[mcp] 连接 task 退出: {self.name} — {e}")
+                logger.warning(f"[mcp] 连接失败: {self.name} — {e}")
+                await self._cleanup_task()
+                return False
 
-        self._task = asyncio.create_task(_run())
-
-        try:
-            result = await asyncio.wait_for(ready, timeout=self.config.timeout / 1000)
             if result is True:
                 logger.info(f"[mcp] 连接成功: {self.name}")
                 return True
-            return False
-        except Exception as e:
-            logger.warning(f"[mcp] 连接失败: {self.name} — {e}")
             await self._cleanup_task()
             return False
+
+    async def _run_connection(self, ready: asyncio.Future) -> None:
+        """在专属 task 里管理 MCP 连接的完整生命周期。"""
+        try:
+            if self.config.type == "local":
+                server_params = StdioServerParameters(
+                    command=self.config.command[0],
+                    args=self.config.command[1:],
+                    env=self.config.environment or None,
+                )
+                async with stdio_client(server_params) as streams:
+                    async with ClientSession(*streams) as session:
+                        await self._serve_session(session, ready)
+            elif self.config.type == "remote":
+                async with streamablehttp_client(
+                    self.config.url, headers=self.config.headers or None
+                ) as (read_stream, write_stream, _):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await self._serve_session(session, ready)
+            elif not ready.done():
+                ready.set_result(False)
+        except Exception as e:
+            if not ready.done():
+                ready.set_exception(e)
+            logger.debug(f"[mcp] 连接 task 退出: {self.name} — {e}")
+        finally:
+            self.session = None
+
+    async def _serve_session(self, session: ClientSession, ready: asyncio.Future) -> None:
+        """初始化会话并等待断连信号。"""
+        await session.initialize()
+        self.session = session
+        if not ready.done():
+            ready.set_result(True)
+        await self._stop_event.wait()
 
     async def disconnect(self) -> None:
         """断开连接——通知连接 task 自行退出，不跨 task 操作 cancel scope。"""
         self._stop_event.set()
         await self._cleanup_task()
-        self.session = None
-        self._connected = False
 
     async def _cleanup_task(self) -> None:
         """等待连接 task 结束并清理。"""
         if self._task and not self._task.done():
             try:
                 await asyncio.wait_for(self._task, timeout=5)
-            except (asyncio.TimeoutError, Exception):
+            except asyncio.TimeoutError:
                 # 超时则强制 cancel
                 self._task.cancel()
-                try:
+                with suppress(asyncio.CancelledError, Exception):
                     await self._task
-                except (asyncio.CancelledError, Exception):
-                    pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"[mcp] 清理连接 task 异常: {self.name} — {e}")
         self._task = None
 
     async def list_tools(self) -> list[McpToolDef]:
         """列举服务器提供的工具"""
-        if not self.is_connected:
+        session = self.session
+        if session is None:
             return []
         try:
-            result = await self.session.list_tools()
+            result = await session.list_tools()
             return result.tools
         except Exception as e:
             logger.warning(f"[mcp] list_tools 失败: {self.name} — {e}")
@@ -157,9 +143,10 @@ class McpConnection:
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         """调用 MCP 工具"""
-        if not self.is_connected:
+        session = self.session
+        if session is None:
             raise RuntimeError(f"MCP 服务器 {self.name} 未连接")
-        return await self.session.call_tool(tool_name, arguments)
+        return await session.call_tool(tool_name, arguments)
 
 
 class McpManager:
@@ -180,32 +167,24 @@ class McpManager:
         self._reload_lock = asyncio.Lock()
         self._watcher_task: asyncio.Task | None = None
 
-    # ─── 启动 / 停止 ──────────────────────────────────────────
-
     async def start_and_register(self, raw_mcp: dict) -> None:
         """解析配置、连接服务器、注册工具 — 启动时调用一次。"""
-        configs = parse_mcp_config(raw_mcp)
-        if not configs:
-            logger.info("[mcp] 无 MCP 服务器配置")
-            return
-        await self.start(configs)
-        await self._register_tools()
+        async with self._reload_lock:
+            await self._apply_config(raw_mcp, source="startup")
 
     async def stop(self) -> None:
         """断开所有连接、停止 config watcher。"""
         if self._watcher_task and not self._watcher_task.done():
             self._watcher_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._watcher_task
-            except asyncio.CancelledError:
-                pass
             self._watcher_task = None
-        for conn in self._connections.values():
-            await conn.disconnect()
+        await asyncio.gather(
+            *(conn.disconnect() for conn in self._connections.values()),
+            return_exceptions=True,
+        )
         self._connections.clear()
         logger.info("[mcp] 所有连接已断开")
-
-    # ─── 热重载 + 工具注册（统一入口）──────────────────────────
 
     async def reload_and_register(self, raw_mcp: dict, source: str = "unknown") -> None:
         """MCP 热重载 + 工具注册的统一入口。
@@ -213,16 +192,8 @@ class McpManager:
         任何路径（API 路由、config watcher）需要触发重载时都调这个方法。
         加锁防并发，避免工具重复注册。
         """
-        if self._reload_lock.locked():
-            logger.debug(f"[mcp] 已有重载在进行中（来源: {source}），跳过")
-            return
         async with self._reload_lock:
-            new_configs = parse_mcp_config(raw_mcp)
-            await self.reload(new_configs)
-            await self._register_tools()
-            logger.info(f"[mcp] 热重载完成（来源: {source}），注册 {len([c for c in self._connections.values() if c.is_connected])} 个连接")
-
-    # ─── Config Watcher ──────────────────────────────────────
+            await self._apply_config(raw_mcp, source=source)
 
     def start_config_watcher(self) -> None:
         """启动后台协程，每 3 秒轮询 config.json 的 mcp 段变化，自动热重载。"""
@@ -269,44 +240,23 @@ class McpManager:
             except Exception as e:
                 logger.warning(f"[mcp] config watcher 异常: {e}")
 
-    # ─── 连接管理（内部）────────────────────────────────────
-
-    async def start(self, configs: list[McpServerConfig]) -> None:
-        """根据配置列表启动所有 MCP 连接"""
-        for cfg in configs:
-            conn = McpConnection(cfg)
-            self._connections[cfg.name] = conn
-
-        results = await asyncio.gather(
-            *(conn.connect() for conn in self._connections.values()),
-            return_exceptions=True,
-        )
-
-        success = sum(1 for r in results if r is True)
-        logger.info(f"[mcp] 连接完成: {success}/{len(results)} 成功")
-
     async def reload(self, configs: list[McpServerConfig]) -> None:
         """热重载：对比新旧配置，断开新增/变更/删除的服务器，保留未变的连接。"""
         new_names = {cfg.name for cfg in configs}
-        old_names = set(self._connections.keys())
+        old_map = {name: conn.config for name, conn in self._connections.items()}
+        to_remove = set(self._connections) - new_names
 
-        # ── 1. 断开已删除的 ──
-        removed = old_names - new_names
-        for name in removed:
-            logger.info(f"[mcp] 移除服务器: {name}")
-            await self._connections.pop(name).disconnect()
-
-        # ── 2. 断开配置变更的 ──
-        old_map = {cfg.name: cfg for cfg in self._current_configs()}
         for cfg in configs:
             old_cfg = old_map.get(cfg.name)
-            if old_cfg and not self._config_equals(old_cfg, cfg):
+            if old_cfg and old_cfg != cfg:
+                to_remove.add(cfg.name)
                 logger.info(f"[mcp] 配置变更，重连: {cfg.name}")
-                old_conn = self._connections.pop(cfg.name, None)
-                if old_conn:
-                    await old_conn.disconnect()
 
-        # ── 3. 连接新增/变更的 ──
+        await asyncio.gather(
+            *(self._remove_connection(name) for name in to_remove),
+            return_exceptions=True,
+        )
+
         to_connect = [
             cfg for cfg in configs
             if cfg.name not in self._connections or not self._connections[cfg.name].is_connected
@@ -323,22 +273,26 @@ class McpManager:
             success = sum(1 for r in results if r is True)
             logger.info(f"[mcp] 热重载: {success}/{len(to_connect)} 连接成功")
 
-        # ── 4. disabled 的标记断开但保留条目 ──
-        for cfg in configs:
-            if cfg.disabled and cfg.name in self._connections:
-                await self._connections[cfg.name].disconnect()
-
-    # ─── 工具注册（内部）────────────────────────────────────
+    async def _apply_config(self, raw_mcp: dict, source: str) -> None:
+        configs = parse_mcp_config(raw_mcp)
+        if not configs:
+            logger.info("[mcp] 无 MCP 服务器配置")
+        await self.reload(configs)
+        await self._register_tools()
+        logger.info(
+            f"[mcp] 配置应用完成（来源: {source}），"
+            f"连接 {len(self.get_connected_servers())} 个服务器"
+        )
 
     async def _register_tools(self) -> None:
         """刷新 tool_registry 里的 MCP 工具（先移除旧的，再注册新的）。"""
         if self._tool_registry is None:
             return
-        from .adapter import build_mcp_tools
+        from .adapter import MCP_TOOL_PREFIX, build_mcp_tools
 
         self._tool_registry._tools = [
             t for t in self._tool_registry._tools
-            if not getattr(t, "name", "").startswith("mcp__")
+            if not getattr(t, "name", "").startswith(MCP_TOOL_PREFIX)
         ]
         mcp_tools = await build_mcp_tools(self)
         for tool in mcp_tools:
@@ -348,15 +302,22 @@ class McpManager:
                 pass  # 已注册则跳过
         logger.info(f"[mcp] 注册 {len(mcp_tools)} 个 MCP 工具")
 
-    # ─── 外部查询接口 ─────────────────────────────────────────
-
     async def list_all_tools(self) -> list[tuple[str, McpToolDef]]:
         """返回所有已连接服务器的工具列表。"""
         all_tools: list[tuple[str, McpToolDef]] = []
-        for name, conn in self._connections.items():
-            if not conn.is_connected:
+        connected = [
+            (name, conn)
+            for name, conn in self._connections.items()
+            if conn.is_connected
+        ]
+        results = await asyncio.gather(
+            *(conn.list_tools() for _, conn in connected),
+            return_exceptions=True,
+        )
+        for (name, _), tools in zip(connected, results):
+            if isinstance(tools, Exception):
+                logger.warning(f"[mcp] list_tools 失败: {name} — {tools}")
                 continue
-            tools = await conn.list_tools()
             for tool in tools:
                 all_tools.append((name, tool))
         return all_tools
@@ -393,20 +354,8 @@ class McpManager:
         ]
         return "\n".join(lines)
 
-    # ─── 内部辅助 ─────────────────────────────────────────────
-
-    def _current_configs(self) -> list[McpServerConfig]:
-        return [conn.config for conn in self._connections.values()]
-
-    @staticmethod
-    def _config_equals(a: McpServerConfig, b: McpServerConfig) -> bool:
-        return (
-            a.name == b.name
-            and a.type == b.type
-            and a.command == b.command
-            and a.environment == b.environment
-            and a.url == b.url
-            and a.headers == b.headers
-            and a.disabled == b.disabled
-            and a.timeout == b.timeout
-        )
+    async def _remove_connection(self, name: str) -> None:
+        conn = self._connections.pop(name, None)
+        if conn:
+            logger.info(f"[mcp] 移除服务器: {name}")
+            await conn.disconnect()

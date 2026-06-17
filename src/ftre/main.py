@@ -13,29 +13,72 @@ import json
 # Windows CMD 默认不认 ANSI 转义码，激活虚拟终端支持
 if sys.platform == "win32":
     import ctypes
+
     kernel32 = ctypes.windll.kernel32
-    kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+    stdout = kernel32.GetStdHandle(-11)
+    mode = ctypes.c_uint32()
+    if kernel32.GetConsoleMode(stdout, ctypes.byref(mode)):
+        kernel32.SetConsoleMode(stdout, mode.value | 0x0004)
+
 
 # 带颜色的日志格式
 class ColorFormatter(logging.Formatter):
-    COLORS = {
-        'DEBUG': '\033[94m',     # 亮蓝
-        'INFO': '\033[92m',      # 亮绿
-        'WARNING': '\033[93m',   # 亮黄
-        'ERROR': '\033[91m',     # 亮红
-        'CRITICAL': '\033[95m',  # 亮紫
+    RESET = "\033[0m"
+    DIM = "\033[2m"
+    SEP = "\033[90m"
+    MESSAGE = "\033[97m"
+    LEVEL_COLORS = {
+        "DEBUG": "\033[94m",
+        "INFO": "\033[92m",
+        "WARNING": "\033[93m",
+        "ERROR": "\033[91m",
+        "CRITICAL": "\033[95m",
     }
-    RESET = '\033[0m'
+    NAMESPACE_COLORS = {
+        "ftre.agent": "\033[95m",
+        "ftre.api": "\033[94m",
+        "ftre.bus": "\033[36m",
+        "ftre.channel": "\033[96m",
+        "ftre.command": "\033[35m",
+        "ftre.config": "\033[92m",
+        "ftre.mcp": "\033[38;5;208m",
+        "ftre.plugin": "\033[38;5;141m",
+        "ftre.session": "\033[38;5;45m",
+        "ftre.tools": "\033[38;5;214m",
+        "ftre_agent_core": "\033[38;5;75m",
+        "__main__": "\033[38;5;203m",
+    }
+    DEFAULT_NAME = "\033[96m"
+    TRACEBACK = "\033[91m"
 
-    def format(self, record):
-        color = self.COLORS.get(record.levelname, '')
-        record.levelname = f"{color}{record.levelname:<8}{self.RESET}"
-        record.name = f"\033[37m{record.name}{self.RESET}"  # 白色模块名
-        return super().format(record)
+    def format(self, record: logging.LogRecord) -> str:
+        message = record.getMessage()
+        level_color = self.LEVEL_COLORS.get(record.levelname, "")
+        message = f"{self.MESSAGE}{message}{self.RESET}"
+        if record.exc_info:
+            traceback = self.formatException(record.exc_info)
+            message = f"{message}\n{self.TRACEBACK}{traceback}{self.RESET}"
+        if record.stack_info:
+            stack = self.formatStack(record.stack_info)
+            message = f"{message}\n{self.TRACEBACK}{stack}{self.RESET}"
+
+        timestamp = self.formatTime(record, self.datefmt)
+        level = f"{level_color}{record.levelname:<8}{self.RESET}"
+        name_color = self._name_color(record.name)
+        name = f"{name_color}{record.name}{self.RESET}"
+        sep = f"{self.SEP}-{self.RESET}"
+        return f"{self.DIM}{timestamp}{self.RESET} {sep} {level} {sep} {name} {sep} {message}"
+
+    def _name_color(self, name: str) -> str:
+        for namespace, color in self.NAMESPACE_COLORS.items():
+            if name == namespace or name.startswith(f"{namespace}."):
+                return color
+        return self.DEFAULT_NAME
+
 
 # 配置日志：输出到控制台，级别 INFO，带颜色
 handler = logging.StreamHandler()
-handler.setFormatter(ColorFormatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s'))
+handler.setFormatter(ColorFormatter())
 logging.root.addHandler(handler)
 logging.root.setLevel(logging.INFO)
 
@@ -53,6 +96,17 @@ from ftre.config import load_config_file
 from ftre.tools import ToolRegistry
 from ftre.tools.cron import CronScheduler
 from ftre.mcp import McpManager
+
+
+async def _start_mcp_background(mcp_manager: McpManager, raw_mcp: dict) -> None:
+    """后台启动 MCP，避免阻塞网关主启动流程。"""
+    try:
+        await mcp_manager.start_and_register(raw_mcp)
+        mcp_manager.start_config_watcher()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logging.getLogger(__name__).exception("[mcp] 后台启动失败")
 
 
 async def run_gateway():
@@ -112,8 +166,9 @@ async def run_gateway():
     # ── MCP 服务器 ──
     # McpManager 接管：连接、工具注册、config watcher、热重载
     mcp_manager = McpManager(tool_registry=tool_registry)
-    await mcp_manager.start_and_register(config_data.get("mcp", {}))
-    mcp_manager.start_config_watcher()
+    mcp_startup_task = asyncio.create_task(
+        _start_mcp_background(mcp_manager, config_data.get("mcp", {}))
+    )
 
     # 注入 McpManager 到 API 路由
     set_mcp_manager(mcp_manager)
@@ -145,6 +200,12 @@ async def run_gateway():
     except KeyboardInterrupt:
         pass
     finally:
+        if not mcp_startup_task.done():
+            mcp_startup_task.cancel()
+            try:
+                await mcp_startup_task
+            except asyncio.CancelledError:
+                pass
         await cron_scheduler.stop()
         await agent_loop.stop()
         await mcp_manager.stop()
