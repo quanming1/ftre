@@ -156,7 +156,7 @@ def _do_notify(
 
 # ============================================================
 # invoke 路径：通过目标 Channel.receive() 投递一条 user_input
-# AgentLoop 会自动持久化 USER_INPUT 并 echo 给目标 session 前端。
+# AgentLoop 会自动持久化 user_message 并 echo 给目标 session 前端。
 # ============================================================
 
 def _do_invoke(

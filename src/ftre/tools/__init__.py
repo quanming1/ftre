@@ -43,12 +43,17 @@ class ToolRegistry:
         return len(self._tools)
 
 
-def build_default_tools(channel_manager=None, tool_registry: ToolRegistry | None = None) -> list[Tool]:
+def build_default_tools(
+    channel_manager=None,
+    tool_registry: ToolRegistry | None = None,
+    llm_config=None,
+) -> list[Tool]:
     """构建默认工具集：bash + read + write + edit + set_workspace + cron
     + task + send_message
 
     Args:
         channel_manager: ChannelManager 实例（用于 send_message 工具）
+        llm_config: 当前 Agent 的 llm 配置；vision=False 时不注册 see_img
     """
     tools = [
         create_bash_tool(),
@@ -57,8 +62,10 @@ def build_default_tools(channel_manager=None, tool_registry: ToolRegistry | None
         create_edit_tool(),
         create_set_workspace_tool(),
         create_cron_tool(),
-        create_see_img_tool(),
     ]
+
+    if getattr(llm_config, "vision", False):
+        tools.append(create_see_img_tool())
 
     if channel_manager:
         tools.append(create_task_tool(channel_manager))

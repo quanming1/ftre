@@ -26,10 +26,11 @@ import time
 
 from ftre_agent_core.agent.event import (
     AgentEvent,
-    MessageCompleteEvent,
+    AssistantMessageCompleteEvent,
     ReasoningCompleteEvent,
     ToolCallEvent,
     ToolResultEvent,
+    UserMessageEvent,
 )
 from ftre_agent_core.llm import LLMHandler, TextDelta
 
@@ -352,7 +353,7 @@ class CompactHandler:
             ]
 
             # 优先使用 compact_llm，未配置则回退到主 llm
-            llm_cfg = config.compact_llm or config.llm
+            llm_cfg = getattr(config, "compact_llm", None) or config.llm
             handler = LLMHandler(
                 model=llm_cfg.model,
                 api_key=llm_cfg.api_key,
@@ -424,18 +425,18 @@ def _serialize_events(
     parts: list[str] = []
 
     for ev in chunk:
-        # 尝试转为 AgentEvent class；非 Agent 事件（USER_INPUT, context_compact）保留 dict
+        # 尝试转为 AgentEvent class；非 Agent 事件（context_compact）保留 dict
         agent_ev: AgentEvent | None = None
         try:
             agent_ev = AgentEvent.from_dict(ev) if ev.get("type", "") not in (
-                "USER_INPUT", "context_compact", "context_compact_enabled",
+                "context_compact", "context_compact_enabled",
                 "context_compact_failed", "user_input",
             ) else None
         except (KeyError, ValueError):
             agent_ev = None
 
         if agent_ev is not None:
-            if isinstance(agent_ev, MessageCompleteEvent):
+            if isinstance(agent_ev, AssistantMessageCompleteEvent):
                 parts.append(f"[Assistant]: {agent_ev.content}")
             elif isinstance(agent_ev, ReasoningCompleteEvent):
                 if agent_ev.content:
@@ -448,28 +449,26 @@ def _serialize_events(
                 if len(result) > TOOL_OUTPUT_MAX_CHARS:
                     result = result[:TOOL_OUTPUT_MAX_CHARS] + "\n[truncated]"
                 parts.append(f"[Tool result]: {result}")
+            elif isinstance(agent_ev, UserMessageEvent):
+                content = agent_ev.content
+                if isinstance(content, list):
+                    content = "\n".join(
+                        str(p.get("text") or p.get("data") or "")
+                        for p in content
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    )
+                attachments = (ev.get("data") or {}).get("attachments") or []
+                att_lines = [
+                    f"[附件 {a.get('mime_type', a.get('mime', '未知'))}: {a.get('name', a.get('uri', ''))}]"
+                    for a in attachments if isinstance(a, dict)
+                ]
+                lines = [f"[User]: {content}"] + att_lines
+                parts.append("\n".join(lines))
             continue
 
-        # ─── 非 Agent 事件（USER_INPUT 等）仍用 dict 访问 ──────
+        # ─── 非 Agent 事件仍用 dict 访问 ──────
         t = ev.get("type", "")
         d = ev.get("data") or {}
-
-        if t == "USER_INPUT":
-            content = d.get("content", "")
-            if isinstance(content, list):
-                content = "\n".join(
-                    str(p.get("data", "") or "")
-                    for p in content
-                    if isinstance(p, dict) and p.get("type") == "text"
-                )
-            # 附件（图片/文件）用占位符
-            attachments = d.get("attachments") or []
-            att_lines = [
-                f"[附件 {a.get('mime', '未知')}: {a.get('name', a.get('uri', ''))}]"
-                for a in attachments if isinstance(a, dict)
-            ]
-            lines = [f"[User]: {content}"] + att_lines
-            parts.append("\n".join(lines))
 
     return "\n\n".join(parts)
 
