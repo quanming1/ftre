@@ -14,6 +14,13 @@ from typing import Any, TypedDict
 
 import aiosqlite
 
+from ftre_agent_core.agent.event import (
+    AgentEvent,
+    MessageCompleteEvent,
+    ReasoningCompleteEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from ftre.config import CONFIG_PATH
 
 
@@ -485,9 +492,16 @@ class SessionManager:
                 pending_tool_calls = []
 
         for idx, event in enumerate(events):
-            t = event["type"]
+            # 尝试转为 AgentEvent class（Agent 事件用类型安全方式访问）
+            _ae: AgentEvent | None = None
+            _t = event["type"]
+            if _t not in ("USER_INPUT", "context_compact", "external_message"):
+                try:
+                    _ae = AgentEvent.from_dict(event)
+                except (KeyError, ValueError):
+                    _ae = None
 
-            if t == "USER_INPUT":
+            if _t == "USER_INPUT":
                 _flush_tool_calls()
                 # user 消息边界：丢弃可能残留的 reasoning
                 _take_reasoning()
@@ -503,44 +517,44 @@ class SessionManager:
                     ),
                 })
 
-            elif t == "reasoning_complete":
+            elif isinstance(_ae, ReasoningCompleteEvent):
                 # 一轮 LLM 思考的完整文本，挂到下一条 assistant message 上
-                pending_reasoning = event["data"].get("content", "") or None
+                pending_reasoning = _ae.content or None
 
-            elif t == "tool_call":
+            elif isinstance(_ae, ToolCallEvent):
                 pending_tool_calls.append({
-                    "id": event["data"].get("id", ""),
+                    "id": _ae.tool_id,
                     "type": "function",
                     "function": {
-                        "name": event["data"].get("name", ""),
-                        "arguments": _serialize_arguments(event["data"].get("arguments", {})),
+                        "name": _ae.tool_name,
+                        "arguments": _serialize_arguments(_ae.arguments),
                     },
                 })
 
-            elif t == "tool_result":
+            elif isinstance(_ae, ToolResultEvent):
                 _flush_tool_calls()
-                result_content = event["data"].get("result", "")
-                error = event["data"].get("error")
+                result_content = _ae.result
+                error = _ae.error
                 if prune_max_chars > 0:
                     result_content = _maybe_prune_tool_result(idx, result_content, error)
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": event["data"].get("id", ""),
+                    "tool_call_id": _ae.tool_id,
                     "content": result_content,
                 })
 
-            elif t == "message_complete":
+            elif isinstance(_ae, MessageCompleteEvent):
                 _flush_tool_calls()
                 msg: dict = {
                     "role": "assistant",
-                    "content": event["data"].get("content", ""),
+                    "content": _ae.content,
                 }
                 reasoning = _take_reasoning()
                 if reasoning:
                     msg["reasoning_content"] = reasoning
                 messages.append(msg)
 
-            elif t == "external_message":
+            elif _t == "external_message":
                 _flush_tool_calls()
                 _take_reasoning()
                 d = event["data"]
@@ -553,7 +567,7 @@ class SessionManager:
                     "content": f"[来自 {src} 的消息] {d.get('content', '')}",
                 })
 
-            elif t == "context_compact":
+            elif _t == "context_compact":
                 # 压缩事件 = 游标。按事件顺序处理：
                 # - 清空之前累积的 messages，注入 summary 作为新起点；
                 # - 该事件之后的事件照常重建 → 自动形成 tail（最近原文）。
@@ -595,11 +609,21 @@ def _safe_name(s: str) -> str:
 
 def _find_anchor(events: list[MessageModel]) -> tuple[int, dict | None, str]:
     """倒序找最晚的"携带 usage 的事件"，返回 (index, usage_dict, source)"""
+    from ftre_agent_core.agent.event import AgentEvent, UsageUpdateEvent, DoneEvent
     for i in range(len(events) - 1, -1, -1):
         ev = events[i]
-        if ev["type"] not in ("usage_update", "done"):
+        _ae = None
+        try:
+            _ae = AgentEvent.from_dict(ev)
+        except (KeyError, ValueError):
+            pass
+        if not isinstance(_ae, (UsageUpdateEvent, DoneEvent)):
             continue
-        usage = (ev.get("data") or {}).get("usage")
+        usage = None
+        if isinstance(_ae, UsageUpdateEvent):
+            usage = _ae.usage
+        elif isinstance(_ae, DoneEvent) and _ae.usage:
+            usage = _ae.usage
         if usage:
             return i, usage, ev["type"]
     return -1, None, ""

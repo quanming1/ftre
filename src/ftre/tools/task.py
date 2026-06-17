@@ -90,6 +90,15 @@ def _final_content_after(
         ts = ev.get("timestamp", 0)
         if ts < baseline_ts:
             break
+        # 优先用 AgentEvent class 解包
+        try:
+            from ftre_agent_core.agent.event import AgentEvent, MessageCompleteEvent
+            agent_ev = AgentEvent.from_dict(ev)
+            if isinstance(agent_ev, MessageCompleteEvent):
+                return agent_ev.content
+        except (KeyError, ValueError):
+            pass
+        # 兜底：旧式 dict 访问
         if ev.get("type") == "message_complete":
             return (ev.get("data") or {}).get("content") or ""
     return None
