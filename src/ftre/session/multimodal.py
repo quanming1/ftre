@@ -37,11 +37,11 @@ def _content_to_text(content: str | list[dict]) -> str:
     for part in content:
         t = part.get("type", "")
         if t == "text":
-            d = (part.get("data") or "").strip()
+            d = str(part.get("data") or "").strip()
             if d:
                 parts.append(d)
         elif t == "skill":
-            name = part.get("data", "")
+            name = str(part.get("data", ""))
             if name:
                 parts.append(
                     f"<selected_skill name=\"{escape(name)}\">\n"
@@ -69,6 +69,8 @@ def build_user_content(
         - 含附件场景：list[dict]
     """
     text = _content_to_text(content)
+    if not isinstance(text, str):
+        text = str(text)
 
     if not attachments:
         return text or ""
@@ -80,7 +82,7 @@ def build_user_content(
 
     parts_multi: list[dict] = []
     if text:
-        parts_multi.append({"type": "text", "text": text})
+        parts_multi.append({"type": "text", "text": str(text)})
 
     for att in attachments:
         if att.get("type") == "image":
