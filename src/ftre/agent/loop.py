@@ -18,6 +18,17 @@ import logging
 import os
 
 from ftre_agent_core.agent import ReActAgent
+from ftre_agent_core.agent.event import (
+    AgentEvent,
+    DoneEvent,
+    DoneReason,
+    ErrorEvent,
+    MessageCompleteEvent,
+    ReasoningCompleteEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    UsageUpdateEvent,
+)
 from ftre.bus import BusMessage, EventBus, GLOBAL_CHANNEL, GLOBAL_SESSION
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 from ftre.config import AgentConfig, load_config
@@ -306,18 +317,16 @@ class AgentLoop:
 
     # ─── Agent 执行 ─────────────────────────────────────────
 
-    # 需要持久化的事件类型
-    PERSISTENT_EVENTS = {
-        "message_complete",
-        "reasoning_complete",
-        "tool_call",
-        "tool_result",
-        "tool_cancel_requested",
-        "tool_cancelled",
-        "done",
-        "usage_update",
-        "error",
-    }
+    # 需要持久化的事件类型（dataclass 类型，用 isinstance 检查）
+    _PERSISTENT_CLASSES: tuple[type, ...] = (
+        MessageCompleteEvent,
+        ReasoningCompleteEvent,
+        ToolCallEvent,
+        ToolResultEvent,
+        DoneEvent,
+        UsageUpdateEvent,
+        ErrorEvent,
+    )
 
     async def _run_async(self, inbound: BusMessage, need_compact: bool = False) -> None:
         """异步执行 Agent，事件逐条投递到 Bus。
@@ -439,9 +448,9 @@ class AgentLoop:
                 # 检查 cancel：Task.cancel() 会在 await 处抛 CancelledError，
                 # 但 async for 的 yield 不一定被 cancel 打断（取决于 generator 内部实现），
                 # 所以在这里也检查 CancellationToken 作为补充。
-                if event.get("type") in self.PERSISTENT_EVENTS:
+                if isinstance(event, self._PERSISTENT_CLASSES):
                     await self.session_manager.save_message(
-                        session_id, event["type"], event.get("data", {})
+                        session_id, event.type.value, event._data_dict()
                     )
 
                 out = BusMessage(
@@ -450,13 +459,13 @@ class AgentLoop:
                     to_channel=inbound.to_channel,
                     from_session=inbound.from_session,
                     to_session=inbound.to_session,
-                    data=event,
+                    data=event.to_dict(),
                 )
                 await self.bus.publish_outbound(out)
                 # usage_update 时检查是否需要预压缩。
                 # _compact_tasks 去重保护确保同一 session 只有一个 compact task 在飞，
                 # 所以即使 usage_update 频繁也不会反复调度。
-                if event.get("type") == "usage_update" and inbound.from_channel != SUBAGENT_CHANNEL_ID:
+                if isinstance(event, UsageUpdateEvent) and inbound.from_channel != SUBAGENT_CHANNEL_ID:
                     try:
                         await self._schedule_idle_compact(session_id, inbound.from_channel)
                     except Exception:
@@ -472,7 +481,7 @@ class AgentLoop:
                 to_channel=inbound.to_channel,
                 from_session=inbound.from_session,
                 to_session=inbound.to_session,
-                data={"type": "done", "data": {"success": False, "reason": "cancelled"}},
+                data=DoneEvent(success=False, reason=DoneReason.CANCELLED).to_dict(),
             )
             await self.bus.publish_outbound(done_evt)
         except Exception:
@@ -483,7 +492,7 @@ class AgentLoop:
                 to_channel=inbound.to_channel,
                 from_session=inbound.from_session,
                 to_session=inbound.to_session,
-                data={"type": "done", "data": {"success": False, "reason": "error"}},
+                data=DoneEvent(success=False, reason=DoneReason.ERROR).to_dict(),
             )
             await self.bus.publish_outbound(err_evt)
         finally:
