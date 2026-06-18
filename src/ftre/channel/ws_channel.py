@@ -8,7 +8,7 @@ WebSocket Channel
 - 一个客户端 = 一条物理 WebSocket。
 - 一条 WebSocket 可以 attach 到多个 session（前端同时关注多个会话）。
 - session_id → set[WebSocket]：同一个 session 也允许被多个客户端 attach（多端同步）。
-- 客户端必须显式发送 attach 帧（或在 user_input/cancel 时隐式 attach 当前 session），
+- 客户端必须显式发送 attach 帧（或在 user_message/cancel 时隐式 attach 当前 session），
   后端才会把这条 ws 加入 session 的推送目标。
 """
 import base64
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# 附件校验（user_input.data.attachments）
+# 附件校验（user_message.data.attachments）
 # ============================================================
 
 # 允许的图片 MIME
@@ -47,7 +47,7 @@ MAX_ATTACHMENTS_PER_MESSAGE = 8
 
 def _validate_attachments(attachments) -> tuple[bool, str]:
     """
-    校验 user_input.data.attachments。
+    校验 user_message.data.attachments。
     返回 (ok, error_message)。无附件视为合法。
     """
     if attachments is None:
@@ -246,8 +246,8 @@ class WebSocketChannel(Channel):
         type:
         - attach     声明这条 ws 关心的 session（data.session_id）
         - detach     取消关心（data.session_id）
-        - user_input 用户消息（隐式 attach data.session_id）
-        - cancel     取消生成（转为 /cancel user_input，隐式 attach data.session_id）
+        - user_message 用户消息（隐式 attach data.session_id）
+        - cancel       取消生成（转为 /cancel user_message，隐式 attach data.session_id）
         """
         try:
             frame = json.loads(raw)
@@ -270,7 +270,7 @@ class WebSocketChannel(Channel):
             self._detach(session_id, ws)
             return
 
-        # ─── cancel 帧：转为 /cancel 的 user_input ───
+        # ─── cancel 帧：转为 /cancel 的 user_message ───
         # 取消操作统一走系统级 /cancel 指令，不再有 type="cancel" 的 BusMessage
         if frame_type == "cancel":
             if not session_id:
@@ -287,11 +287,11 @@ class WebSocketChannel(Channel):
                 session_id,
                 data={"content": "/cancel", "session_id": session_id},
                 metadata=metadata,
-                kind="user_input",
+                kind="user_message",
             )
             return
 
-        if frame_type != "user_input":
+        if frame_type != "user_message":
             logger.debug(f"[ws-channel] unknown frame type: {frame_type}")
             return
 
@@ -299,14 +299,14 @@ class WebSocketChannel(Channel):
             logger.warning(f"[ws-channel] {frame_type} 缺少 session_id，忽略")
             return
 
-        # user_input 附件校验：违规直接拒绝，不进 Bus
+        # user_message 附件校验：违规直接拒绝，不进 Bus
         ok, err = _validate_attachments(data.get("attachments"))
         if not ok:
-            logger.warning(f"[ws-channel] user_input 附件非法: {err}")
+            logger.warning(f"[ws-channel] user_message 附件非法: {err}")
             await self._reject(ws, frame.get("id", ""), session_id, err)
             return
 
-        # user_input 隐式 attach（保持向后兼容）
+        # user_message 隐式 attach（保持向后兼容）
         self._attach(session_id, ws)
 
         metadata = frame.get("metadata") or {}
@@ -318,7 +318,7 @@ class WebSocketChannel(Channel):
         if frame_id:
             metadata = {**metadata, "frame_id": frame_id}
 
-        await self.receive(session_id, data, metadata, kind="user_input")
+        await self.receive(session_id, data, metadata, kind="user_message")
 
     async def _reject(self, ws: WebSocket, frame_id: str, session_id: str, reason: str) -> None:
         """向客户端回写一帧拒绝消息（不入 Bus）"""

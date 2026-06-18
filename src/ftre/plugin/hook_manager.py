@@ -33,7 +33,7 @@ class MessagesBuildContext:
 
     只读字段（hook 改了也不会被采纳）：
     - session_id / channel_id：当前会话标识
-    - inbound_data：本次 user_input 的完整 payload
+    - inbound_data：本次 user_message 的完整 payload
     - workspace：当前会话工作区的绝对路径
     - event_loop：主 asyncio 事件循环引用（plugin 用于 run_coroutine_threadsafe）
 

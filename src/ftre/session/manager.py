@@ -481,43 +481,9 @@ class SessionManager:
             return text
 
         def _coerce_user_message_content(content: Any) -> str | list[dict]:
-            if not isinstance(content, list):
-                return content
+            from .multimodal import normalize_user_content
 
-            # 防御性归一化：确保 content parts 符合 OpenAI API 格式。
-            # 历史数据已刷库统一为 {"type":"text","text":"..."}，
-            # 此处兜底防止未来写入侧遗漏导致旧格式泄漏到 LLM 请求。
-            normalized: list[dict] = []
-            omitted_image = False
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                ptype = part.get("type")
-                if ptype == "text":
-                    text = part.get("text") or part.get("data") or ""
-                    if text:
-                        normalized.append({"type": "text", "text": str(text)})
-                elif ptype == "image_url":
-                    if include_images:
-                        normalized.append(part)
-                    else:
-                        omitted_image = True
-                elif ptype is not None:
-                    normalized.append(part)
-
-            if not include_images and omitted_image:
-                from .multimodal import IMAGE_OMITTED_NOTICE
-                normalized.append({"type": "text", "text": IMAGE_OMITTED_NOTICE})
-
-            # 无图片场景或归一化后为空：退回纯文本字符串
-            if not normalized:
-                return ""
-            # 如果只有纯文本且无图片，退回字符串（兼容旧行为）
-            if not include_images:
-                return "\n\n".join(
-                    p.get("text", "") for p in normalized if p.get("type") == "text"
-                )
-            return normalized
+            return normalize_user_content(content, include_images=include_images)
 
         def _flush_tool_calls():
             nonlocal pending_tool_calls

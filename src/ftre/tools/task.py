@@ -4,7 +4,7 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 行为：
 - session_id 不传 → 在 channel="subagent" 下新建 session
 - session_id 传了 → 复用，会带上其历史
-- 通过 SubagentChannel.receive 投递 user_input
+- 通过 SubagentChannel.receive 投递 user_message
 - 投递后阻塞等待目标 session 跑完，返回最后一条 ai 回复 + session_id
 
 终止判定：

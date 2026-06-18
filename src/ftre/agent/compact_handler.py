@@ -430,7 +430,7 @@ def _serialize_events(
         try:
             agent_ev = AgentEvent.from_dict(ev) if ev.get("type", "") not in (
                 "context_compact", "context_compact_enabled",
-                "context_compact_failed", "user_input",
+                "context_compact_failed",
             ) else None
         except (KeyError, ValueError):
             agent_ev = None
