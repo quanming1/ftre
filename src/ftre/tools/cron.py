@@ -13,7 +13,7 @@ Cron 工具 - 让 Agent 创建/管理定时任务
 }
 
 调度由 CronScheduler._loop 协程负责：默认每 30 秒扫描目录，
-对到期任务生成 user_input 投递到 Bus（在独立 cron session 中执行）。
+对到期任务生成 user_message 投递到 Bus（在独立 cron session 中执行）。
 """
 import json
 import logging
@@ -107,7 +107,7 @@ class CronChannel(Channel):
 
 class CronScheduler:
     """
-    Cron 调度器：周期扫描 ~/.ftre/cron/，对到期任务投递 user_input 到 Bus。
+    Cron 调度器：周期扫描 ~/.ftre/cron/，对到期任务投递 user_message 到 Bus。
 
     每个任务在独立 cron session 中执行，结果不污染原始会话。
     Agent 收到 prompt 后可调用 send_message 向其他 session 推送结果。
@@ -181,7 +181,7 @@ class CronScheduler:
             )
 
             msg = BusMessage(
-                type="user_input",
+                type="user_message",
                 from_channel=self.default_channel,
                 to_channel=self.default_channel,
                 from_session=cron_session_id,

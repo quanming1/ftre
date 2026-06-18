@@ -125,22 +125,22 @@ class CommandManager:
 
     @staticmethod
     def _extract_text(content) -> str:
-        """从 user_input.content 抽取首段纯文本，兼容字符串与多模态分段数组。"""
+        """从 user_message.content 抽取首段纯文本，兼容字符串与多模态分段数组。"""
         if isinstance(content, str):
             return content
         if isinstance(content, list):
             for seg in content:
                 if isinstance(seg, dict) and seg.get("type") == "text":
-                    return str(seg.get("data", "") or "")
+                    return str(seg.get("text") or seg.get("data") or "")
         return ""
 
     def _extract_from_data(self, data: dict) -> str | None:
         """从 data["inbound"] 提取指令文本。
 
-        仅当 inbound.type == "user_input" 且文本以 "/" 开头时返回文本，否则返回 None。
+        仅当 inbound.type == "user_message" 且文本以 "/" 开头时返回文本，否则返回 None。
         """
         inbound = data.get("inbound")
-        if inbound is None or inbound.type != "user_input":
+        if inbound is None or inbound.type != "user_message":
             return None
         text = self._extract_text(inbound.data.get("content", ""))
         return text if text.startswith("/") else None

@@ -2,7 +2,7 @@
 Subagent Channel - 静默通道，专门承载 task 工具派发的子任务
 
 设计：
-- inbound：由 task 工具调用 receive() 投递 user_input 到 Bus
+- inbound：由 task 工具调用 receive() 投递 user_message 到 Bus
 - outbound：静默丢弃（subagent 没有外部观察者，事件只持久化到数据库
   由前端按 channel_id="subagent" 过滤展示）
 
