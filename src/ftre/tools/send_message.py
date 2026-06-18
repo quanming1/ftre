@@ -8,7 +8,7 @@ send_message 工具 - 向另一个 session 发送一条消息
   目标自己的运行不受影响。适合"通知/抄送/把结果同步给别人"。
 
 - invoke：唤起，触发对方 agent 执行
-  以 user_input 形式投递到目标 session 的 Channel.receive()，等价于"模拟一条
+  以 user_message 形式投递到目标 session 的 Channel.receive()，等价于"模拟一条
   用户输入"，AgentLoop 会跑起目标 agent。适合"委派任务/请求别人帮忙"。
   调用方拿不到结果（fire-and-forget），需要 await 对方回复请改用 task 工具。
 
@@ -94,7 +94,7 @@ def create_send_message_tool(channel_manager) -> Tool:
             "向另一个 session 发送一条消息。\n"
             "kind='notify'（默认）：仅通知，目标 session 收到一条 external_message，"
             "目标自身运行不受影响。\n"
-            "kind='invoke'：唤起目标 session，以 user_input 形式触发对方 agent 执行；"
+            "kind='invoke'：唤起目标 session，以 user_message 形式触发对方 agent 执行；"
             "调用方拿不到结果（如需等待回复请改用 task 工具）。\n"
             "subagent 内禁止调用，禁止发给当前 session 自己。"
         ),
@@ -155,7 +155,7 @@ def _do_notify(
 
 
 # ============================================================
-# invoke 路径：通过目标 Channel.receive() 投递一条 user_input
+# invoke 路径：通过目标 Channel.receive() 投递一条 user_message
 # AgentLoop 会自动持久化 user_message 并 echo 给目标 session 前端。
 # ============================================================
 
@@ -180,6 +180,6 @@ def _do_invoke(
         "session_id": target_session_id,
     }
     asyncio.run_coroutine_threadsafe(
-        target_channel.receive(target_session_id, data, kind="user_input"),
+        target_channel.receive(target_session_id, data, kind="user_message"),
         event_loop,
     ).result(timeout=10)

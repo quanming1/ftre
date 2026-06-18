@@ -3,7 +3,7 @@ AgentLoop - 全局单例，消费所有 session 的 inbound 消息
 
 职责：
 - 从 Bus 全局 inbound 队列消费消息
-- 收到 user_input 时，加载历史 → 驱动 ReActAgent → 将事件逐条发布到 outbound
+- 收到 user_message 时，加载历史 → 驱动 ReActAgent → 将事件逐条发布到 outbound
 - 系统级指令（如 /cancel）在锁外立即执行
 
 并发模型（v3 — 主循环化）：
@@ -34,7 +34,7 @@ from ftre.bus import BusMessage, EventBus, GLOBAL_CHANNEL, GLOBAL_SESSION
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 from ftre.config import AgentConfig, load_config
 from ftre.session import SessionManager
-from ftre.session.multimodal import build_user_content
+from ftre.session.multimodal import build_user_content, normalize_stored_user_content
 from ftre.tools import ToolRegistry, build_default_tools
 from ftre.tools._workspace import WorkspaceAccessor
 from ftre.utils import Pipeline
@@ -280,7 +280,7 @@ class AgentLoop:
     async def _step_compact(self, data: dict) -> bool:
         """压缩阶段：只判断是否需要自动压缩，把结论写入 data['need_compact']。"""
         inbound = data["inbound"]
-        if inbound.type != "user_input":
+        if inbound.type != "user_message":
             return True
         session_id = inbound.data.get("session_id", "") or inbound.from_session
         if not session_id:
@@ -414,14 +414,9 @@ class AgentLoop:
         await self._publish_session_status_async(session_id, "running")
 
         # Step 6: 持久化用户输入
-        # 归一化 content 格式：前端上行帧可能是 parts 数组（[{"type":"text","data":"..."}]），
-        # 统一转为 LLM API 格式（str 或 multimodal list）后再存 DB，
-        # 确保 DB 中 UserMessageEvent.content 与 core 层（see_img 等）产出格式一致。
-        stored_content = build_user_content(
-            content,
-            attachments,
-            include_images=config.llm.vision,
-        )
+        # 归一化存储格式：只保留 UI/DB 可回放的 user parts。
+        # LLM API 格式在构建上下文时由 build_user_content() 统一转换。
+        stored_content = normalize_stored_user_content(content)
         await self.session_manager.save_message(
             session_id,
             "user_message",
@@ -432,7 +427,7 @@ class AgentLoop:
             },
         )
 
-        # Step 6.5: echo user_input 给前端
+        # Step 6.5: echo user_message 给前端
         # 透传 inbound.metadata（含 frame_id），前端用 frame_id 与本地乐观占位去重
         echo = BusMessage(
             type="agent_event",
@@ -440,7 +435,7 @@ class AgentLoop:
             to_channel=inbound.to_channel,
             from_session=inbound.from_session,
             to_session=inbound.to_session,
-            data={"type": "user_input", "data": inbound.data},
+            data={"type": "user_message", "data": inbound.data},
             metadata=inbound.metadata,
         )
         await self.bus.publish_outbound(echo)
