@@ -80,7 +80,8 @@ def list_trace_summaries(
             (limit, offset),
         ).fetchall()
         trace_ids = [str(row["trace_id"]) for row in roots]
-        runs = _load_runs_for_traces(conn, trace_ids)
+        # Use lightweight query for list view - skip large payload fields
+        runs = _load_runs_for_summary(conn, trace_ids)
         traces = _summarize_runs(runs, limit=limit)
         next_offset = offset + len(trace_ids)
         return {
@@ -268,6 +269,48 @@ def _load_runs_for_traces(conn: sqlite3.Connection, trace_ids: list[str]) -> lis
         trace_ids,
     ).fetchall()
     return [_row_to_run(row) for row in rows]
+
+
+def _load_runs_for_summary(
+    conn: sqlite3.Connection, trace_ids: list[str]
+) -> list[dict]:
+    """Lightweight query for list view - skip large payload fields (inputs, events)."""
+    if not trace_ids:
+        return []
+    placeholders = ",".join("?" for _ in trace_ids)
+    rows = conn.execute(
+        f"""
+        SELECT id, trace_id, parent_run_id, name, run_type, status,
+               start_time, end_time, duration_ms, error,
+               outputs_json, metadata_json, tags_json
+        FROM trace_runs
+        WHERE trace_id IN ({placeholders})
+        ORDER BY trace_id, start_time, parent_run_id IS NOT NULL, id
+        """,
+        trace_ids,
+    ).fetchall()
+    return [_row_to_run_summary(row) for row in rows]
+
+
+def _row_to_run_summary(row: sqlite3.Row) -> dict:
+    """Convert row to dict for summary view - skip inputs and events."""
+    return {
+        "id": row["id"],
+        "trace_id": row["trace_id"],
+        "parent_run_id": row["parent_run_id"],
+        "name": row["name"],
+        "run_type": row["run_type"],
+        "status": row["status"],
+        "start_time": row["start_time"],
+        "end_time": row["end_time"],
+        "duration_ms": row["duration_ms"],
+        "inputs": {},  # Skip for summary
+        "outputs": _json_load(row["outputs_json"], {}),
+        "error": row["error"],
+        "metadata": _json_load(row["metadata_json"], {}),
+        "tags": _json_load(row["tags_json"], []),
+        "events": [],  # Skip for summary
+    }
 
 
 def _summarize_runs(runs: Iterable[dict], *, limit: int) -> list[dict]:
