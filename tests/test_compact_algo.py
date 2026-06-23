@@ -245,6 +245,28 @@ def test_prune_disabled_when_not_passed():
         assert "[L1 修剪" not in m["content"]
 
 
+def test_to_openai_messages_merges_reasoning_into_content_by_default():
+    from ftre.session.manager import SessionManager
+
+    events = [
+        {"type": "reasoning_complete", "data": {"content": "thinking"}},
+        {"type": "assistant_message_complete", "data": {"content": "answer"}},
+    ]
+
+    msgs = SessionManager.to_openai_messages(events)
+
+    assert msgs == [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "thinking"},
+                {"type": "text", "text": "answer"},
+            ],
+            "reasoning_content": "",
+        }
+    ]
+
+
 def test_to_openai_messages_omits_images_by_default():
     from ftre.session.manager import SessionManager
 

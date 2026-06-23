@@ -22,6 +22,7 @@ from ftre_agent_core.agent.event import (
     ToolResultEvent,
     UserMessageEvent,
 )
+from ftre_agent_core.reasoning import attach_reasoning
 from ftre.config import CONFIG_PATH
 
 
@@ -426,8 +427,7 @@ class SessionManager:
         - TOOL_CALL           → 连续的合并为 {"role": "assistant", "tool_calls": [...]}
         - TOOL_RESULT         → {"role": "tool", "tool_call_id": ..., "content": ...}
         - MESSAGE_COMPLETE    → {"role": "assistant", "content": ...}
-        - REASONING_COMPLETE  → 暂存到下一条 assistant message 的 reasoning_content
-                                （部分 thinking 模型要求多轮间透传）
+        - REASONING_COMPLETE  → 暂存并合并到下一条 assistant message 的 content
         - EXTERNAL_MESSAGE    → {"role": "assistant", "name": "<src>", "content": "[来自 ...]"}
                                 其他 AI agent 通过 send_message 发来的消息
         - 其他类型跳过
@@ -494,8 +494,7 @@ class SessionManager:
                     "tool_calls": pending_tool_calls,
                 }
                 reasoning = _take_reasoning()
-                if reasoning:
-                    msg["reasoning_content"] = reasoning
+                attach_reasoning(msg, reasoning)
                 messages.append(msg)
                 pending_tool_calls = []
 
@@ -542,8 +541,7 @@ class SessionManager:
                     "content": _ae.content,
                 }
                 reasoning = _take_reasoning()
-                if reasoning:
-                    msg["reasoning_content"] = reasoning
+                attach_reasoning(msg, reasoning)
                 messages.append(msg)
 
             elif isinstance(_ae, UserMessageEvent):
