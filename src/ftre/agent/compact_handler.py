@@ -32,7 +32,7 @@ from ftre_agent_core.agent.event import (
     ToolResultEvent,
     UserMessageEvent,
 )
-from ftre_agent_core.llm import LLMHandler, TextDelta
+from ftre_agent_core.llm import LLMError, LLMHandler, TextDelta
 
 from ftre.bus import BusMessage
 
@@ -102,6 +102,7 @@ class CompactHandler:
         self.channel_manager = channel_manager
         self.bus = bus
         self._threshold = threshold
+        self._last_llm_error: LLMError | None = None
 
     # ─── 只读判断 ──────────────────────────────────────────────────
 
@@ -339,6 +340,7 @@ class CompactHandler:
         2. buildPrompt() 拼接：[增量指令/首次指令] + SUMMARY_TEMPLATE + 序列化文本
         3. 把拼接结果作为 user message 发给 LLM
         """
+        self._last_llm_error = None
         try:
             context = _serialize_events(head_events)
             if not context.strip():
@@ -371,6 +373,10 @@ class CompactHandler:
                 logger.warning(f"[compact] LLM 摘要不合格 len={len(summary)}")
                 return None
             return summary
+        except LLMError as exc:
+            self._last_llm_error = exc
+            logger.warning("[compact] LLM 直调摘要失败 code=%s message=%s", exc.code, exc.message)
+            return None
         except Exception:
             logger.exception("[compact] LLM 直调摘要异常")
             return None
