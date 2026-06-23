@@ -48,29 +48,6 @@ logger = logging.getLogger(__name__)
 COMPACT_UNRETRYABLE_LLM_CODES = {"auth_error", "bad_request", "content_filter"}
 COMPACT_UNRETRYABLE_COOLDOWN_SECONDS = 300
 
-AGENT_EXECUTION_POLICY = """对于需要实际执行的任务，必须持续使用工具直到任务完成并验证。不要只描述计划或口头承诺。
-
-如果你说“我会执行”“接下来修改”“让我处理”等，必须立即实际调用工具，不能直接结束。
-
-先使用可用的搜索和读取工具理解代码库及用户需求，再决定并执行后续步骤。
-
-使用所有适用的可用工具完成实现，不要停留在分析或方案阶段。
-
-任务完成后，如果项目提供了 lint、类型检查或测试命令，必须实际运行相关命令验证改动；不能未经验证就宣称任务完成。
-
-只有以下情况可以结束：
-1. 任务已实际完成并验证；
-2. 用户要求停止；
-3. 存在必须由用户处理的明确阻塞。"""
-
-
-def _build_agent_system_prompt(base_prompt: str, mcp_hint: str = "") -> str:
-    """组合用户配置提示词和所有 Agent 都必须遵守的执行约束。"""
-    parts = [base_prompt.strip(), AGENT_EXECUTION_POLICY]
-    if mcp_hint.strip():
-        parts.append(mcp_hint.strip())
-    return "\n\n".join(part for part in parts if part)
-
 
 class AgentLoop:
     """
@@ -723,11 +700,12 @@ class AgentLoop:
             llm_config=c.llm,
         )
 
-        # 固定执行约束不能被 config.json 中的自定义 system_prompt 覆盖。
-        mcp_hint = ""
+        # MCP 工具提示词注入
+        system_prompt = c.system_prompt
         if self.mcp_manager:
-            mcp_hint = self.mcp_manager.build_system_hint() or ""
-        system_prompt = _build_agent_system_prompt(c.system_prompt, mcp_hint)
+            mcp_hint = self.mcp_manager.build_system_hint()
+            if mcp_hint:
+                system_prompt = system_prompt + mcp_hint
 
         return ReActAgent(
             model=c.llm.model,
