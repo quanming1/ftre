@@ -221,12 +221,10 @@ def load_config() -> AgentConfig:
         silent=bool(_f("silent", "silent", True)),
     )
 
-    # 日志：首次加载或配置变更时 INFO，否则 DEBUG
+    # 配置日志统一降为 DEBUG，避免每次重新加载刷屏
     is_first_load = _last_config is None
     config_changed = not is_first_load and current_mtime != _last_mtime
-
-    log_fn = logger.info if (is_first_load or config_changed) else logger.debug
-    log_fn(
+    logger.debug(
         f"[config] model={llm.model}, provider={provider_name}, "
         f"context_window={llm.context_window}, max_output={llm.max_output}, "
         f"workspace={workspace or '(default)'}, "
