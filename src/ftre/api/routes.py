@@ -22,7 +22,7 @@ from ftre.tools.cron import (
 )
 from ftre.api import skill as skill_store
 from ftre.mcp.manager import McpManager
-from ftre.trace_store import TRACE_PATH, get_trace, get_trace_run, list_trace_summaries
+from ftre.trace_store import TRACE_DB_PATH, get_trace, get_trace_run, list_trace_summaries
 from croniter import croniter
 
 logger = logging.getLogger(__name__)
@@ -63,12 +63,10 @@ def set_mcp_manager(mgr: McpManager) -> None:
 
 
 @router.get("/traces")
-async def list_traces(limit: int = 100):
+async def list_traces(limit: int = 100, offset: int = 0):
     """List recent Agent traces without returning full prompt/tool payloads."""
-    return {
-        "traces": await asyncio.to_thread(list_trace_summaries, limit=limit),
-        "path": str(TRACE_PATH),
-    }
+    page = await asyncio.to_thread(list_trace_summaries, limit=limit, offset=offset)
+    return {**page, "path": str(TRACE_DB_PATH)}
 
 
 @router.get("/traces/{trace_id}")
