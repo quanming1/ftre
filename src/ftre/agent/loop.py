@@ -19,7 +19,7 @@ import os
 import time
 
 from ftre_agent_core.agent import ReActAgent
-from ftre_agent_core import JsonlTraceExporter, Tracer
+from ftre_agent_core import Tracer
 from ftre_agent_core.agent.event import (
     AgentEvent,
     DoneEvent,
@@ -40,7 +40,7 @@ from ftre.session.multimodal import build_user_content, normalize_stored_user_co
 from ftre.tools import ToolRegistry, build_default_tools
 from ftre.tools._workspace import WorkspaceAccessor
 from ftre.utils import Pipeline
-from ftre.trace_store import TRACE_PATH
+from ftre.trace_store import SQLiteTraceExporter, TRACE_DB_PATH
 from .compact_handler import CompactHandler
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,7 @@ class AgentLoop:
         self._injected_config = config
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
-        self.tracer = Tracer([JsonlTraceExporter(TRACE_PATH)])
+        self.tracer = Tracer([SQLiteTraceExporter(TRACE_DB_PATH)])
 
         # ─── 并发控制 ──────────────────────────────────────────
         # per-session 协程锁：保证同一 session 的消息串行处理，

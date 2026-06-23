@@ -1,70 +1,273 @@
-"""Read-only query helpers for the append-only agent trace JSONL file."""
+"""SQLite-backed storage and query helpers for Agent Traces."""
+
 from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import threading
 from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from ftre.config import CONFIG_PATH
 
+if TYPE_CHECKING:
+    from ftre_agent_core.tracing import TraceRun
+
 logger = logging.getLogger(__name__)
 
-TRACE_PATH = CONFIG_PATH.parent / "traces" / "agent-traces.jsonl"
-RECENT_SCAN_BYTES = 64 * 1024 * 1024
-RECENT_SCAN_RECORDS = 50000
-_cache_lock = threading.Lock()
-_cache: dict[Path, tuple[int, int, list[dict]]] = {}
+TRACE_DB_PATH = CONFIG_PATH.parent / "traces" / "agent-traces.sqlite"
+_SCHEMA_VERSION = 1
 
 
-def load_completed_runs(path: Path = TRACE_PATH) -> list[dict]:
-    """Load the latest completed snapshot for every run.
+class SQLiteTraceExporter:
+    """Trace exporter that stores run snapshots in a standalone SQLite DB."""
 
-    Corrupt or partially-written lines are ignored so a tracing failure can
-    never make the diagnostics API unavailable.
-    """
-    if not path.exists():
-        return []
+    def __init__(self, path: str | Path = TRACE_DB_PATH):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self._initialized = False
 
-    try:
-        stat = path.stat()
-    except OSError:
-        return []
-    with _cache_lock:
-        cached = _cache.get(path)
-        if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
-            return cached[2]
+    def on_run_start(self, run: "TraceRun") -> None:
+        self._write(run)
 
-    runs: dict[str, dict] = {}
-    try:
-        with path.open("r", encoding="utf-8") as stream:
-            for line_number, line in enumerate(stream, start=1):
-                if not line.strip():
-                    continue
+    def on_run_end(self, run: "TraceRun") -> None:
+        self._write(run)
+
+    def _write(self, run: "TraceRun") -> None:
+        try:
+            with self._lock:
+                conn = _connect(self.path)
                 try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.warning("[trace-store] skip invalid JSONL line %s", line_number)
-                    continue
-                if record.get("phase") != "end":
-                    continue
-                run = record.get("run")
-                if isinstance(run, dict) and run.get("id"):
-                    runs[str(run["id"])] = run
-    except OSError:
-        logger.exception("[trace-store] failed to read %s", path)
+                    _ensure_schema(conn)
+                    _upsert_run(conn, run.to_dict())
+                    conn.commit()
+                finally:
+                    conn.close()
+        except Exception:
+            logger.exception(
+                "[trace-store] failed to write trace run %s", getattr(run, "id", "")
+            )
+
+
+def list_trace_summaries(
+    path: Path = TRACE_DB_PATH,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    """Return one page of recent trace summaries."""
+    limit = max(1, min(int(limit or 100), 500))
+    offset = max(0, int(offset or 0))
+    conn = _connect(path)
+    try:
+        _ensure_schema(conn)
+        total = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM trace_runs WHERE parent_run_id IS NULL"
+            ).fetchone()[0]
+        )
+        roots = conn.execute(
+            """
+            SELECT trace_id
+            FROM trace_runs
+            WHERE parent_run_id IS NULL
+            ORDER BY start_time DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+        trace_ids = [str(row["trace_id"]) for row in roots]
+        runs = _load_runs_for_traces(conn, trace_ids)
+        traces = _summarize_runs(runs, limit=limit)
+        next_offset = offset + len(trace_ids)
+        return {
+            "traces": traces,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "next_offset": next_offset if next_offset < total else None,
+            "has_more": next_offset < total,
+        }
+    finally:
+        conn.close()
+
+
+def get_trace(
+    trace_id: str, path: Path = TRACE_DB_PATH, *, include_payload: bool = False
+) -> dict | None:
+    conn = _connect(path)
+    try:
+        _ensure_schema(conn)
+        runs = _load_runs_for_traces(conn, [trace_id])
+    finally:
+        conn.close()
+    if not runs:
+        return None
+    runs.sort(
+        key=lambda run: (
+            run.get("start_time") or "",
+            0 if run.get("parent_run_id") is None else 1,
+        )
+    )
+    if not include_payload:
+        runs = [_compact_run(run) for run in runs]
+    return {"trace_id": trace_id, "runs": runs}
+
+
+def get_trace_run(
+    trace_id: str, run_id: str, path: Path = TRACE_DB_PATH
+) -> dict | None:
+    conn = _connect(path)
+    try:
+        _ensure_schema(conn)
+        row = conn.execute(
+            "SELECT * FROM trace_runs WHERE trace_id = ? AND id = ?",
+            (trace_id, run_id),
+        ).fetchone()
+        return _row_to_run(row) if row else None
+    finally:
+        conn.close()
+
+
+def _connect(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+_SCHEMA_VERSION_KEY = "schema_version"
+_SCHEMA_VERSION_VALUE = str(_SCHEMA_VERSION)
+
+_schema_ready = False
+_schema_lock = threading.Lock()
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create tables/indexes if missing; update schema_version only when needed.
+
+    Uses a module-level flag so that after the first successful call every
+    subsequent call (from both reader and writer paths) is a cheap no-op,
+    eliminating DDL write-lock contention with the trace exporter.
+    """
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS trace_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS trace_runs (
+                id TEXT PRIMARY KEY,
+                trace_id TEXT NOT NULL,
+                parent_run_id TEXT,
+                name TEXT NOT NULL,
+                run_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT,
+                duration_ms REAL,
+                error TEXT,
+                inputs_json TEXT NOT NULL DEFAULT '{}',
+                outputs_json TEXT NOT NULL DEFAULT '{}',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                events_json TEXT NOT NULL DEFAULT '[]'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trace_runs_root_recent
+                ON trace_runs(parent_run_id, start_time DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_trace_runs_trace
+                ON trace_runs(trace_id, start_time, id);
+            CREATE INDEX IF NOT EXISTS idx_trace_runs_trace_run
+                ON trace_runs(trace_id, id);
+            """
+        )
+        # Only write when the version is missing or mismatched — avoid pointless
+        # write contention with the trace exporter thread.
+        row = conn.execute(
+            "SELECT value FROM trace_meta WHERE key = ?",
+            (_SCHEMA_VERSION_KEY,),
+        ).fetchone()
+        if row is None or row["value"] != _SCHEMA_VERSION_VALUE:
+            conn.execute(
+                "INSERT OR REPLACE INTO trace_meta(key, value) VALUES(?, ?)",
+                (_SCHEMA_VERSION_KEY, _SCHEMA_VERSION_VALUE),
+            )
+        _schema_ready = True
+
+
+def _upsert_run(conn: sqlite3.Connection, run: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO trace_runs (
+            id, trace_id, parent_run_id, name, run_type, status,
+            start_time, end_time, duration_ms, error,
+            inputs_json, outputs_json, metadata_json, tags_json, events_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            trace_id = excluded.trace_id,
+            parent_run_id = excluded.parent_run_id,
+            name = excluded.name,
+            run_type = excluded.run_type,
+            status = excluded.status,
+            start_time = excluded.start_time,
+            end_time = excluded.end_time,
+            duration_ms = excluded.duration_ms,
+            error = excluded.error,
+            inputs_json = excluded.inputs_json,
+            outputs_json = excluded.outputs_json,
+            metadata_json = excluded.metadata_json,
+            tags_json = excluded.tags_json,
+            events_json = excluded.events_json
+        """,
+        (
+            run["id"],
+            run["trace_id"],
+            run.get("parent_run_id"),
+            run.get("name") or "react_agent",
+            run.get("run_type") or "agent",
+            run.get("status") or "running",
+            run.get("start_time") or "",
+            run.get("end_time"),
+            run.get("duration_ms"),
+            run.get("error"),
+            _json_dump(run.get("inputs") or {}),
+            _json_dump(run.get("outputs") or {}),
+            _json_dump(run.get("metadata") or {}),
+            _json_dump(run.get("tags") or []),
+            _json_dump(run.get("events") or []),
+        ),
+    )
+
+
+def _load_runs_for_traces(conn: sqlite3.Connection, trace_ids: list[str]) -> list[dict]:
+    if not trace_ids:
         return []
-    result = list(runs.values())
-    with _cache_lock:
-        _cache[path] = (stat.st_mtime_ns, stat.st_size, result)
-    return result
-
-
-def list_trace_summaries(path: Path = TRACE_PATH, *, limit: int = 100) -> list[dict]:
-    runs = load_recent_completed_runs(path, target_traces=limit)
-    return _summarize_runs(runs, limit=limit)
+    placeholders = ",".join("?" for _ in trace_ids)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM trace_runs
+        WHERE trace_id IN ({placeholders})
+        ORDER BY trace_id, start_time, parent_run_id IS NOT NULL, id
+        """,
+        trace_ids,
+    ).fetchall()
+    return [_row_to_run(row) for row in rows]
 
 
 def _summarize_runs(runs: Iterable[dict], *, limit: int) -> list[dict]:
@@ -88,82 +291,43 @@ def _summarize_runs(runs: Iterable[dict], *, limit: int) -> list[dict]:
             if (run.get("outputs") or {}).get("finish_reason") == "stop"
             and not (run.get("outputs") or {}).get("has_tool_calls")
         )
-        response_models = sorted({
-            str(((run.get("outputs") or {}).get("response_metadata") or {}).get("model"))
-            for run in llm_runs
-            if ((run.get("outputs") or {}).get("response_metadata") or {}).get("model")
-        })
-        summaries.append({
-            "trace_id": trace_id,
-            "name": root.get("name") or "react_agent",
-            "status": root.get("status") or "unknown",
-            "start_time": root.get("start_time"),
-            "end_time": root.get("end_time"),
-            "duration_ms": root.get("duration_ms"),
-            "metadata": root.get("metadata") or {},
-            "tags": root.get("tags") or [],
-            "outputs": root.get("outputs") or {},
-            "run_count": len(trace_runs),
-            "llm_run_count": len(llm_runs),
-            "tool_run_count": len(tool_runs),
-            "stop_without_tools": stop_without_tools,
-            "response_models": response_models,
-            "error_count": sum(1 for run in trace_runs if run.get("status") == "error"),
-        })
+        response_models = sorted(
+            {
+                str(
+                    ((run.get("outputs") or {}).get("response_metadata") or {}).get(
+                        "model"
+                    )
+                )
+                for run in llm_runs
+                if ((run.get("outputs") or {}).get("response_metadata") or {}).get(
+                    "model"
+                )
+            }
+        )
+        summaries.append(
+            {
+                "trace_id": trace_id,
+                "name": root.get("name") or "react_agent",
+                "status": root.get("status") or "unknown",
+                "start_time": root.get("start_time"),
+                "end_time": root.get("end_time"),
+                "duration_ms": root.get("duration_ms"),
+                "metadata": root.get("metadata") or {},
+                "tags": root.get("tags") or [],
+                "outputs": root.get("outputs") or {},
+                "run_count": len(trace_runs),
+                "llm_run_count": len(llm_runs),
+                "tool_run_count": len(tool_runs),
+                "stop_without_tools": stop_without_tools,
+                "response_models": response_models,
+                "error_count": sum(
+                    1 for run in trace_runs if run.get("status") == "error"
+                ),
+            }
+        )
 
     summaries.sort(key=lambda item: item.get("start_time") or "", reverse=True)
     return summaries[: max(1, min(limit, 500))]
-
-
-def load_recent_completed_runs(
-    path: Path = TRACE_PATH,
-    *,
-    target_traces: int = 100,
-    max_bytes: int = RECENT_SCAN_BYTES,
-    max_records: int = RECENT_SCAN_RECORDS,
-) -> list[dict]:
-    """Load completed runs for the newest traces by scanning JSONL from the end.
-
-    The trace file can grow to gigabytes. The Agent Traces list only needs
-    recent traces, and root agent runs are appended after their child LLM/tool
-    runs. Scanning backward lets the UI avoid a full-file read on every refresh.
-    """
-    target = max(1, min(target_traces, 500))
-    runs_by_id: dict[str, dict] = {}
-    root_trace_order: list[str] = []
-    root_trace_ids: set[str] = set()
-
-    for record in _iter_recent_jsonl_records(path, max_bytes=max_bytes, max_records=max_records):
-        if record.get("phase") != "end":
-            continue
-        run = record.get("run")
-        if not isinstance(run, dict) or not run.get("id"):
-            continue
-        run_id = str(run["id"])
-        runs_by_id.setdefault(run_id, run)
-        trace_id = str(run.get("trace_id") or "")
-        if (
-            trace_id
-            and run.get("parent_run_id") is None
-            and trace_id not in root_trace_ids
-        ):
-            root_trace_ids.add(trace_id)
-            root_trace_order.append(trace_id)
-            if len(root_trace_order) > target:
-                break
-
-    selected = set(root_trace_order[:target])
-    if not selected:
-        selected = {
-            str(run.get("trace_id"))
-            for run in runs_by_id.values()
-            if run.get("trace_id")
-        }
-    return [
-        run
-        for run in runs_by_id.values()
-        if str(run.get("trace_id") or "") in selected
-    ]
 
 
 def _compact_run(run: dict) -> dict:
@@ -172,8 +336,15 @@ def _compact_run(run: dict) -> dict:
     compact_outputs = {
         key: outputs[key]
         for key in (
-            "success", "done_reason", "iterations", "finish_reason",
-            "has_tool_calls", "usage", "response_metadata", "status", "error",
+            "success",
+            "done_reason",
+            "iterations",
+            "finish_reason",
+            "has_tool_calls",
+            "usage",
+            "response_metadata",
+            "status",
+            "error",
         )
         if key in outputs
     }
@@ -189,116 +360,34 @@ def _compact_run(run: dict) -> dict:
     }
 
 
-def get_trace(trace_id: str, path: Path = TRACE_PATH, *, include_payload: bool = False) -> dict | None:
-    runs = _load_recent_trace_runs(trace_id, path)
-    if not runs:
-        return None
-    runs.sort(key=lambda run: (
-        run.get("start_time") or "",
-        0 if run.get("parent_run_id") is None else 1,
-    ))
-    if not include_payload:
-        runs = [_compact_run(run) for run in runs]
-    return {"trace_id": trace_id, "runs": runs}
+def _row_to_run(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "trace_id": row["trace_id"],
+        "parent_run_id": row["parent_run_id"],
+        "name": row["name"],
+        "run_type": row["run_type"],
+        "status": row["status"],
+        "start_time": row["start_time"],
+        "end_time": row["end_time"],
+        "duration_ms": row["duration_ms"],
+        "inputs": _json_load(row["inputs_json"], {}),
+        "outputs": _json_load(row["outputs_json"], {}),
+        "error": row["error"],
+        "metadata": _json_load(row["metadata_json"], {}),
+        "tags": _json_load(row["tags_json"], []),
+        "events": _json_load(row["events_json"], []),
+    }
 
 
-def get_trace_run(trace_id: str, run_id: str, path: Path = TRACE_PATH) -> dict | None:
-    for record in _iter_recent_jsonl_records(path):
-        if record.get("phase") != "end":
-            continue
-        run = record.get("run")
-        if (
-            isinstance(run, dict)
-            and run.get("trace_id") == trace_id
-            and run.get("id") == run_id
-        ):
-            return run
-    return None
+def _json_dump(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _load_recent_trace_runs(trace_id: str, path: Path = TRACE_PATH) -> list[dict]:
-    runs_by_id: dict[str, dict] = {}
-    seen_target_root = False
-    seen_older_root_after_target = False
-
-    for record in _iter_recent_jsonl_records(path):
-        if record.get("phase") != "end":
-            continue
-        run = record.get("run")
-        if not isinstance(run, dict) or not run.get("id"):
-            continue
-        is_root = run.get("parent_run_id") is None
-        current_trace_id = str(run.get("trace_id") or "")
-        if current_trace_id == trace_id:
-            runs_by_id.setdefault(str(run["id"]), run)
-            if is_root:
-                seen_target_root = True
-        elif seen_target_root and is_root:
-            seen_older_root_after_target = True
-        if seen_target_root and seen_older_root_after_target:
-            break
-
-    return list(runs_by_id.values())
-
-
-def _iter_recent_jsonl_records(
-    path: Path,
-    *,
-    max_bytes: int = RECENT_SCAN_BYTES,
-    max_records: int = RECENT_SCAN_RECORDS,
-) -> Iterable[dict]:
-    if not path.exists():
-        return
+def _json_load(raw: str | None, default: Any) -> Any:
+    if not raw:
+        return default
     try:
-        size = path.stat().st_size
-    except OSError:
-        return
-    if size <= 0:
-        return
-
-    chunk_size = 1024 * 1024
-    position = size
-    pending = b""
-    scanned = 0
-    yielded = 0
-    first_chunk = True
-
-    try:
-        with path.open("rb") as stream:
-            while position > 0 and scanned < max_bytes and yielded < max_records:
-                read_size = min(chunk_size, position, max_bytes - scanned)
-                position -= read_size
-                stream.seek(position)
-                data = stream.read(read_size) + pending
-                scanned += read_size
-                parts = data.split(b"\n")
-                pending = parts[0]
-                lines = parts[1:]
-                if first_chunk and lines and lines[-1] == b"":
-                    lines = lines[:-1]
-                first_chunk = False
-                for raw in reversed(lines):
-                    if yielded >= max_records:
-                        return
-                    record = _decode_jsonl_line(raw)
-                    if record is None:
-                        continue
-                    yielded += 1
-                    yield record
-
-            if position == 0 and pending and yielded < max_records:
-                record = _decode_jsonl_line(pending)
-                if record is not None:
-                    yield record
-    except OSError:
-        logger.exception("[trace-store] failed to read tail of %s", path)
-
-
-def _decode_jsonl_line(raw: bytes) -> dict | None:
-    if not raw.strip():
-        return None
-    try:
-        record = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return record if isinstance(record, dict) else None
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return default
