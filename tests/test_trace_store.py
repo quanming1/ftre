@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from ftre.trace_store import SQLiteTraceExporter, get_trace, get_trace_run, list_trace_summaries
 
 
@@ -120,3 +122,69 @@ def test_sqlite_trace_store_paginates_root_traces(tmp_path):
     assert [item["trace_id"] for item in second["traces"]] == ["trace-0"]
     assert second["has_more"] is False
     assert second["next_offset"] is None
+
+
+def test_sqlite_trace_store_migrates_legacy_inputs_to_payload_table(tmp_path):
+    db_path = tmp_path / "legacy-agent-traces.sqlite"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE trace_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE trace_runs (
+                id TEXT PRIMARY KEY,
+                trace_id TEXT NOT NULL,
+                parent_run_id TEXT,
+                name TEXT NOT NULL,
+                run_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT,
+                duration_ms REAL,
+                error TEXT,
+                inputs_json TEXT NOT NULL DEFAULT '{}',
+                outputs_json TEXT NOT NULL DEFAULT '{}',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                events_json TEXT NOT NULL DEFAULT '[]'
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO trace_runs (
+                id, trace_id, parent_run_id, name, run_type, status,
+                start_time, inputs_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-run",
+                "legacy-trace",
+                None,
+                "session:sess_legacy",
+                "agent",
+                "completed",
+                "2026-06-22T10:00:00+00:00",
+                '{"prompt":"legacy"}',
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    run = get_trace_run("legacy-trace", "legacy-run", db_path)
+
+    assert run["inputs"] == {"prompt": "legacy"}
+    conn = sqlite3.connect(db_path)
+    try:
+        payload = conn.execute(
+            "SELECT inputs_json FROM trace_payloads WHERE run_id = ?",
+            ("legacy-run",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert payload == ('{"prompt":"legacy"}',)
