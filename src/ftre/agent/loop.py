@@ -16,8 +16,10 @@ import asyncio
 import copy
 import logging
 import os
+import time
 
 from ftre_agent_core.agent import ReActAgent
+from ftre_agent_core import JsonlTraceExporter, Tracer
 from ftre_agent_core.agent.event import (
     AgentEvent,
     DoneEvent,
@@ -38,9 +40,36 @@ from ftre.session.multimodal import build_user_content, normalize_stored_user_co
 from ftre.tools import ToolRegistry, build_default_tools
 from ftre.tools._workspace import WorkspaceAccessor
 from ftre.utils import Pipeline
+from ftre.trace_store import TRACE_PATH
 from .compact_handler import CompactHandler
 
 logger = logging.getLogger(__name__)
+
+COMPACT_UNRETRYABLE_LLM_CODES = {"auth_error", "bad_request", "content_filter"}
+COMPACT_UNRETRYABLE_COOLDOWN_SECONDS = 300
+
+AGENT_EXECUTION_POLICY = """对于需要实际执行的任务，必须持续使用工具直到任务完成并验证。不要只描述计划或口头承诺。
+
+如果你说“我会执行”“接下来修改”“让我处理”等，必须立即实际调用工具，不能直接结束。
+
+先使用可用的搜索和读取工具理解代码库及用户需求，再决定并执行后续步骤。
+
+使用所有适用的可用工具完成实现，不要停留在分析或方案阶段。
+
+任务完成后，如果项目提供了 lint、类型检查或测试命令，必须实际运行相关命令验证改动；不能未经验证就宣称任务完成。
+
+只有以下情况可以结束：
+1. 任务已实际完成并验证；
+2. 用户要求停止；
+3. 存在必须由用户处理的明确阻塞。"""
+
+
+def _build_agent_system_prompt(base_prompt: str, mcp_hint: str = "") -> str:
+    """组合用户配置提示词和所有 Agent 都必须遵守的执行约束。"""
+    parts = [base_prompt.strip(), AGENT_EXECUTION_POLICY]
+    if mcp_hint.strip():
+        parts.append(mcp_hint.strip())
+    return "\n\n".join(part for part in parts if part)
 
 
 class AgentLoop:
@@ -79,6 +108,7 @@ class AgentLoop:
         self._injected_config = config
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        self.tracer = Tracer([JsonlTraceExporter(TRACE_PATH)])
 
         # ─── 并发控制 ──────────────────────────────────────────
         # per-session 协程锁：保证同一 session 的消息串行处理，
@@ -100,6 +130,7 @@ class AgentLoop:
         # 后台 idle compact task 去重：session_id → asyncio.Task
         # 同一 session 同一时间只允许一个 compact task 在飞
         self._compact_tasks: dict[str, asyncio.Task] = {}
+        self._compact_retry_after: dict[str, float] = {}
 
         # ─── pipeline ─────────────────────────────────────────
         self._pipeline = Pipeline("consume")
@@ -454,6 +485,13 @@ class AgentLoop:
                 event_loop=self._event_loop,
                 fallback_cwd=workspace,
             ),
+            "trace_name": f"session:{session_id}",
+            "trace_tags": [inbound.from_channel or "unknown"],
+            "trace_metadata": {
+                "session_id": session_id,
+                "channel_id": inbound.from_channel,
+                "workspace": workspace,
+            },
         }
 
         try:
@@ -537,6 +575,19 @@ class AgentLoop:
             config = self._load_current_config()
             if not getattr(config.context, "idle_compaction", True):
                 return
+
+            retry_after = self._compact_retry_after.get(session_id)
+            now = time.monotonic()
+            if retry_after is not None and now < retry_after:
+                logger.debug(
+                    "[agent-loop] session=%s 后台压缩冷却中，%.0fs 后重试",
+                    session_id,
+                    retry_after - now,
+                )
+                return
+            if retry_after is not None:
+                self._compact_retry_after.pop(session_id, None)
+
             need = await self.compact_handler.should_compact(
                 session_id,
                 channel_id,
@@ -554,12 +605,28 @@ class AgentLoop:
             # 后台隐形压缩：直接启用 compact event，让下一轮上下文立刻使用摘要。
             async def _do_compact():
                 try:
-                    await self.compact_handler.compact(
+                    summary = await self.compact_handler.compact(
                         session_id, channel_id,
                         config=config,
                         silent=getattr(config.context, "silent", True),
                         enabled=True,
                     )
+                    llm_error = getattr(self.compact_handler, "_last_llm_error", None)
+                    if summary is not None:
+                        self._compact_retry_after.pop(session_id, None)
+                    elif (
+                        llm_error is not None
+                        and getattr(llm_error, "code", None) in COMPACT_UNRETRYABLE_LLM_CODES
+                    ):
+                        self._compact_retry_after[session_id] = (
+                            time.monotonic() + COMPACT_UNRETRYABLE_COOLDOWN_SECONDS
+                        )
+                        logger.warning(
+                            "[agent-loop] session=%s 后台压缩遇到不可重试 LLM 错误 code=%s，冷却 %ss",
+                            session_id,
+                            llm_error.code,
+                            COMPACT_UNRETRYABLE_COOLDOWN_SECONDS,
+                        )
                 finally:
                     self._compact_tasks.pop(session_id, None)
 
@@ -656,12 +723,11 @@ class AgentLoop:
             llm_config=c.llm,
         )
 
-        # MCP 工具提示词注入
-        system_prompt = c.system_prompt
+        # 固定执行约束不能被 config.json 中的自定义 system_prompt 覆盖。
+        mcp_hint = ""
         if self.mcp_manager:
-            mcp_hint = self.mcp_manager.build_system_hint()
-            if mcp_hint:
-                system_prompt = system_prompt + mcp_hint
+            mcp_hint = self.mcp_manager.build_system_hint() or ""
+        system_prompt = _build_agent_system_prompt(c.system_prompt, mcp_hint)
 
         return ReActAgent(
             model=c.llm.model,
@@ -671,4 +737,6 @@ class AgentLoop:
             system_prompt=system_prompt,
             tools=tools,
             max_iterations=c.max_iterations,
+            max_tokens=c.llm.max_output,
+            tracer=self.tracer,
         )

@@ -1,6 +1,7 @@
 """
 API 路由
 """
+import asyncio
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ from ftre.tools.cron import (
 )
 from ftre.api import skill as skill_store
 from ftre.mcp.manager import McpManager
+from ftre.trace_store import TRACE_PATH, get_trace, get_trace_run, list_trace_summaries
 from croniter import croniter
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,33 @@ def set_mcp_manager(mgr: McpManager) -> None:
     """注入 McpManager 实例（启动时调用）"""
     global _mcp_manager
     _mcp_manager = mgr
+
+
+@router.get("/traces")
+async def list_traces(limit: int = 100):
+    """List recent Agent traces without returning full prompt/tool payloads."""
+    return {
+        "traces": await asyncio.to_thread(list_trace_summaries, limit=limit),
+        "path": str(TRACE_PATH),
+    }
+
+
+@router.get("/traces/{trace_id}")
+async def read_trace(trace_id: str):
+    """Return a lightweight Run tree; large payloads are loaded separately."""
+    trace = await asyncio.to_thread(get_trace, trace_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail=f"Trace 不存在: {trace_id}")
+    return trace
+
+
+@router.get("/traces/{trace_id}/runs/{run_id}")
+async def read_trace_run(trace_id: str, run_id: str):
+    """Return full inputs, outputs, metadata and events for one Run."""
+    run = await asyncio.to_thread(get_trace_run, trace_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run 不存在: {run_id}")
+    return {"run": run}
 
 
 @router.post("/sessions")
