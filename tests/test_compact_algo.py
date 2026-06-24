@@ -267,6 +267,51 @@ def test_to_openai_messages_merges_reasoning_into_content_by_default():
     ]
 
 
+def test_to_openai_messages_preserves_reasoning_for_direct_tool_call():
+    from ftre.session.manager import SessionManager
+
+    events = [
+        {"type": "reasoning_complete", "data": {"content": "thinking"}},
+        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {"command": "pwd"}}},
+        {"type": "tool_result", "data": {"id": "c1", "result": "ok"}},
+    ]
+
+    msgs = SessionManager.to_openai_messages(events)
+
+    assert msgs[0]["role"] == "assistant"
+    assert msgs[0]["content"] == ""
+    assert msgs[0]["reasoning_content"] == "thinking"
+    assert msgs[0]["tool_calls"][0]["id"] == "c1"
+    assert msgs[1] == {"role": "tool", "tool_call_id": "c1", "content": "ok"}
+
+
+def test_to_openai_messages_combines_assistant_content_with_following_tool_call():
+    from ftre.session.manager import SessionManager
+
+    events = [
+        {"type": "reasoning_complete", "data": {"content": "thinking"}},
+        {"type": "assistant_message_complete", "data": {"content": "visible answer"}},
+        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {"command": "pwd"}}},
+        {"type": "tool_result", "data": {"id": "c1", "result": "ok"}},
+    ]
+
+    msgs = SessionManager.to_openai_messages(events)
+
+    assert msgs[0] == {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "visible answer"}],
+        "reasoning_content": "thinking",
+        "tool_calls": [
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "bash", "arguments": '{"command": "pwd"}'},
+            }
+        ],
+    }
+    assert msgs[1] == {"role": "tool", "tool_call_id": "c1", "content": "ok"}
+
+
 def test_to_openai_messages_omits_images_by_default():
     from ftre.session.manager import SessionManager
 
