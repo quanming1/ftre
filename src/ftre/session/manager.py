@@ -22,7 +22,7 @@ from ftre_agent_core.agent.event import (
     ToolResultEvent,
     UserMessageEvent,
 )
-from ftre_agent_core.reasoning import content_parts, merge_reasoning_into_content, preserve_tool_call_reasoning
+from ftre_agent_core.reasoning import format_assistant_message
 from ftre.config import CONFIG_PATH
 
 
@@ -427,7 +427,7 @@ class SessionManager:
         - TOOL_CALL           → 连续的合并为 {"role": "assistant", "tool_calls": [...]}
         - TOOL_RESULT         → {"role": "tool", "tool_call_id": ..., "content": ...}
         - MESSAGE_COMPLETE    → {"role": "assistant", "content": ...}
-        - REASONING_COMPLETE  → 暂存并合并到下一条 assistant message 的 content
+        - REASONING_COMPLETE  → 暂存并合并到下一条 assistant message 的 reasoning_content
         - EXTERNAL_MESSAGE    → {"role": "assistant", "name": "<src>", "content": "[来自 ...]"}
                                 其他 AI agent 通过 send_message 发来的消息
         - 其他类型跳过
@@ -435,7 +435,7 @@ class SessionManager:
         messages: list[dict] = []
         pending_tool_calls: list[dict] = []
         pending_reasoning: str | None = None
-        pending_assistant_msg: dict | None = None
+        pending_assistant_content: Any = None
         pending_assistant_reasoning: str | None = None
         llm_config = (config or {}).get("llm") or {}
         include_images = bool(llm_config.get("vision", False))
@@ -488,34 +488,33 @@ class SessionManager:
             return normalize_user_content(content, include_images=include_images)
 
         def _flush_pending_assistant():
-            nonlocal pending_assistant_msg, pending_assistant_reasoning
-            if pending_assistant_msg is None:
+            nonlocal pending_assistant_content, pending_assistant_reasoning
+            if pending_assistant_content is None:
                 return
-            msg = pending_assistant_msg
-            merge_reasoning_into_content(msg, pending_assistant_reasoning)
+            msg = format_assistant_message(
+                content=pending_assistant_content,
+                reasoning=pending_assistant_reasoning,
+            )
             messages.append(msg)
-            pending_assistant_msg = None
+            pending_assistant_content = None
             pending_assistant_reasoning = None
 
         def _flush_tool_calls():
-            nonlocal pending_tool_calls, pending_assistant_msg, pending_assistant_reasoning
+            nonlocal pending_tool_calls, pending_assistant_content, pending_assistant_reasoning
             if pending_tool_calls:
-                if pending_assistant_msg is not None:
-                    msg = pending_assistant_msg
-                    msg["content"] = content_parts(msg.get("content")) or ""
-                    msg["tool_calls"] = pending_tool_calls
-                    if pending_assistant_reasoning:
-                        msg["reasoning_content"] = pending_assistant_reasoning
-                    pending_assistant_msg = None
+                if pending_assistant_content is not None:
+                    msg = format_assistant_message(
+                        content=pending_assistant_content,
+                        reasoning=pending_assistant_reasoning,
+                        tool_calls=pending_tool_calls,
+                    )
+                    pending_assistant_content = None
                     pending_assistant_reasoning = None
                 else:
-                    msg = {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": pending_tool_calls,
-                    }
-                    reasoning = _take_reasoning()
-                    preserve_tool_call_reasoning(msg, reasoning)
+                    msg = format_assistant_message(
+                        reasoning=_take_reasoning(),
+                        tool_calls=pending_tool_calls,
+                    )
                 messages.append(msg)
                 pending_tool_calls = []
             else:
@@ -560,10 +559,7 @@ class SessionManager:
 
             elif isinstance(_ae, AssistantMessageCompleteEvent):
                 _flush_tool_calls()
-                pending_assistant_msg = {
-                    "role": "assistant",
-                    "content": _ae.content,
-                }
+                pending_assistant_content = _ae.content
                 pending_assistant_reasoning = _take_reasoning()
 
             elif isinstance(_ae, UserMessageEvent):

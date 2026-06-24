@@ -245,7 +245,7 @@ def test_prune_disabled_when_not_passed():
         assert "[L1 修剪" not in m["content"]
 
 
-def test_to_openai_messages_merges_reasoning_into_content_by_default():
+def test_to_openai_messages_keeps_reasoning_separate_from_content():
     from ftre.session.manager import SessionManager
 
     events = [
@@ -259,10 +259,9 @@ def test_to_openai_messages_merges_reasoning_into_content_by_default():
         {
             "role": "assistant",
             "content": [
-                {"type": "text", "text": "thinking"},
                 {"type": "text", "text": "answer"},
             ],
-            "reasoning_content": "",
+            "reasoning_content": "thinking",
         }
     ]
 
@@ -301,6 +300,32 @@ def test_to_openai_messages_combines_assistant_content_with_following_tool_call(
         "role": "assistant",
         "content": [{"type": "text", "text": "visible answer"}],
         "reasoning_content": "thinking",
+        "tool_calls": [
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "bash", "arguments": '{"command": "pwd"}'},
+            }
+        ],
+    }
+    assert msgs[1] == {"role": "tool", "tool_call_id": "c1", "content": "ok"}
+
+
+def test_to_openai_messages_combines_plain_assistant_content_with_following_tool_call():
+    from ftre.session.manager import SessionManager
+
+    events = [
+        {"type": "assistant_message_complete", "data": {"content": "visible answer"}},
+        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {"command": "pwd"}}},
+        {"type": "tool_result", "data": {"id": "c1", "result": "ok"}},
+    ]
+
+    msgs = SessionManager.to_openai_messages(events)
+
+    assert msgs[0] == {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "visible answer"}],
+        "reasoning_content": "",
         "tool_calls": [
             {
                 "id": "c1",
