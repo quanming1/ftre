@@ -22,7 +22,7 @@ from ftre_agent_core.agent.event import (
     ToolResultEvent,
     UserMessageEvent,
 )
-from ftre_agent_core.reasoning import merge_reasoning_into_content, preserve_tool_call_reasoning
+from ftre_agent_core.reasoning import content_parts, merge_reasoning_into_content, preserve_tool_call_reasoning
 from ftre.config import CONFIG_PATH
 
 
@@ -435,6 +435,8 @@ class SessionManager:
         messages: list[dict] = []
         pending_tool_calls: list[dict] = []
         pending_reasoning: str | None = None
+        pending_assistant_msg: dict | None = None
+        pending_assistant_reasoning: str | None = None
         llm_config = (config or {}).get("llm") or {}
         include_images = bool(llm_config.get("vision", False))
         # ─── L1 prune 预处理：算出"受保护索引集"（最近 N 个可见 user_message 内）───
@@ -485,18 +487,39 @@ class SessionManager:
 
             return normalize_user_content(content, include_images=include_images)
 
+        def _flush_pending_assistant():
+            nonlocal pending_assistant_msg, pending_assistant_reasoning
+            if pending_assistant_msg is None:
+                return
+            msg = pending_assistant_msg
+            merge_reasoning_into_content(msg, pending_assistant_reasoning)
+            messages.append(msg)
+            pending_assistant_msg = None
+            pending_assistant_reasoning = None
+
         def _flush_tool_calls():
-            nonlocal pending_tool_calls
+            nonlocal pending_tool_calls, pending_assistant_msg, pending_assistant_reasoning
             if pending_tool_calls:
-                msg: dict = {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": pending_tool_calls,
-                }
-                reasoning = _take_reasoning()
-                preserve_tool_call_reasoning(msg, reasoning)
+                if pending_assistant_msg is not None:
+                    msg = pending_assistant_msg
+                    msg["content"] = content_parts(msg.get("content")) or ""
+                    msg["tool_calls"] = pending_tool_calls
+                    if pending_assistant_reasoning:
+                        msg["reasoning_content"] = pending_assistant_reasoning
+                    pending_assistant_msg = None
+                    pending_assistant_reasoning = None
+                else:
+                    msg = {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": pending_tool_calls,
+                    }
+                    reasoning = _take_reasoning()
+                    preserve_tool_call_reasoning(msg, reasoning)
                 messages.append(msg)
                 pending_tool_calls = []
+            else:
+                _flush_pending_assistant()
 
         for idx, event in enumerate(events):
             # 尝试转为 AgentEvent class（Agent 事件用类型安全方式访问）
@@ -509,6 +532,7 @@ class SessionManager:
                     _ae = None
 
             if isinstance(_ae, ReasoningCompleteEvent):
+                _flush_pending_assistant()
                 # 一轮 LLM 思考的完整文本，挂到下一条 assistant message 上
                 pending_reasoning = _ae.content or None
 
@@ -536,13 +560,11 @@ class SessionManager:
 
             elif isinstance(_ae, AssistantMessageCompleteEvent):
                 _flush_tool_calls()
-                msg: dict = {
+                pending_assistant_msg = {
                     "role": "assistant",
                     "content": _ae.content,
                 }
-                reasoning = _take_reasoning()
-                merge_reasoning_into_content(msg, reasoning)
-                messages.append(msg)
+                pending_assistant_reasoning = _take_reasoning()
 
             elif isinstance(_ae, UserMessageEvent):
                 _flush_tool_calls()
