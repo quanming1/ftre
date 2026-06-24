@@ -22,6 +22,7 @@ from ftre_agent_core.agent.event import (
     ToolResultEvent,
     UserMessageEvent,
 )
+from ftre_agent_core.reasoning import merge_reasoning_into_content, preserve_tool_call_reasoning
 from ftre.config import CONFIG_PATH
 
 
@@ -493,16 +494,7 @@ class SessionManager:
                     "tool_calls": pending_tool_calls,
                 }
                 reasoning = _take_reasoning()
-                if reasoning:
-                    parts: list[dict[str, str]] = [{"type": "text", "text": reasoning}]
-                    _c = msg.get("content")
-                    if isinstance(_c, list):
-                        for _item in _c:
-                            parts.append(_item if isinstance(_item, dict) else {"type": "text", "text": str(_item)})
-                    elif _c not in (None, ""):
-                        parts.append({"type": "text", "text": str(_c)})
-                    msg["content"] = parts
-                    msg["reasoning_content"] = ""
+                preserve_tool_call_reasoning(msg, reasoning)
                 messages.append(msg)
                 pending_tool_calls = []
 
@@ -549,16 +541,7 @@ class SessionManager:
                     "content": _ae.content,
                 }
                 reasoning = _take_reasoning()
-                if reasoning:
-                    parts: list[dict[str, str]] = [{"type": "text", "text": reasoning}]
-                    _c = msg.get("content")
-                    if isinstance(_c, list):
-                        for _item in _c:
-                            parts.append(_item if isinstance(_item, dict) else {"type": "text", "text": str(_item)})
-                    elif _c not in (None, ""):
-                        parts.append({"type": "text", "text": str(_c)})
-                    msg["content"] = parts
-                    msg["reasoning_content"] = ""
+                merge_reasoning_into_content(msg, reasoning)
                 messages.append(msg)
 
             elif isinstance(_ae, UserMessageEvent):
