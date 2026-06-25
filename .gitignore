@@ -11,4 +11,9 @@ _*.py
 tmp_*.py
 fetch_*.py
 debug_*.py
-.playwright-mcp/ 
+.playwright-mcp/
+
+# 截图/导出文件
+*.png
+*.jpg
+*.jpeg 
