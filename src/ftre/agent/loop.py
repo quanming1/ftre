@@ -17,6 +17,7 @@ import copy
 import logging
 import os
 import time
+from concurrent.futures import Future
 
 from ftre_agent_core.agent import ReActAgent
 from ftre_agent_core import Tracer
@@ -95,6 +96,9 @@ class AgentLoop:
         # 当前正在执行的 Agent（session_id → ReActAgent）
         # 主循环化后所有访问都在主循环协程内，无需 threading.Lock
         self._active_agents: dict[str, ReActAgent] = {}
+
+        # subagent session_id → task 工具等待的一次性完成结果
+        self._subagent_done_futures: dict[str, Future[dict]] = {}
 
         # session_id → 该 session 当前正在执行的 dispatch task
         # cancel 时通过 task.cancel() 立即中断
@@ -202,6 +206,24 @@ class AgentLoop:
         """该 session 是否有正在跑的 ReActAgent。"""
         return session_id in self._active_agents
 
+    def register_subagent_done_future(self, session_id: str, future: Future[dict]) -> bool:
+        """注册 subagent 单轮执行完成通知；返回 False 表示已有等待者。"""
+        existing = self._subagent_done_futures.get(session_id)
+        if existing is not None and not existing.done():
+            return False
+        self._subagent_done_futures[session_id] = future
+        return True
+
+    def unregister_subagent_done_future(
+        self,
+        session_id: str,
+        future: Future[dict] | None = None,
+    ) -> None:
+        """移除未完成的 subagent 等待者，避免启动/执行超时后残留。"""
+        existing = self._subagent_done_futures.get(session_id)
+        if existing is not None and (future is None or existing is future):
+            self._subagent_done_futures.pop(session_id, None)
+
     async def stop(self) -> None:
         """优雅关闭：取消消费循环 + 中断所有 Agent。"""
         # 1. 取消消费循环
@@ -217,6 +239,17 @@ class AgentLoop:
             agent.cancel_nowait()
         self._active_agents.clear()
         self._session_tasks.clear()
+        for sid, future in self._subagent_done_futures.items():
+            if not future.done():
+                future.set_result(
+                    {
+                        "session_id": sid,
+                        "channel_id": SUBAGENT_CHANNEL_ID,
+                        "status": "cancelled",
+                        "final_content": "",
+                    }
+                )
+        self._subagent_done_futures.clear()
 
     # ─── 消费循环 ────────────────────────────────────────────
 
@@ -471,8 +504,15 @@ class AgentLoop:
             },
         }
 
+        subagent_status = "completed"
+        final_content = ""
+
         try:
             async for event in agent.run(messages, runtime_context=runtime_context):
+                # task 工具只使用这里记录的最后一条完整 assistant 回复作为返回内容。
+                if isinstance(event, AssistantMessageCompleteEvent):
+                    final_content = event.content or ""
+
                 # 检查 cancel：Task.cancel() 会在 await 处抛 CancelledError，
                 # 但 async for 的 yield 不一定被 cancel 打断（取决于 generator 内部实现），
                 # 所以在这里也检查 CancellationToken 作为补充。
@@ -500,6 +540,7 @@ class AgentLoop:
                         logger.debug("[agent-loop] 调度 usage 压缩失败", exc_info=True)
 
         except asyncio.CancelledError:
+            subagent_status = "cancelled"
             # Task.cancel() 导致的 CancelledError：Agent 被 cancel 中断
             logger.info(f"[agent-loop] Agent 被 cancel 中断 session={session_id}")
             # 发送 done 事件让前端知道已停止
@@ -513,6 +554,7 @@ class AgentLoop:
             )
             await self.bus.publish_outbound(done_evt)
         except Exception:
+            subagent_status = "error"
             logger.exception(f"[agent-loop] _run 异常 (session={session_id})")
             err_evt = BusMessage(
                 type="agent_event",
@@ -531,14 +573,28 @@ class AgentLoop:
             else:
                 should_emit_idle = False
 
+            if inbound.from_channel == SUBAGENT_CHANNEL_ID:
+                future = self._subagent_done_futures.pop(session_id, None)
+                if future is not None and not future.done():
+                    # finally 覆盖正常结束、异常和 cancel，是父 task 唤醒的唯一出口。
+                    future.set_result(
+                        {
+                            "session_id": session_id,
+                            "channel_id": inbound.from_channel,
+                            "status": subagent_status,
+                            "final_content": final_content,
+                        }
+                    )
+
             if should_emit_idle:
                 await self._publish_session_status_async(session_id, "idle")
-                # 步骤 5（无感）：本轮结束后调度后台空闲压缩。
-                if inbound.from_channel != SUBAGENT_CHANNEL_ID:
-                    try:
-                        await self._schedule_idle_compact(session_id, inbound.from_channel)
-                    except Exception:
-                        logger.debug("[agent-loop] 调度 idle 压缩失败", exc_info=True)
+
+            # 步骤 5（无感）：本轮结束后调度后台空闲压缩。
+            if inbound.from_channel != SUBAGENT_CHANNEL_ID:
+                try:
+                    await self._schedule_idle_compact(session_id, inbound.from_channel)
+                except Exception:
+                    logger.debug("[agent-loop] 调度 idle 压缩失败", exc_info=True)
 
     # ─── idle 压缩调度 ──────────────────────────────────────
 
