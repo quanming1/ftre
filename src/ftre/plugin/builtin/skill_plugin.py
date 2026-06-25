@@ -6,12 +6,16 @@ Skills are local prompt files under ~/.ftre/skills:
 - name/SKILL.md
 - name/skill.md
 """
+import json
 import os
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from fastapi import APIRouter, HTTPException, Request
+
 from ftre.plugin import BEFORE_MESSAGES_BUILD, Plugin
 from ftre_agent_core.tool import Tool, ToolParameter
+from ftre.api import skill as skill_store
 
 
 def _read_text_safe(path: Path) -> str:
@@ -49,6 +53,102 @@ class SkillPlugin(Plugin):
         )
         self.api.register_hook(BEFORE_MESSAGES_BUILD, self._inject_skill_descriptions)
         self.api.tool_registry.register(create_load_skill_tool(self._skills_dir))
+        self.api.register_router(self._build_router())
+
+    def _build_router(self) -> APIRouter:
+        """构建 Skill CRUD 路由（迁移自 routes.py）。"""
+        router = APIRouter(prefix="/skills")
+
+        @router.get("")
+        async def list_skills():
+            return {"skills": skill_store.list_skills()}
+
+        @router.get("/{name}")
+        async def get_skill(name: str):
+            if not skill_store.is_valid_name(name):
+                raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name}")
+            try:
+                skill = skill_store.read_skill(name)
+            except OSError as e:
+                raise HTTPException(status_code=500, detail=f"读取失败: {e}")
+            if skill is None:
+                raise HTTPException(status_code=404, detail=f"Skill 不存在: {name}")
+            return skill
+
+        @router.post("", status_code=201)
+        async def create_skill(request: Request):
+            try:
+                payload = await request.json()
+            except json.JSONDecodeError as e:
+                raise HTTPException(status_code=400, detail=f"非法 JSON: {e}")
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
+
+            name = payload.get("name")
+            if not isinstance(name, str) or not skill_store.is_valid_name(name):
+                raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name!r}")
+            name = name.strip()
+
+            kind = payload.get("kind", "dir")
+            if kind not in ("dir", "file"):
+                raise HTTPException(status_code=400, detail="kind 仅支持 'dir' / 'file'")
+
+            content = payload.get("content")
+            if content is not None and not isinstance(content, str):
+                raise HTTPException(status_code=400, detail="content 必须是字符串")
+            if not content:
+                description = payload.get("description")
+                if not isinstance(description, str):
+                    description = ""
+                content = skill_store.SKILL_TEMPLATE.format(
+                    name=name, description=description.strip()
+                )
+
+            try:
+                skill = skill_store.create_skill(name, content, kind=kind)
+            except FileExistsError:
+                raise HTTPException(status_code=409, detail=f"Skill 已存在: {name}")
+            except OSError as e:
+                raise HTTPException(status_code=500, detail=f"创建失败: {e}")
+            return skill
+
+        @router.put("/{name}")
+        async def update_skill(name: str, request: Request):
+            if not skill_store.is_valid_name(name):
+                raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name}")
+
+            try:
+                payload = await request.json()
+            except json.JSONDecodeError as e:
+                raise HTTPException(status_code=400, detail=f"非法 JSON: {e}")
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
+
+            content = payload.get("content")
+            if not isinstance(content, str):
+                raise HTTPException(status_code=400, detail="content 必须是字符串")
+
+            try:
+                skill = skill_store.update_skill(name, content)
+            except OSError as e:
+                raise HTTPException(status_code=500, detail=f"保存失败: {e}")
+            if skill is None:
+                raise HTTPException(status_code=404, detail=f"Skill 不存在: {name}")
+            return skill
+
+        @router.delete("/{name}", status_code=204)
+        async def remove_skill(name: str):
+            if not skill_store.is_valid_name(name):
+                raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name}")
+            try:
+                ok = skill_store.delete_skill(name)
+            except OSError as e:
+                raise HTTPException(status_code=500, detail=f"删除失败: {e}")
+            if not ok:
+                raise HTTPException(status_code=404, detail=f"Skill 不存在: {name}")
+            return None
+
+        return router
 
     def _inject_skill_descriptions(self, ctx):
         descriptions = list_skill_descriptions(self._skills_dir)
