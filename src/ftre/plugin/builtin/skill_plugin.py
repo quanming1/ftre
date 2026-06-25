@@ -37,6 +37,14 @@ class SkillPlugin(Plugin):
     def setup(self) -> None:
         cfg = self.api.config or {}
         self._skills_dir = Path(cfg.get("skills_dir") or DEFAULT_SKILLS_DIR)
+        self.api.append_system_prompt(
+            "Skill 是 ~/.ftre/skills 下的本地能力说明。"
+            f"当前电脑上的 Skill 文件夹绝对路径是 {get_skills_dir_path(self._skills_dir)}。"
+            "如果用户点名某个 Skill，或用户需求与下方任一 Skill 的能力描述匹配，"
+            "且该 Skill 的完整内容尚未在当前对话历史中被加载过，"
+            "请调用 loadSkill 读取该 Skill 的完整内容，再按 Skill 内容执行任务。"
+            "同一个 Skill 在当前对话中只需加载一次，不要重复加载。"
+        )
         self.api.register_hook(BEFORE_MESSAGES_BUILD, self._inject_skill_descriptions)
         self.api.tool_registry.register(create_load_skill_tool(self._skills_dir))
 
@@ -47,14 +55,6 @@ class SkillPlugin(Plugin):
 
         lines = [
             "<skills>",
-            "<instructions>",
-            "Skill 是 ~/.ftre/skills 下的本地能力说明。"
-            f"当前电脑上的 Skill 文件夹绝对路径是 {get_skills_dir_path(self._skills_dir)}。"
-            "如果用户点名某个 Skill，或用户需求与下方任一 Skill 的能力描述匹配，"
-            "且该 Skill 的完整内容尚未在当前对话历史中被加载过，"
-            "请调用 loadSkill 读取该 Skill 的完整内容，再按 Skill 内容执行任务。"
-            "同一个 Skill 在当前对话中只需加载一次，不要重复加载。",
-            "</instructions>",
         ]
         for item in descriptions:
             lines.append(
