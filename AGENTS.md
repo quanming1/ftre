@@ -24,6 +24,7 @@ ftre-agent-core    Agent 核心库（无状态、纯算法）
      ▼
 ftre               Gateway 后端（有状态、长驻进程）
      │              Session 管理 / EventBus / Channel / 插件 / MCP
+     │              内置插件：skill、mcp、context_govern、title_gen
      │              对 desktop 提供 WebSocket + HTTP API
      ▼
 ftre-desktop        Desktop 客户端（Electron + React）
@@ -34,6 +35,25 @@ ftre-docs          文档站（React + Vite）
                     Markdown 源文件在 src/content/，侧边栏自动渲染
                     独立部署，不依赖后端
 ```
+
+## 插件体系
+
+内置插件（`src/ftre/plugin/builtin/`）随代码仓库发布，无需用户手动安装：
+
+| 插件 | 职责 |
+| --- | --- |
+| `skill` | Skill 管理（loadSkill 工具、Skill CRUD API、system prompt 注入） |
+| `mcp` | MCP 服务器管理（连接、工具注册、CRUD API、config watcher） |
+| `context_govern` | 上下文治理（AGENTS.md 注入、工具事件配对校验） |
+| `title_gen` | 标题生成（首条消息自动生成会话标题） |
+
+插件通过 `FtrePluginApi` 注册能力：
+- `self.api.tool_registry` — 注册工具
+- `self.api.append_system_prompt(...)` — 注入 system prompt
+- `self.api.register_router(APIRouter)` — 注册 HTTP 路由
+- `self.api.register_hook(...)` — 注册 hook
+
+外部插件目录 `~/.ftre/plugins/` 仍保留作为扩展点，`PluginManager` 先加载内置插件再扫描外部目录。
 
 ### 一键启动
 
