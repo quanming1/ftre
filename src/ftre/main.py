@@ -95,18 +95,6 @@ from ftre.agent.loop import AgentLoop
 from ftre.config import load_config_file
 from ftre.tools import ToolRegistry
 from ftre.tools.cron import CronScheduler
-from ftre.mcp import McpManager
-
-
-async def _start_mcp_background(mcp_manager: McpManager, raw_mcp: dict) -> None:
-    """后台启动 MCP，避免阻塞网关主启动流程。"""
-    try:
-        await mcp_manager.start_and_register(raw_mcp)
-        mcp_manager.start_config_watcher()
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logging.getLogger(__name__).exception("[mcp] 后台启动失败")
 
 
 async def run_gateway():
@@ -150,7 +138,7 @@ async def run_gateway():
     )
 
     # 注入到 API 路由
-    from ftre.api.routes import set_agent_loop, set_command_manager, set_mcp_manager
+    from ftre.api.routes import set_agent_loop, set_command_manager
     set_command_manager(cmd)
 
     # 加载配置文件
@@ -166,16 +154,6 @@ async def run_gateway():
     # Subagent Channel — 静默通道，承载 task 工具派发的子任务
     mgr.register(SubagentChannel(bus))
 
-    # ── MCP 服务器 ──
-    # McpManager 接管：连接、工具注册、config watcher、热重载
-    mcp_manager = McpManager(tool_registry=tool_registry)
-    mcp_startup_task = asyncio.create_task(
-        _start_mcp_background(mcp_manager, config_data.get("mcp", {}))
-    )
-
-    # 注入 McpManager 到 API 路由
-    set_mcp_manager(mcp_manager)
-
     # 全局 AgentLoop（消费所有 session 的消息）
     agent_loop = AgentLoop(
         bus=bus,
@@ -184,7 +162,6 @@ async def run_gateway():
         hook_manager=hook_manager,
         tool_registry=tool_registry,
         command_manager=cmd,
-        mcp_manager=mcp_manager,
         plugin_manager=plugin_manager,
     )
     agent_loop.start()
@@ -204,15 +181,8 @@ async def run_gateway():
     except KeyboardInterrupt:
         pass
     finally:
-        if not mcp_startup_task.done():
-            mcp_startup_task.cancel()
-            try:
-                await mcp_startup_task
-            except asyncio.CancelledError:
-                pass
         await cron_scheduler.stop()
         await agent_loop.stop()
-        await mcp_manager.stop()
         await mgr.stop()
         await session_manager.close()
 
