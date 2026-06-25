@@ -98,3 +98,34 @@ def test_plugin_api_tool_registry_adds_to_shared_registry():
     assert [tool.name for tool in registry.snapshot()] == ["from_plugin"]
 
 
+def test_plugin_api_register_router():
+    from fastapi import APIRouter
+
+    class RouterPlugin(Plugin):
+        name = "router_plugin"
+
+        def setup(self) -> None:
+            router = APIRouter()
+
+            @router.get("/ping")
+            def ping():
+                return {"pong": True}
+
+            self.api.register_router(router)
+
+    registry = ToolRegistry()
+    manager = PluginManager(
+        bus=None,
+        channel_manager=None,
+        session_manager=None,
+        hook_manager=HookManager(),
+        tool_registry=registry,
+    )
+
+    manager._load(RouterPlugin(), {})
+
+    assert len(manager.routers) == 1
+    routes = [r.path for r in manager.routers[0].routes]
+    assert "/ping" in routes
+
+
