@@ -8,23 +8,19 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 - 投递后阻塞等待目标 session 跑完，返回最后一条 ai 回复 + session_id
 
 终止判定：
-- 用 AgentLoop._active_agents 作为权威信号判断"是否在跑"。
-  AgentLoop._run 在 finally 里必定 pop，所以无论 done 是否被发出（异常 / 超时
-  / 被 cancel）都能正确感知"agent 不再运行"。
-- 等到 sid 不再 active，就去事件流取 baseline_ts 之后最后一条 message_complete
-  作为返回值。
+- 在 AgentLoop 注册一个 session_id → Future[dict] 的一次性完成通知。
+- AgentLoop._run 在 finally 里必定 set_result，所以无论 done 是否被发出（异常
+  / 被 cancel）都能正确感知 agent 已结束。
+- Future payload 中携带 status 和最后一条 message_complete 内容。
 
 防递归：subagent channel 的调用方禁止再调 task。
 """
 import asyncio
-import logging
 import time
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
-
-
-logger = logging.getLogger(__name__)
 
 
 # 轮询参数
@@ -70,40 +66,6 @@ def _wait_until(predicate, timeout: float, interval: float = _POLL_INTERVAL) -> 
     return False
 
 
-def _final_content_after(
-    session_manager,
-    event_loop,
-    sid: str,
-    baseline_ts: float,
-) -> str | None:
-    """取 baseline_ts 之后最近一条 message_complete 的 content；找不到返回 None"""
-    try:
-        events = _run_async(
-            session_manager.get_messages_by_session(sid),
-            event_loop,
-            timeout=10.0,
-        )
-    except Exception as e:
-        logger.warning(f"[task] 拉取 events 失败: {e}")
-        return None
-    for ev in reversed(events):
-        ts = ev.get("timestamp", 0)
-        if ts < baseline_ts:
-            break
-        # 优先用 AgentEvent class 解包
-        try:
-            from ftre_agent_core.agent.event import AgentEvent, AssistantMessageCompleteEvent
-            agent_ev = AgentEvent.from_dict(ev)
-            if isinstance(agent_ev, AssistantMessageCompleteEvent):
-                return agent_ev.content
-        except (KeyError, ValueError):
-            pass
-        # 兜底：旧式 dict 访问
-        if ev.get("type") == "assistant_message_complete":
-            return (ev.get("data") or {}).get("content") or ""
-    return None
-
-
 def create_task_tool(channel_manager) -> Tool:
     """创建 task 工具
 
@@ -136,8 +98,9 @@ def create_task_tool(channel_manager) -> Tool:
         if subagent_channel is None:
             return f"[error] 未注册 channel: {SUBAGENT_CHANNEL_ID}"
 
+        sid = (session_id or "").strip()
+        done_future: Future[dict] | None = None
         try:
-            sid = (session_id or "").strip()
 
             if not sid:
                 title = prompt.strip().splitlines()[0][:40] or "subagent task"
@@ -161,8 +124,15 @@ def create_task_tool(channel_manager) -> Tool:
                     event_loop,
                 )
 
+            # 先注册完成通知再投递消息，避免 subagent 极快结束时漏掉结果。
+            done_future = Future()
+            if not agent_loop.register_subagent_done_future(sid, done_future):
+                return (
+                    f"[session={sid}, status=busy] "
+                    "该 subagent session 已有一轮 task 在等待完成，请稍后重试"
+                )
+
             wrapped_prompt = _wrap_with_preamble(prompt)
-            baseline_ts = time.time()
 
             _run_async(
                 subagent_channel.receive(
@@ -172,35 +142,42 @@ def create_task_tool(channel_manager) -> Tool:
                 event_loop,
             )
         except Exception as e:
+            if sid and done_future is not None:
+                agent_loop.unregister_subagent_done_future(sid, done_future)
             return f"[error] 派发失败: {type(e).__name__}: {e}"
 
         head = f"[session={sid}"
 
-        # 阶段 A：等 AgentLoop 把这条 inbound 消费、_run 真正进入活跃态
+        # 阶段 A：验证 AgentLoop 已经消费 inbound，并进入本轮 _run。
+        # 这里仍检查 running，用来区分“已投递但没有启动”和“正在执行/已完成”。
+        # 极快完成时可能没轮询到 running，但 future 已经有结果，也视为启动成功。
         if not _wait_until(
-            lambda: agent_loop.is_session_running(sid), _STARTUP_TIMEOUT
+            lambda: agent_loop.is_session_running(sid) or done_future.done(),
+            _STARTUP_TIMEOUT,
         ):
+            agent_loop.unregister_subagent_done_future(sid, done_future)
             return (
                 f"{head}, status=startup_timeout] "
                 f"派发后 {_STARTUP_TIMEOUT}s 内 agent 仍未启动，可能 AgentLoop "
                 f"消费阻塞或鉴权失败"
             )
 
-        # 阶段 B：等 agent 跑完（_run finally 必定 pop，不依赖 done 事件）
-        if not _wait_until(
-            lambda: not agent_loop.is_session_running(sid), _TIMEOUT_SECONDS
-        ):
+        # 阶段 B：等待 AgentLoop._run finally 设置完成结果，不依赖 done 事件。
+        # done_payload 是 task 的唯一结果来源，final_content 不再回查 DB。
+        try:
+            done_payload = done_future.result(timeout=_TIMEOUT_SECONDS)
+        except FutureTimeoutError:
+            agent_loop.unregister_subagent_done_future(sid, done_future)
             return (
                 f"{head}, status=timeout] "
                 f"任务超时（{_TIMEOUT_SECONDS}s）未完成。"
                 f"可下次调用 task 时传入 session_id={sid} 接着上次执行"
             )
 
-        # agent 已结束，取最后一条 message_complete 作为返回值
-        final_content = _final_content_after(
-            session_manager, event_loop, sid, baseline_ts
-        )
-        head_full = f"{head}, status=completed]"
+        # agent 已结束，使用 AgentLoop 回传的最后一条 message_complete。
+        status = done_payload.get("status") or "completed"
+        final_content = done_payload.get("final_content") or ""
+        head_full = f"{head}, status={status}]"
         if final_content:
             return f"{head_full}\n{final_content}"
         return f"{head_full} 任务结束但 subagent 未输出最终回复（可能仅工具调用 / 异常退出）"
