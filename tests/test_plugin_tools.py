@@ -2,10 +2,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from ftre_agent_core.agent.event import UserMessageEvent
 from ftre_agent_core.tool import Tool
 
 from ftre.plugin import HookManager, Plugin, PluginManager
 from ftre.tools import ToolRegistry, build_default_tools
+from ftre.tools._workspace import WorkspaceAccessor
+from ftre.tools.read import create_read_tool
 
 
 def _dummy_tool(name: str = "dummy") -> Tool:
@@ -46,13 +49,62 @@ def test_build_default_tools_omits_see_img_without_vision():
     assert "see_img" not in names
 
 
-def test_build_default_tools_includes_see_img_with_vision():
+def test_build_default_tools_omits_see_img_with_vision():
     names = [
         tool.name
         for tool in build_default_tools(llm_config=SimpleNamespace(vision=True))
     ]
 
-    assert "see_img" in names
+    assert "see_img" not in names
+
+
+def test_read_tool_reads_relative_image_path(tmp_path):
+    class FakeWorkspace(WorkspaceAccessor):
+        def __init__(self, cwd: str):
+            self.cwd = cwd
+
+        def get(self) -> str:
+            return self.cwd
+
+    image = tmp_path / "screen.png"
+    image.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00"
+        b"\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    result = create_read_tool().func(
+        "screen.png",
+        ws=FakeWorkspace(str(tmp_path)),
+        llm_config=SimpleNamespace(vision=True),
+    )
+
+    assert isinstance(result, UserMessageEvent)
+    assert result.metadata["hide"] is True
+    assert result.metadata["path"] == str(image.resolve())
+    assert result.content[0]["type"] == "image_url"
+    assert result.content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_read_tool_rejects_image_without_vision(tmp_path):
+    class FakeWorkspace(WorkspaceAccessor):
+        def __init__(self, cwd: str):
+            self.cwd = cwd
+
+        def get(self) -> str:
+            return self.cwd
+
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"not actually decoded because vision is disabled")
+
+    result = create_read_tool().func(
+        "screen.png",
+        ws=FakeWorkspace(str(tmp_path)),
+        llm_config=SimpleNamespace(vision=False),
+    )
+
+    assert "当前模型不支持视觉输入" in result
 
 
 def test_plugin_manager_rolls_back_tools_when_setup_fails():

@@ -12,7 +12,6 @@ from .bash import create_bash_tool
 from .cron import create_cron_tool
 from .edit import create_edit_tool
 from .read import create_read_tool
-from .see_img import create_see_img_tool
 from .send_message import create_send_message_tool
 from .set_workspace import create_set_workspace_tool
 from .task import create_task_tool
@@ -53,19 +52,16 @@ def build_default_tools(
 
     Args:
         channel_manager: ChannelManager 实例（用于 send_message 工具）
-        llm_config: 当前 Agent 的 llm 配置；vision=False 时不注册 see_img
+        llm_config: 当前 Agent 的 llm 配置。
     """
     tools = [
         create_bash_tool(),
-        create_read_tool(),
+        create_read_tool(vision=getattr(llm_config, "vision", False)),
         create_write_tool(),
         create_edit_tool(),
         create_set_workspace_tool(),
         create_cron_tool(),
     ]
-
-    if getattr(llm_config, "vision", False):
-        tools.append(create_see_img_tool())
 
     if channel_manager:
         tools.append(create_task_tool(channel_manager))
