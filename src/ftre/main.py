@@ -153,15 +153,18 @@ async def run_gateway():
     from ftre.api.routes import set_agent_loop, set_command_manager, set_mcp_manager
     set_command_manager(cmd)
 
+    # 加载配置文件
+    config_data = load_config_file()
+
+    # 加载插件（注册 Channel / Hook / Tool / Router 等）
+    plugin_manager.load_all(config_data)
+
     # WebSocket Channel
-    ws_channel = WebSocketChannel(bus)
+    ws_channel = WebSocketChannel(bus, plugin_manager=plugin_manager)
     mgr.register(ws_channel)
 
     # Subagent Channel — 静默通道，承载 task 工具派发的子任务
     mgr.register(SubagentChannel(bus))
-
-    config_data = load_config_file()
-    plugin_manager.load_all(config_data)
 
     # ── MCP 服务器 ──
     # McpManager 接管：连接、工具注册、config watcher、热重载
