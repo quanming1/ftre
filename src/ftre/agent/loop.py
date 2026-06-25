@@ -75,6 +75,7 @@ class AgentLoop:
         tool_registry: ToolRegistry | None = None,
         command_manager=None,
         mcp_manager=None,
+        plugin_manager=None,
     ):
         self.bus = bus
         self.session_manager = session_manager
@@ -83,6 +84,7 @@ class AgentLoop:
         self.tool_registry = tool_registry
         self.command_manager = command_manager
         self.mcp_manager = mcp_manager
+        self.plugin_manager = plugin_manager
         self._injected_config = config
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -762,6 +764,12 @@ class AgentLoop:
             mcp_hint = self.mcp_manager.build_system_hint()
             if mcp_hint:
                 system_prompt = system_prompt + mcp_hint
+
+        # 插件 system prompt 注入
+        if self.plugin_manager and self.plugin_manager.appended_system_prompts:
+            plugin_hints = "\n\n".join(self.plugin_manager.appended_system_prompts)
+            if plugin_hints:
+                system_prompt = system_prompt + "\n\n" + plugin_hints
 
         return ReActAgent(
             model=c.llm.model,

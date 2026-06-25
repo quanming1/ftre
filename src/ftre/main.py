@@ -182,6 +182,7 @@ async def run_gateway():
         tool_registry=tool_registry,
         command_manager=cmd,
         mcp_manager=mcp_manager,
+        plugin_manager=plugin_manager,
     )
     agent_loop.start()
     set_agent_loop(agent_loop)
