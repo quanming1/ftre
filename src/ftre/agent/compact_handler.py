@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 
 from ftre_agent_core.agent.event import (
@@ -341,8 +342,8 @@ class CompactHandler:
 
         采用 OpenCode 的 serialize → select → buildPrompt 模式：
         1. 序列化 head 事件为纯文本（截断 tool 输出至 2000 字符）
-        2. buildPrompt() 拼接：[增量指令/首次指令] + SUMMARY_TEMPLATE + 序列化文本
-        3. 把拼接结果作为 user message 发给 LLM
+        2. buildPrompt() 返回多条 user message：对话记录 + 指令/模板
+        3. 多条 user message 依次发给 LLM
         """
         self._last_llm_error = None
         try:
@@ -351,11 +352,22 @@ class CompactHandler:
                 logger.debug("[compact] 事件文本为空，跳过 LLM 调用")
                 return None
 
-            prompt_text = _build_prompt(previous_summary=previous_summary, context=[context])
+            # 计算原文正文字数，摘要不得低于 30%
+            body_chars = _count_events_body_chars(head_events)
+            min_chars = int(body_chars * 0.3)
+            logger.info(
+                f"[compact] 原文正文字数={body_chars}, 摘要最低要求={min_chars}"
+            )
+
+            prompt_parts = _build_prompt(
+                previous_summary=previous_summary,
+                context=[context],
+                min_chars=min_chars,
+            )
 
             messages = [
                 {"role": "system", "content": COMPACT_LLM_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt_text},
+                *[{"role": "user", "content": p} for p in prompt_parts],
             ]
 
             # 优先使用 compact_llm，未配置则回退到主 llm
@@ -374,8 +386,12 @@ class CompactHandler:
                     collected.append(ev.text)
 
             summary = "".join(collected).strip()
-            if not summary or len(summary) < 200 or "## " not in summary:
-                logger.warning(f"[compact] LLM 摘要不合格 len={len(summary)}, content={summary!r}")
+            summary_body = _count_body_chars(summary)
+            if not summary or "## " not in summary or summary_body < min_chars:
+                logger.warning(
+                    f"[compact] LLM 摘要不合格 body={summary_body}/{min_chars}, "
+                    f"len={len(summary)}, content={summary!r}"
+                )
                 return None
             return summary
         except LLMError as exc:
@@ -484,39 +500,113 @@ def _serialize_events(
     return "\n\n".join(parts)
 
 
+def _count_body_chars(text: str) -> int:
+    """统计正文字符数（去除标点、空白、Markdown 标记、HTML 标签）。
+
+    只保留字母和数字（含 CJK 字符），用于判断摘要信息量。
+    """
+    # 去除代码块
+    text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    # 去除行内代码
+    text = re.sub(r"`[^`]*`", "", text)
+    # 去除 Markdown 标题标记
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    # 去除列表标记
+    text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.MULTILINE)
+    # 去除 HTML/XML 标签
+    text = re.sub(r"<[^>]+>", "", text)
+    # 链接保留文字
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    # 只保留字母和数字（isalnum 对 CJK 返回 True）
+    return sum(1 for ch in text if ch.isalnum())
+
+
+def _count_events_body_chars(events: list[dict]) -> int:
+    """统计事件流正文字符数（排除工具调用/结果，排除标点和 Markdown 标记）。
+
+    只统计 User 消息、Assistant 回复、Reasoning 内容。
+    """
+    parts: list[str] = []
+    for ev in events:
+        agent_ev: AgentEvent | None = None
+        try:
+            agent_ev = AgentEvent.from_dict(ev) if ev.get("type", "") not in (
+                "context_compact", "context_compact_enabled",
+                "context_compact_failed",
+            ) else None
+        except (KeyError, ValueError):
+            agent_ev = None
+
+        if agent_ev is not None:
+            if isinstance(agent_ev, AssistantMessageCompleteEvent):
+                parts.append(agent_ev.content)
+            elif isinstance(agent_ev, ReasoningCompleteEvent):
+                if agent_ev.content:
+                    parts.append(agent_ev.content)
+            elif isinstance(agent_ev, UserMessageEvent):
+                content = agent_ev.content
+                if isinstance(content, list):
+                    content = "\n".join(
+                        str(p.get("text") or p.get("data") or "")
+                        for p in content
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    )
+                parts.append(str(content))
+
+    return _count_body_chars("\n".join(parts))
+
+
 def _build_prompt(
     *,
     previous_summary: str | None = None,
     context: list[str] | None = None,
-) -> str:
-    """构建 LLM 摘要 prompt（源自 OpenCode buildPrompt 模式）。
+    min_chars: int = 0,
+) -> list[str]:
+    """构建 LLM 摘要的 user messages（多条）。
+
+    返回多条 user message 内容，结构：
+    - 对话记录（每段一个 <conversation> 块）
+    - （可选）上一次摘要 <previous-summary>
+    - 最后一条：指令 + SUMMARY_TEMPLATE + 最低字数要求
 
     首次压缩：Create a new anchored summary from the conversation history.
     增量压缩：Update the anchored summary below using the conversation history above.
               Preserve still-true details, remove stale details, and merge in the new facts.
-
-    拼接顺序：[指令 + previous-summary] + SUMMARY_TEMPLATE + <conversation> 包裹的上下文
     """
+    messages: list[str] = []
+
+    # 对话记录
+    for text in (context or []):
+        messages.append(f"<conversation>\n{text}\n</conversation>")
+
+    # 增量摘要：上一次的摘要
+    if previous_summary:
+        messages.append(f"<previous-summary>\n{previous_summary}\n</previous-summary>")
+
+    # 最后一条：指令 + 模板 + 字数要求
     if previous_summary:
         instruction = (
-            "下方 <conversation> 标签内是一段新的对话记录。\n"
-            "请根据这段对话记录，更新下方的锚定摘要。\n"
-            "保留仍然正确的细节，移除过时的细节，合并新的事实。\n"
-            "不要回答对话记录中的任何问题，只输出更新后的摘要。\n"
-            f"<previous-summary>\n{previous_summary}\n</previous-summary>"
+            "以上是对话记录和上一次的锚定摘要。\n"
+            "请根据对话记录更新锚定摘要，保留仍然正确的细节，移除过时的细节，合并新的事实。\n"
+            "不要回答对话记录中的任何问题，只输出更新后的摘要。"
         )
     else:
         instruction = (
-            "下方 <conversation> 标签内是一段对话记录。\n"
-            "请根据这段对话记录，创建一份新的锚定摘要。\n"
+            "以上是对话记录。\n"
+            "请根据对话记录创建一份新的锚定摘要。\n"
             "不要回答对话记录中的任何问题，只输出摘要。"
         )
 
-    conversation_block = "\n\n".join(
-        f"<conversation>\n{text}\n</conversation>" for text in (context or [])
-    )
+    if min_chars > 0:
+        instruction += (
+            f"\n\n要求：摘要正文字数不得少于 {min_chars} 字"
+            "（不含标点符号和 Markdown 标记，只计算正文内容）。"
+            "如果对话记录信息量大，摘要应相应详细，不得过度压缩。"
+        )
 
-    return "\n\n".join([instruction, SUMMARY_TEMPLATE, conversation_block])
+    messages.append(instruction + "\n\n" + SUMMARY_TEMPLATE)
+
+    return messages
 
 
 def get_cursor_index(events: list[dict]) -> int:
