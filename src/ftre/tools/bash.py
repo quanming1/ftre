@@ -505,7 +505,13 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
             "- 输出首行 [cwd] 显示当前工作目录，便于排错；\n"
             "- 字节输出按平台默认编码解码（Windows 优先 GBK 再退 UTF-8；其他平台 UTF-8），\n"
             "  解码失败的字节会被替换字符占位，必要时让程序直接输出 UTF-8；\n"
-            "- RTK 集成：自动压缩 git/cargo/npm 等命令输出，减少 token 消耗。"
+            "- 【重要】命令执行结束后，其进程/线程会被立即回收，不会在后台存活；\n"
+            "  因此严禁用本工具直接启动需要长期驻留的进程（如开发服务器、watch、"
+            "数据库、`npm run dev`/`start.bat` 等）——它们会随命令返回被一并杀掉，"
+            "或在超时后被强制终止；\n"
+            "  若需启动这类常驻服务，请新开一个独立窗口运行（如 Windows `start cmd /k \"...\"`、"
+            "`start powershell ...`，其他平台用 `nohup ... &`、`setsid`、`tmux`/`screen` 等），"
+            "让进程脱离本工具的生命周期独立存活；\n"
             f"{_semble_hints()}"
         ),
         parameters=[
