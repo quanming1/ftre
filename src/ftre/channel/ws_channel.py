@@ -90,7 +90,7 @@ def _validate_attachments(attachments) -> tuple[bool, str]:
 
 class WebSocketChannel(Channel):
 
-    def __init__(self, bus: EventBus, host: str = "0.0.0.0", port: int = 19470):
+    def __init__(self, bus: EventBus, host: str = "0.0.0.0", port: int = 19470, plugin_manager=None):
         super().__init__(channel_id="ws", name="WebSocket Channel", bus=bus)
         self.host = host
         self.port = port
@@ -115,6 +115,11 @@ class WebSocketChannel(Channel):
         # 挂载 HTTP API 路由
         from ftre.api.routes import router as api_router
         self.app.include_router(api_router, prefix="/api")
+
+        # 挂载插件注册的路由
+        if plugin_manager:
+            for router in plugin_manager.routers:
+                self.app.include_router(router, prefix="/api")
 
     async def start(self) -> None:
         """启动 WebSocket 服务"""
