@@ -74,7 +74,6 @@ class AgentLoop:
         hook_manager=None,
         tool_registry: ToolRegistry | None = None,
         command_manager=None,
-        mcp_manager=None,
         plugin_manager=None,
     ):
         self.bus = bus
@@ -83,7 +82,6 @@ class AgentLoop:
         self.hook_manager = hook_manager
         self.tool_registry = tool_registry
         self.command_manager = command_manager
-        self.mcp_manager = mcp_manager
         self.plugin_manager = plugin_manager
         self._injected_config = config
         self._task: asyncio.Task | None = None
@@ -758,14 +756,8 @@ class AgentLoop:
             llm_config=c.llm,
         )
 
-        # MCP 工具提示词注入
-        system_prompt = c.system_prompt
-        if self.mcp_manager:
-            mcp_hint = self.mcp_manager.build_system_hint()
-            if mcp_hint:
-                system_prompt = system_prompt + mcp_hint
-
         # 插件 system prompt 注入
+        system_prompt = c.system_prompt
         if self.plugin_manager and self.plugin_manager.appended_system_prompts:
             plugin_hints = "\n\n".join(self.plugin_manager.appended_system_prompts)
             if plugin_hints:
