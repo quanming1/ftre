@@ -39,17 +39,34 @@ class TitleGenPlugin(Plugin):
         self._input_truncate = cfg.get("input_truncate", DEFAULT_INPUT_TRUNCATE)
         self._max_chars = cfg.get("max_chars", DEFAULT_MAX_CHARS)
         self.api.register_hook(BEFORE_MESSAGES_BUILD, self._on_build)
+        logger.info(
+            "[title_gen] 插件已就绪，已注册 before_messages_build hook "
+            f"(input_truncate={self._input_truncate}, max_chars={self._max_chars})"
+        )
 
     def _on_build(self, ctx):
         """before_messages_build hook：首条消息时异步生成标题"""
+        session_id = ctx.session_id
+
         # 判断是否首条：events 为空 = DB 里还没有任何事件
         if ctx.events:
+            logger.debug(
+                f"[title_gen] 跳过：非首条消息 (session={session_id}, "
+                f"已有 {len(ctx.events)} 条事件)"
+            )
             return ctx
 
-        session_id = ctx.session_id
         inbound_data = ctx.inbound_data
         config = ctx.config
         event_loop = self.api.event_loop
+
+        # event_loop 缺失会导致后续 run_coroutine_threadsafe 静默失败，提前显式拦截
+        if event_loop is None:
+            logger.warning(
+                f"[title_gen] 跳过：event_loop 未注入，无法跨线程调度 "
+                f"(session={session_id})"
+            )
+            return ctx
 
         # 检查 session 是否已有 title
         try:
@@ -57,17 +74,31 @@ class TitleGenPlugin(Plugin):
                 self.api.session_manager.get_session(session_id),
                 event_loop,
             ).result(timeout=5)
-            if session and (session.get("title") or "").strip():
-                return ctx
         except Exception:
+            logger.exception(f"[title_gen] 查询 session 失败，跳过 (session={session_id})")
+            return ctx
+
+        if session and (session.get("title") or "").strip():
+            logger.debug(
+                f"[title_gen] 跳过：session 已有标题 "
+                f"(session={session_id}, title={session.get('title')!r})"
+            )
             return ctx
 
         # 提取文本
         text = self._extract_text(inbound_data)
         if not text:
+            logger.warning(
+                f"[title_gen] 跳过：未能从 inbound_data 提取到文本 "
+                f"(session={session_id}, content_type={type(inbound_data.get('content')).__name__})"
+            )
             return ctx
         text = text[: self._input_truncate]
 
+        logger.info(
+            f"[title_gen] 满足首条条件，开始异步生成标题 "
+            f"(session={session_id}, 文本长度={len(text)})"
+        )
         # 异步生成标题（不阻塞主流程）
         self._spawn_title_generation(session_id, text, config, event_loop)
         return ctx
@@ -84,6 +115,9 @@ class TitleGenPlugin(Plugin):
                 logger.exception(f"[title_gen] 生成标题失败 (session={session_id})")
                 return
             if not title:
+                logger.warning(
+                    f"[title_gen] LLM 返回空标题，放弃写入 (session={session_id})"
+                )
                 return
             try:
                 asyncio.run_coroutine_threadsafe(
@@ -93,7 +127,7 @@ class TitleGenPlugin(Plugin):
             except Exception:
                 logger.exception(f"[title_gen] 写入标题失败 (session={session_id})")
                 return
-            logger.info(f"[title_gen] session={session_id} title={title!r}")
+            logger.info(f"[title_gen] 标题生成成功 session={session_id} title={title!r}")
 
         threading.Thread(
             target=worker,
@@ -106,10 +140,16 @@ class TitleGenPlugin(Plugin):
         # 优先用 title_llm，没配则用主 llm
         llm_cfg = getattr(config, "title_llm", None) or config.llm
         if not (llm_cfg and llm_cfg.model and llm_cfg.api_key):
+            logger.warning(
+                "[title_gen] LLM 配置不完整，无法生成标题 "
+                f"(model={getattr(llm_cfg, 'model', None)!r}, "
+                f"api_key={'已配置' if getattr(llm_cfg, 'api_key', None) else '缺失'})"
+            )
             return ""
 
         from ftre_agent_core.llm import LLMHandler, LLMResponse, StreamDelta
 
+        logger.info(f"[title_gen] 调用 LLM 生成标题 (model={llm_cfg.model})")
         handler = LLMHandler(
             model=llm_cfg.model,
             api_key=llm_cfg.api_key,
@@ -127,6 +167,7 @@ class TitleGenPlugin(Plugin):
             elif isinstance(item, LLMResponse) and item.content:
                 chunks.append(item.content)
         raw = "".join(chunks).strip()
+        logger.info(f"[title_gen] LLM 原始输出={raw!r}")
         return self._sanitize_title(raw)
 
     def _sanitize_title(self, raw: str) -> str:
