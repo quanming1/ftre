@@ -235,14 +235,14 @@ class SkillPlugin(Plugin):
             return ctx
 
         lines = [
-            "<skill_desc>",
+            "<skill_list desc=\"以下是你当前可以使用的全部 skill，通过 loadSkill 工具按名称加载对应 skill 后再使用\">",
         ]
         for item in descriptions:
             lines.append(
                 f"<skill name=\"{escape(item['name'])}\">"
                 f"{escape(item['description'])}</skill>"
             )
-        lines.append("</skill_desc>")
+        lines.append("</skill_list>")
 
         current = getattr(ctx.config, "system_prompt", "") or ""
         ctx.config.system_prompt = current.rstrip() + "\n\n" + "\n".join(lines)
