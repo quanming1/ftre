@@ -76,13 +76,10 @@ class FtrePluginApi:
         """注册 Channel"""
         self.channel_manager.register(channel)
 
-    def register_tool(self, tool: Tool) -> None:
-        """注册 Tool，让它进入 Agent 的默认工具集。"""
-        self._tool_registry.register(tool)
-
-    def registerTool(self, tool: Tool) -> None:
-        """register_tool 的 camelCase 别名。"""
-        self.register_tool(tool)
+    @property
+    def tool_registry(self) -> ToolRegistry:
+        """共享工具注册表，插件可注册 / 过滤工具。"""
+        return self._tool_registry
 
     def register_hook(self, point: str, fn: Callable) -> None:
         """

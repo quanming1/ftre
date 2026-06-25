@@ -38,7 +38,7 @@ class SkillPlugin(Plugin):
         cfg = self.api.config or {}
         self._skills_dir = Path(cfg.get("skills_dir") or DEFAULT_SKILLS_DIR)
         self.api.register_hook(BEFORE_MESSAGES_BUILD, self._inject_skill_descriptions)
-        self.api.register_tool(create_load_skill_tool(self._skills_dir))
+        self.api.tool_registry.register(create_load_skill_tool(self._skills_dir))
 
     def _inject_skill_descriptions(self, ctx):
         descriptions = list_skill_descriptions(self._skills_dir)

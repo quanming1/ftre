@@ -60,7 +60,7 @@ def test_plugin_manager_rolls_back_tools_when_setup_fails():
         name = "failing_tool"
 
         def setup(self) -> None:
-            self.api.register_tool(_dummy_tool("leaked"))
+            self.api.tool_registry.register(_dummy_tool("leaked"))
             raise RuntimeError("boom")
 
     registry = ToolRegistry()
@@ -77,12 +77,12 @@ def test_plugin_manager_rolls_back_tools_when_setup_fails():
     assert "leaked" not in [tool.name for tool in registry.snapshot()]
 
 
-def test_plugin_api_register_tool_adds_to_shared_registry():
+def test_plugin_api_tool_registry_adds_to_shared_registry():
     class ToolPlugin(Plugin):
         name = "tool_plugin"
 
         def setup(self) -> None:
-            self.api.register_tool(_dummy_tool("from_plugin"))
+            self.api.tool_registry.register(_dummy_tool("from_plugin"))
 
     registry = ToolRegistry()
     manager = PluginManager(
