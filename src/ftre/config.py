@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 # 配置文件路径
 CONFIG_PATH = Path(os.environ.get("USERPROFILE", Path.home()) if sys.platform == "win32" else Path.home()) / ".ftre" / "config.json"
 
-# 默认 system prompt 文件（相对于 ftre 包根目录）
-SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "agent" / "system_prompt.md"
+# 默认 system prompt 文件（与 config.py 同级）
+SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "system_prompt.md"
 
 
 def _load_system_prompt() -> str:
