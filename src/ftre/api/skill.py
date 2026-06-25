@@ -18,6 +18,17 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+def _read_text_safe(path: Path) -> str:
+    """读取文件文本，优先 UTF-8，失败则回退到 GBK（Windows 中文环境兼容）。"""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        try:
+            return path.read_text(encoding="gbk")
+        except UnicodeDecodeError:
+            return path.read_text(encoding="utf-8", errors="replace")
+
 # Skill 目录固定位置，与 skill_plugin.py 的 DEFAULT_SKILLS_DIR 对齐
 SKILLS_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "skills"
 
@@ -138,7 +149,7 @@ def _extract_frontmatter_description(text: str) -> str:
 def _skill_meta(name: str, path: Path) -> dict:
     """根据内容文件构造一个 Skill 元信息 dict（不含 content）。"""
     try:
-        text = path.read_text(encoding="utf-8")
+        text = _read_text_safe(path)
     except OSError as e:
         logger.warning(f"[skill] 读取失败 {path}: {e}")
         text = ""
@@ -195,7 +206,7 @@ def read_skill(name: str) -> dict | None:
     if path is None:
         return None
     try:
-        content = path.read_text(encoding="utf-8")
+        content = _read_text_safe(path)
     except OSError as e:
         logger.error(f"[skill] 读取失败 {path}: {e}")
         raise
