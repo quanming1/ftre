@@ -15,6 +15,42 @@ logger = logging.getLogger(__name__)
 # 配置文件路径
 CONFIG_PATH = Path(os.environ.get("USERPROFILE", Path.home()) if sys.platform == "win32" else Path.home()) / ".ftre" / "config.json"
 
+# 默认 system prompt 文件（相对于 ftre 包根目录）
+SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "agent" / "system_prompt.md"
+
+
+def _load_system_prompt() -> str:
+    """从 system_prompt.md 加载默认提示词。
+
+    文件不存在时返回内置兜底文本。
+    """
+    try:
+        if SYSTEM_PROMPT_PATH.exists():
+            content = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+            # 提取 ```...``` 代码块中的提示词（跳过前面的 YAML/表格）
+            block_start = content.find("```\n")
+            if block_start >= 0:
+                block_end = content.find("\n```", block_start + 4)
+                if block_end > block_start:
+                    return content[block_start + 4:block_end].strip()
+            # 没有代码块标记时，尝试提取 ## 默认提示词 之后的内容
+            marker = "## 默认提示词"
+            idx = content.find(marker)
+            if idx >= 0:
+                # 跳过标记行和后续的 ``` 代码块开始
+                rest = content[idx + len(marker):]
+                code_start = rest.find("```")
+                if code_start >= 0:
+                    code_end = rest.find("```", code_start + 3)
+                    if code_end > code_start:
+                        return rest[code_start + 3:code_end].strip()
+            return content.strip()
+    except Exception as e:
+        logger.warning(f"[config] 读取 system_prompt.md 失败: {e}")
+
+    # 兜底
+    return "你是 ftre，一个 AI 编程助手。"
+
 
 @dataclass
 class LLMConfig:
@@ -67,15 +103,7 @@ class ContextConfig:
 class AgentConfig:
     """Agent 配置"""
     llm: LLMConfig = field(default_factory=LLMConfig)
-    system_prompt: str = """你是 ftre，一个 AI 编程助手。
-
-输出文本用于和用户交流；所有非工具调用的输出都会展示给用户。只使用工具完成任务，不要用 Bash 或代码注释等工具作为会话中和用户沟通的方式。
-
-除非用户明确要求，否则不要使用 emoji。
-
-你可以主动，但只能在用户要求你做事时主动。用户提出请求时，做正确的事，包括必要的后续动作；不要用未经请求的动作让用户意外。如果用户问“该怎么做”，优先回答问题，而不是立刻开始改代码。不要在用户未要求时添加额外代码解释总结；改完文件后直接停止，不要解释你做了什么。
-
-修改文件时，先理解该文件的代码约定。模仿代码风格，使用已有库和工具，遵循已有模式。永远不要假设某个库可用，即使它很知名；写使用某库或框架的代码前，先检查代码库是否已经使用它，例如查看相邻文件、package.json、cargo.toml 等。创建新组件前，先看现有组件怎么写，再考虑框架选择、命名约定、类型和其他规范。编辑代码前，先看周围上下文，尤其是 imports，理解代码使用的框架和库，再以最符合该代码库习惯的方式修改。始终遵循安全最佳实践，不要引入暴露或记录 secrets、keys 的代码，不要把 secrets 或 keys 提交到仓库。"""
+    system_prompt: str = ""  # 默认从 system_prompt.md 加载，见 _load_system_prompt()
     max_iterations: int | None = None
     # 默认工作区。空字符串表示走进程 cwd 兜底。
     # 一个 session 没有 set_workspace 历史时使用这个值；
@@ -209,6 +237,11 @@ def load_config() -> AgentConfig:
     if not isinstance(workspace, str):
         workspace = ""
 
+    # 系统提示词：优先从 config.json 读取，否则从 system_prompt.md 加载
+    system_prompt = defaults.get("system_prompt", "") or ""
+    if not system_prompt:
+        system_prompt = _load_system_prompt()
+
     # 上下文管理配置：agents.defaults.context（缺省即代码内默认值）
     ctx_raw = defaults.get("context") or {}
     if not isinstance(ctx_raw, dict):
@@ -246,7 +279,12 @@ def load_config() -> AgentConfig:
     )
 
     result = AgentConfig(
-        llm=llm, workspace=workspace, title_llm=title_llm, compact_llm=compact_llm, context=context_cfg
+        llm=llm,
+        system_prompt=system_prompt,
+        workspace=workspace,
+        title_llm=title_llm,
+        compact_llm=compact_llm,
+        context=context_cfg,
     )
 
     # 更新缓存
