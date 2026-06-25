@@ -54,14 +54,14 @@ class SkillPlugin(Plugin):
             return ctx
 
         lines = [
-            "<skills>",
+            "<skill_desc>",
         ]
         for item in descriptions:
             lines.append(
                 f"<skill name=\"{escape(item['name'])}\">"
                 f"{escape(item['description'])}</skill>"
             )
-        lines.append("</skills>")
+        lines.append("</skill_desc>")
 
         current = getattr(ctx.config, "system_prompt", "") or ""
         ctx.config.system_prompt = current.rstrip() + "\n\n" + "\n".join(lines)
