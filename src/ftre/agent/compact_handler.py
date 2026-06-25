@@ -370,7 +370,7 @@ class CompactHandler:
 
             summary = "".join(collected).strip()
             if not summary or len(summary) < 200 or "## " not in summary:
-                logger.warning(f"[compact] LLM 摘要不合格 len={len(summary)}")
+                logger.warning(f"[compact] LLM 摘要不合格 len={len(summary)}, content={summary!r}")
                 return None
             return summary
         except LLMError as exc:
