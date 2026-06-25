@@ -20,35 +20,12 @@ SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "system_prompt.md"
 
 
 def _load_system_prompt() -> str:
-    """从 system_prompt.md 加载默认提示词。
-
-    文件不存在时返回内置兜底文本。
-    """
+    """从 system_prompt.md 读取默认提示词。"""
     try:
         if SYSTEM_PROMPT_PATH.exists():
-            content = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
-            # 提取 ```...``` 代码块中的提示词（跳过前面的 YAML/表格）
-            block_start = content.find("```\n")
-            if block_start >= 0:
-                block_end = content.find("\n```", block_start + 4)
-                if block_end > block_start:
-                    return content[block_start + 4:block_end].strip()
-            # 没有代码块标记时，尝试提取 ## 默认提示词 之后的内容
-            marker = "## 默认提示词"
-            idx = content.find(marker)
-            if idx >= 0:
-                # 跳过标记行和后续的 ``` 代码块开始
-                rest = content[idx + len(marker):]
-                code_start = rest.find("```")
-                if code_start >= 0:
-                    code_end = rest.find("```", code_start + 3)
-                    if code_end > code_start:
-                        return rest[code_start + 3:code_end].strip()
-            return content.strip()
+            return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
     except Exception as e:
         logger.warning(f"[config] 读取 system_prompt.md 失败: {e}")
-
-    # 兜底
     return "你是 ftre，一个 AI 编程助手。"
 
 
