@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from fastapi import APIRouter
+
 from ftre.bus import EventBus
 from ftre.channel import Channel, ChannelManager
 from ftre_agent_core.tool import Tool
@@ -49,6 +51,7 @@ class FtrePluginApi:
         event_loop: Callable | None = None,
         command_manager: object | None = None,
         appended_system_prompts: list[str] | None = None,
+        routers: list[APIRouter] | None = None,
     ):
         self.bus = bus
         self.session_manager = session_manager
@@ -59,6 +62,7 @@ class FtrePluginApi:
         self._event_loop = event_loop
         self._command_manager = command_manager
         self._appended_system_prompts = appended_system_prompts if appended_system_prompts is not None else []
+        self._routers: list[APIRouter] = routers if routers is not None else []
 
     @property
     def event_loop(self):
@@ -103,6 +107,10 @@ class FtrePluginApi:
         if text and text.strip():
             self._appended_system_prompts.append(text)
 
+    def register_router(self, router: APIRouter) -> None:
+        """注册 FastAPI APIRouter，路由会在 WebSocketChannel 启动时挂载到 /api prefix 下。"""
+        self._routers.append(router)
+
     @property
     def appended_system_prompts(self) -> list[str]:
         """获取所有插件追加的 system prompt 内容。"""
@@ -144,6 +152,7 @@ class PluginManager:
         self._event_loop = event_loop
         self._command_manager = command_manager
         self._appended_system_prompts: list[str] = []
+        self._routers: list[APIRouter] = []
 
     def load_all(self, config_data: dict = None) -> None:
         """
@@ -216,6 +225,7 @@ class PluginManager:
             event_loop=self._event_loop,
             command_manager=self._command_manager,
             appended_system_prompts=self._appended_system_prompts,
+            routers=self._routers,
         )
 
         tool_count = len(self._tool_registry)
@@ -248,3 +258,8 @@ class PluginManager:
     def appended_system_prompts(self) -> list[str]:
         """获取所有插件追加的 system prompt 内容。"""
         return self._appended_system_prompts.copy()
+
+    @property
+    def routers(self) -> list[APIRouter]:
+        """获取所有插件注册的 APIRouter。"""
+        return self._routers.copy()
