@@ -41,6 +41,7 @@ class SkillPlugin(Plugin):
     def setup(self) -> None:
         cfg = self.api.config or {}
         self._skills_dir = Path(cfg.get("skills_dir") or DEFAULT_SKILLS_DIR)
+        self._disabled_skills = self._load_disabled_skills()
         self.api.append_system_prompt(
             "<skill_desc>\n"
             "Skill 是 ~/.ftre/skills 下的本地能力说明。"
@@ -52,8 +53,22 @@ class SkillPlugin(Plugin):
             "\n</skill_desc>"
         )
         self.api.register_hook(BEFORE_MESSAGES_BUILD, self._inject_skill_descriptions)
-        self.api.tool_registry.register(create_load_skill_tool(self._skills_dir))
+        self.api.tool_registry.register(create_load_skill_tool(self._skills_dir, self._disabled_skills))
         self.api.register_router(self._build_router())
+
+    def _load_disabled_skills(self) -> set[str]:
+        """从 config.json 读取 disabled_skills 数组。"""
+        from ftre.config import CONFIG_PATH
+        try:
+            if not CONFIG_PATH.exists():
+                return set()
+            raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            arr = raw.get("disabled_skills", [])
+            if isinstance(arr, list):
+                return {str(s) for s in arr}
+        except Exception:
+            pass
+        return set()
 
     def _build_router(self) -> APIRouter:
         """构建 Skill CRUD 路由（迁移自 routes.py）。"""
@@ -61,7 +76,11 @@ class SkillPlugin(Plugin):
 
         @router.get("")
         async def list_skills():
-            return {"skills": skill_store.list_skills()}
+            skills = skill_store.list_skills()
+            # 附加 disabled 状态
+            for s in skills:
+                s["disabled"] = s.get("name", "") in self._disabled_skills
+            return {"skills": skills}
 
         @router.get("/{name}")
         async def get_skill(name: str):
@@ -148,10 +167,70 @@ class SkillPlugin(Plugin):
                 raise HTTPException(status_code=404, detail=f"Skill 不存在: {name}")
             return None
 
+        @router.patch("/{name}/toggle")
+        async def toggle_skill_disabled(name: str):
+            """切换 Skill 的禁用状态。"""
+            if not skill_store.is_valid_name(name):
+                raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name}")
+
+            from ftre.config import CONFIG_PATH
+            import tempfile
+
+            config_data = {}
+            if CONFIG_PATH.exists():
+                try:
+                    config_data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                except Exception:
+                    config_data = {}
+
+            arr = config_data.get("disabled_skills", [])
+            if not isinstance(arr, list):
+                arr = []
+            arr = [str(s) for s in arr]
+
+            if name in arr:
+                arr.remove(name)
+                disabled = False
+            else:
+                arr.append(name)
+                disabled = True
+
+            config_data["disabled_skills"] = arr
+
+            # 原子写入
+            CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=".config.", suffix=".tmp", dir=str(CONFIG_PATH.parent)
+            )
+            import os as _os
+            try:
+                with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(config_data, f, ensure_ascii=False, indent=2)
+                _os.replace(tmp_path, CONFIG_PATH)
+            except Exception:
+                try:
+                    _os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+
+            # 更新内存缓存
+            self._disabled_skills = set(arr)
+
+            return {"name": name, "disabled": disabled}
+
         return router
 
     def _inject_skill_descriptions(self, ctx):
         descriptions = list_skill_descriptions(self._skills_dir)
+        if not descriptions:
+            return ctx
+
+        # 过滤掉被禁用的 skill
+        if self._disabled_skills:
+            descriptions = [
+                d for d in descriptions if d["name"] not in self._disabled_skills
+            ]
         if not descriptions:
             return ctx
 
@@ -170,8 +249,10 @@ class SkillPlugin(Plugin):
         return ctx
 
 
-def create_load_skill_tool(skills_dir: Path) -> Tool:
+def create_load_skill_tool(skills_dir: Path, disabled_skills: set[str] | None = None) -> Tool:
     """Create the loadSkill tool."""
+
+    _disabled = disabled_skills or set()
 
     def loadSkill(skill: str) -> str:
         skill_name = (skill or "").strip()
@@ -179,6 +260,9 @@ def create_load_skill_tool(skills_dir: Path) -> Tool:
             return "[error] skill name is required"
         if Path(skill_name).name != skill_name:
             return f"[error] invalid skill name: {skill!r}"
+
+        if skill_name in _disabled:
+            return f"[error] skill '{skill_name}' is disabled"
 
         candidates = (
             skills_dir / f"{skill_name}.md",
