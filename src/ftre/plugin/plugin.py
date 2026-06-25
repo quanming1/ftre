@@ -129,7 +129,7 @@ class PluginManager:
 
     def load_all(self, config_data: dict = None) -> None:
         """
-        扫描 ~/.ftre/plugins/ 加载所有插件。
+        加载插件：先加载内置插件（ftre.plugin.builtin），再扫描 ~/.ftre/plugins/。
         config_data 中 plugins 数组按 name 匹配提供 config。
         """
         # 从配置文件构建 name → config
@@ -140,8 +140,28 @@ class PluginManager:
                 if name:
                     configs[name] = entry.get("config", {})
 
-        # 扫描目录
-        logger.warning(f"[plugin] 扫描: {PLUGINS_DIR}")
+        # ─── 阶段 1: 加载内置插件 ─────────────────────────────
+        BUILTIN_DIR = Path(__file__).parent / "builtin"
+        logger.info(f"[plugin] 加载内置插件: {BUILTIN_DIR}")
+        
+        for py_file in BUILTIN_DIR.glob("*.py"):
+            if py_file.name.startswith("_"):
+                continue
+            module_name = f"ftre.plugin.builtin.{py_file.stem}"
+            try:
+                mod = importlib.import_module(module_name)
+                for attr in vars(mod).values():
+                    if (isinstance(attr, type)
+                        and issubclass(attr, Plugin)
+                        and attr is not Plugin
+                        and attr.name):
+                        plugin = attr()
+                        self._load(plugin, configs.get(plugin.name, {}))
+            except Exception as e:
+                logger.error(f"[plugin] 内置插件 {py_file.name} 加载失败: {e}")
+
+        # ─── 阶段 2: 扫描外部插件目录 ─────────────────────────
+        logger.warning(f"[plugin] 扫描外部插件: {PLUGINS_DIR}")
         if not PLUGINS_DIR.exists():
             return
 
