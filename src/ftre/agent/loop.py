@@ -446,10 +446,10 @@ class AgentLoop:
         )
 
         # Step 5: 创建 Agent + 注册到 _active_agents
-        agent = self._create_agent(hook_config)
-        agent.system_prompt = (
-            hook_config.system_prompt
-            + f"\n\n[当前上下文] channel_id={inbound.from_channel}, session_id={session_id}"
+        agent = self._create_agent(
+            hook_config,
+            channel_id=inbound.from_channel,
+            session_id=session_id,
         )
         self._active_agents[session_id] = agent
         await self._publish_session_status_async(session_id, "running")
@@ -489,6 +489,7 @@ class AgentLoop:
             "session_manager": self.session_manager,
             "bus": self.bus,
             "agent_loop": self,
+            "llm_config": hook_config.llm,
             "workspace": WorkspaceAccessor(
                 session_id=session_id,
                 session_manager=self.session_manager,
@@ -747,7 +748,13 @@ class AgentLoop:
             return user_content, hook_config
         return [{"role": "user", "content": user_content}], hook_config
 
-    def _create_agent(self, config: AgentConfig) -> ReActAgent:
+    def _create_agent(
+        self,
+        config: AgentConfig,
+        *,
+        channel_id: str | None = None,
+        session_id: str | None = None,
+    ) -> ReActAgent:
         """根据配置创建 ReActAgent 实例。"""
         c = config
         tools = build_default_tools(
@@ -762,6 +769,22 @@ class AgentLoop:
             plugin_hints = "\n\n".join(self.plugin_manager.appended_system_prompts)
             if plugin_hints:
                 system_prompt = system_prompt + "\n\n" + plugin_hints
+
+        env_lines = [
+            "<env>",
+            f"channel_id={channel_id or ''}",
+            f"session_id={session_id or ''}",
+        ]
+        if getattr(c.llm, "vision", False):
+            env_lines.append(
+                "vision=true：你当前使用的模型具备识图（视觉理解）能力，可以直接"
+                "看懂图片、截图、浏览器画面和 UI 视觉状态，不要因为自己是文本模型"
+                "而拒绝看图。需要理解视觉内容时，使用 read 工具读取图片文件。"
+                "read 支持图片的绝对路径、相对当前工作区路径，以及 HTTP(S) 图片 URL；"
+                "读取图片后可用于辅助修改 UI、判断浏览器操控结果、检查视觉回归和还原设计细节。"
+            )
+        env_lines.append("</env>")
+        system_prompt = system_prompt + "\n\n" + "\n".join(env_lines)
 
         return ReActAgent(
             model=c.llm.model,
