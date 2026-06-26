@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
@@ -15,9 +16,25 @@ ROOT = Path(__file__).resolve().parent
 DESKTOP_ROOT = Path(r"E:\binn\ftre-desktop")
 DOCS_ROOT = Path(r"E:\ftre-docs")
 
-GATEWAY_PORT = 19470
-DESKTOP_PORT = 50000
-DOCS_PORT = 5173
+# 端口的单一事实源是 ~/.ftre/config.json 的 servers 段；读不到时回退到下面的默认值。
+CONFIG_PATH = Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "config.json"
+_PORT_FALLBACK = {"gateway": 48650, "frontend": 48651, "docs": 48652}
+
+
+def _resolve_port(name: str) -> int:
+    try:
+        servers = json.loads(CONFIG_PATH.read_text(encoding="utf-8")).get("servers", {})
+        port = servers.get(name, {}).get("port")
+        if isinstance(port, int):
+            return port
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    return _PORT_FALLBACK[name]
+
+
+GATEWAY_PORT = _resolve_port("gateway")
+DESKTOP_PORT = _resolve_port("frontend")
+DOCS_PORT = _resolve_port("docs")
 STARTUP_TIMEOUT_SECONDS = 60
 
 
