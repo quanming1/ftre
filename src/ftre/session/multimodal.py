@@ -9,6 +9,8 @@ from __future__ import annotations
 from typing import Any
 from xml.sax.saxutils import escape
 
+from ftre.utils.image_store import load_as_data_url
+
 IMAGE_OMITTED_NOTICE = "[图片附件已省略：当前模型不支持视觉输入]"
 
 
@@ -128,6 +130,23 @@ def normalize_user_content(
                 omitted_image = True
         elif ptype == "image":
             omitted_image = True
+        elif ptype == "image_file":
+            if include_images:
+                file_path = part.get("path", "")
+                file_mime = part.get("mime_type", "")
+                if file_path:
+                    data_url = load_as_data_url(file_path, mime=file_mime)
+                    if data_url:
+                        normalized.append({
+                            "type": "image_url",
+                            "image_url": {"url": data_url},
+                        })
+                    else:
+                        omitted_image = True
+                else:
+                    omitted_image = True
+            else:
+                omitted_image = True
 
     if omitted_image:
         text_only.append(IMAGE_OMITTED_NOTICE)
@@ -177,13 +196,16 @@ def build_user_content(
         if att.get("type") != "image":
             continue
         mime = att.get("mime_type", "")
-        b64 = att.get("data", "")
-        if not mime or not b64:
+        file_path = att.get("path", "")
+        if not file_path:
+            continue
+        data_url = load_as_data_url(file_path, mime=mime)
+        if not data_url:
             continue
         parts_multi.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"},
+                "image_url": {"url": data_url},
             }
         )
 
