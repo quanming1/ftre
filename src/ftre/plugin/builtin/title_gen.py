@@ -68,22 +68,10 @@ class TitleGenPlugin(Plugin):
             )
             return ctx
 
-        # 检查 session 是否已有 title
-        try:
-            session = asyncio.run_coroutine_threadsafe(
-                self.api.session_manager.get_session(session_id),
-                event_loop,
-            ).result(timeout=5)
-        except Exception:
-            logger.exception(f"[title_gen] 查询 session 失败，跳过 (session={session_id})")
-            return ctx
-
-        if session and (session.get("title") or "").strip():
-            logger.debug(
-                f"[title_gen] 跳过：session 已有标题 "
-                f"(session={session_id}, title={session.get('title')!r})"
-            )
-            return ctx
+        # 注意：_on_build 运行在主事件循环线程上（trigger_sync 同步调用）。
+        # 这里【不能】用 run_coroutine_threadsafe(...).result() 去查 session——那会把协程
+        # 排回当前正阻塞的事件循环，造成自我等待死锁（表现为 5s TimeoutError，并卡死整个
+        # 事件循环）。因此 session 是否已有标题的检查移到 worker 线程里做。
 
         # 提取文本
         text = self._extract_text(inbound_data)
@@ -109,6 +97,23 @@ class TitleGenPlugin(Plugin):
         """起守护线程跑 LLM 生成标题"""
 
         def worker() -> None:
+            # session 是否已有标题的检查放在 worker 线程里：这里不是事件循环线程，
+            # run_coroutine_threadsafe(...).result() 可以安全阻塞等待，不会死锁。
+            try:
+                session = asyncio.run_coroutine_threadsafe(
+                    self.api.session_manager.get_session(session_id),
+                    event_loop,
+                ).result(timeout=10)
+            except Exception:
+                logger.exception(f"[title_gen] 查询 session 失败，跳过 (session={session_id})")
+                return
+            if session and (session.get("title") or "").strip():
+                logger.debug(
+                    f"[title_gen] 跳过：session 已有标题 "
+                    f"(session={session_id}, title={session.get('title')!r})"
+                )
+                return
+
             try:
                 title = self._generate_title(text, config)
             except Exception:
@@ -147,7 +152,7 @@ class TitleGenPlugin(Plugin):
             )
             return ""
 
-        from ftre_agent_core.llm import LLMHandler, LLMResponse, StreamDelta
+        from ftre_agent_core.llm import LLMHandler, TextDelta
 
         logger.info(f"[title_gen] 调用 LLM 生成标题 (model={llm_cfg.model})")
         handler = LLMHandler(
@@ -160,13 +165,19 @@ class TitleGenPlugin(Plugin):
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": user_text},
         ]
-        chunks: list[str] = []
-        for item in handler.stream(messages, tools=None):
-            if isinstance(item, StreamDelta) and item.content:
-                chunks.append(item.content)
-            elif isinstance(item, LLMResponse) and item.content:
-                chunks.append(item.content)
-        raw = "".join(chunks).strip()
+
+        # LLMHandler.stream 是 async generator，必须在事件循环里消费。
+        # worker 跑在独立线程，这里把"消费整个流"作为一个协程投递到主循环执行。
+        async def _collect() -> str:
+            parts: list[str] = []
+            async for item in handler.stream(messages, tools=None):
+                if isinstance(item, TextDelta) and item.text:
+                    parts.append(item.text)
+            return "".join(parts)
+
+        raw = asyncio.run_coroutine_threadsafe(
+            _collect(), self.api.event_loop
+        ).result(timeout=60).strip()
         logger.info(f"[title_gen] LLM 原始输出={raw!r}")
         return self._sanitize_title(raw)
 

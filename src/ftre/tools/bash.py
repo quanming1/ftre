@@ -355,6 +355,8 @@ def _semble_hints() -> str:
     return (
         "\n\n"
         f"【代码检索建议：本机已安装 semble，强烈优先使用】\n"
+        "⚠️ 重要：semble 不是一个可调用的工具（tool），它只是一个命令行程序（CLI）。\n"
+        "  不要尝试以工具调用的方式调用 semble；它必须通过本 bash 工具，作为一条 shell 命令来执行。\n"
         f"semble 是什么：一个为 AI agent 设计的语义代码检索 CLI{install_hint}。\n"
         "  它把代码库切成 tree-sitter 感知的 chunk，做混合检索（语义嵌入 + BM25 关键词 + RRF 融合），\n"
         "  返回最相关的几段代码而不是整个文件。索引在首次查询时自动构建并缓存，\n"
