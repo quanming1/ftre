@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
@@ -24,16 +25,13 @@ from ._workspace import WorkspaceAccessor
 def _user_bin_dirs() -> list[str]:
     """返回常见的用户级可执行文件目录（仅返回实际存在的）"""
     home = Path.home()
-    candidates = []
     if sys.platform == "win32":
-        appdata_local = home / "AppData" / "Local"
-        appdata_roaming = home / "AppData" / "Roaming"
         candidates = [
             home / ".local" / "bin",
             home / ".mavis" / "bin",
-            appdata_local / "Programs" / "uv",
-            appdata_roaming / "uv",
-            appdata_roaming / "uv" / "tools",
+            home / "AppData" / "Local" / "Programs" / "uv",
+            home / "AppData" / "Roaming" / "uv",
+            home / "AppData" / "Roaming" / "uv" / "tools",
         ]
     else:
         candidates = [
@@ -63,17 +61,11 @@ def _which_with_user_paths(name: str) -> str | None:
 
 # ============== RTK 集成 ==============
 
-# 缓存 rtk 可执行文件路径（None=未检测，False=不可用，str=路径）
-_rtk_path_cache: str | bool | None = None
 
-
+@lru_cache(maxsize=1)
 def _find_rtk() -> str | None:
     """查找 rtk 可执行文件路径，结果会被缓存"""
-    global _rtk_path_cache
-    if _rtk_path_cache is None:
-        path = _which_with_user_paths("rtk")
-        _rtk_path_cache = path if path else False
-    return _rtk_path_cache if _rtk_path_cache else None
+    return _which_with_user_paths("rtk")
 
 
 def _rtk_rewrite(command: str) -> str | None:
@@ -209,27 +201,19 @@ def _try_handle_cd(command: str, ws: WorkspaceAccessor) -> str | None:
     return f"已切换到 {new_dir}"
 
 
-def _build_subprocess_args(
-    command: str,
-) -> tuple[str | list[str], bool, str | None]:
-    """
-    根据平台决定如何把 command 交给 shell。
+def _shell_executable() -> str | None:
+    """返回执行命令时显式指定的 shell 可执行文件，None 表示用平台默认。
 
-    返回 (args_or_command, shell_flag, executable)。
+    Windows: shell=True 走 cmd /c，无需显式 executable。
+    POSIX: 优先 /bin/bash（比 /bin/sh 功能多），不存在则回退默认 sh。
 
-    Windows 上使用 shell=True 让 subprocess 直接调用 cmd /c <command>，
-    避免 list2cmdline 把数组拼回命令行时把命令里的双引号 `\"` 转义成 cmd
-    不认识的 `\\\"`，导致 `git commit -m "msg"` 这类命令被拆词。
-
-    POSIX 上同样 shell=True，但显式用 /bin/bash（比 /bin/sh 功能多），
-    fallback 到 sh 由 subprocess 自动处理。
+    统一用 shell=True：避免 list2cmdline 把数组拼回命令行时，把命令里的
+    双引号转义成 shell 不认识的形式，导致 `git commit -m "msg"` 被拆词。
     """
     if sys.platform == "win32":
-        return (command, True, None)
+        return None
     bash = "/bin/bash"
-    if Path(bash).exists():
-        return (command, True, bash)
-    return (command, True, None)
+    return bash if Path(bash).exists() else None
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
@@ -291,59 +275,51 @@ def _platform_hints() -> str:
     )
 
 
-# 缓存 semble 检测结果（None=未检测，False=不可用，str=路径）
-_semble_path_cache: str | bool | None = None
+# 缓存 semble 检测结果
 
 
+@lru_cache(maxsize=1)
 def _find_semble() -> str | None:
     """查找 semble 可执行文件路径，结果会被缓存。
 
     优先在 PATH 中查找（含用户级目录 fallback）；找不到再看 uvx 是否可用，
     尝试通过 `uvx --from "semble[mcp]" semble` 调用作为降级方案。
     """
-    global _semble_path_cache
-    if _semble_path_cache is not None:
-        return _semble_path_cache if isinstance(_semble_path_cache, str) else None
-
     # 主路径：shutil.which + 用户级 PATH fallback
     path = _which_with_user_paths("semble")
     if path:
-        _semble_path_cache = path
         return path
 
     # 降级方案：尝试通过 uvx 调用
     uvx_path = _which_with_user_paths("uvx")
-    if uvx_path:
-        try:
-            # 用 --help 快速检测 uvx 能否拉起 semble（不真正执行索引）
-            test_result = subprocess.run(
-                [uvx_path, "--from", "semble[mcp]", "semble", "--help"],
-                capture_output=True,
-                timeout=15,
-            )
-            if test_result.returncode == 0:
-                # uvx 可以拉起 semble，缓存 uvx 调用模板
-                _semble_path_cache = f"{uvx_path} --from \"semble[mcp]\" semble"
-                return _semble_path_cache
-        except Exception:
-            pass
-
-    _semble_path_cache = False
+    if not uvx_path:
+        return None
+    try:
+        # 用 --help 快速检测 uvx 能否拉起 semble（不真正执行索引）
+        result = subprocess.run(
+            [uvx_path, "--from", "semble[mcp]", "semble", "--help"],
+            capture_output=True,
+            timeout=15,
+        )
+    except Exception:
+        return None
+    if result.returncode == 0:
+        return f"{uvx_path} --from \"semble[mcp]\" semble"
     return None
 
 
 def _semble_hints() -> str:
-    """检测到 semble 已安装时，生成一段代码检索使用建议；否则返回空串。
+    """检测到 semble 已安装时，生成一段精简的代码检索使用建议；否则返回空串。
 
-    提示词假定 LLM 完全不认识 semble，先讲清"它是什么/为什么用/怎么调"，
-    再给具体示例和反例，让 LLM 在『按行为/功能找代码』场景下优先用它。
+    强调 semble 是 CLI 命令而非工具，给少量精准示例 + 何时用/何时不用，
+    完整子命令与参数引导 LLM 自行用 `--help` 查看。
     """
-    if not _find_semble():
+    semble_path = _find_semble()
+    if not semble_path:
         return ""
 
-    semble_path = _find_semble()
     # 判断是直接安装还是 uvx 降级调用
-    is_uvx = semble_path and "uvx" in semble_path and "--from" in semble_path
+    is_uvx = "uvx" in semble_path and "--from" in semble_path
     cmd_prefix = semble_path if is_uvx else "semble"
 
     install_hint = (
@@ -354,45 +330,18 @@ def _semble_hints() -> str:
 
     return (
         "\n\n"
-        f"【代码检索建议：本机已安装 semble，强烈优先使用】\n"
-        "⚠️ 重要：semble 不是一个可调用的工具（tool），它只是一个命令行程序（CLI）。\n"
-        "  不要尝试以工具调用的方式调用 semble；它必须通过本 bash 工具，作为一条 shell 命令来执行。\n"
-        f"semble 是什么：一个为 AI agent 设计的语义代码检索 CLI{install_hint}。\n"
-        "  它把代码库切成 tree-sitter 感知的 chunk，做混合检索（语义嵌入 + BM25 关键词 + RRF 融合），\n"
-        "  返回最相关的几段代码而不是整个文件。索引在首次查询时自动构建并缓存，\n"
-        "  文件变化会自动失效重建。全程 CPU、无 API key、无外部服务。\n"
-        "为什么强烈推荐它替代 grep/findstr/rg：\n"
-        "  - token 消耗约为 grep+read 的 2%（只返回相关片段，不返回整文件）；\n"
-        "  - 自然语言查询，不需要先猜函数/变量/类名；\n"
-        "  - 跨语言、跨文件类型，对 TS/Python/Rust/Go 等都开箱即用；\n"
-        "  - 返回结果带 file_path 和行号，可直接用 read 工具继续查看上下文。\n"
-        "常用调用方式（都通过本 bash 工具执行；路径省略时默认当前目录）：\n"
-        "  1) 按行为/功能找代码（最常用）：\n"
-        f"       {cmd_prefix} search \"how authentication is handled\" .\n"
-        f"       {cmd_prefix} search \"websocket reconnect logic\" .\n"
-        f"       {cmd_prefix} search \"model selector dropdown button\" .\n"
-        f"       {cmd_prefix} search \"...\" . --top-k 10           # 默认 10，可调整\n"
-        "  2) 找与某段已知代码相似的实现（探索同类组件 / 找重复代码）：\n"
-        f"       {cmd_prefix} find-related src/auth.py 42 .\n"
-        "       （第二个参数是行号，定位到一个具体 chunk 作为种子）\n"
-        "  3) 搜文档或配置（默认只搜代码）：\n"
-        f"       {cmd_prefix} search \"deployment guide\" . --content docs\n"
-        f"       {cmd_prefix} search \"database host port\" . --content config\n"
-        f"       {cmd_prefix} search \"...\"               . --content all\n"
-        "  4) 搜远程仓库（自动浅克隆 + 索引 + 缓存）：\n"
-        f"       {cmd_prefix} search \"save model\" https://github.com/MinishLab/model2vec\n"
-        "查询要点（实测有效）：\n"
-        "  · 用英文自然语言描述行为，结果显著更准（底层模型偏英文）；\n"
-        "  · 直接描述『这段代码在做什么』，无需先猜命名；\n"
-        "  · 首次索引可能十几秒，后续查询毫秒级，不要因为首次慢就放弃；\n"
-        "  · 结果是 JSON 数组，每条带 chunk.file_path / start_line / end_line / content / score。\n"
-        "下列情况才回退到 grep/findstr/rg：\n"
-        "  · 要改某个字面字符串前，需要穷尽所有出现位置；\n"
-        "  · 重命名 API / 移除引用，需要列出全部 caller；\n"
-        "  · 只是验证某个固定字符串是否存在。\n"
-        "反例（请避免）：用 `findstr WorkspaceGroup` 猜变量名翻代码——\n"
-        f"  这种场景一次 `{cmd_prefix} search \"workspace group sidebar\" .` 就能命中，\n"
-        "  且不需要事先知道组件叫什么名字。"
+        f"【代码检索：本机已安装 semble，按行为/功能找代码时优先用它】\n"
+        "semble 不是工具（tool），是命令行程序（CLI），必须通过本 bash 工具作为 shell 命令执行。\n"
+        f"它是为 AI 设计的语义代码检索 CLI{install_hint}：用自然语言描述意图即可，"
+        "无需先猜函数/类名，只返回最相关的代码片段（带 file_path 和行号），token 远少于 grep+read。\n"
+        "精准示例（路径省略默认当前目录）：\n"
+        f"  {cmd_prefix} search \"how authentication is handled\" .   # 按行为找代码，英文描述更准\n"
+        f"  {cmd_prefix} find-related src/auth.py 42 .              # 找与某段代码相似的实现\n"
+        "何时用：想理解某功能在哪实现、找同类/重复代码、不确定命名时。\n"
+        "何时回退 grep/findstr/rg：要穷尽某字面串的全部出现位置、重命名 API 列全部 caller、"
+        "或仅验证某固定字符串是否存在。\n"
+        f"更多子命令和参数（如 --top-k / --content docs|config|all / 搜远程仓库）直接运行 "
+        f"`{cmd_prefix} --help` 查看，按需使用。"
     )
 
 
@@ -441,14 +390,14 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
                 actual_command = rewritten
 
         # 3) 执行命令
-        args, shell_flag, executable = _build_subprocess_args(actual_command)
         cwd = ws.get()
         popen_kwargs: dict = {
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "cwd": cwd,
-            "shell": shell_flag,
+            "shell": True,
         }
+        executable = _shell_executable()
         if executable is not None:
             popen_kwargs["executable"] = executable
         if sys.platform == "win32":
@@ -457,7 +406,7 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
             popen_kwargs["start_new_session"] = True
 
         try:
-            proc = subprocess.Popen(args, **popen_kwargs)
+            proc = subprocess.Popen(actual_command, **popen_kwargs)
             try:
                 stdout_b, stderr_b = proc.communicate(timeout=effective_timeout)
             except subprocess.TimeoutExpired:
@@ -481,7 +430,7 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
 
             stdout = _decode(stdout_b)
             stderr = _decode(stderr_b)
-            output_lines = [f"[cwd] {cwd}"]
+            output_lines = ["<FTRE_SYSTEM_FACT>", f"[cwd] {cwd}", "</FTRE_SYSTEM_FACT>"]
             if stdout.strip():
                 output_lines.append(stdout.rstrip())
             if stderr.strip():
@@ -504,7 +453,7 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
             "- 仅【纯 cd】命令（如 `cd src`、`cd /d D:\\proj`）会持久切换工作区；\n"
             "- 组合命令（如 `cd x && yyy`）由底层 shell 自行处理，不持久切换；\n"
             f"- 默认超时 {default_timeout}s，可通过 timeout 参数延长（上限 {max_timeout}s）；\n"
-            "- 输出首行 [cwd] 显示当前工作目录，便于排错；\n"
+            "- 输出开头的 [cwd] 显示当前工作目录（包在 <FTRE_SYSTEM_FACT> 中，是系统事实），便于排错；\n"
             "- 字节输出按平台默认编码解码（Windows 优先 GBK 再退 UTF-8；其他平台 UTF-8），\n"
             "  解码失败的字节会被替换字符占位，必要时让程序直接输出 UTF-8；\n"
             "- 【重要】命令执行结束后，其进程/线程会被立即回收，不会在后台存活；\n"

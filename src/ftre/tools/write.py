@@ -4,7 +4,7 @@ write 工具 - 写入/覆盖文件
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
 from .read import _resolve
-from ._io import read_text, write_text_new, write_text_preserving
+from ._io import read_text, write_text_new, write_text_preserving, _NEWLINE_LABEL
 from ._workspace import WorkspaceAccessor
 
 
@@ -26,16 +26,26 @@ def create_write_tool() -> Tool:
                 return f"[error] 目标路径是目录: {p}"
 
             p.parent.mkdir(parents=True, exist_ok=True)
+            normalized = content.replace("\r\n", "\n").replace("\r", "\n")
 
             if p.exists():
                 original = read_text(p)
-                normalized = content.replace("\r\n", "\n").replace("\r", "\n")
                 n = write_text_preserving(p, normalized, original)
-                return f"已覆盖 {p} ({n} bytes, encoding={original.encoding}, newline={original.newline!r})"
+                encoding, newline = original.encoding, original.newline
+                action = "已覆盖"
+            else:
+                n = write_text_new(p, normalized, encoding="utf-8", newline="\n")
+                encoding, newline = "utf-8", "\n"
+                action = "已创建"
 
-            normalized = content.replace("\r\n", "\n").replace("\r", "\n")
-            n = write_text_new(p, normalized, encoding="utf-8", newline="\n")
-            return f"已创建 {p} ({n} bytes, encoding=utf-8, newline=LF)"
+            newline_label = _NEWLINE_LABEL.get(newline, repr(newline))
+            return (
+                "<FTRE_SYSTEM_FACT>\n"
+                f"[file] {p}\n"
+                f"[meta] encoding={encoding} newline={newline_label} size={n}bytes\n"
+                f"{action}\n"
+                "</FTRE_SYSTEM_FACT>"
+            )
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}"
 
