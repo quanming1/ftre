@@ -764,27 +764,9 @@ class AgentLoop:
         )
 
         # 插件 system prompt 注入
-        system_prompt = c.system_prompt
-        if self.plugin_manager and self.plugin_manager.appended_system_prompts:
-            plugin_hints = "\n\n".join(self.plugin_manager.appended_system_prompts)
-            if plugin_hints:
-                system_prompt = system_prompt + "\n\n" + plugin_hints
-
-        env_lines = [
-            "<env>",
-            f"channel_id={channel_id or ''}",
-            f"session_id={session_id or ''}",
-        ]
-        if getattr(c.llm, "vision", False):
-            env_lines.append(
-                "vision=true：你当前使用的模型具备识图（视觉理解）能力，可以直接"
-                "看懂图片、截图、浏览器画面和 UI 视觉状态，不要因为自己是文本模型"
-                "而拒绝看图。需要理解视觉内容时，使用 read 工具读取图片文件。"
-                "read 支持图片的绝对路径、相对当前工作区路径，以及 HTTP(S) 图片 URL；"
-                "读取图片后可用于辅助修改 UI、判断浏览器操控结果、检查视觉回归和还原设计细节。"
-            )
-        env_lines.append("</env>")
-        system_prompt = system_prompt + "\n\n" + "\n".join(env_lines)
+        system_prompt = self._compose_system_prompt(
+            c, channel_id=channel_id, session_id=session_id
+        )
 
         return ReActAgent(
             model=c.llm.model,
@@ -797,3 +779,54 @@ class AgentLoop:
             max_tokens=c.llm.max_output,
             tracer=self.tracer,
         )
+
+    def _compose_system_prompt(
+        self,
+        config: AgentConfig,
+        *,
+        channel_id: str | None = None,
+        session_id: str | None = None,
+    ) -> str:
+        """合成最终 system prompt：基础提示词 + 插件注入 + <env> 环境块。"""
+        c = config
+        system_prompt = c.system_prompt
+
+        # 插件 system prompt 注入
+        if self.plugin_manager and self.plugin_manager.appended_system_prompts:
+            plugin_hints = "\n\n".join(self.plugin_manager.appended_system_prompts)
+            if plugin_hints:
+                system_prompt = system_prompt + "\n\n" + plugin_hints
+
+        env_lines = [
+            "<env>",
+            f"channel_id={channel_id or ''}",
+            f"session_id={session_id or ''}",
+            f"os={os.name}",
+        ]
+        # 路径书写提示：按操作系统区分。重点防止 AI 在构造命令/参数字符串时
+        # 因反斜杠转义出错（如把 `\\npm` 写成 `\npm` 被解析成换行）。
+        if os.name == "nt":
+            env_lines.append(
+                "当前是 Windows 系统。书写路径时优先使用正斜杠 /（如 "
+                "C:/Users/name/AppData/Roaming/npm/x.cmd），Windows 下的命令与 "
+                "Node/npm 系工具都能正确识别正斜杠，可彻底避免反斜杠转义问题。"
+                "如果必须用反斜杠，在 JSON/字符串里务必写成双反斜杠 \\\\；切勿漏写，"
+                "尤其当反斜杠后面跟 n、t、r 等字母时（如 \\npm、\\temp），单反斜杠会被"
+                "当成换行/制表符等转义字符，导致路径被截断、命令执行失败。"
+            )
+        else:
+            env_lines.append(
+                "当前是类 Unix 系统（Linux/macOS）。路径使用正斜杠 /，区分大小写；"
+                "优先使用绝对路径或 ~ 展开，避免依赖当前工作目录。"
+            )
+        if getattr(c.llm, "vision", False):
+            env_lines.append(
+                "vision=true：你当前使用的模型具备识图（视觉理解）能力，可以直接"
+                "看懂图片、截图、浏览器画面和 UI 视觉状态，不要因为自己是文本模型"
+                "而拒绝看图。需要理解视觉内容时，使用 read 工具读取图片文件。"
+                "read 支持图片的绝对路径、相对当前工作区路径，以及 HTTP(S) 图片 URL；"
+                "读取图片后可用于辅助修改 UI、判断浏览器操控结果、检查视觉回归和还原设计细节。"
+            )
+        env_lines.append("</env>")
+
+        return system_prompt + "\n\n" + "\n".join(env_lines)
