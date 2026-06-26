@@ -1,7 +1,6 @@
 """
 read 工具 - 读取文件内容或图片内容
 """
-import base64
 import io
 import logging
 import urllib.request
@@ -10,6 +9,7 @@ from pathlib import Path
 from ftre_agent_core.agent.event import UserMessageEvent, user_message_event
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
+from ftre.utils.image_store import save_image
 from ._io import read_text, file_meta_header
 from ._truncate import truncate_output
 from ._workspace import WorkspaceAccessor
@@ -133,15 +133,17 @@ def _image_to_event(path: str, cwd: str) -> UserMessageEvent | str:
     except Exception as e:
         return f"[error] 图片压缩失败: {type(e).__name__}: {e}"
 
-    # 以 data URI 内联，避免 LLM 侧再发起网络请求；base64 用 ascii 解码即可。
-    data_uri = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
-    logger.info(f"[read] image {display_path} -> {mime}, {len(data)} bytes")
+    # 落盘到 temp 目录，事件链路只携带路径；base64 转换在 SessionManager 出口完成。
+    original_name = Path(display_path).name if display_path else ""
+    stored_path = save_image(data, mime, original_name=original_name)
+    logger.info(f"[read] image {display_path} -> {stored_path} ({mime}, {len(data)} bytes)")
 
     # hide=True：图片本体只作为模型视觉输入，不在 UI 会话流里重复展示。
     return user_message_event(
         content=[{
-            "type": "image_url",
-            "image_url": {"url": data_uri},
+            "type": "image_file",
+            "path": stored_path,
+            "mime_type": mime,
         }],
         metadata={"hide": True, "path": display_path, "mime": mime, "size": len(data)},
     )

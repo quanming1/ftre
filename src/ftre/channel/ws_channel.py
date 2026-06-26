@@ -88,6 +88,37 @@ def _validate_attachments(attachments) -> tuple[bool, str]:
     return True, ""
 
 
+def _persist_attachments(attachments: list | None) -> None:
+    """将 attachments 中的 base64 data 落盘，替换为 path。
+
+    在 _validate_attachments 校验通过后调用。原地修改 attachments 列表。
+    """
+    if not attachments:
+        return
+
+    from ftre.utils.image_store import save_image
+
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        if att.get("type") != "image":
+            continue
+
+        b64 = att.get("data", "")
+        mime = att.get("mime_type", "image/png")
+        name = att.get("name", "")
+
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            logger.warning(f"[ws-channel] 附件落盘失败，跳过: {name}")
+            continue
+
+        path = save_image(raw, mime, original_name=name)
+        del att["data"]
+        att["path"] = path
+
+
 class WebSocketChannel(Channel):
 
     def __init__(self, bus: EventBus, host: str = "0.0.0.0", port: int = 48650, plugin_manager=None):
@@ -310,6 +341,9 @@ class WebSocketChannel(Channel):
             logger.warning(f"[ws-channel] user_message 附件非法: {err}")
             await self._reject(ws, frame.get("id", ""), session_id, err)
             return
+
+        # 附件落盘：base64 → temp 文件路径，事件链路不再携带 base64
+        _persist_attachments(data.get("attachments"))
 
         # user_message 隐式 attach（保持向后兼容）
         self._attach(session_id, ws)
