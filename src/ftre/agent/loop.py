@@ -798,6 +798,7 @@ class AgentLoop:
                 system_prompt = system_prompt + "\n\n" + plugin_hints
 
         env_lines = [
+            "<FTRE_SYSTEM_FACT>",
             "<env>",
             f"channel_id={channel_id or ''}",
             f"session_id={session_id or ''}",
@@ -828,5 +829,6 @@ class AgentLoop:
                 "读取图片后可用于辅助修改 UI、判断浏览器操控结果、检查视觉回归和还原设计细节。"
             )
         env_lines.append("</env>")
+        env_lines.append("</FTRE_SYSTEM_FACT>")
 
         return system_prompt + "\n\n" + "\n".join(env_lines)

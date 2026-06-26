@@ -43,8 +43,8 @@ def create_set_workspace_tool() -> Tool:
         new_str = str(new_dir)
         old = ws.set(new_str)
         if old == new_str:
-            return f"工作区未变化: {new_dir}"
-        return f"工作区已切换: {old} → {new_dir}"
+            return f"<FTRE_SYSTEM_FACT>[workspace] {new_dir}（未变化）</FTRE_SYSTEM_FACT>"
+        return f"<FTRE_SYSTEM_FACT>[workspace] {old} → {new_dir}</FTRE_SYSTEM_FACT>"
 
     return Tool(
         name="set_workspace",
