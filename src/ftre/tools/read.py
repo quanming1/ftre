@@ -176,7 +176,12 @@ def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> To
 
             p = _resolve(path, cwd)
             if not p.exists():
-                return f"[error] 文件不存在: {p}"
+                return (
+                    f"[error] 文件不存在: {p}\n"
+                    f"提示：相对路径基于当前会话工作区 {cwd}（不是 bash 的 [cwd]）。"
+                    f"用 `cd x && ...` 这类组合命令切的目录【不会】改变工作区；"
+                    f"若文件在别处，请改用绝对路径读取，或先用纯 `cd <dir>` / set_workspace 切换工作区。"
+                )
             if p.is_dir():
                 # 目录直接列出其下条目（目录在前、文件在后，各自按名排序）。
                 return _list_dir(p)
