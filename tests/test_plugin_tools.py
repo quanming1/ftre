@@ -59,6 +59,8 @@ def test_build_default_tools_omits_see_img_with_vision():
 
 
 def test_read_tool_reads_relative_image_path(tmp_path):
+    import os
+
     class FakeWorkspace(WorkspaceAccessor):
         def __init__(self, cwd: str):
             self.cwd = cwd
@@ -83,8 +85,10 @@ def test_read_tool_reads_relative_image_path(tmp_path):
     assert isinstance(result, UserMessageEvent)
     assert result.metadata["hide"] is True
     assert result.metadata["path"] == str(image.resolve())
-    assert result.content[0]["type"] == "image_url"
-    assert result.content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert result.content[0]["type"] == "image_file"
+    assert "path" in result.content[0]
+    assert os.path.exists(result.content[0]["path"])
+    assert result.content[0]["mime_type"] == "image/png"
 
 
 def test_read_tool_rejects_image_without_vision(tmp_path):

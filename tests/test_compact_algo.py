@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import pytest
 
+from ftre.utils.image_store import save_image
+
 from ftre.agent.compact_handler import (
     get_cursor_index,
     get_pending_compact_index,
@@ -16,6 +18,12 @@ from ftre.agent.compact_handler import (
     _compact_enabled,
     SUMMARY_TEMPLATE,
 )
+
+
+def _make_test_image() -> str:
+    """创建一个真实的 temp 图片文件，返回路径。"""
+    raw = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+    return save_image(raw, "image/png", "compact_test.png")
 
 
 # ─── get_cursor_index / get_previous_summary ──────────────────────────
@@ -347,7 +355,7 @@ def test_to_openai_messages_omits_images_by_default():
             "attachments": [{
                 "type": "image",
                 "mime_type": "image/png",
-                "data": "abc",
+                "path": _make_test_image(),
             }],
         },
     }]
@@ -369,7 +377,7 @@ def test_to_openai_messages_omits_images_when_vision_disabled():
             "attachments": [{
                 "type": "image",
                 "mime_type": "image/png",
-                "data": "abc",
+                "path": _make_test_image(),
             }],
         },
     }]
@@ -394,7 +402,7 @@ def test_to_openai_messages_keeps_images_when_vision_enabled():
             "attachments": [{
                 "type": "image",
                 "mime_type": "image/png",
-                "data": "abc",
+                "path": _make_test_image(),
             }],
         },
     }]
@@ -405,10 +413,8 @@ def test_to_openai_messages_keeps_images_when_vision_enabled():
     )
 
     assert msgs[0]["content"][0] == {"type": "text", "text": "看图"}
-    assert msgs[0]["content"][1] == {
-        "type": "image_url",
-        "image_url": {"url": "data:image/png;base64,abc"},
-    }
+    assert msgs[0]["content"][1]["type"] == "image_url"
+    assert msgs[0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 def test_to_openai_messages_omits_user_message_images_without_vision():
