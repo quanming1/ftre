@@ -90,7 +90,7 @@ def _validate_attachments(attachments) -> tuple[bool, str]:
 
 class WebSocketChannel(Channel):
 
-    def __init__(self, bus: EventBus, host: str = "0.0.0.0", port: int = 19470, plugin_manager=None):
+    def __init__(self, bus: EventBus, host: str = "0.0.0.0", port: int = 48650, plugin_manager=None):
         super().__init__(channel_id="ws", name="WebSocket Channel", bus=bus)
         self.host = host
         self.port = port
