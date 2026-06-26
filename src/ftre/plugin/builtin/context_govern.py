@@ -21,7 +21,7 @@ class ContextGovernPlugin(Plugin):
         self.api.register_hook(BEFORE_MESSAGES_BUILD, self._govern)
 
     def _govern(self, ctx):
-        """before_messages_build hook：清理孤立事件 + 修复相邻性 + 丢弃悬挂 tool_result + 注入 AGENTS.md"""
+        """before_messages_build hook：清理孤立事件 + 修复相邻性 + 丢弃悬挂 tool_result + 注入 AGENTS.md + 注入用户自定义提示词"""
         events = ctx.events
 
         # Step 1: 丢弃孤立的 tool_call / tool_result（OpenAI 协议要求配对）
@@ -39,8 +39,29 @@ class ContextGovernPlugin(Plugin):
         # Step 4: 注入工作区下的 AGENTS.md 到系统提示词
         self._inject_agents_md(ctx)
 
+        # Step 5: 注入用户在客户端设置的自定义提示词
+        self._inject_user_prompt(ctx)
+
         ctx.events = events
         return ctx
+
+    # ─── 用户自定义提示词注入 ──────────────────────────────────
+
+    def _inject_user_prompt(self, ctx) -> None:
+        """把用户在客户端设置的 user_prompt（config.json）注入到 system_prompt。"""
+        user_prompt = (getattr(ctx.config, "user_prompt", "") or "").strip()
+        if not user_prompt:
+            return
+
+        current = (ctx.config.system_prompt or "").strip()
+        ctx.config.system_prompt = (
+            f"""{current}
+
+<USER_CUSTOM_PROMPT desc="以下是用户在客户端设置的自定义提示词，代表用户的个人偏好与额外要求，请遵守">
+{user_prompt}
+</USER_CUSTOM_PROMPT>"""
+        )
+        logger.info(f"[context_govern] 已注入用户自定义提示词 ({len(user_prompt)} chars)")
 
     # ─── AGENTS.md 注入 ────────────────────────────────────────
 
