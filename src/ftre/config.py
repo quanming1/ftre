@@ -122,6 +122,21 @@ def load_config_file() -> dict:
         return {}
 
 
+def load_gateway_address(default_host: str = "127.0.0.1", default_port: int = 48650) -> tuple[str, int]:
+    """读取 gateway 监听地址。
+
+    端口/host 的单一事实源是 config.json 的 servers.gateway，缺失时回退到默认值。
+    """
+    servers = load_config_file().get("servers", {})
+    gateway = servers.get("gateway", {}) if isinstance(servers, dict) else {}
+    host = gateway.get("host") if isinstance(gateway, dict) else None
+    port = gateway.get("port") if isinstance(gateway, dict) else None
+    return (
+        host if isinstance(host, str) and host else default_host,
+        port if isinstance(port, int) else default_port,
+    )
+
+
 def _build_model_name(model_id: str, protocol: str) -> str:
     return model_id
 

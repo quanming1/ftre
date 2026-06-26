@@ -92,7 +92,7 @@ from ftre.channel import WebSocketChannel, SubagentChannel, ChannelManager
 from ftre.session import SessionManager
 from ftre.plugin import PluginManager, HookManager
 from ftre.agent.loop import AgentLoop
-from ftre.config import load_config_file
+from ftre.config import load_config_file, load_gateway_address
 from ftre.tools import ToolRegistry
 from ftre.tools.cron import CronScheduler
 
@@ -147,8 +147,11 @@ async def run_gateway():
     # 加载插件（注册 Channel / Hook / Tool / Router 等）
     plugin_manager.load_all(config_data)
 
-    # WebSocket Channel
-    ws_channel = WebSocketChannel(bus, plugin_manager=plugin_manager)
+    # WebSocket Channel — host/port 以 config.json 的 servers.gateway 为准
+    gateway_host, gateway_port = load_gateway_address()
+    ws_channel = WebSocketChannel(
+        bus, host=gateway_host, port=gateway_port, plugin_manager=plugin_manager
+    )
     mgr.register(ws_channel)
 
     # Subagent Channel — 静默通道，承载 task 工具派发的子任务
