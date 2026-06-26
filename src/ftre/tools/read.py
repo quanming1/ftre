@@ -10,7 +10,7 @@ from pathlib import Path
 from ftre_agent_core.agent.event import UserMessageEvent, user_message_event
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
-from ._io import read_text
+from ._io import read_text, file_meta_header
 from ._truncate import truncate_output
 from ._workspace import WorkspaceAccessor
 
@@ -48,9 +48,10 @@ def _list_dir(p: Path) -> str:
     目录名带尾随 `/` 以便区分，文件附带字节大小，方便后续决定如何读取。
     """
     entries = sorted(p.iterdir(), key=lambda e: (not e.is_dir(), e.name))
-    lines = [f"[dir] {p}"]
+    lines = ["<FTRE_SYSTEM_FACT>", f"[dir] {p}"]
     for e in entries:
         lines.append(f"  {e.name}/" if e.is_dir() else f"  {e.name}  ({e.stat().st_size} bytes)")
+    lines.append("</FTRE_SYSTEM_FACT>")
     return truncate_output("\n".join(lines))
 
 
@@ -202,11 +203,12 @@ def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> To
             else:
                 numbered = [f"{i + 1:6d}| {line}" for i, line in enumerate(lines)]
 
-            # 非 utf-8 文件首行标注实际编码，提示调用方内容已转码。
-            header = ""
-            if tf.encoding != "utf-8" and tf.encoding != "utf-8-sig":
-                header = f"[encoding] {tf.encoding}\n"
-            return truncate_output(header + "\n".join(numbered))
+            # 文件元信息头：绝对路径、编码、换行符、大小、行数（系统事实）。
+            meta = file_meta_header(p, tf)
+            note = ""
+            if tf.encoding not in ("utf-8", "utf-8-sig"):
+                note = f"[encoding] 内容已从 {tf.encoding} 转为 UTF-8 呈现\n"
+            return truncate_output(meta + "\n" + note + "\n" + "\n".join(numbered))
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}"
 

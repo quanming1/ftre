@@ -15,6 +15,7 @@ Cron 工具 - 让 Agent 创建/管理定时任务
 调度由 CronScheduler._loop 协程负责：默认每 30 秒扫描目录，
 对到期任务生成 user_message 投递到 Bus（在独立 cron session 中执行）。
 """
+import asyncio
 import json
 import logging
 import os
@@ -124,12 +125,10 @@ class CronScheduler:
             channel_manager.register(CronChannel(bus))
 
     def start(self) -> None:
-        import asyncio
         self._task = asyncio.create_task(self._loop())
         logger.warning(f"[cron] 调度器已启动 (扫描间隔 {self.scan_interval}s)")
 
     async def stop(self) -> None:
-        import asyncio
         if self._task:
             self._task.cancel()
             try:
@@ -138,7 +137,6 @@ class CronScheduler:
                 pass
 
     async def _loop(self) -> None:
-        import asyncio
         try:
             while True:
                 try:
@@ -263,8 +261,8 @@ def _cron(
     if action == "list":
         jobs = load_all_jobs()
         if not jobs:
-            return "当前没有定时任务"
-        lines = []
+            return "<FTRE_SYSTEM_FACT>当前没有定时任务</FTRE_SYSTEM_FACT>"
+        lines = ["<FTRE_SYSTEM_FACT>"]
         for j in jobs:
             history = j.get("run_history") or []
             last_str = (
@@ -275,6 +273,7 @@ def _cron(
             lines.append(f"- {j['id']} | {status} | {j['cron']} | {j.get('title', '')}")
             lines.append(f"  prompt: {j.get('prompt', '')[:80]}")
             lines.append(f"  上次运行: {last_str} | 累计运行: {len(history)} 次")
+        lines.append("</FTRE_SYSTEM_FACT>")
         return "\n".join(lines)
 
     if action == "delete":

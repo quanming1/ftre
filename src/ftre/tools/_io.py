@@ -110,3 +110,31 @@ def write_text_new(path: Path, text: str, encoding: str = "utf-8", newline: str 
     data = text.encode(encoding)
     path.write_bytes(data)
     return len(data)
+
+
+# 换行风格的可读名称，用于元信息展示
+_NEWLINE_LABEL = {"\r\n": "CRLF", "\r": "CR", "\n": "LF"}
+
+
+def file_meta_header(path: Path, tf: TextFile) -> str:
+    """生成文件元信息头：绝对路径、编码、换行符、大小、总行数。
+
+    read / edit 共用，让模型清楚自己读到/改到的文件的物理属性，
+    避免因编码或换行风格误判而生成不匹配的内容。
+
+    包裹在 FTRE_SYSTEM_FACT 标签内，标记为系统注入的可信事实。
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = -1
+    newline = _NEWLINE_LABEL.get(tf.newline, repr(tf.newline))
+    encoding = tf.encoding + ("+BOM" if tf.had_bom else "")
+    line_count = tf.text.count("\n") + (1 if tf.text and not tf.text.endswith("\n") else 0)
+    return (
+        "<FTRE_SYSTEM_FACT>\n"
+        f"[file] {path}\n"
+        f"[meta] encoding={encoding} newline={newline} "
+        f"size={size}bytes lines={line_count}\n"
+        "</FTRE_SYSTEM_FACT>"
+    )

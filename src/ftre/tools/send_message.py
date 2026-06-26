@@ -20,6 +20,7 @@ import asyncio
 
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 from ftre.bus import BusMessage
+from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 
 
 # kind=invoke 时拼到 content 头部的来源标注模板
@@ -43,7 +44,7 @@ def create_send_message_tool(channel_manager) -> Tool:
         session_manager=Injected("session_manager"),
     ) -> str:
         # ── 通用前置校验 ────────────────────────────────────
-        if caller_channel == "subagent":
+        if caller_channel == SUBAGENT_CHANNEL_ID:
             return (
                 "[error] subagent 内不允许调用 send_message，"
                 "请通过你的最后一条消息总结结果给调用方"

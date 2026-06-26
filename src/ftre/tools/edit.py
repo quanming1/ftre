@@ -4,7 +4,7 @@ edit 工具 - 修改已有文件，支持精确字符串替换与按行号替换
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
 from .read import _resolve
-from ._io import read_text, write_text_preserving
+from ._io import read_text, write_text_preserving, _NEWLINE_LABEL
 from ._workspace import WorkspaceAccessor
 
 
@@ -48,9 +48,14 @@ def _trimmed_match_hint(text: str, needle: str) -> str | None:
 
 
 def _format_result(p, old_lines: int, new_lines: int, n: int, tf) -> str:
+    newline = _NEWLINE_LABEL.get(tf.newline, repr(tf.newline))
+    encoding = tf.encoding + ("+BOM" if tf.had_bom else "")
     return (
-        f"已修改 {p} ({old_lines} 行 → {new_lines} 行, "
-        f"{n} bytes, encoding={tf.encoding}, newline={tf.newline!r})"
+        "<FTRE_SYSTEM_FACT>\n"
+        f"[file] {p}\n"
+        f"[meta] encoding={encoding} newline={newline} size={n}bytes\n"
+        f"已修改：{old_lines} 行 → {new_lines} 行\n"
+        "</FTRE_SYSTEM_FACT>"
     )
 
 

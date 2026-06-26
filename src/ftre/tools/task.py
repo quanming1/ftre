@@ -128,7 +128,7 @@ def create_task_tool(channel_manager) -> Tool:
             done_future = Future()
             if not agent_loop.register_subagent_done_future(sid, done_future):
                 return (
-                    f"[session={sid}, status=busy] "
+                    f"<FTRE_SYSTEM_FACT>[session={sid}, status=busy]</FTRE_SYSTEM_FACT>\n"
                     "该 subagent session 已有一轮 task 在等待完成，请稍后重试"
                 )
 
@@ -146,8 +146,6 @@ def create_task_tool(channel_manager) -> Tool:
                 agent_loop.unregister_subagent_done_future(sid, done_future)
             return f"[error] 派发失败: {type(e).__name__}: {e}"
 
-        head = f"[session={sid}"
-
         # 阶段 A：验证 AgentLoop 已经消费 inbound，并进入本轮 _run。
         # 这里仍检查 running，用来区分“已投递但没有启动”和“正在执行/已完成”。
         # 极快完成时可能没轮询到 running，但 future 已经有结果，也视为启动成功。
@@ -157,7 +155,7 @@ def create_task_tool(channel_manager) -> Tool:
         ):
             agent_loop.unregister_subagent_done_future(sid, done_future)
             return (
-                f"{head}, status=startup_timeout] "
+                f"<FTRE_SYSTEM_FACT>[session={sid}, status=startup_timeout]</FTRE_SYSTEM_FACT>\n"
                 f"派发后 {_STARTUP_TIMEOUT}s 内 agent 仍未启动，可能 AgentLoop "
                 f"消费阻塞或鉴权失败"
             )
@@ -169,7 +167,7 @@ def create_task_tool(channel_manager) -> Tool:
         except FutureTimeoutError:
             agent_loop.unregister_subagent_done_future(sid, done_future)
             return (
-                f"{head}, status=timeout] "
+                f"<FTRE_SYSTEM_FACT>[session={sid}, status=timeout]</FTRE_SYSTEM_FACT>\n"
                 f"任务超时（{_TIMEOUT_SECONDS}s）未完成。"
                 f"可下次调用 task 时传入 session_id={sid} 接着上次执行"
             )
@@ -177,10 +175,10 @@ def create_task_tool(channel_manager) -> Tool:
         # agent 已结束，使用 AgentLoop 回传的最后一条 message_complete。
         status = done_payload.get("status") or "completed"
         final_content = done_payload.get("final_content") or ""
-        head_full = f"{head}, status={status}]"
+        head_full = f"<FTRE_SYSTEM_FACT>[session={sid}, status={status}]</FTRE_SYSTEM_FACT>"
         if final_content:
             return f"{head_full}\n{final_content}"
-        return f"{head_full} 任务结束但 subagent 未输出最终回复（可能仅工具调用 / 异常退出）"
+        return f"{head_full}\n任务结束但 subagent 未输出最终回复（可能仅工具调用 / 异常退出）"
 
     return Tool(
         name="task",
@@ -192,7 +190,7 @@ def create_task_tool(channel_manager) -> Tool:
             "- 传 session_id：复用该会话（带上其历史），用于让 subagent 接着上一次 task 的上下文继续\n"
             "\n"
             "重要：session_id 不能自己编造！只能从 task 工具上一次的返回值中复制粘贴。\n"
-            "  返回值首行格式：[session=<sid>, status=<...>]，sid 就是这次 task 的 session_id。\n"
+            "  返回值首行格式：<FTRE_SYSTEM_FACT>[session=<sid>, status=<...>]</FTRE_SYSTEM_FACT>，sid 就是这次 task 的 session_id。\n"
             "  下一次想接着同一个 subagent 对话时，把这个 sid 原样填回 session_id 参数即可。\n"
             "\n"
             "工作区继承：\n"
