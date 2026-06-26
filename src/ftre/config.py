@@ -81,6 +81,9 @@ class AgentConfig:
     """Agent 配置"""
     llm: LLMConfig = field(default_factory=LLMConfig)
     system_prompt: str = ""  # 默认从 system_prompt.md 加载，见 _load_system_prompt()
+    # 用户自定义提示词：客户端设置，存于 config.json 的 agents.defaults.user_prompt。
+    # 与内置 system_prompt 分离，由 context_govern 插件在每轮构建消息时注入。
+    user_prompt: str = ""
     max_iterations: int | None = None
     # 默认工作区。空字符串表示走进程 cwd 兜底。
     # 一个 session 没有 set_workspace 历史时使用这个值；
@@ -219,6 +222,11 @@ def load_config() -> AgentConfig:
     if not system_prompt:
         system_prompt = _load_system_prompt()
 
+    # 用户自定义提示词（客户端可设置，缺省为空）
+    user_prompt = defaults.get("user_prompt", "") or ""
+    if not isinstance(user_prompt, str):
+        user_prompt = ""
+
     # 上下文管理配置：agents.defaults.context（缺省即代码内默认值）
     ctx_raw = defaults.get("context") or {}
     if not isinstance(ctx_raw, dict):
@@ -258,6 +266,7 @@ def load_config() -> AgentConfig:
     result = AgentConfig(
         llm=llm,
         system_prompt=system_prompt,
+        user_prompt=user_prompt,
         workspace=workspace,
         title_llm=title_llm,
         compact_llm=compact_llm,
