@@ -111,7 +111,7 @@ class _VolatileReplayBuffer:
             seq = self._next_seq.get(session_id, 1)
             self._next_seq[session_id] = seq + 1
             # buffer 里存的是最终要发给客户端的帧形态。
-            # 这样 replay 时不需要重新理解 BusMessage，只补一个 replay 标记即可。
+            # replay 时直接原样发送，不需要重新理解 BusMessage。
             event_metadata = {
                 **metadata,
                 "channel_id": msg.to_channel,
@@ -128,7 +128,7 @@ class _VolatileReplayBuffer:
                 "metadata": event_metadata,
             })
 
-        # live 下发的同一帧也带 volatile 标记。
+        # live 下发的同一帧也带 volatile_seq。
         # 如果客户端刚 attach 时 replay 和 live 发生重叠，可以靠 seq 去重。
         return {
             **metadata,
