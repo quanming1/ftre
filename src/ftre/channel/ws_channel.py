@@ -16,6 +16,8 @@ import binascii
 import json
 import logging
 import asyncio
+from collections import deque
+from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,6 +45,144 @@ MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024  # 3 MB
 
 # 单条消息允许的最大附件数
 MAX_ATTACHMENTS_PER_MESSAGE = 8
+
+VOLATILE_BUFFER_MAX_EVENTS = 1000
+# 这些事件只代表“正在流式输出的增量”，不会直接落到 session DB。
+# 如果客户端在它们产生时还没 attach，刷新后只读 DB 会看不到这些片段，
+# 所以在 WS channel 内短暂缓存，等客户端 attach 后补发。
+VOLATILE_EVENT_TYPES = frozenset({
+    "assistant_message",
+    "reasoning",
+    "tool_call_streaming",
+})
+# 对应的稳定事件到达后，说明这类流式增量已经被最终事件覆盖/持久化，
+# 可以从 volatile buffer 删除，避免客户端 attach 后看到旧草稿。
+VOLATILE_CLEAR_BY_TYPE = {
+    "assistant_message_complete": {"assistant_message"},
+    "reasoning_complete": {"reasoning"},
+    "tool_call": {"tool_call_streaming"},
+    "tool_result": {"tool_call_streaming"},
+}
+# 一轮执行结束、失败或进入重试后，旧的临时流式片段都不应该再 replay。
+VOLATILE_CLEAR_ALL_TYPES = frozenset({"done", "error", "retry"})
+
+
+class _VolatileReplayBuffer:
+    """缓存未入库的流式事件，供客户端 attach 时补发。
+
+    这个类只处理 WS 层的临时恢复，不替代数据库历史：
+    - DB 负责稳定消息（*_complete、tool_call、tool_result 等）。
+    - 这里负责还没稳定落库的流式片段（assistant_message、reasoning 等）。
+    - attach 时 replay 当前 session 的临时片段，随后客户端继续接收 live 流。
+    """
+
+    def __init__(self) -> None:
+        # session_id -> 最近的 volatile 下行帧。deque 自带 maxlen，防止无限增长。
+        self._buffers: dict[str, deque[dict[str, Any]]] = {}
+        # 每个 session 独立递增 seq，客户端用 session_id + seq 去重 replay/live 重叠帧。
+        self._next_seq: dict[str, int] = {}
+        # send() 和 attach replay 都在事件循环里运行；加锁保证 buffer/seq 快照一致。
+        self._lock = asyncio.Lock()
+
+    async def track(self, msg: BusMessage, metadata: dict[str, Any]) -> dict[str, Any]:
+        """检查一条 agent_event 是否需要缓存，并返回下发时要携带的 metadata。"""
+        ev_type = msg.data.get("type") if isinstance(msg.data, dict) else None
+        if not isinstance(ev_type, str):
+            return metadata
+
+        session_id = msg.to_session
+        # done/error/retry 表示这一轮临时流结束，整个 session 的 volatile 草稿都清掉。
+        if ev_type in VOLATILE_CLEAR_ALL_TYPES:
+            await self._clear(session_id)
+            return metadata
+
+        # 稳定事件到达后，只清理它所覆盖的那一类流式草稿。
+        # 例如 assistant_message_complete 只清 assistant_message，不影响 tool_call_streaming。
+        clear_types = VOLATILE_CLEAR_BY_TYPE.get(ev_type)
+        if clear_types:
+            await self._clear(session_id, event_types=clear_types)
+            return metadata
+
+        # 其他事件要么已经会入库，要么不是流式片段，不进入 volatile buffer。
+        if ev_type not in VOLATILE_EVENT_TYPES:
+            return metadata
+
+        async with self._lock:
+            seq = self._next_seq.get(session_id, 1)
+            self._next_seq[session_id] = seq + 1
+            # buffer 里存的是最终要发给客户端的帧形态。
+            # 这样 replay 时不需要重新理解 BusMessage，只补一个 replay 标记即可。
+            event_metadata = {
+                **metadata,
+                "channel_id": msg.to_channel,
+                "session_id": session_id,
+                "volatile_seq": seq,
+            }
+            self._buffers.setdefault(
+                session_id,
+                deque(maxlen=VOLATILE_BUFFER_MAX_EVENTS),
+            ).append({
+                "id": msg.id,
+                "type": msg.type,
+                "data": msg.data,
+                "metadata": event_metadata,
+            })
+
+        # live 下发的同一帧也带 volatile 标记。
+        # 如果客户端刚 attach 时 replay 和 live 发生重叠，可以靠 seq 去重。
+        return {
+            **metadata,
+            "volatile_seq": seq,
+        }
+
+    async def replay(self, session_id: str, ws: WebSocket) -> None:
+        """把某个 session 当前还没稳定落库的流式片段补发给刚 attach 的 ws。"""
+        for item in await self._snapshot(session_id):
+            payload = {
+                **item,
+                "metadata": {
+                    **(item.get("metadata") or {}),
+                },
+            }
+            try:
+                await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
+            except Exception as e:
+                logger.debug(f"[ws-channel] volatile replay failed: {e}")
+                break
+
+    async def _clear(
+        self,
+        session_id: str,
+        *,
+        event_types: set[str] | frozenset[str] | None = None,
+    ) -> None:
+        async with self._lock:
+            if event_types is None:
+                # 不传 event_types 表示整轮结束，直接清空该 session 的全部 volatile 缓存。
+                self._buffers.pop(session_id, None)
+                return
+
+            buf = self._buffers.get(session_id)
+            if not buf:
+                return
+
+            # 只删除被稳定事件覆盖的类型，保留其他仍在流式中的类型。
+            kept = deque(
+                (
+                    item for item in buf
+                    if (item.get("data") or {}).get("type") not in event_types
+                ),
+                maxlen=VOLATILE_BUFFER_MAX_EVENTS,
+            )
+            if kept:
+                self._buffers[session_id] = kept
+            else:
+                self._buffers.pop(session_id, None)
+
+    async def _snapshot(self, session_id: str) -> list[dict[str, Any]]:
+        # replay 期间不持锁发送网络数据，先复制快照，避免阻塞 send() 写入。
+        async with self._lock:
+            return [dict(item) for item in self._buffers.get(session_id, ())]
 
 
 def _validate_attachments(attachments) -> tuple[bool, str]:
@@ -137,6 +277,7 @@ class WebSocketChannel(Channel):
         self._connections: dict[str, set[WebSocket]] = {}
         # 反向索引：ws → 它 attach 过的所有 session_id（断开时清理用）
         self._ws_sessions: dict[WebSocket, set[str]] = {}
+        self._volatile_replay = _VolatileReplayBuffer()
         self._server = None
         self._server_task: asyncio.Task | None = None
 
@@ -181,6 +322,12 @@ class WebSocketChannel(Channel):
         - 全局广播（to_session == GLOBAL_SESSION）：扇出给所有活跃 ws，
           无视 attach 关系（用于 session 状态等全局控制信号）。
         """
+        metadata = dict(msg.metadata or {})
+        if msg.type == "agent_event" and msg.to_session != GLOBAL_SESSION:
+            # 先 track 再找订阅者：即使当前没有 ws attach，也要缓存未入库的流式片段，
+            # 这样客户端稍后 attach 时还能 replay 补齐。
+            metadata = await self._volatile_replay.track(msg, metadata)
+
         if msg.to_session == GLOBAL_SESSION:
             targets = list(self._ws_sessions.keys())
         else:
@@ -197,7 +344,7 @@ class WebSocketChannel(Channel):
             "type": msg.type,
             "data": msg.data,
             "metadata": {
-                **(msg.metadata or {}),
+                **metadata,
                 "channel_id": msg.to_channel,
                 "session_id": msg.to_session,
             },
@@ -300,6 +447,9 @@ class WebSocketChannel(Channel):
 
         if frame_type == "attach":
             self._attach(session_id, ws)
+            # 客户端流程是先 HTTP 读 DB 历史，再 WS attach。
+            # DB 里没有流式增量，所以 attach 后立即补发 volatile buffer。
+            await self._volatile_replay.replay(session_id, ws)
             return
 
         if frame_type == "detach":
