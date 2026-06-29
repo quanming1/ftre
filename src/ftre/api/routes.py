@@ -188,8 +188,23 @@ async def delete_session(session_id: str):
 
 
 @router.get("/sessions/{session_id}/messages")
-async def get_messages(session_id: str):
-    """获取指定 session 的全部消息（按时间正序）"""
+async def get_messages(
+    session_id: str,
+    limit_turns: int | None = None,
+    before_ts: float | None = None,
+):
+    """获取指定 session 的消息（按时间正序）。
+
+    不带参数时返回全部消息。
+    带 limit_turns=N 时返回最近 N 轮对话的所有事件
+    （一轮 = 一个可见 user_message 到下一个之间的所有事件）。
+    before_ts 为游标，只返回 timestamp < before_ts 的事件（用于加载更早）。
+    """
+    if limit_turns is not None and limit_turns > 0:
+        messages, has_more = await _session_manager.get_recent_messages_by_turns(
+            session_id, limit_turns, before_ts=before_ts
+        )
+        return {"messages": messages, "has_more": has_more}
     messages = await _session_manager.get_messages_by_session(session_id)
     return {"messages": messages}
 
