@@ -366,6 +366,88 @@ class SessionManager:
             for r in rows
         ]
 
+    async def get_recent_messages_by_turns(
+        self, session_id: str, limit_turns: int = 5, before_ts: float | None = None
+    ) -> tuple[list[MessageModel], bool]:
+        """获取指定 session 最近 N 轮对话的所有消息。
+
+        一轮 = 一个 type='user_message' 且 metadata.hide != true 的事件，
+        到下一个可见 user_message（或末尾）之间的所有事件。
+
+        Args:
+            limit_turns: 返回最近 N 轮
+            before_ts: 可选游标，只考虑 timestamp < before_ts 的事件（用于加载更早）
+
+        Returns:
+            (messages, has_more): messages 按时间正序；has_more 表示是否还有更早的消息。
+        """
+        ts_filter = "AND timestamp < ?" if before_ts is not None else ""
+        params = [session_id]
+        if before_ts is not None:
+            params.append(before_ts)
+
+        # 1. 找到最近 limit_turns 个可见 user_message 中最早的那个的 timestamp
+        cursor = await self._db.execute(
+            f"""
+            SELECT timestamp FROM messages
+            WHERE session_id = ?
+              {ts_filter}
+              AND type = 'user_message'
+              AND (
+                json_extract(data, '$.metadata.hide') IS NULL
+                OR json_extract(data, '$.metadata.hide') IS NOT 1
+              )
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (*params, limit_turns),
+        )
+        turn_rows = await cursor.fetchall()
+
+        if not turn_rows:
+            # 没有可见 user_message，返回空
+            return [], False
+
+        earliest_turn_ts = turn_rows[-1]["timestamp"]
+
+        # 2. 查 total count（考虑 before_ts 过滤）判断 has_more
+        count_params = [session_id]
+        count_filter = ""
+        if before_ts is not None:
+            count_filter = "AND timestamp < ?"
+            count_params.append(before_ts)
+        cursor = await self._db.execute(
+            f"SELECT COUNT(*) as cnt FROM messages WHERE session_id = ? {count_filter}",
+            count_params,
+        )
+        total_in_range = (await cursor.fetchone())["cnt"]
+
+        # 3. 从 earliest_turn_ts 到 before_ts（如有）的所有事件
+        end_filter = "AND timestamp < ?" if before_ts is not None else ""
+        end_params = [session_id, earliest_turn_ts] + ([before_ts] if before_ts is not None else [])
+        cursor = await self._db.execute(
+            f"""
+            SELECT * FROM messages
+            WHERE session_id = ? AND timestamp >= ?
+            {end_filter}
+            ORDER BY timestamp ASC
+            """,
+            end_params,
+        )
+        rows = await cursor.fetchall()
+        messages = [
+            MessageModel(
+                id=r["id"],
+                session_id=r["session_id"],
+                type=r["type"],
+                data=json.loads(r["data"]),
+                timestamp=r["timestamp"],
+            )
+            for r in rows
+        ]
+        has_more = len(messages) < total_in_range
+        return messages, has_more
+
     # ============================================================
     # Token 用量（最近一次 LLM 实算 + 之后未计入事件的字符级粗估）
     # ============================================================
