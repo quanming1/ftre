@@ -10,6 +10,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from ftre.agent.loop import AgentLoop
 from ftre.session import SessionManager
@@ -433,3 +434,24 @@ async def list_commands():
     if _command_manager is None:
         return {"commands": []}
     return {"commands": _command_manager.list_commands()}
+
+
+@router.get("/images/{filename}")
+async def serve_image(filename: str):
+    """返回 temp 目录下的图片文件，供前端历史消息渲染。
+
+    前端发送附件时后端将 base64 落盘到 $TEMP/ftre_images/，
+    DB 中只存 path。历史消息加载时前端通过此接口用 HTTP URL 渲染图片。
+    """
+    # 防止路径穿越：只取 basename
+    safe_name = os.path.basename(filename)
+    if safe_name != filename:
+        raise HTTPException(status_code=400, detail="非法文件名")
+
+    img_dir = os.path.join(os.path.expanduser("~"), ".ftre", "assets", "images")
+    file_path = os.path.join(img_dir, safe_name)
+
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="图片不存在或已被清理")
+
+    return FileResponse(file_path)
