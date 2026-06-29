@@ -43,10 +43,9 @@ ALLOWED_IMAGE_MIME = frozenset({
 # 单张附件 base64 解码后的字节数上限
 MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024  # 3 MB
 
-# 单条消息允许的最大附件数
 MAX_ATTACHMENTS_PER_MESSAGE = 8
 
-VOLATILE_BUFFER_MAX_EVENTS = 1000
+# 这些事件只代表"正在流式输出的增量"，不会直接落到 session DB。
 # 这些事件只代表“正在流式输出的增量”，不会直接落到 session DB。
 # 如果客户端在它们产生时还没 attach，刷新后只读 DB 会看不到这些片段，
 # 所以在 WS channel 内短暂缓存，等客户端 attach 后补发。
@@ -120,7 +119,7 @@ class _VolatileReplayBuffer:
             }
             self._buffers.setdefault(
                 session_id,
-                deque(maxlen=VOLATILE_BUFFER_MAX_EVENTS),
+                deque(),
             ).append({
                 "id": msg.id,
                 "type": msg.type,
@@ -172,7 +171,6 @@ class _VolatileReplayBuffer:
                     item for item in buf
                     if (item.get("data") or {}).get("type") not in event_types
                 ),
-                maxlen=VOLATILE_BUFFER_MAX_EVENTS,
             )
             if kept:
                 self._buffers[session_id] = kept
