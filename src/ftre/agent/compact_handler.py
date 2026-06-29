@@ -2,8 +2,9 @@
 CompactHandler — 上下文压缩处理器
 
 设计：
-- 50% 水位：idle 时隐形压缩 → compact(enabled=True)，直接写入已启用 compact event
-- 60% 水位：关键路径 → enable_pending_compact() 启用历史 pending，没有则 compact(enabled=True)
+- 50% 水位（precompact_threshold）：idle/usage 后台路径 → compact(enabled=True)
+- 50% 水位（precompact_threshold）：用户输入路径 → _step_compact 标记 need_compact，
+  然后在 _run_async 中先尝试 enable_pending_compact()，没有 pending 则 compact(enabled=True)
 - /compact 手动：先 enable_pending_compact()，没有则 compact(enabled=True, silent=False)
 
 每次压缩：从上一个 enabled=True 的 compact 到现在，全量 LLM 摘要，
