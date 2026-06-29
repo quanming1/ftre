@@ -10,12 +10,11 @@ import base64
 import logging
 import os
 import re
-import tempfile
 import uuid
 
 logger = logging.getLogger(__name__)
 
-_IMG_DIR = os.path.join(tempfile.gettempdir(), "ftre_images")
+_IMG_DIR = os.path.join(os.path.expanduser("~"), ".ftre", "assets", "images")
 
 _MIME_TO_EXT: dict[str, str] = {
     "image/png": ".png",
