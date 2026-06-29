@@ -57,7 +57,7 @@ ftre-docs          文档站（React + Vite）
 
 ### 一键启动
 
-`E:\ftre\start.bat` 依次启动三个服务：
-1. Gateway 后端 → `ws://127.0.0.1:19470/`
+`E:\ftre\start.py` 依次启动三个服务：
+1. Gateway 后端 → `ws://127.0.0.1:48650/`
 2. Desktop 前端 → Electron pnpm dev
-3. Docs 文档站 → `http://localhost:5173/`
+3. Docs 文档站 → `http://localhost:48652/`
