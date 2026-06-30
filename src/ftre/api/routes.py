@@ -200,8 +200,7 @@ async def get_messages(
     （一轮 = 一个可见 user_message 到下一个之间的所有事件）。
     before_ts 为游标，只返回 timestamp < before_ts 的事件（用于加载更早）。
     """
-    running = bool(_agent_loop and _agent_loop.is_session_running(session_id))
-    status = "running" if running else "idle"
+    status = _agent_loop.get_session_status(session_id) if _agent_loop else "idle"
     if limit_turns is not None and limit_turns > 0:
         messages, has_more = await _session_manager.get_recent_messages_by_turns(
             session_id, limit_turns, before_ts=before_ts

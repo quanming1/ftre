@@ -21,7 +21,7 @@ def _agent_event(session_id: str, event_type: str, data: dict | None = None) -> 
         to_channel="ws",
         from_session=session_id,
         to_session=session_id,
-        data={"type": event_type, "data": data or {}},
+        data={"type": event_type, "event_id": f"ev_{event_type}", "data": data or {}},
     )
 
 
@@ -41,16 +41,20 @@ async def test_attach_replays_volatile_events_buffered_without_subscribers():
     assert len(ws.sent) == 1
     replay = ws.sent[0]
     assert replay["type"] == "agent_event"
-    assert replay["data"] == {"type": "assistant_message", "data": {"content": "hello"}}
+    assert replay["data"] == {
+        "type": "assistant_message",
+        "event_id": "ev_assistant_message",
+        "data": {"content": "hello"},
+    }
     assert replay["metadata"]["session_id"] == session_id
-    assert replay["metadata"]["volatile_seq"] == 1
+    assert not any(key.startswith("volatile") for key in replay["metadata"])
     assert "volatile" not in replay["metadata"]
     assert "volatile_epoch" not in replay["metadata"]
     assert "replay" not in replay["metadata"]
 
 
 @pytest.mark.asyncio
-async def test_persisted_complete_clears_assistant_volatile_replay():
+async def test_persisted_complete_replaces_assistant_volatile_replay():
     channel = WebSocketChannel(EventBus())
     session_id = "ws::sess_done"
 
@@ -65,4 +69,9 @@ async def test_persisted_complete_clears_assistant_volatile_replay():
         ws,
     )
 
-    assert ws.sent == []
+    assert len(ws.sent) == 1
+    assert ws.sent[0]["data"] == {
+        "type": "assistant_message_complete",
+        "event_id": "ev_assistant_message_complete",
+        "data": {"content": "final"},
+    }
