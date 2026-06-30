@@ -17,6 +17,7 @@ import copy
 import logging
 import os
 import time
+import uuid
 from concurrent.futures import Future
 
 from ftre_agent_core.agent import ReActAgent
@@ -112,6 +113,7 @@ class AgentLoop:
         # 同一 session 同一时间只允许一个 compact task 在飞
         self._compact_tasks: dict[str, asyncio.Task] = {}
         self._compact_retry_after: dict[str, float] = {}
+        self._compacting_sessions: set[str] = set()
 
         # ─── pipeline ─────────────────────────────────────────
         self._pipeline = Pipeline("consume")
@@ -170,8 +172,8 @@ class AgentLoop:
         session_id = inbound.from_session
         channel_id = inbound.from_channel
 
-        # emit running
-        await self._publish_session_status_async(session_id, "running")
+        self._compacting_sessions.add(session_id)
+        await self._publish_session_status_async(session_id, "compacting")
 
         try:
             config = self._load_current_config()
@@ -194,8 +196,8 @@ class AgentLoop:
         except Exception:
             logger.exception(f"[agent-loop] /compact 执行异常 session={session_id}")
         finally:
-            # emit idle
-            await self._publish_session_status_async(session_id, "idle")
+            self._compacting_sessions.discard(session_id)
+            await self._publish_session_status_async(session_id, self.get_session_status(session_id))
 
     def start(self) -> None:
         """启动消费循环"""
@@ -205,6 +207,14 @@ class AgentLoop:
     def is_session_running(self, session_id: str) -> bool:
         """该 session 是否有正在跑的 ReActAgent。"""
         return session_id in self._active_agents
+
+    def get_session_status(self, session_id: str) -> str:
+        """返回客户端可见状态：idle / running / compacting。"""
+        if session_id in self._active_agents:
+            return "running"
+        if session_id in self._compacting_sessions:
+            return "compacting"
+        return "idle"
 
     def register_subagent_done_future(self, session_id: str, future: Future[dict]) -> bool:
         """注册 subagent 单轮执行完成通知；返回 False 表示已有等待者。"""
@@ -458,14 +468,17 @@ class AgentLoop:
         # 归一化存储格式：只保留 UI/DB 可回放的 user parts。
         # LLM API 格式在构建上下文时由 build_user_content() 统一转换。
         stored_content = normalize_stored_user_content(content)
+        user_event_id = uuid.uuid4().hex[:16]
+        stored_user_data = {
+            "event_id": user_event_id,
+            "content": stored_content,
+            "attachments": attachments,
+            "metadata": {"hide": False},
+        }
         await self.session_manager.save_message(
             session_id,
             "user_message",
-            {
-                "content": stored_content,
-                "attachments": attachments,
-                "metadata": {"hide": False},
-            },
+            stored_user_data,
         )
 
         # Step 6.5: echo user_message 给前端
@@ -476,7 +489,11 @@ class AgentLoop:
             to_channel=inbound.to_channel,
             from_session=inbound.from_session,
             to_session=inbound.to_session,
-            data={"type": "user_message", "data": inbound.data},
+            data={
+                "type": "user_message",
+                "event_id": user_event_id,
+                "data": {**inbound.data, "event_id": user_event_id},
+            },
             metadata=inbound.metadata,
         )
         await self.bus.publish_outbound(echo)
@@ -518,8 +535,10 @@ class AgentLoop:
                 # 但 async for 的 yield 不一定被 cancel 打断（取决于 generator 内部实现），
                 # 所以在这里也检查 CancellationToken 作为补充。
                 if isinstance(event, self._PERSISTENT_CLASSES):
+                    event_data = event._data_dict()
+                    event_data["event_id"] = event.event_id
                     await self.session_manager.save_message(
-                        session_id, event.type.value, event._data_dict()
+                        session_id, event.type.value, event_data
                     )
 
                 out = BusMessage(

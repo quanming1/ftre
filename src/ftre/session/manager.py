@@ -103,6 +103,7 @@ class SessionManager:
             "SET channel_id = substr(id, 1, instr(id, '::') - 1) "
             "WHERE channel_id = '' AND instr(id, '::') > 0"
         )
+        await self._migrate_backfill_message_event_id()
         await self._db.commit()
 
     async def _migrate_add_column(
@@ -116,6 +117,20 @@ class SessionManager:
             return
         await self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
         logger.warning(f"[session] 迁移：{table}.{column} 已添加")
+
+    async def _migrate_backfill_message_event_id(self) -> None:
+        """Backfill legacy rows so HTTP history and WS replay share an event id."""
+        await self._db.execute(
+            """
+            UPDATE messages
+            SET data = json_set(data, '$.event_id', id)
+            WHERE json_valid(data)
+              AND (
+                json_extract(data, '$.event_id') IS NULL
+                OR json_extract(data, '$.event_id') = ''
+              )
+            """
+        )
 
     async def close(self) -> None:
         """关闭数据库连接"""
@@ -318,11 +333,14 @@ class SessionManager:
         始终用真实当前时间，不会因游标回插而错乱会话列表排序。
         """
         msg_id = uuid.uuid4().hex[:16]
+        stored_data = dict(data or {})
+        if not stored_data.get("event_id"):
+            stored_data["event_id"] = msg_id
         now = time.time()
         ts = now if timestamp is None else float(timestamp)
         await self._db.execute(
             "INSERT INTO messages (id, session_id, type, data, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (msg_id, session_id, type, json.dumps(data, ensure_ascii=False), ts),
+            (msg_id, session_id, type, json.dumps(stored_data, ensure_ascii=False), ts),
         )
         await self._db.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?",
