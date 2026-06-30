@@ -50,7 +50,6 @@ class FtrePluginApi:
         tool_registry: ToolRegistry,
         event_loop: Callable | None = None,
         command_manager: object | None = None,
-        appended_system_prompts: list[str] | None = None,
         routers: list[APIRouter] | None = None,
     ):
         self.bus = bus
@@ -61,7 +60,6 @@ class FtrePluginApi:
         self._tool_registry = tool_registry
         self._event_loop = event_loop
         self._command_manager = command_manager
-        self._appended_system_prompts = appended_system_prompts if appended_system_prompts is not None else []
         self._routers: list[APIRouter] = routers if routers is not None else []
 
     @property
@@ -94,27 +92,9 @@ class FtrePluginApi:
         """
         self._hook_manager.register(point, fn)
 
-    def append_system_prompt(self, text: str) -> None:
-        """
-        追加内容到 system prompt 末尾。
-
-        插件可通过此方法向所有会话的 system prompt 注入额外的上下文或指令。
-        内容会在每次构建 messages 时附加到 system prompt 后面。
-
-        Args:
-            text: 要追加的文本内容
-        """
-        if text and text.strip():
-            self._appended_system_prompts.append(text)
-
     def register_router(self, router: APIRouter) -> None:
         """注册 FastAPI APIRouter，路由会在 WebSocketChannel 启动时挂载到 /api prefix 下。"""
         self._routers.append(router)
-
-    @property
-    def appended_system_prompts(self) -> list[str]:
-        """获取所有插件追加的 system prompt 内容。"""
-        return self._appended_system_prompts.copy()
 
 
 class Plugin:
@@ -151,7 +131,6 @@ class PluginManager:
         self._tool_registry = tool_registry if tool_registry is not None else ToolRegistry()
         self._event_loop = event_loop
         self._command_manager = command_manager
-        self._appended_system_prompts: list[str] = []
         self._routers: list[APIRouter] = []
 
     def load_all(self, config_data: dict = None) -> None:
@@ -224,7 +203,6 @@ class PluginManager:
             tool_registry=self._tool_registry,
             event_loop=self._event_loop,
             command_manager=self._command_manager,
-            appended_system_prompts=self._appended_system_prompts,
             routers=self._routers,
         )
 
@@ -253,11 +231,6 @@ class PluginManager:
     def tool_registry(self) -> ToolRegistry:
         """插件工具注册表。"""
         return self._tool_registry
-
-    @property
-    def appended_system_prompts(self) -> list[str]:
-        """获取所有插件追加的 system prompt 内容。"""
-        return self._appended_system_prompts.copy()
 
     @property
     def routers(self) -> list[APIRouter]:
