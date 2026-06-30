@@ -5,7 +5,9 @@ import pytest
 from ftre_agent_core.agent.event import UserMessageEvent
 from ftre_agent_core.tool import Tool
 
-from ftre.plugin import HookManager, Plugin, PluginManager
+from ftre.agent.loop import AgentLoop
+from ftre.config import AgentConfig, LLMConfig
+from ftre.plugin import BEFORE_AGENT_RUN, HookManager, Plugin, PluginManager
 from ftre.tools import ToolRegistry, build_default_tools
 from ftre.tools._workspace import WorkspaceAccessor
 from ftre.tools.read import create_read_tool
@@ -183,5 +185,79 @@ def test_plugin_api_register_router():
     assert len(manager.routers) == 1
     routes = [r.path for r in manager.routers[0].routes]
     assert "/ping" in routes
+
+
+def test_before_agent_run_hook_can_insert_messages():
+    """before_agent_run hook 可以自由插入任意 role 的消息。"""
+    hooks = HookManager()
+
+    def rewrite(ctx):
+        # 模拟 OpenClaw 双轨注入
+        ctx.messages.insert(0, {"role": "system", "content": "persona: act as Alice"})
+        ctx.messages.insert(1, {"role": "user", "content": "[GROUP CONTEXT]\n群规: 禁止骂人\n[/GROUP CONTEXT]"})
+        ctx.messages.insert(2, {"role": "user", "content": "成员列表:\n- Alice\n- Bob"})
+        return ctx
+
+    hooks.register(BEFORE_AGENT_RUN, rewrite)
+
+    from ftre.plugin import AgentRunContext
+    ctx = AgentRunContext(
+        session_id="sess_1",
+        channel_id="ws",
+        messages=[
+            {"role": "system", "content": "base system prompt"},
+            {"role": "user", "content": "你好"},
+        ],
+        config=AgentConfig(),
+    )
+    ctx = hooks.trigger_sync(BEFORE_AGENT_RUN, ctx)
+
+    assert ctx.messages[0]["role"] == "system"
+    assert ctx.messages[0]["content"] == "persona: act as Alice"
+    assert ctx.messages[1]["role"] == "user"
+    assert "群规" in ctx.messages[1]["content"]
+    assert ctx.messages[2]["role"] == "user"
+    assert "Alice" in ctx.messages[2]["content"]
+    # 原始消息还在
+    assert ctx.messages[3]["role"] == "system"
+    assert "base system prompt" in ctx.messages[3]["content"]
+    assert ctx.messages[4]["role"] == "user"
+    assert ctx.messages[4]["content"] == "你好"
+
+
+def test_builtin_prompt_injection_uses_before_agent_run(tmp_path):
+    from ftre.plugin.builtin.mcp_plugin import McpPlugin
+    from ftre.plugin.builtin.skill_plugin import SkillPlugin
+
+    hooks = HookManager()
+    registry = ToolRegistry()
+    manager = PluginManager(
+        bus=None,
+        channel_manager=None,
+        session_manager=None,
+        hook_manager=hooks,
+        tool_registry=registry,
+    )
+    manager._load(McpPlugin(), {})
+    manager._load(SkillPlugin(), {"skills_dir": str(tmp_path)})
+
+    from ftre.plugin import AgentRunContext
+    ctx = AgentRunContext(
+        session_id="sess_1",
+        channel_id="ws",
+        messages=[
+            {"role": "system", "content": "base system prompt"},
+            {"role": "user", "content": "你好"},
+        ],
+        config=AgentConfig(),
+    )
+    ctx = hooks.trigger_sync(BEFORE_AGENT_RUN, ctx)
+
+    # mcp 和 skill 插件注入的内容应在第一条 system 消息中
+    system_msg = ctx.messages[0]
+    assert system_msg["role"] == "system"
+    assert "## MCP 工具" in system_msg["content"]
+    assert "Skill 是 ~/.ftre/skills 下的本地能力说明" in system_msg["content"]
+    assert "base system prompt" in system_msg["content"]
 
 

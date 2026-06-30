@@ -1,5 +1,11 @@
 from .plugin import Plugin, FtrePluginApi, PluginManager
-from .hook_manager import HookManager, MessagesBuildContext, BEFORE_MESSAGES_BUILD
+from .hook_manager import (
+    HookManager,
+    MessagesBuildContext,
+    AgentRunContext,
+    BEFORE_MESSAGES_BUILD,
+    BEFORE_AGENT_RUN,
+)
 
 __all__ = [
     "Plugin",
@@ -7,5 +13,7 @@ __all__ = [
     "PluginManager",
     "HookManager",
     "MessagesBuildContext",
+    "AgentRunContext",
     "BEFORE_MESSAGES_BUILD",
+    "BEFORE_AGENT_RUN",
 ]

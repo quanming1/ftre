@@ -13,7 +13,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ftre.plugin import BEFORE_MESSAGES_BUILD, Plugin
+from ftre.plugin import BEFORE_AGENT_RUN, BEFORE_MESSAGES_BUILD, Plugin
 from ftre_agent_core.tool import Tool, ToolParameter
 from ftre.api import skill as skill_store
 
@@ -32,6 +32,14 @@ def _read_text_safe(path: Path) -> str:
 DEFAULT_SKILLS_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "skills"
 
 
+def _append_prompt(current: str, text: str) -> str:
+    current = (current or "").rstrip()
+    text = (text or "").strip()
+    if not text:
+        return current
+    return f"{current}\n\n{text}" if current else text
+
+
 class SkillPlugin(Plugin):
     """Register the loadSkill tool."""
 
@@ -42,7 +50,11 @@ class SkillPlugin(Plugin):
         cfg = self.api.config or {}
         self._skills_dir = Path(cfg.get("skills_dir") or DEFAULT_SKILLS_DIR)
         self._disabled_skills = self._load_disabled_skills()
-        self.api.append_system_prompt(
+        self.api.register_hook(BEFORE_AGENT_RUN, self._inject_system_prompt)
+        self.api.register_hook(BEFORE_MESSAGES_BUILD, self._inject_skill_descriptions)
+
+    def _inject_system_prompt(self, ctx):
+        prompt = (
             "<skill_desc>\n"
             "Skill 是 ~/.ftre/skills 下的本地能力说明。"
             f"当前电脑上的 Skill 文件夹绝对路径是 {get_skills_dir_path(self._skills_dir)}。"
@@ -52,9 +64,13 @@ class SkillPlugin(Plugin):
             "同一个 Skill 在当前对话中只需加载一次，不要重复加载。"
             "\n</skill_desc>"
         )
-        self.api.register_hook(BEFORE_MESSAGES_BUILD, self._inject_skill_descriptions)
-        self.api.tool_registry.register(create_load_skill_tool(self._skills_dir, self._disabled_skills))
-        self.api.register_router(self._build_router())
+        for msg in ctx.messages:
+            if msg.get("role") == "system":
+                msg["content"] = _append_prompt(msg["content"], prompt)
+                break
+        else:
+            ctx.messages.insert(0, {"role": "system", "content": prompt})
+        return ctx
 
     def _load_disabled_skills(self) -> set[str]:
         """从 config.json 读取 disabled_skills 数组。"""
