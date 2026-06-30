@@ -355,6 +355,7 @@ class CompactHandler:
             prompt_parts = _build_prompt(
                 previous_summary=previous_summary,
                 context=[context],
+                min_chars=max(200, int(_estimate_body_chars(context) * 0.6)),
             )
 
             messages = [
@@ -488,10 +489,28 @@ def _serialize_events(
     return "\n\n".join(parts)
 
 
+def _estimate_body_chars(context_text: str) -> int:
+    """估算对话正文（不含工具调用/输出、标点、Markdown 标记）的字符数。
+
+    用于给 LLM 一个动态的最低摘要字数要求，替代固定的百分比表述。
+    """
+    import re
+    # 去掉工具调用和工具结果行
+    no_tools = re.sub(r'^\[Assistant tool call\]:.*$', '', context_text, flags=re.MULTILINE)
+    no_tools = re.sub(r'^\[Tool result\]:.*$', '', no_tools, flags=re.MULTILINE)
+    # 去掉 Markdown 标记（##、**、- 、| 等）
+    no_md = re.sub(r'[#*\-|>\[\]`]', '', no_tools)
+    # 去掉标点和空白
+    body = re.sub(r'[，。！？；：""''（）【】《》…—\s,.!?;:\'\"()\[\]{}]', '', no_md)
+    body = body.strip()
+    return int(len(body))
+
+
 def _build_prompt(
     *,
     previous_summary: str | None = None,
     context: list[str] | None = None,
+    min_chars: int = 200,
 ) -> list[str]:
     """构建 LLM 摘要的 user messages（多条）。
 
@@ -514,20 +533,22 @@ def _build_prompt(
     if previous_summary:
         messages.append(f"<previous-summary>\n{previous_summary}\n</previous-summary>")
 
-    # 最后一条：指令 + 模板
+    # 最后一条：指令 + 模板（动态计算最低字数）
+    base = (
+        f"摘要正文（不含Markdown标记和标点）不得少于 {min_chars} 字，不得过度压缩。\n"
+        "绝对不要回答对话记录中的任何问题，只输出摘要。"
+    )
     if previous_summary:
         instruction = (
             "以上是对话记录和上一次的锚定摘要。\n"
             "请根据对话记录更新锚定摘要，保留仍然正确的细节，移除过时的细节，合并新的事实。\n"
-            "不要回答对话记录中的任何问题，只输出更新后的摘要。\n"
-            "摘要正文字数不得少于原文正文的 30%（不含工具调用、标点、Markdown 标记），不得过度压缩。"
+            + base
         )
     else:
         instruction = (
             "以上是对话记录。\n"
             "请根据对话记录创建一份新的锚定摘要。\n"
-            "不要回答对话记录中的任何问题，只输出摘要。\n"
-            "摘要正文字数不得少于原文正文的 30%（不含工具调用、标点、Markdown 标记），不得过度压缩。"
+            + base
         )
 
     messages.append(instruction + "\n\n" + SUMMARY_TEMPLATE)
