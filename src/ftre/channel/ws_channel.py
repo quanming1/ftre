@@ -53,6 +53,7 @@ VOLATILE_EVENT_TYPES = frozenset({
     "assistant_message",
     "reasoning",
     "tool_call_streaming",
+    "context_compact_start",
 })
 # 对应的稳定事件到达后，说明这类流式增量已经被最终事件覆盖/持久化，
 # 可以从 volatile buffer 删除，避免客户端 attach 后看到旧草稿。
@@ -61,6 +62,8 @@ VOLATILE_CLEAR_BY_TYPE = {
     "reasoning_complete": {"reasoning"},
     "tool_call": {"tool_call_streaming"},
     "tool_result": {"tool_call_streaming"},
+    "context_compact_done": {"context_compact_start"},
+    "context_compact_failed": {"context_compact_start"},
 }
 # 一轮执行结束、失败或进入重试后，旧的临时流式片段都不应该再 replay。
 VOLATILE_CLEAR_ALL_TYPES = frozenset({"done", "error", "retry"})
