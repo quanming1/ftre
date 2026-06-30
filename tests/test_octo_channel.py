@@ -178,13 +178,54 @@ class TestOctoChannel:
 
 
 class TestOctoChannelPlugin:
-    """Plugin hook 测试（占位，Task 3 实现）"""
+    """Plugin hook 测试"""
 
     def test_hook_injects_octo_hint_into_system_message(self):
-        pass
+        """BEFORE_AGENT_RUN hook 应在 system 消息中注入 Octo 提示"""
+        from ftre.plugin import AgentRunContext, BEFORE_AGENT_RUN, HookManager
+        hooks = HookManager()
+        from octo_channel import OctoChannelPlugin
+        plugin = OctoChannelPlugin()
+        # 无需 setup（setup 需要 self.api 等，这里只测 hook 函数）
+        hooks.register(BEFORE_AGENT_RUN, plugin._on_agent_run)
+
+        from ftre.config import AgentConfig
+        ctx = AgentRunContext(
+            session_id="sess_1",
+            channel_id="octo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hello"},
+            ],
+            config=AgentConfig(),
+        )
+        result = hooks.trigger_sync(BEFORE_AGENT_RUN, ctx)
+
+        system_msg = result.messages[0]
+        assert system_msg["role"] == "system"
+        assert "Octo" in system_msg["content"]
 
     def test_hook_inserts_system_message_when_none_exists(self):
-        pass
+        """如果没有 system 消息，应插入一条新的"""
+        from ftre.plugin import AgentRunContext, BEFORE_AGENT_RUN, HookManager
+        hooks = HookManager()
+        from octo_channel import OctoChannelPlugin
+        plugin = OctoChannelPlugin()
+        hooks.register(BEFORE_AGENT_RUN, plugin._on_agent_run)
+
+        from ftre.config import AgentConfig
+        ctx = AgentRunContext(
+            session_id="sess_1",
+            channel_id="octo",
+            messages=[
+                {"role": "user", "content": "Hello"},
+            ],
+            config=AgentConfig(),
+        )
+        result = hooks.trigger_sync(BEFORE_AGENT_RUN, ctx)
+
+        assert result.messages[0]["role"] == "system"
+        assert "Octo" in result.messages[0]["content"]
 
 
 class TestOctoChannelIntegration:
