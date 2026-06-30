@@ -65,6 +65,56 @@ VOLATILE_CLEAR_BY_TYPE = {
 # 一轮执行结束、失败或进入重试后，旧的临时流式片段都不应该再 replay。
 VOLATILE_CLEAR_ALL_TYPES = frozenset({"done", "error", "retry"})
 
+def _extract_tool_call_ids(data: dict) -> list[str]:
+    """从稳定事件 data 中提取所有 tool_call id。
+
+    msg.data 结构为 {"type": "<ev_type>", "data": {<event_fields>}}。
+    - tool_call: data.data.id 是 tool_call_id
+    - tool_result: data.data.id 是 tool_call_id
+    """
+    inner = data.get("data")
+    if not isinstance(inner, dict):
+        return []
+
+    tc_id = inner.get("id")
+    if isinstance(tc_id, str) and tc_id:
+        return [tc_id]
+    return []
+
+
+def _match_volatile_clear(
+    item: dict,
+    event_types: set[str] | frozenset[str],
+    tool_call_ids: set[str] | frozenset[str] | None,
+) -> bool:
+    """返回 True 表示这条 volatile 帧应该被清理。"""
+    item_data = item.get("data") or {}
+    item_ev_type = item_data.get("type", "")
+
+    # 类型不匹配 → 不清理
+    if item_ev_type not in event_types:
+        return False
+
+    # 没有指定 tool_call_ids → 按类型清理（向后兼容：done/error/retry 等全局清理）
+    if tool_call_ids is None:
+        return True
+
+    # 指定了 tool_call_ids → 只清理匹配的 tool call streaming
+    if item_ev_type == "tool_call_streaming":
+        # tool_call_streaming 事件里，data.data.tool_calls 是 ToolInputDelta 列表
+        # 每条 delta 包含 {type, id, name, text}，其中 id 是 tool_call_id
+        inner = item_data.get("data")
+        if isinstance(inner, dict):
+            tool_calls = inner.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    if isinstance(tc, dict) and tc.get("id") in tool_call_ids:
+                        return True
+        return False
+
+    # assistant_message / reasoning：按类型清理即可
+    return True
+
 
 class _VolatileReplayBuffer:
     """缓存未入库的流式事件，供客户端 attach 时补发。
@@ -78,9 +128,7 @@ class _VolatileReplayBuffer:
     def __init__(self) -> None:
         # session_id -> 最近的 volatile 下行帧。deque 自带 maxlen，防止无限增长。
         self._buffers: dict[str, deque[dict[str, Any]]] = {}
-        # 每个 session 独立递增 seq，客户端用 session_id + seq 去重 replay/live 重叠帧。
-        self._next_seq: dict[str, int] = {}
-        # send() 和 attach replay 都在事件循环里运行；加锁保证 buffer/seq 快照一致。
+        # send() 和 attach replay 都在事件循环里运行；加锁保证 buffer 快照一致。
         self._lock = asyncio.Lock()
 
     async def track(self, msg: BusMessage, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -99,23 +147,36 @@ class _VolatileReplayBuffer:
         # 例如 assistant_message_complete 只清 assistant_message，不影响 tool_call_streaming。
         clear_types = VOLATILE_CLEAR_BY_TYPE.get(ev_type)
         if clear_types:
-            await self._clear(session_id, event_types=clear_types)
-            return metadata
+            # 对 tool_call / tool_result，只清理匹配的 tool_call_id，
+            # 避免清除其他正在流式中的 tool call 片段。
+            tool_call_ids = None
+            if ev_type in ("tool_call", "tool_result") and isinstance(msg.data, dict):
+                tids = _extract_tool_call_ids(msg.data)
+                if tids:
+                    tool_call_ids = frozenset(tids)
+            await self._clear(session_id, event_types=clear_types, tool_call_ids=tool_call_ids)
+            return await self._append(session_id, msg, metadata)
 
         # 其他事件要么已经会入库，要么不是流式片段，不进入 volatile buffer。
         if ev_type not in VOLATILE_EVENT_TYPES:
             return metadata
 
+        return await self._append(session_id, msg, metadata)
+
+    async def _append(
+        self,
+        session_id: str,
+        msg: BusMessage,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """把一帧加入 replay buffer，并返回 live 下发时携带的 metadata。"""
         async with self._lock:
-            seq = self._next_seq.get(session_id, 1)
-            self._next_seq[session_id] = seq + 1
             # buffer 里存的是最终要发给客户端的帧形态。
             # replay 时直接原样发送，不需要重新理解 BusMessage。
             event_metadata = {
                 **metadata,
                 "channel_id": msg.to_channel,
                 "session_id": session_id,
-                "volatile_seq": seq,
             }
             self._buffers.setdefault(
                 session_id,
@@ -127,12 +188,7 @@ class _VolatileReplayBuffer:
                 "metadata": event_metadata,
             })
 
-        # live 下发的同一帧也带 volatile_seq。
-        # 如果客户端刚 attach 时 replay 和 live 发生重叠，可以靠 seq 去重。
-        return {
-            **metadata,
-            "volatile_seq": seq,
-        }
+        return metadata
 
     async def replay(self, session_id: str, ws: WebSocket) -> None:
         """把某个 session 当前还没稳定落库的流式片段补发给刚 attach 的 ws。"""
@@ -146,7 +202,7 @@ class _VolatileReplayBuffer:
             try:
                 await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
             except Exception as e:
-                logger.debug(f"[ws-channel] volatile replay failed: {e}")
+                logger.debug(f"[ws-channel] replay failed: {e}")
                 break
 
     async def _clear(
@@ -154,10 +210,10 @@ class _VolatileReplayBuffer:
         session_id: str,
         *,
         event_types: set[str] | frozenset[str] | None = None,
+        tool_call_ids: set[str] | frozenset[str] | None = None,
     ) -> None:
         async with self._lock:
             if event_types is None:
-                # 不传 event_types 表示整轮结束，直接清空该 session 的全部 volatile 缓存。
                 self._buffers.pop(session_id, None)
                 return
 
@@ -165,11 +221,14 @@ class _VolatileReplayBuffer:
             if not buf:
                 return
 
-            # 只删除被稳定事件覆盖的类型，保留其他仍在流式中的类型。
+            # 只删除被稳定事件覆盖的类型；
+            # 如果指定了 tool_call_ids，只删除匹配的 tool call（避免清掉其他正在流式中的 tool call）。
             kept = deque(
                 (
                     item for item in buf
-                    if (item.get("data") or {}).get("type") not in event_types
+                    if not _match_volatile_clear(
+                        item, event_types, tool_call_ids
+                    )
                 ),
             )
             if kept:
