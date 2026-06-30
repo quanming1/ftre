@@ -522,6 +522,18 @@ class AgentLoop:
             },
         }
 
+        # Step 7.5: before_agent_run hook（插件注入对话上下文 / 系统身份）
+        if self.hook_manager is not None:
+            from ftre.plugin import AgentRunContext, BEFORE_AGENT_RUN
+            ctx = AgentRunContext(
+                session_id=session_id,
+                channel_id=inbound.from_channel,
+                messages=messages,
+                config=hook_config,
+            )
+            ctx = self.hook_manager.trigger_sync(BEFORE_AGENT_RUN, ctx)
+            messages = ctx.messages
+
         subagent_status = "completed"
         final_content = ""
 
@@ -775,14 +787,13 @@ class AgentLoop:
         session_id: str | None = None,
     ) -> ReActAgent:
         """根据配置创建 ReActAgent 实例。"""
-        c = config
+        c = copy.deepcopy(config)
         tools = build_default_tools(
             channel_manager=self.channel_manager,
             tool_registry=self.tool_registry,
             llm_config=c.llm,
         )
 
-        # 插件 system prompt 注入
         system_prompt = self._compose_system_prompt(
             c, channel_id=channel_id, session_id=session_id
         )
@@ -809,12 +820,6 @@ class AgentLoop:
         """合成最终 system prompt：基础提示词 + 插件注入 + <env> 环境块。"""
         c = config
         system_prompt = c.system_prompt
-
-        # 插件 system prompt 注入
-        if self.plugin_manager and self.plugin_manager.appended_system_prompts:
-            plugin_hints = "\n\n".join(self.plugin_manager.appended_system_prompts)
-            if plugin_hints:
-                system_prompt = system_prompt + "\n\n" + plugin_hints
 
         env_lines = [
             "<FTRE_SYSTEM_FACT>",
