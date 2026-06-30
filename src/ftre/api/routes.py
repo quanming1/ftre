@@ -4,6 +4,7 @@ API 路由
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import tempfile
 import time
@@ -450,6 +451,23 @@ async def list_commands():
     if _command_manager is None:
         return {"commands": []}
     return {"commands": _command_manager.list_commands()}
+
+
+@router.get("/image-file")
+async def serve_image_file(path: str):
+    """Serve a local image path for renderer previews."""
+    if not path:
+        raise HTTPException(status_code=400, detail="path cannot be empty")
+
+    file_path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="image not found")
+
+    mime, _ = mimetypes.guess_type(file_path)
+    if not (mime and mime.startswith("image/")):
+        raise HTTPException(status_code=415, detail="not an image file")
+
+    return FileResponse(file_path, media_type=mime)
 
 
 @router.get("/images/{filename}")
