@@ -16,4 +16,7 @@ debug_*.py
 # 截图/导出文件
 *.png
 *.jpg
-*.jpeg 
+*.jpeg
+
+# 日志
+*.log 
