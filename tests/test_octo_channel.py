@@ -229,8 +229,61 @@ class TestOctoChannelPlugin:
 
 
 class TestOctoChannelIntegration:
-    """端到端集成测试（占位，Task 4 实现）"""
+    """端到端：从 WS 入站到 Agent 回复出站的完整链路"""
 
     @pytest.mark.asyncio
     async def test_full_round_trip_ws_to_send(self):
-        pass
+        """模拟：WS 收到消息 → Channel._handle_message() → Channel.send() 回复"""
+        from octo_channel import OctoChannel
+
+        bus = MagicMock()
+        bus.publish_inbound = AsyncMock()
+        bus.publish_outbound = AsyncMock()
+
+        config = {
+            "bot_token": "bf_test",
+            "api_url": "https://api.example.com",
+            "ws_url": "wss://ws.example.com/ws",
+        }
+        ch = OctoChannel(config, bus)
+        ch._im_token = "im_test_token"
+        ch.api.send_message = AsyncMock(return_value={"message_id": "reply_1"})
+
+        # Step 1: 模拟 WS 收到消息
+        ws_data = {
+            "type": 1,
+            "content": "Hello, check the weather",
+            "from_uid": "uid_alice",
+            "channel_id": "ch_group_1",
+            "channel_type": 1,
+            "message_id": "in_1",
+            "timestamp": 1719700000,
+        }
+        await ch._handle_message(ws_data)
+
+        # 验证 publish_inbound 被调用
+        bus.publish_inbound.assert_called_once()
+        inbound_msg = bus.publish_inbound.call_args[0][0]
+        assert inbound_msg.type == "user_message"
+        assert inbound_msg.data["content"] == "Hello, check the weather"
+        assert "octo_" in inbound_msg.from_session
+
+        # Step 2: 模拟 AgentLoop 处理后的 outbound
+        outbound_msg = BusMessage(
+            type="agent_event",
+            from_channel="octo",
+            from_session=inbound_msg.from_session,
+            to_channel="octo",
+            to_session=inbound_msg.from_session,
+            data={
+                "type": "assistant_message_complete",
+                "data": {"content": "Today sunny, 25C"},
+            },
+        )
+        await ch.send(outbound_msg)
+
+        # 验证 send_message 被调用
+        ch.api.send_message.assert_called_once()
+        call_kwargs = ch.api.send_message.call_args[1]
+        assert "Today sunny" in call_kwargs["content"]
+        assert call_kwargs["im_token"] == "im_test_token"
