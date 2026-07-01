@@ -849,3 +849,105 @@ class TestOctoMentionGate:
 
         await ch._handle_message(msg)
         mock_bus.publish_inbound.assert_called_once()
+
+
+class TestOctoManagementTool:
+    """octo_management Tool 测试"""
+
+    @pytest.fixture
+    def mock_api(self):
+        api = MagicMock()
+        api.list_groups = AsyncMock(return_value=[
+            {"group_no": "grp_1", "name": "测试群1"},
+            {"group_no": "grp_2", "name": "测试群2"},
+        ])
+        api.get_group_info = AsyncMock(return_value={
+            "group_no": "grp_1", "name": "测试群1", "member_count": 5,
+        })
+        api.get_group_members = AsyncMock(return_value=[
+            {"uid": "uid_1", "name": "张三", "role": "admin", "robot": 0},
+            {"uid": "uid_2", "name": "李四", "role": "member", "robot": 1},
+        ])
+        api.search_space_members = AsyncMock(return_value=[
+            {"uid": "uid_1", "name": "张三", "robot": 0},
+        ])
+        return api
+
+    @pytest.mark.asyncio
+    async def test_list_groups(self, mock_api):
+        from octo_channel import create_octo_management_tool
+        import json
+
+        tool = create_octo_management_tool(mock_api)
+        result = await tool.func(action="list-groups")
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["data"]["count"] == 2
+        assert data["data"]["groups"][0]["group_no"] == "grp_1"
+
+    @pytest.mark.asyncio
+    async def test_group_info(self, mock_api):
+        from octo_channel import create_octo_management_tool
+        import json
+
+        tool = create_octo_management_tool(mock_api)
+        result = await tool.func(action="group-info", groupId="grp_1")
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["data"]["name"] == "测试群1"
+
+    @pytest.mark.asyncio
+    async def test_group_info_missing_id(self, mock_api):
+        from octo_channel import create_octo_management_tool
+        import json
+
+        tool = create_octo_management_tool(mock_api)
+        result = await tool.func(action="group-info", groupId="")
+        data = json.loads(result)
+        assert data["success"] is False
+        assert "groupId" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_group_members(self, mock_api):
+        from octo_channel import create_octo_management_tool
+        import json
+
+        tool = create_octo_management_tool(mock_api)
+        result = await tool.func(action="group-members", groupId="grp_1")
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["data"]["count"] == 2
+        assert data["data"]["members"][0]["name"] == "张三"
+
+    @pytest.mark.asyncio
+    async def test_search_members(self, mock_api):
+        from octo_channel import create_octo_management_tool
+        import json
+
+        tool = create_octo_management_tool(mock_api)
+        result = await tool.func(action="search-members", keyword="张")
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["data"]["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_unknown_action(self, mock_api):
+        from octo_channel import create_octo_management_tool
+        import json
+
+        tool = create_octo_management_tool(mock_api)
+        result = await tool.func(action="invalid-action")
+        data = json.loads(result)
+        assert data["success"] is False
+
+    def test_tool_name_and_schema(self, mock_api):
+        from octo_channel import create_octo_management_tool
+
+        tool = create_octo_management_tool(mock_api)
+        assert tool.name == "octo_management"
+        schema = tool.to_openai_dict()
+        assert schema["function"]["name"] == "octo_management"
+        param_names = list(schema["function"]["parameters"]["properties"].keys())
+        assert "action" in param_names
+        assert "groupId" in param_names
+        assert "keyword" in param_names
