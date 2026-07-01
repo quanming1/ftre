@@ -75,41 +75,39 @@ class TestOctoChannel:
         return {
             "bot_token": "bf_test",
             "api_url": "https://api.example.com",
-            "ws_url": "wss://ws.example.com/ws",
         }
 
     @pytest.mark.asyncio
+    @patch("octo_channel.subprocess.Popen")
     @patch("octo_channel.aiohttp.ClientSession")
-    async def test_start_registers_and_connects(self, mock_session_cls, mock_bus, channel_config):
-        """start() should call register_bot, then connect WS with returned ws_url"""
+    async def test_start_launches_bridge_and_connects(self, mock_session_cls, mock_popen, mock_bus, channel_config):
+        """start() should launch bridge subprocess and connect to local WS"""
         from octo_channel import OctoChannel
 
-        mock_http = AsyncMock()
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value={
-            "robot_id": "test_bot",
-            "im_token": "im_xxx",
-            "ws_url": "wss://ws.example.com/ws",
-            "owner_uid": "uid_123",
-        })
-        mock_resp.__aenter__.return_value = mock_resp
-        mock_http.post = MagicMock(return_value=mock_resp)
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_popen.return_value = mock_proc
 
         mock_ws = AsyncMock()
         mock_ws.closed = False
         mock_session = MagicMock()
         mock_session.ws_connect = AsyncMock(return_value=mock_ws)
-
         mock_session_cls.return_value = mock_session
 
         ch = OctoChannel(channel_config, mock_bus)
-        ch.api._session = mock_http
 
         await ch.start()
 
-        mock_http.post.assert_called()
-        mock_session.ws_connect.assert_called_once_with("wss://ws.example.com/ws")
+        # 验证启动了桥接进程
+        mock_popen.assert_called_once()
+        call_args = mock_popen.call_args
+        # call_args 格式：((args_list,), {kwargs})
+        args_list = call_args[0][0] if call_args[0] else call_args[1].get('args', [])
+        assert "node" in args_list[0]
+        assert any("octo-bridge.js" in arg for arg in args_list)
+
+        # 验证连接了本地桥接 WS
+        mock_session.ws_connect.assert_called_once_with("ws://127.0.0.1:9876")
 
     @pytest.mark.asyncio
     async def test_send_extracts_text_and_calls_api(self, mock_bus, channel_config):
@@ -142,25 +140,23 @@ class TestOctoChannel:
 
     @pytest.mark.asyncio
     async def test_ws_text_frame_triggers_receive(self, mock_bus, channel_config):
-        """WS TEXT frame (nested event format) should parse to user_message and call receive()"""
+        """WS TEXT frame (flat WuKongIM format) should parse to user_message and call receive()"""
         from octo_channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
-        # Octo WS 事件是嵌套结构
-        event = {
-            "event_id": 102,
-            "message": {
-                "message_id": 1002,
-                "from_uid": "uid_alice",
-                "channel_id": "ch_group_1",
-                "channel_type": 2,
-                "payload": {"type": 1, "content": "Hello bot"},
-                "timestamp": 1719700000,
-            },
+        # WuKongIM 扁平格式（桥接已解密）
+        msg = {
+            "message_id": "1002",
+            "message_seq": 42,
+            "from_uid": "uid_alice",
+            "channel_id": "ch_group_1",
+            "channel_type": 2,
+            "timestamp": 1719700000,
+            "payload": {"type": 1, "content": "Hello bot"},
         }
 
-        await ch._handle_message(event)
+        await ch._handle_message(msg)
 
         mock_bus.publish_inbound.assert_called_once()
         call_msg = mock_bus.publish_inbound.call_args[0][0]
@@ -179,17 +175,17 @@ class TestOctoChannel:
         ch = OctoChannel(channel_config, mock_bus)
 
         # DM 事件：无 channel_id / channel_type
-        event = {
-            "event_id": 101,
-            "message": {
-                "message_id": 1001,
-                "from_uid": "uid_alice",
-                "payload": {"type": 1, "content": "Hi bot!"},
-                "timestamp": 1700000000,
-            },
+        msg = {
+            "message_id": "1001",
+            "message_seq": 1,
+            "from_uid": "uid_alice",
+            "channel_id": "",
+            "channel_type": 1,
+            "timestamp": 1700000000,
+            "payload": {"type": 1, "content": "Hi bot!"},
         }
 
-        await ch._handle_message(event)
+        await ch._handle_message(msg)
 
         mock_bus.publish_inbound.assert_called_once()
         call_msg = mock_bus.publish_inbound.call_args[0][0]
@@ -304,24 +300,21 @@ class TestOctoChannelIntegration:
         config = {
             "bot_token": "bf_test",
             "api_url": "https://api.example.com",
-            "ws_url": "wss://ws.example.com/ws",
         }
         ch = OctoChannel(config, bus)
         ch.api.send_message = AsyncMock(return_value={"message_id": "reply_1"})
 
-        # Step 1: 模拟 WS 收到群聊消息（嵌套事件格式）
-        ws_event = {
-            "event_id": 102,
-            "message": {
-                "message_id": 1002,
-                "from_uid": "uid_alice",
-                "channel_id": "ch_group_1",
-                "channel_type": 2,
-                "payload": {"type": 1, "content": "Hello, check the weather"},
-                "timestamp": 1719700000,
-            },
+        # Step 1: 模拟 WS 收到群聊消息（扁平 WuKongIM 格式）
+        ws_msg = {
+            "message_id": "1002",
+            "message_seq": 42,
+            "from_uid": "uid_alice",
+            "channel_id": "ch_group_1",
+            "channel_type": 2,
+            "timestamp": 1719700000,
+            "payload": {"type": 1, "content": "Hello, check the weather"},
         }
-        await ch._handle_message(ws_event)
+        await ch._handle_message(ws_msg)
 
         # 验证 publish_inbound 被调用
         bus.publish_inbound.assert_called_once()
