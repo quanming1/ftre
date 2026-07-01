@@ -6,8 +6,10 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from collections import defaultdict
 from collections.abc import Iterable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,17 +22,32 @@ logger = logging.getLogger(__name__)
 
 TRACE_DB_PATH = CONFIG_PATH.parent / "traces" / "agent-traces.sqlite"
 _SCHEMA_VERSION = 2
+_DEFAULT_MAX_AGE_DAYS = 7
+_PURGE_INTERVAL_SECONDS = 3600
 
 
 class SQLiteTraceExporter:
-    """Trace exporter that stores run snapshots in a standalone SQLite DB."""
+    """Trace exporter that stores run snapshots in a standalone SQLite DB.
 
-    def __init__(self, path: str | Path = TRACE_DB_PATH):
+    Automatically purges traces older than *max_age_days* on startup and
+    periodically thereafter to prevent unbounded database growth.
+    """
+
+    def __init__(
+        self,
+        path: str | Path = TRACE_DB_PATH,
+        *,
+        max_age_days: int = _DEFAULT_MAX_AGE_DAYS,
+    ):
         self.path = Path(path)
+        self.max_age_days = max_age_days
         self._lock = threading.Lock()
         self._initialized = False
+        self._last_purge_ts: float = 0.0
+        self._maybe_purge(force=True)
 
     def on_run_start(self, run: "TraceRun") -> None:
+        self._maybe_purge()
         self._write(run)
 
     def on_run_end(self, run: "TraceRun") -> None:
@@ -50,6 +67,57 @@ class SQLiteTraceExporter:
             logger.exception(
                 "[trace-store] failed to write trace run %s", getattr(run, "id", "")
             )
+
+    def _maybe_purge(self, *, force: bool = False) -> None:
+        """Trigger a background purge at most once per interval."""
+        if self.max_age_days <= 0:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_purge_ts < _PURGE_INTERVAL_SECONDS:
+            return
+        self._last_purge_ts = now
+        threading.Thread(
+            target=_purge_old_traces,
+            args=(self.path, self.max_age_days),
+            daemon=True,
+        ).start()
+
+
+def purge_old_traces(
+    path: Path = TRACE_DB_PATH, *, max_age_days: int = _DEFAULT_MAX_AGE_DAYS
+) -> int:
+    """Delete all trace runs whose *start_time* is older than *max_age_days*.
+
+    Returns the number of deleted rows.  Safe to call while the server is
+    running — uses a separate connection; WAL mode allows concurrent writers
+    and the busy_timeout pragma handles transient lock contention.
+    """
+    conn = _connect(path)
+    try:
+        _ensure_schema(conn)
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+        cur = conn.execute(
+            "DELETE FROM trace_runs WHERE start_time < ?", (cutoff,)
+        )
+        deleted = cur.rowcount
+        conn.commit()
+        if deleted:
+            logger.info(
+                "[trace-store] purged %d runs older than %d days",
+                deleted,
+                max_age_days,
+            )
+        return deleted
+    finally:
+        conn.close()
+
+
+def _purge_old_traces(path: Path, max_age_days: int) -> None:
+    """Thread entry point wrapper — swallows exceptions to protect the caller."""
+    try:
+        purge_old_traces(path, max_age_days=max_age_days)
+    except Exception:
+        logger.exception("[trace-store] background purge failed")
 
 
 def list_trace_summaries(
