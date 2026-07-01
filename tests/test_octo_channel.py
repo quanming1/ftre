@@ -767,3 +767,85 @@ class TestOctoMentionGate:
 
         await ch._handle_message(msg)
         mock_bus.publish_inbound.assert_not_called()
+
+    # --- 广播抑制测试 ---
+
+    @pytest.mark.asyncio
+    async def test_broadcast_all_suppressed(self, mock_bus, channel_config):
+        """@所有人 (all=1, ais=1) → 广播抑制，不应投递"""
+        ch = self._make_channel(channel_config, mock_bus)
+
+        msg = {
+            "message_id": "m12", "message_seq": 12,
+            "from_uid": "user_001", "channel_id": "group_001",
+            "channel_type": 2,
+            "timestamp": 1234567890,
+            "payload": {
+                "type": 1,
+                "content": "@所有人 注意一下",
+                "mention": {"all": 1, "ais": 1},
+            },
+        }
+
+        await ch._handle_message(msg)
+        mock_bus.publish_inbound.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_humans_suppressed(self, mock_bus, channel_config):
+        """@所有人 (humans=1, ais=1) → 广播抑制，不应投递"""
+        ch = self._make_channel(channel_config, mock_bus)
+
+        msg = {
+            "message_id": "m13", "message_seq": 13,
+            "from_uid": "user_001", "channel_id": "group_001",
+            "channel_type": 2,
+            "timestamp": 1234567890,
+            "payload": {
+                "type": 1,
+                "content": "@所有人 开会了",
+                "mention": {"humans": 1, "ais": 1},
+            },
+        }
+
+        await ch._handle_message(msg)
+        mock_bus.publish_inbound.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_all_but_direct_mention_dispatches(self, mock_bus, channel_config):
+        """@所有人 但同时直接 @bot uid → 应投递（直接 @ 不受广播抑制）"""
+        ch = self._make_channel(channel_config, mock_bus)
+
+        msg = {
+            "message_id": "m14", "message_seq": 14,
+            "from_uid": "user_001", "channel_id": "group_001",
+            "channel_type": 2,
+            "timestamp": 1234567890,
+            "payload": {
+                "type": 1,
+                "content": "@所有人 @ftre开发 你来说说",
+                "mention": {"all": 1, "ais": 1, "uids": ["bot_self_001"]},
+            },
+        }
+
+        await ch._handle_message(msg)
+        mock_bus.publish_inbound.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pure_ais_mention_dispatches(self, mock_bus, channel_config):
+        """纯 @AI (ais=1, 无 all/humans) → 应投递"""
+        ch = self._make_channel(channel_config, mock_bus)
+
+        msg = {
+            "message_id": "m15", "message_seq": 15,
+            "from_uid": "user_001", "channel_id": "group_001",
+            "channel_type": 2,
+            "timestamp": 1234567890,
+            "payload": {
+                "type": 1,
+                "content": "@AI 帮我查一下",
+                "mention": {"ais": 1},
+            },
+        }
+
+        await ch._handle_message(msg)
+        mock_bus.publish_inbound.assert_called_once()
