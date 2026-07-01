@@ -4,6 +4,22 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from ftre.bus import BusMessage
 
 
+class TestExtractParentGroupNo:
+    """extract_parent_group_no 工具函数测试"""
+
+    def test_plain_group_no_returns_unchanged(self):
+        from octo_channel import extract_parent_group_no
+        assert extract_parent_group_no("fb924c042aee4cd6b055ca61ac340093") == "fb924c042aee4cd6b055ca61ac340093"
+
+    def test_thread_compound_extracts_group_no(self):
+        from octo_channel import extract_parent_group_no
+        assert extract_parent_group_no("fb924c042aee4cd6b055ca61ac340093____2064912548183937024") == "fb924c042aee4cd6b055ca61ac340093"
+
+    def test_empty_string_returns_empty(self):
+        from octo_channel import extract_parent_group_no
+        assert extract_parent_group_no("") == ""
+
+
 class FakeExternalSessionManager:
     def __init__(self):
         self.session_id = "octo::sess_mapped"
@@ -683,6 +699,51 @@ class TestOctoMentionGate:
             "payload": {
                 "type": 1,
                 "content": "ftre开发 这个怎么搞",
+            },
+        }
+
+        await ch._handle_message(msg)
+        mock_bus.publish_inbound.assert_not_called()
+
+    # --- Thread（讨论串）门控测试 ---
+
+    @pytest.mark.asyncio
+    async def test_thread_mentioned_dispatches(self, mock_bus, channel_config):
+        """讨论串中 @bot → 应投递消息"""
+        from octo_channel import OctoChannel
+
+        ch = OctoChannel(channel_config, mock_bus)
+
+        msg = {
+            "message_id": "m10", "message_seq": 10,
+            "from_uid": "user_001", "channel_id": "thread_001",
+            "channel_type": 5,  # Thread
+            "timestamp": 1234567890,
+            "payload": {
+                "type": 1,
+                "content": "@ftre开发 帮我看下",
+                "mention": {"uids": ["bot_self_001"]},
+            },
+        }
+
+        await ch._handle_message(msg)
+        mock_bus.publish_inbound.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_thread_not_mentioned_skipped(self, mock_bus, channel_config):
+        """讨论串中未被 @ → 不应投递消息"""
+        from octo_channel import OctoChannel
+
+        ch = OctoChannel(channel_config, mock_bus)
+
+        msg = {
+            "message_id": "m11", "message_seq": 11,
+            "from_uid": "user_001", "channel_id": "thread_001",
+            "channel_type": 5,  # Thread
+            "timestamp": 1234567890,
+            "payload": {
+                "type": 1,
+                "content": "今天天气不错",
             },
         }
 
