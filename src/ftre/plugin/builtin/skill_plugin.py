@@ -65,7 +65,7 @@ class SkillPlugin(Plugin):
             "\n</skill_desc>"
         )
         for msg in ctx.messages:
-            if msg.get("role") == "system":
+            if isinstance(msg, dict) and msg.get("role") == "system":
                 msg["content"] = _append_prompt(msg["content"], prompt)
                 break
         else:
