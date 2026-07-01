@@ -45,14 +45,20 @@ class TestOctoBotApi:
 
         result = await api.send_message(
             channel_id="ch_456",
-            channel_type="group",
+            channel_type=2,
             content="Hello from ftre",
-            im_token="im_test_token"
         )
 
         assert result["message_id"] == "msg_001"
         call_args = mock_session.post.call_args
-        assert "/v1/bot/send_message" in call_args[0][0]
+        # URL 应是驼峰格式
+        assert "/v1/bot/sendMessage" in call_args[0][0]
+        # payload 格式：嵌套结构
+        payload = call_args[1]["json"]
+        assert payload["channel_id"] == "ch_456"
+        assert payload["channel_type"] == 2
+        assert payload["payload"]["type"] == 1
+        assert payload["payload"]["content"] == "Hello from ftre"
 
 
 class TestOctoChannel:
@@ -107,19 +113,19 @@ class TestOctoChannel:
 
     @pytest.mark.asyncio
     async def test_send_extracts_text_and_calls_api(self, mock_bus, channel_config):
-        """send() should extract text from BusMessage and call send_message"""
+        """send() should extract text from BusMessage and call send_message with correct channel_type"""
         from octo_channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
         ch.api.send_message = AsyncMock(return_value={"message_id": "msg_1"})
-        ch._im_token = "im_xxx"
 
+        # session_id 格式: octo_{channel_type}_{channel_id}
         msg = BusMessage(
             type="agent_event",
             from_channel="octo",
-            from_session="octo_uid_alice_ch_group_1",
+            from_session="octo_2_ch_group_1",
             to_channel="octo",
-            to_session="octo_uid_alice_ch_group_1",
+            to_session="octo_2_ch_group_1",
             data={
                 "type": "assistant_message_complete",
                 "data": {"content": "Hello, I am ftre bot"},
@@ -131,32 +137,65 @@ class TestOctoChannel:
         ch.api.send_message.assert_called_once()
         call_kwargs = ch.api.send_message.call_args[1]
         assert "Hello, I am ftre bot" in call_kwargs["content"]
+        assert call_kwargs["channel_type"] == 2
+        assert call_kwargs["channel_id"] == "ch_group_1"
 
     @pytest.mark.asyncio
     async def test_ws_text_frame_triggers_receive(self, mock_bus, channel_config):
-        """WS TEXT frame should parse to user_message and call receive()"""
+        """WS TEXT frame (nested event format) should parse to user_message and call receive()"""
         from octo_channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
-        ch._im_token = "im_xxx"
 
-        data = {
-            "type": 1,
-            "content": "Hello bot",
-            "from_uid": "uid_alice",
-            "channel_id": "ch_group_1",
-            "channel_type": 1,
-            "message_id": "msg_in_1",
-            "timestamp": 1719700000,
+        # Octo WS 事件是嵌套结构
+        event = {
+            "event_id": 102,
+            "message": {
+                "message_id": 1002,
+                "from_uid": "uid_alice",
+                "channel_id": "ch_group_1",
+                "channel_type": 2,
+                "payload": {"type": 1, "content": "Hello bot"},
+                "timestamp": 1719700000,
+            },
         }
 
-        await ch._handle_message(data)
+        await ch._handle_message(event)
 
         mock_bus.publish_inbound.assert_called_once()
         call_msg = mock_bus.publish_inbound.call_args[0][0]
         assert call_msg.type == "user_message"
         assert call_msg.data["content"] == "Hello bot"
         assert call_msg.data["from_uid"] == "uid_alice"
+        assert call_msg.data["channel_type"] == 2
+        # session_id 应编码 channel_type
+        assert "octo_2_" in call_msg.from_session
+
+    @pytest.mark.asyncio
+    async def test_ws_dm_event_uses_from_uid_as_channel(self, mock_bus, channel_config):
+        """DM 事件无 channel_id，应使用 from_uid 作为 channel_id，channel_type=1"""
+        from octo_channel import OctoChannel
+
+        ch = OctoChannel(channel_config, mock_bus)
+
+        # DM 事件：无 channel_id / channel_type
+        event = {
+            "event_id": 101,
+            "message": {
+                "message_id": 1001,
+                "from_uid": "uid_alice",
+                "payload": {"type": 1, "content": "Hi bot!"},
+                "timestamp": 1700000000,
+            },
+        }
+
+        await ch._handle_message(event)
+
+        mock_bus.publish_inbound.assert_called_once()
+        call_msg = mock_bus.publish_inbound.call_args[0][0]
+        assert call_msg.data["channel_type"] == 1  # DM
+        assert call_msg.data["channel_id"] == "uid_alice"
+        assert call_msg.from_session == "octo_1_uid_alice"
 
     @pytest.mark.asyncio
     async def test_stop_closes_ws_and_session(self, mock_bus, channel_config):
@@ -186,7 +225,6 @@ class TestOctoChannelPlugin:
         hooks = HookManager()
         from octo_channel import OctoChannelPlugin
         plugin = OctoChannelPlugin()
-        # 无需 setup（setup 需要 self.api 等，这里只测 hook 函数）
         hooks.register(BEFORE_AGENT_RUN, plugin._on_agent_run)
 
         from ftre.config import AgentConfig
@@ -227,6 +265,29 @@ class TestOctoChannelPlugin:
         assert result.messages[0]["role"] == "system"
         assert "Octo" in result.messages[0]["content"]
 
+    def test_hook_skips_non_octo_channels(self):
+        """非 octo channel 的消息不应注入提示"""
+        from ftre.plugin import AgentRunContext, BEFORE_AGENT_RUN, HookManager
+        hooks = HookManager()
+        from octo_channel import OctoChannelPlugin
+        plugin = OctoChannelPlugin()
+        hooks.register(BEFORE_AGENT_RUN, plugin._on_agent_run)
+
+        from ftre.config import AgentConfig
+        ctx = AgentRunContext(
+            session_id="sess_1",
+            channel_id="ws",  # 非 octo
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hello"},
+            ],
+            config=AgentConfig(),
+        )
+        result = hooks.trigger_sync(BEFORE_AGENT_RUN, ctx)
+
+        # system 消息不应被修改
+        assert result.messages[0]["content"] == "You are a helpful assistant."
+
 
 class TestOctoChannelIntegration:
     """端到端：从 WS 入站到 Agent 回复出站的完整链路"""
@@ -246,27 +307,28 @@ class TestOctoChannelIntegration:
             "ws_url": "wss://ws.example.com/ws",
         }
         ch = OctoChannel(config, bus)
-        ch._im_token = "im_test_token"
         ch.api.send_message = AsyncMock(return_value={"message_id": "reply_1"})
 
-        # Step 1: 模拟 WS 收到消息
-        ws_data = {
-            "type": 1,
-            "content": "Hello, check the weather",
-            "from_uid": "uid_alice",
-            "channel_id": "ch_group_1",
-            "channel_type": 1,
-            "message_id": "in_1",
-            "timestamp": 1719700000,
+        # Step 1: 模拟 WS 收到群聊消息（嵌套事件格式）
+        ws_event = {
+            "event_id": 102,
+            "message": {
+                "message_id": 1002,
+                "from_uid": "uid_alice",
+                "channel_id": "ch_group_1",
+                "channel_type": 2,
+                "payload": {"type": 1, "content": "Hello, check the weather"},
+                "timestamp": 1719700000,
+            },
         }
-        await ch._handle_message(ws_data)
+        await ch._handle_message(ws_event)
 
         # 验证 publish_inbound 被调用
         bus.publish_inbound.assert_called_once()
         inbound_msg = bus.publish_inbound.call_args[0][0]
         assert inbound_msg.type == "user_message"
         assert inbound_msg.data["content"] == "Hello, check the weather"
-        assert "octo_" in inbound_msg.from_session
+        assert inbound_msg.from_session == "octo_2_ch_group_1"
 
         # Step 2: 模拟 AgentLoop 处理后的 outbound
         outbound_msg = BusMessage(
@@ -282,8 +344,9 @@ class TestOctoChannelIntegration:
         )
         await ch.send(outbound_msg)
 
-        # 验证 send_message 被调用
+        # 验证 send_message 被调用，参数正确
         ch.api.send_message.assert_called_once()
         call_kwargs = ch.api.send_message.call_args[1]
         assert "Today sunny" in call_kwargs["content"]
-        assert call_kwargs["im_token"] == "im_test_token"
+        assert call_kwargs["channel_type"] == 2
+        assert call_kwargs["channel_id"] == "ch_group_1"
