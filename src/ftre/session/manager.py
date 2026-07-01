@@ -44,6 +44,15 @@ class MessageModel(TypedDict):
     data: dict[str, Any] # 事件数据（JSON）
     timestamp: float     # 事件时间戳
 
+class ExternalSessionModel(TypedDict):
+    channel_id: str
+    external_key: str
+    session_id: str
+    external_data: dict[str, Any]
+    created_at: float
+    updated_at: float
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,6 +93,19 @@ class SessionManager:
 
             CREATE INDEX IF NOT EXISTS idx_messages_session
                 ON messages(session_id, timestamp ASC);
+
+            CREATE TABLE IF NOT EXISTS external_sessions (
+                channel_id    TEXT NOT NULL,
+                external_key  TEXT NOT NULL,
+                session_id    TEXT NOT NULL,
+                external_data TEXT NOT NULL DEFAULT '{}',
+                created_at    REAL NOT NULL,
+                updated_at    REAL NOT NULL,
+                PRIMARY KEY (channel_id, external_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_external_sessions_session
+                ON external_sessions(session_id);
         """)
         # 老库迁移：sessions 表存量没有这些列时补上
         await self._migrate_add_column(
@@ -161,6 +183,89 @@ class SessionManager:
         )
         await self._db.commit()
         return sid
+
+    async def get_or_create_external_session(
+        self,
+        channel_id: str,
+        external_key: str,
+        title: str = "",
+        workspace: str = "",
+        external_data: dict[str, Any] | None = None,
+    ) -> str:
+        """Get or create a local session bound to an external platform conversation."""
+        if not channel_id:
+            raise ValueError("channel_id cannot be empty")
+        if not external_key:
+            raise ValueError("external_key cannot be empty")
+
+        cursor = await self._db.execute(
+            """
+            SELECT es.session_id
+            FROM external_sessions es
+            JOIN sessions s ON s.id = es.session_id
+            WHERE es.channel_id = ? AND es.external_key = ?
+            """,
+            (channel_id, external_key),
+        )
+        row = await cursor.fetchone()
+        now = time.time()
+        serialized = json.dumps(external_data or {}, ensure_ascii=False)
+        if row:
+            session_id = row["session_id"]
+            await self._db.execute(
+                """
+                UPDATE external_sessions
+                SET updated_at = ?, external_data = ?
+                WHERE channel_id = ? AND external_key = ?
+                """,
+                (now, serialized, channel_id, external_key),
+            )
+            await self._db.commit()
+            return session_id
+
+        await self._db.execute(
+            "DELETE FROM external_sessions WHERE channel_id = ? AND external_key = ?",
+            (channel_id, external_key),
+        )
+
+        session_id = f"{channel_id}::{self.create_id()}"
+        await self._db.execute(
+            "INSERT INTO sessions (id, channel_id, title, workspace, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, channel_id, title, workspace, now, now),
+        )
+        await self._db.execute(
+            """
+            INSERT INTO external_sessions (
+                channel_id, external_key, session_id, external_data, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (channel_id, external_key, session_id, serialized, now, now),
+        )
+        await self._db.commit()
+        return session_id
+
+    async def get_external_session(self, session_id: str) -> ExternalSessionModel | None:
+        """Look up external platform conversation metadata by local session id."""
+        cursor = await self._db.execute(
+            "SELECT * FROM external_sessions WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        try:
+            external_data = json.loads(row["external_data"] or "{}")
+        except json.JSONDecodeError:
+            external_data = {}
+        return ExternalSessionModel(
+            channel_id=row["channel_id"],
+            external_key=row["external_key"],
+            session_id=row["session_id"],
+            external_data=external_data,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
 
     async def get_session(self, session_id: str) -> SessionModel | None:
         """获取 session，不存在返回 None"""
