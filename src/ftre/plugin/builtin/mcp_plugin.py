@@ -65,7 +65,7 @@ class McpPlugin(Plugin):
         )
         # 找到第一条 system 消息并追加，或插入新的 system 消息
         for msg in ctx.messages:
-            if msg.get("role") == "system":
+            if isinstance(msg, dict) and msg.get("role") == "system":
                 msg["content"] = _append_prompt(msg["content"], prompt)
                 break
         else:
