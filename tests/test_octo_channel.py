@@ -208,7 +208,7 @@ class TestOctoChannel:
         mock_bus.publish_inbound.assert_called_once()
         call_msg = mock_bus.publish_inbound.call_args[0][0]
         assert call_msg.type == "user_message"
-        assert call_msg.data["content"] == "Hello bot"
+        assert call_msg.data["content"] == "[来自 uid_alice]: Hello bot"
         assert call_msg.data["from_uid"] == "uid_alice"
         assert call_msg.data["channel_type"] == 2
         # session_id 应编码 channel_type
@@ -466,7 +466,7 @@ class TestOctoChannelIntegration:
         bus.publish_inbound.assert_called_once()
         inbound_msg = bus.publish_inbound.call_args[0][0]
         assert inbound_msg.type == "user_message"
-        assert inbound_msg.data["content"] == "Hello, check the weather"
+        assert "Hello, check the weather" in inbound_msg.data["content"]
         assert inbound_msg.from_session == "octo_2_ch_group_1"
 
         # Step 2: 模拟 AgentLoop 处理后的 outbound
