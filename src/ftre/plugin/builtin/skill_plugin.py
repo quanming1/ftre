@@ -13,7 +13,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ftre.plugin import BEFORE_AGENT_RUN, BEFORE_MESSAGES_BUILD, Plugin
+from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
 from ftre_agent_core.tool import Tool, ToolParameter
 from ftre.api import skill as skill_store
 
@@ -32,14 +32,6 @@ def _read_text_safe(path: Path) -> str:
 DEFAULT_SKILLS_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "skills"
 
 
-def _append_prompt(current: str, text: str) -> str:
-    current = (current or "").rstrip()
-    text = (text or "").strip()
-    if not text:
-        return current
-    return f"{current}\n\n{text}" if current else text
-
-
 class SkillPlugin(Plugin):
     """Register the loadSkill tool."""
 
@@ -50,11 +42,14 @@ class SkillPlugin(Plugin):
         cfg = self.api.config or {}
         self._skills_dir = Path(cfg.get("skills_dir") or DEFAULT_SKILLS_DIR)
         self._disabled_skills = self._load_disabled_skills()
+        self.api.tool_registry.register(
+            create_load_skill_tool(self._skills_dir, self._disabled_skills)
+        )
+        self.api.register_router(self._build_router())
         self.api.register_hook(BEFORE_AGENT_RUN, self._inject_system_prompt)
-        self.api.register_hook(BEFORE_MESSAGES_BUILD, self._inject_skill_descriptions)
 
     def _inject_system_prompt(self, ctx):
-        prompt = (
+        parts = [
             "<skill_desc>\n"
             "Skill 是 ~/.ftre/skills 下的本地能力说明。"
             f"当前电脑上的 Skill 文件夹绝对路径是 {get_skills_dir_path(self._skills_dir)}。"
@@ -63,13 +58,11 @@ class SkillPlugin(Plugin):
             "请调用 loadSkill 读取该 Skill 的完整内容，再按 Skill 内容执行任务。"
             "同一个 Skill 在当前对话中只需加载一次，不要重复加载。"
             "\n</skill_desc>"
-        )
-        for msg in ctx.messages:
-            if isinstance(msg, dict) and msg.get("role") == "system":
-                msg["content"] = _append_prompt(msg["content"], prompt)
-                break
-        else:
-            ctx.messages.insert(0, {"role": "system", "content": prompt})
+        ]
+        skill_list = self._build_skill_list_prompt()
+        if skill_list:
+            parts.append(skill_list)
+        append_to_first_system(ctx.messages, "\n\n".join(parts))
         return ctx
 
     def _load_disabled_skills(self) -> set[str]:
@@ -231,16 +224,17 @@ class SkillPlugin(Plugin):
                 raise
 
             # 更新内存缓存
-            self._disabled_skills = set(arr)
+            self._disabled_skills.clear()
+            self._disabled_skills.update(arr)
 
             return {"name": name, "disabled": disabled}
 
         return router
 
-    def _inject_skill_descriptions(self, ctx):
+    def _build_skill_list_prompt(self) -> str:
         descriptions = list_skill_descriptions(self._skills_dir)
         if not descriptions:
-            return ctx
+            return ""
 
         # 过滤掉被禁用的 skill
         if self._disabled_skills:
@@ -248,7 +242,7 @@ class SkillPlugin(Plugin):
                 d for d in descriptions if d["name"] not in self._disabled_skills
             ]
         if not descriptions:
-            return ctx
+            return ""
 
         lines = [
             "<skill_list desc=\"以下是你当前可以使用的全部 skill，通过 loadSkill 工具按名称加载对应 skill 后再使用\">",
@@ -260,9 +254,7 @@ class SkillPlugin(Plugin):
             )
         lines.append("</skill_list>")
 
-        current = getattr(ctx.config, "system_prompt", "") or ""
-        ctx.config.system_prompt = current.rstrip() + "\n\n" + "\n".join(lines)
-        return ctx
+        return "\n".join(lines)
 
 
 def create_load_skill_tool(skills_dir: Path, disabled_skills: set[str] | None = None) -> Tool:

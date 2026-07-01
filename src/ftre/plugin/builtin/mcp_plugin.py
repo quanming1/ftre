@@ -4,7 +4,7 @@ MCP Plugin — 将 MCP 模块封装为内置插件
 职责：
 - 创建 McpManager 实例并管理连接生命周期
 - 注册 MCP 工具（通过 tool_registry）
-- 注入 MCP 系统提示词（通过 before_agent_build）
+- 注入 MCP 系统提示词（通过 before_agent_run，向 messages 前插入 system 消息）
 - 注册 MCP CRUD HTTP 路由（通过 register_router）
 - 配置热重载（config watcher）
 """
@@ -16,19 +16,11 @@ import tempfile
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ftre.plugin import BEFORE_AGENT_RUN, Plugin
+from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
 from ftre.mcp.manager import McpManager
 from ftre.config import CONFIG_PATH
 
 logger = logging.getLogger(__name__)
-
-
-def _append_prompt(current: str, text: str) -> str:
-    current = (current or "").rstrip()
-    text = (text or "").strip()
-    if not text:
-        return current
-    return f"{current}\n\n{text}" if current else text
 
 
 class McpPlugin(Plugin):
@@ -58,18 +50,13 @@ class McpPlugin(Plugin):
 
     def _inject_system_prompt(self, ctx):
         prompt = (
-            "## MCP 工具\n"
+            "<mcp_desc>\n"
             "你可以通过 MCP (Model Context Protocol) 调用外部工具。"
             "MCP 工具名格式为 `mcp__{服务器名}__{工具名}`。\n"
             "调用 MCP 工具时，参数会自动传递给对应的 MCP 服务器处理。"
+            "\n</mcp_desc>"
         )
-        # 找到第一条 system 消息并追加，或插入新的 system 消息
-        for msg in ctx.messages:
-            if isinstance(msg, dict) and msg.get("role") == "system":
-                msg["content"] = _append_prompt(msg["content"], prompt)
-                break
-        else:
-            ctx.messages.insert(0, {"role": "system", "content": prompt})
+        append_to_first_system(ctx.messages, prompt)
         return ctx
 
     async def _start_connections(self) -> None:
