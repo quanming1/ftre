@@ -253,11 +253,14 @@ def test_builtin_prompt_injection_uses_before_agent_run(tmp_path):
     )
     ctx = hooks.trigger_sync(BEFORE_AGENT_RUN, ctx)
 
-    # mcp 和 skill 插件注入的内容应在第一条 system 消息中
-    system_msg = ctx.messages[0]
-    assert system_msg["role"] == "system"
-    assert "## MCP 工具" in system_msg["content"]
-    assert "Skill 是 ~/.ftre/skills 下的本地能力说明" in system_msg["content"]
-    assert "base system prompt" in system_msg["content"]
+    # MCP 和 Skill 的内容拼接到第一条 system 消息，不产生新的 system 消息
+    system_msgs = [m for m in ctx.messages if m["role"] == "system"]
+    assert len(system_msgs) == 1  # 仍然是单条 system 消息
+    assert "base system prompt" in system_msgs[0]["content"]
+    assert "MCP" in system_msgs[0]["content"]
+    assert "skill" in system_msgs[0]["content"].lower()
 
+    route_paths = [route.path for router in manager.routers for route in router.routes]
+    assert "/skills" in route_paths
+    assert "loadSkill" in [tool.name for tool in registry.snapshot()]
 

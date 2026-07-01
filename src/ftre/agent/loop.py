@@ -734,7 +734,7 @@ class AgentLoop:
         inbound_data: dict | None = None,
         channel_id: str = "",
         workspace: str = "",
-    ) -> tuple[str | list[dict], AgentConfig]:
+    ) -> tuple[list[dict], AgentConfig]:
         """构建 LLM 输入消息，触发 before_messages_build hook。"""
         events = await self.session_manager.get_messages_by_session(session_id)
 
@@ -775,8 +775,6 @@ class AgentLoop:
             history.append({"role": "user", "content": user_content})
             return history, hook_config
 
-        if isinstance(user_content, str):
-            return user_content, hook_config
         return [{"role": "user", "content": user_content}], hook_config
 
     def _create_agent(
@@ -797,6 +795,8 @@ class AgentLoop:
         system_prompt = self._compose_system_prompt(
             c, channel_id=channel_id, session_id=session_id
         )
+        max_iterations = c.max_iterations
+        max_tokens = c.llm.max_output
 
         return ReActAgent(
             model=c.llm.model,
@@ -805,8 +805,8 @@ class AgentLoop:
             api_type=c.llm.api_type,
             system_prompt=system_prompt,
             tools=tools,
-            max_iterations=c.max_iterations,
-            max_tokens=c.llm.max_output,
+            max_iterations=max_iterations,
+            max_tokens=max_tokens,
             tracer=self.tracer,
         )
 
