@@ -4,6 +4,7 @@
 - 前端路径：E:\binn\ftre-desktop\
 - 文档路径：E:\ftre-docs\
 - Agent 核心库：E:\ftre-agent-core\
+- Octo 插件路径：C:\Users\蒋全明\.ftre\plugins\octo-plugin\
 - 配置目录：C:\Users\蒋全明\.ftre\
 - 使用 Python 3.12 + TypeScript
 - 日志统一用 logging（Python）、console（前端）
@@ -21,6 +22,11 @@
 ftre-agent-core    Agent 核心库（无状态、纯算法）
      │              ReActAgent / LLMHandler / Tool 体系 / Runner
      │              被 ftre 后端 import 使用，不独立部署
+     │
+     ├── ftre-octo-plugin  Octo IM 外部插件（生态重要组成部分）
+     │                     真实路径：C:\Users\蒋全明\.ftre\plugins\octo-plugin
+     │                     Python + Node 混合项目：WuKongIM 桥接 / Octo Channel / octo_management Tool
+     │                     通过 shim `C:\Users\蒋全明\.ftre\plugins\octo_channel.py` 被 Gateway 扫描加载
      ▼
 ftre               Gateway 后端（有状态、长驻进程）
      │              Session 管理 / EventBus / Channel / 插件 / MCP
@@ -54,6 +60,15 @@ ftre-docs          文档站（React + Vite）
 - `self.api.register_hook(...)` — 注册 hook
 
 外部插件目录 `~/.ftre/plugins/` 仍保留作为扩展点，`PluginManager` 先加载内置插件再扫描外部目录。
+
+### 重要外部插件
+
+- **Octo 插件**：`C:\Users\蒋全明\.ftre\plugins\octo-plugin\`
+  - 这是 ftre 生态的重要组成部分，不是临时脚本目录
+  - 改动 Octo IM / WuKongIM / 外部消息通道相关需求时，优先检查这里
+  - 入口 shim：`C:\Users\蒋全明\.ftre\plugins\octo_channel.py`
+  - 项目内也有自己的 `AGENTS.md` 和 `README.md`，进入该目录工作前先阅读
+  - 该项目是独立 git 仓库，和 `E:\ftre` 主仓库分开管理
 
 ### 一键启动
 
