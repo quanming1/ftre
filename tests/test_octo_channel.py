@@ -121,6 +121,14 @@ class TestOctoChannel:
             "require_mention": False,  # 测试默认关闭 @ 检测，专门的门控测试在 TestOctoMentionGate 中
         }
 
+    def _make_channel(self, config, bus, **kwargs):
+        """创建 OctoChannel 实例并 mock 掉所有外部 API 调用。"""
+        from octo_channel import OctoChannel
+        ch = OctoChannel(config, bus, **kwargs)
+        ch.api.get_channel_messages = AsyncMock(return_value=[])
+        ch.api.get_group_members = AsyncMock(return_value=[])
+        return ch
+
     @pytest.mark.asyncio
     @patch("octo_channel.subprocess.Popen")
     @patch("octo_channel.aiohttp.ClientSession")
@@ -449,6 +457,8 @@ class TestOctoChannelIntegration:
         }
         ch = OctoChannel(config, bus)
         ch.api.send_message = AsyncMock(return_value={"message_id": "reply_1"})
+        ch.api.get_channel_messages = AsyncMock(return_value=[])
+        ch.api.get_group_members = AsyncMock(return_value=[])
 
         # Step 1: 模拟 WS 收到群聊消息（扁平 WuKongIM 格式）
         ws_msg = {
@@ -509,6 +519,14 @@ class TestOctoMentionGate:
             "bot_name": "ftre开发",
             "require_mention": True,
         }
+
+    def _make_channel(self, config, bus, **kwargs):
+        """创建 OctoChannel 实例并 mock 掉所有外部 API 调用。"""
+        from octo_channel import OctoChannel
+        ch = OctoChannel(config, bus, **kwargs)
+        ch.api.get_channel_messages = AsyncMock(return_value=[])
+        ch.api.get_group_members = AsyncMock(return_value=[])
+        return ch
 
     @pytest.mark.asyncio
     async def test_group_mentioned_by_uid_dispatches(self, mock_bus, channel_config):
