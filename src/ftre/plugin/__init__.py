@@ -5,6 +5,7 @@ from .hook_manager import (
     AgentRunContext,
     BEFORE_MESSAGES_BUILD,
     BEFORE_AGENT_RUN,
+    append_to_first_system,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "AgentRunContext",
     "BEFORE_MESSAGES_BUILD",
     "BEFORE_AGENT_RUN",
+    "append_to_first_system",
 ]

@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from ftre.config import AgentConfig
-    from ftre_agent_core.tool import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +28,24 @@ logger = logging.getLogger(__name__)
 # hook point 字符串常量
 BEFORE_MESSAGES_BUILD = "before_messages_build"
 BEFORE_AGENT_RUN = "before_agent_run"
+
+
+def append_to_first_system(messages: list[dict], text: str) -> None:
+    """将 text 追加到 messages 中第一条 system 消息的 content 末尾。
+
+    如果没有 system 消息，则在列表开头插入一条新的。
+    多个插件调用此函数时，内容会依次拼接到同一条 system 消息中，
+    避免产生多条 system 消息。
+    """
+    text = (text or "").strip()
+    if not text:
+        return
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "system":
+            current = (msg.get("content") or "").rstrip()
+            msg["content"] = f"{current}\n\n{text}" if current else text
+            return
+    messages.insert(0, {"role": "system", "content": text})
 
 
 @dataclass
