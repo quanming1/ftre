@@ -20,12 +20,16 @@ MCP tool schema → ftre ToolParameter 映射：
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from typing import Any
 
+from ftre_agent_core.agent.event import UserMessageEvent, user_message_event
 from ftre_agent_core.tool import Tool, ToolParameter
 from mcp import Tool as McpToolDef
+
+from ftre.utils.image_store import save_image
 
 from .manager import McpManager
 
@@ -39,17 +43,24 @@ _TYPE_MAP = {
     "boolean": "boolean",
 }
 
-# 工具名前缀，用于识别 MCP 工具
+# 工具名前缀：MCP 工具统一以 mcp__ 开头，便于与内置工具区分
 MCP_TOOL_PREFIX = "mcp__"
 
 
 def mcp_tool_id(server_name: str, tool_name: str) -> str:
-    """生成 ftre 工具名：mcp__{server}__{tool}"""
+    """生成 ftre 侧的 MCP 工具名。
+
+    命名格式固定为 `mcp__{server}__{tool}`，这样在工具注册表里能
+    一眼看出这个工具来自哪个 MCP 服务器，同时避免和内置工具重名。
+    """
     return f"{MCP_TOOL_PREFIX}{server_name}__{tool_name}"
 
 
 def _parse_tool_name(tool_id: str) -> tuple[str, str] | None:
-    """从 ftre 工具名解析出 (server_name, mcp_tool_name)"""
+    """从 ftre 工具名里反推出 MCP 的 server 和 tool 名。
+
+    这里只做轻量解析，不做严格校验；如果格式不符合预期，直接返回 None。
+    """
     if not tool_id.startswith(MCP_TOOL_PREFIX):
         return None
     rest = tool_id[len(MCP_TOOL_PREFIX):]
@@ -60,7 +71,13 @@ def _parse_tool_name(tool_id: str) -> tuple[str, str] | None:
 
 
 def _convert_parameters(mcp_tool: McpToolDef) -> list[ToolParameter]:
-    """将 MCP tool 的 inputSchema 转换为 ftre ToolParameter 列表"""
+    """把 MCP tool 的 JSON Schema 输入定义，转换成 ftre 的参数定义。
+
+    这里采用“尽量保真 + 适度降级”的策略：
+    - string / number / integer / boolean 直接映射
+    - array / object 降级成 string，并在说明里提示用户用 JSON 格式传值
+    - enum 原样透传，保留前端和模型侧的枚举约束
+    """
     schema = mcp_tool.inputSchema
     if not isinstance(schema, dict):
         return []
@@ -76,20 +93,15 @@ def _convert_parameters(mcp_tool: McpToolDef) -> list[ToolParameter]:
         prop_type = prop.get("type", "string")
         ftre_type = _TYPE_MAP.get(prop_type, "string")
 
-        # array / object 类型用 string + JSON 提示
+        # array / object 类型在 ftre 里没有独立参数结构，统一转成 string。
+        # 为了减少调用方困惑，在描述中明确告诉模型和用户要传 JSON。
         description = prop.get("description", "")
         if prop_type == "array":
-            if description:
-                description += "（JSON 数组格式）"
-            else:
-                description = "JSON 数组格式"
+            description = f"{description}（JSON 数组格式）" if description else "JSON 数组格式"
         elif prop_type == "object":
-            if description:
-                description += "（JSON 对象格式）"
-            else:
-                description = "JSON 对象格式"
+            description = f"{description}（JSON 对象格式）" if description else "JSON 对象格式"
 
-        # enum 透传
+        # MCP schema 里的 enum 约束可以直接沿用，方便前端展示和模型约束。
         enum = prop.get("enum")
 
         params.append(ToolParameter(
@@ -119,34 +131,103 @@ def create_mcp_tool(
     parameters = _convert_parameters(mcp_tool)
     description = mcp_tool.description or f"MCP tool: {mcp_tool.name}"
 
-    async def _execute(**kwargs) -> str:
-        """异步调用 MCP 工具，返回文本结果"""
+    async def _execute(**kwargs) -> str | UserMessageEvent:
+        """执行单个 MCP 工具调用。
+
+        返回策略：
+        - 纯文本结果：直接拼成字符串返回，保持和普通工具一致
+        - 包含图片结果：把图片落盘后返回 UserMessageEvent，让下游走视觉消息链路
+        - 文本 + 图片同时出现时：图片优先，文本放到 metadata 里，避免信息丢失
+        """
         try:
             result = await manager.call_tool(server_name, mcp_tool.name, kwargs)
-            # MCP callTool 返回 CallToolResult，含 content 列表
+            # MCP callTool 返回 CallToolResult，content 是一个 block 列表，里面可能混有 text / image / resource。
             content_list = getattr(result, "content", [])
             if not content_list:
                 return ""
 
-            parts: list[str] = []
+            text_parts: list[str] = []
+            image_event: UserMessageEvent | None = None
+
             for item in content_list:
                 item_type = getattr(item, "type", "")
+
                 if item_type == "text":
-                    parts.append(getattr(item, "text", ""))
-                elif item_type == "image":
-                    parts.append("[image]")
-                elif item_type == "resource":
+                    text = getattr(item, "text", "")
+                    if text:
+                        text_parts.append(text)
+                    continue
+
+                if item_type == "image":
+                    # MCP 的 image block 里带 base64 数据；ftre 内部要先落盘，再通过 image_file 事件下发。
+                    data = getattr(item, "data", "")
+                    mime_type = getattr(item, "mimeType", "image/png")
+                    if not data:
+                        text_parts.append("[image]")
+                        continue
+
+                    try:
+                        image_bytes = base64.b64decode(data)
+                        stored_path = save_image(
+                            image_bytes,
+                            mime_type,
+                            original_name=f"{server_name}_{mcp_tool.name}.png",
+                        )
+                        image_event = user_message_event(
+                            content=[{
+                                "type": "image_file",
+                                "path": stored_path,
+                                "mime_type": mime_type,
+                            }],
+                            metadata={
+                                # 这条消息是工具返回的中间视觉结果，不需要直接展示给用户。
+                                "hide": True,
+                                "mime": mime_type,
+                                "size": len(image_bytes),
+                            },
+                        )
+                    except Exception as image_error:
+                        logger.warning(f"[mcp] 图片内容处理失败: {tool_id} — {image_error}")
+                        text_parts.append("[image]")
+                    continue
+
+                if item_type == "resource":
+                    # resource 可能是文本资源，也可能是二进制 blob。
+                    # 二进制内容不直接塞进 prompt，先落盘保存，再给 AI 一个可点击/可读取的路径提示。
                     resource = getattr(item, "resource", None)
                     if resource and hasattr(resource, "text"):
-                        parts.append(resource.text)
+                        text = resource.text
+                        if text:
+                            text_parts.append(text)
                     elif resource and hasattr(resource, "blob"):
-                        parts.append("[resource blob]")
+                        try:
+                            blob_bytes = base64.b64decode(resource.blob)
+                            original_name = getattr(resource, "name", "") or f"{server_name}_{mcp_tool.name}"
+                            stored_path = save_image(blob_bytes, getattr(resource, "mimeType", "application/octet-stream"), original_name=original_name)
+                            text_parts.append(
+                                f"[resource 二进制内容已保存到本地，请读取该路径获取完整内容: {stored_path}]"
+                            )
+                        except Exception as blob_error:
+                            logger.warning(f"[mcp] resource blob 处理失败: {tool_id} — {blob_error}")
+                            text_parts.append("[resource blob]")
                     else:
-                        parts.append("[resource]")
-                else:
-                    parts.append(str(item))
+                        text_parts.append("[resource]")
+                    continue
 
-            return "\n".join(parts)
+                # 未知 block 类型统一转字符串，保证工具不会因为协议扩展直接失败。
+                text_parts.append(str(item))
+
+            text_output = "\n".join(part for part in text_parts if part)
+            if image_event is not None:
+                if text_output:
+                    # 兼容“图片 + 文本”场景：文本先挂到 metadata，后续如果需要可在上层渲染。
+                    image_event.metadata = {
+                        **(image_event.metadata or {}),
+                        "text": text_output,
+                    }
+                return image_event
+
+            return text_output
 
         except Exception as e:
             logger.error(f"[mcp] call_tool 失败: {tool_id} — {e}")
