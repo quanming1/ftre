@@ -16,7 +16,6 @@ import asyncio
 import copy
 import logging
 import os
-import time
 import uuid
 from concurrent.futures import Future
 
@@ -46,9 +45,6 @@ from ftre.trace_store import SQLiteTraceExporter, TRACE_DB_PATH
 from .compact_handler import CompactHandler
 
 logger = logging.getLogger(__name__)
-
-COMPACT_UNRETRYABLE_LLM_CODES = {"auth_error", "bad_request", "content_filter"}
-COMPACT_UNRETRYABLE_COOLDOWN_SECONDS = 300
 
 
 class AgentLoop:
@@ -109,10 +105,7 @@ class AgentLoop:
         # stop() 时可以统一 cancel，防止任务飞丢。
         self._dispatch_tasks: set[asyncio.Task] = set()
 
-        # 后台 idle compact task 去重：session_id → asyncio.Task
-        # 同一 session 同一时间只允许一个 compact task 在飞
-        self._compact_tasks: dict[str, asyncio.Task] = {}
-        self._compact_retry_after: dict[str, float] = {}
+        # 后台 idle compact 状态标记：手动 /compact 执行中的 session
         self._compacting_sessions: set[str] = set()
 
         # ─── pipeline ─────────────────────────────────────────
@@ -249,6 +242,9 @@ class AgentLoop:
             agent.cancel_nowait()
         self._active_agents.clear()
         self._session_tasks.clear()
+
+        # 4. 取消所有后台 idle 压缩 task
+        self.compact_handler.cancel_all_compact_tasks()
         for sid, future in self._subagent_done_futures.items():
             if not future.done():
                 future.set_result(
@@ -563,11 +559,12 @@ class AgentLoop:
                 )
                 await self.bus.publish_outbound(out)
                 # usage_update 时检查是否需要预压缩。
-                # _compact_tasks 去重保护确保同一 session 只有一个 compact task 在飞，
+                # maybe_schedule_idle_compact 自带去重，确保同一 session 只有一个 compact task 在飞，
                 # 所以即使 usage_update 频繁也不会反复调度。
                 if isinstance(event, UsageUpdateEvent) and inbound.from_channel != SUBAGENT_CHANNEL_ID:
                     try:
-                        await self._schedule_idle_compact(session_id, inbound.from_channel)
+                        _cfg = self._load_current_config()
+                        await self.compact_handler.maybe_schedule_idle_compact(session_id, inbound.from_channel, _cfg)
                     except Exception:
                         logger.debug("[agent-loop] 调度 usage 压缩失败", exc_info=True)
 
@@ -624,82 +621,10 @@ class AgentLoop:
             # 步骤 5（无感）：本轮结束后调度后台空闲压缩。
             if inbound.from_channel != SUBAGENT_CHANNEL_ID:
                 try:
-                    await self._schedule_idle_compact(session_id, inbound.from_channel)
+                    _cfg = self._load_current_config()
+                    await self.compact_handler.maybe_schedule_idle_compact(session_id, inbound.from_channel, _cfg)
                 except Exception:
                     logger.debug("[agent-loop] 调度 idle 压缩失败", exc_info=True)
-
-    # ─── idle 压缩调度 ──────────────────────────────────────
-
-    async def _schedule_idle_compact(self, session_id: str, channel_id: str) -> None:
-        """主事件循环里：水位 ≥ threshold → 后台压缩。
-
-        去重：同一 session 同一时间只允许一个后台 compact task 在飞。
-        如果上一个还没完成就不再派发，避免 cron session 连续触发导致反复压缩。
-        """
-        try:
-            config = self._load_current_config()
-            if not getattr(config.context, "idle_compaction", True):
-                return
-
-            retry_after = self._compact_retry_after.get(session_id)
-            now = time.monotonic()
-            if retry_after is not None and now < retry_after:
-                logger.debug(
-                    "[agent-loop] session=%s 后台压缩冷却中，%.0fs 后重试",
-                    session_id,
-                    retry_after - now,
-                )
-                return
-            if retry_after is not None:
-                self._compact_retry_after.pop(session_id, None)
-
-            need = await self.compact_handler.should_compact(
-                session_id,
-                channel_id,
-                config,
-                threshold=getattr(config.context, "precompact_threshold", 0.5),
-            )
-            if not need:
-                return
-
-            # 去重：同一 session 已有后台 compact 在飞则跳过
-            if session_id in self._compact_tasks:
-                logger.debug(f"[agent-loop] session={session_id} 已有后台压缩在飞，跳过")
-                return
-
-            # 后台隐形压缩：直接启用 compact event，让下一轮上下文立刻使用摘要。
-            async def _do_compact():
-                try:
-                    summary = await self.compact_handler.compact(
-                        session_id, channel_id,
-                        config=config,
-                        silent=getattr(config.context, "silent", True),
-                        enabled=True,
-                    )
-                    llm_error = getattr(self.compact_handler, "_last_llm_error", None)
-                    if summary is not None:
-                        self._compact_retry_after.pop(session_id, None)
-                    elif (
-                        llm_error is not None
-                        and getattr(llm_error, "code", None) in COMPACT_UNRETRYABLE_LLM_CODES
-                    ):
-                        self._compact_retry_after[session_id] = (
-                            time.monotonic() + COMPACT_UNRETRYABLE_COOLDOWN_SECONDS
-                        )
-                        logger.warning(
-                            "[agent-loop] session=%s 后台压缩遇到不可重试 LLM 错误 code=%s，冷却 %ss",
-                            session_id,
-                            llm_error.code,
-                            COMPACT_UNRETRYABLE_COOLDOWN_SECONDS,
-                        )
-                finally:
-                    self._compact_tasks.pop(session_id, None)
-
-            task = asyncio.create_task(_do_compact())
-            self._compact_tasks[session_id] = task
-            logger.info(f"[agent-loop] idle 后台压缩已派发 session={session_id}")
-        except Exception:
-            logger.exception(f"[agent-loop] idle 压缩调度异常 session={session_id}")
 
     # ─── 工具方法 ──────────────────────────────────────────
 
