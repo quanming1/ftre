@@ -519,6 +519,7 @@ async def test_run_compact_llm_collects_stream(monkeypatch):
     handler.channel_manager = None
     handler.bus = None
     handler._threshold = 0.6
+    handler._last_llm_errors = {}
     config = types.SimpleNamespace(
         llm=types.SimpleNamespace(
             model="fake-model",
@@ -557,7 +558,7 @@ async def test_run_compact_llm_records_llm_error(monkeypatch):
     handler.channel_manager = None
     handler.bus = None
     handler._threshold = 0.6
-    handler._last_llm_error = None
+    handler._last_llm_errors = {}
     config = types.SimpleNamespace(
         llm=types.SimpleNamespace(
             model="fake-model",
@@ -570,32 +571,38 @@ async def test_run_compact_llm_records_llm_error(monkeypatch):
 
     monkeypatch.setattr(compact_module, "LLMHandler", FakeLLMHandler)
 
-    summary = await handler._run_compact_llm(events, config=config)
+    summary = await handler._run_compact_llm(events, config=config, session_id="test")
 
     assert summary is None
-    assert handler._last_llm_error is not None
-    assert handler._last_llm_error.code == "bad_request"
+    assert handler._last_llm_errors.get("test") is not None
+    assert handler._last_llm_errors["test"].code == "bad_request"
 
 
 @pytest.mark.asyncio
 async def test_idle_compact_unretryable_llm_error_enters_cooldown():
     import types
 
-    from ftre.agent.loop import AgentLoop
+    from ftre.agent.compact_handler import CompactHandler
     from ftre_agent_core.llm import LLMError
 
-    class FakeCompactHandler:
-        def __init__(self):
-            self.compact_calls = 0
-            self._last_llm_error = None
+    handler = object.__new__(CompactHandler)
+    handler._compact_tasks = {}
+    handler._compact_retry_after = {}
+    handler._last_llm_errors = {}
 
-        async def should_compact(self, session_id, channel_id, config, *, threshold):
-            return True
+    compact_calls = 0
 
-        async def compact(self, session_id, channel_id, *, config, silent, enabled):
-            self.compact_calls += 1
-            self._last_llm_error = LLMError("Insufficient Balance", "bad_request")
-            return None
+    async def fake_should_compact(session_id, channel_id, config, *, threshold):
+        return True
+
+    async def fake_compact(session_id, channel_id, *, config, silent, enabled):
+        nonlocal compact_calls
+        compact_calls += 1
+        handler._last_llm_errors[session_id] = LLMError("Insufficient Balance", "bad_request")
+        return None
+
+    handler.should_compact = fake_should_compact
+    handler.compact = fake_compact
 
     config = types.SimpleNamespace(
         context=types.SimpleNamespace(
@@ -604,18 +611,12 @@ async def test_idle_compact_unretryable_llm_error_enters_cooldown():
             silent=True,
         )
     )
-    compact_handler = FakeCompactHandler()
-    loop = object.__new__(AgentLoop)
-    loop._injected_config = config
-    loop.compact_handler = compact_handler
-    loop._compact_tasks = {}
-    loop._compact_retry_after = {}
 
-    await loop._schedule_idle_compact("ws::s1", "ws")
-    task = loop._compact_tasks["ws::s1"]
+    await handler.maybe_schedule_idle_compact("ws::s1", "ws", config)
+    task = handler._compact_tasks["ws::s1"]
     await task
 
-    await loop._schedule_idle_compact("ws::s1", "ws")
+    await handler.maybe_schedule_idle_compact("ws::s1", "ws", config)
 
-    assert compact_handler.compact_calls == 1
-    assert loop._compact_retry_after["ws::s1"] > 0
+    assert compact_calls == 1
+    assert handler._compact_retry_after["ws::s1"] > 0

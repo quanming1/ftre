@@ -17,6 +17,8 @@ to_openai_messages 遍历：
 并发安全：
 - compact() 总是在 AgentLoop._dispatch 的 per-session asyncio.Lock 内调用，
   同一 session 不会并发执行压缩，无需 CompactHandler 自建锁。
+- 后台 idle 压缩（maybe_schedule_idle_compact）在 lock 外异步执行，
+  通过 _compact_tasks 去重 + _compact_retry_after 冷却退避自行管理并发。
 """
 from __future__ import annotations
 
@@ -41,6 +43,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PRECOMPACT_THRESHOLD = 0.5
 DEFAULT_COMPACT_THRESHOLD = 0.6
+
+# 不可重试的 LLM 错误码 → 触发冷却退避
+COMPACT_UNRETRYABLE_LLM_CODES = {"auth_error", "bad_request", "content_filter"}
+COMPACT_UNRETRYABLE_COOLDOWN_SECONDS = 300
 
 # ─── 摘要模板（源自 OpenCode 7 段锚定结构，中文本地化） ──────────────────────
 SUMMARY_TEMPLATE = """\
@@ -107,7 +113,12 @@ class CompactHandler:
         self.channel_manager = channel_manager
         self.bus = bus
         self._threshold = threshold
-        self._last_llm_error: LLMError | None = None
+        self._last_llm_errors: dict[str, LLMError | None] = {}
+
+        # 后台 idle compact task 去重：session_id → asyncio.Task
+        # 同一 session 同一时间只允许一个 compact task 在飞
+        self._compact_tasks: dict[str, asyncio.Task] = {}
+        self._compact_retry_after: dict[str, float] = {}
 
     # ─── 只读判断 ──────────────────────────────────────────────────
 
@@ -277,6 +288,7 @@ class CompactHandler:
         # 6. LLM 直调摘要
         summary = await self._run_compact_llm(
             head_events, config=config, previous_summary=previous_summary,
+            session_id=session_id,
         )
         if not summary:
             logger.warning(f"[compact] session={session_id} LLM 摘要失败")
@@ -337,6 +349,7 @@ class CompactHandler:
         *,
         config,
         previous_summary: str | None = None,
+        session_id: str = "",
     ) -> str | None:
         """调用 LLM 生成摘要（异步）。
 
@@ -345,7 +358,7 @@ class CompactHandler:
         2. buildPrompt() 返回多条 user message：对话记录 + 指令/模板
         3. 多条 user message 依次发给 LLM
         """
-        self._last_llm_error = None
+        self._last_llm_errors[session_id] = None
         try:
             context = _serialize_events(head_events)
             if not context.strip():
@@ -384,7 +397,7 @@ class CompactHandler:
                 return None
             return summary
         except LLMError as exc:
-            self._last_llm_error = exc
+            self._last_llm_errors[session_id] = exc
             logger.warning("[compact] LLM 直调摘要失败 code=%s message=%s", exc.code, exc.message)
             return None
         except Exception:
@@ -416,6 +429,86 @@ class CompactHandler:
                              *, silent: bool = False) -> None:
         """派发 context_compact_failed 通知。"""
         await self._notify(session_id, channel_id, "context_compact_failed", {"reason": reason}, silent=silent)
+
+    # ─── 后台 idle 压缩调度 ───────────────────────────────────────
+
+    async def maybe_schedule_idle_compact(
+        self, session_id: str, channel_id: str, config,
+    ) -> None:
+        """主事件循环里：水位 ≥ threshold → 后台压缩。
+
+        去重：同一 session 同一时间只允许一个后台 compact task 在飞。
+        如果上一个还没完成就不再派发，避免 cron session 连续触发导致反复压缩。
+        """
+        try:
+            if not getattr(config.context, "idle_compaction", True):
+                return
+
+            retry_after = self._compact_retry_after.get(session_id)
+            now = time.monotonic()
+            if retry_after is not None and now < retry_after:
+                logger.debug(
+                    "[compact] session=%s 后台压缩冷却中，%.0fs 后重试",
+                    session_id,
+                    retry_after - now,
+                )
+                return
+            if retry_after is not None:
+                self._compact_retry_after.pop(session_id, None)
+
+            need = await self.should_compact(
+                session_id,
+                channel_id,
+                config,
+                threshold=getattr(config.context, "precompact_threshold", DEFAULT_PRECOMPACT_THRESHOLD),
+            )
+            if not need:
+                return
+
+            # 去重：同一 session 已有后台 compact 在飞则跳过
+            if session_id in self._compact_tasks:
+                logger.debug(f"[compact] session={session_id} 已有后台压缩在飞，跳过")
+                return
+
+            # 后台隐形压缩：直接启用 compact event，让下一轮上下文立刻使用摘要。
+            async def _do_bg_compact():
+                try:
+                    summary = await self.compact(
+                        session_id, channel_id,
+                        config=config,
+                        silent=getattr(config.context, "silent", True),
+                        enabled=True,
+                    )
+                    llm_error = self._last_llm_errors.get(session_id)
+                    if summary is not None:
+                        self._compact_retry_after.pop(session_id, None)
+                    elif (
+                        llm_error is not None
+                        and getattr(llm_error, "code", None) in COMPACT_UNRETRYABLE_LLM_CODES
+                    ):
+                        self._compact_retry_after[session_id] = (
+                            time.monotonic() + COMPACT_UNRETRYABLE_COOLDOWN_SECONDS
+                        )
+                        logger.warning(
+                            "[compact] session=%s 后台压缩遇到不可重试 LLM 错误 code=%s，冷却 %ss",
+                            session_id,
+                            llm_error.code,
+                            COMPACT_UNRETRYABLE_COOLDOWN_SECONDS,
+                        )
+                finally:
+                    self._compact_tasks.pop(session_id, None)
+
+            task = asyncio.create_task(_do_bg_compact())
+            self._compact_tasks[session_id] = task
+            logger.info(f"[compact] idle 后台压缩已派发 session={session_id}")
+        except Exception:
+            logger.exception(f"[compact] idle 压缩调度异常 session={session_id}")
+
+    def cancel_all_compact_tasks(self) -> None:
+        """stop() 时调用，取消所有在飞的后台压缩 task。"""
+        for task in self._compact_tasks.values():
+            task.cancel()
+        self._compact_tasks.clear()
 
 
 # ─── 模块级纯函数（可单测） ───────────────────────────────────────────
