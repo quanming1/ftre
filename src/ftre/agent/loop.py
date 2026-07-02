@@ -318,11 +318,36 @@ class AgentLoop:
         """普通指令预处理：匹配普通指令（锁内）。
 
         系统级指令已在 _dispatch 锁外处理，这里只处理普通指令（如 /compact）。
-        返回 True 继续 pipeline，返回 False 短路。
+        流程：先判断是否命中 → 命中则持久化 user_message → 再执行指令 handler。
+        返回 True 继续 pipeline（未匹配），返回 False 短路（已执行）。
         """
         if not self.command_manager:
             return True
-        return not await self.command_manager.try_dispatch(data)
+
+        # 1. 先判断是否命中（不执行 handler）
+        cmd_def = self.command_manager.match(data)
+        if cmd_def is None:
+            return True
+
+        # 2. 命中 → 先持久化用户输入（格式与 _run_async Step 6 对齐）
+        inbound = data["inbound"]
+        session_id = inbound.from_session or inbound.data.get("session_id", "")
+        content = inbound.data.get("content", "")
+        if session_id and content:
+            try:
+                await self.session_manager.save_message(
+                    session_id, "user_message", {
+                        "event_id": uuid.uuid4().hex[:16],
+                        "content": normalize_stored_user_content(content),
+                        "metadata": {"hide": False},
+                    },
+                )
+            except Exception:
+                logger.exception(f"[agent-loop] 指令消息持久化失败 session={session_id}")
+
+        # 3. 再执行指令 handler
+        await self.command_manager.try_dispatch(data)
+        return False
 
     async def _step_compact(self, data: dict) -> bool:
         """压缩阶段：只判断是否需要自动压缩，把结论写入 data['need_compact']。"""
