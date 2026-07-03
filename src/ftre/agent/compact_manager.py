@@ -1,5 +1,5 @@
 """
-CompactHandler — 上下文压缩处理器
+CompactManager — 上下文压缩处理器
 
 设计：
 - 50% 水位（precompact_threshold）：idle/usage 后台路径 → compact(enabled=True)
@@ -16,7 +16,7 @@ to_openai_messages 遍历：
 
 并发安全：
 - compact() 总是在 AgentLoop._dispatch 的 per-session asyncio.Lock 内调用，
-  同一 session 不会并发执行压缩，无需 CompactHandler 自建锁。
+  同一 session 不会并发执行压缩，无需 CompactManager 自建锁。
 - 后台 idle 压缩（maybe_schedule_idle_compact）在 lock 外异步执行，
   通过 _compact_tasks 去重 + _compact_retry_after 冷却退避自行管理并发。
 """
@@ -98,7 +98,7 @@ COMPACT_LLM_SYSTEM_PROMPT = """\
 - 你的输出必须且只能是一份 Markdown 摘要，严格遵循给定的模板结构，不输出任何其他内容。"""
 
 
-class CompactHandler:
+class CompactManager:
     """上下文压缩处理器（全异步）。"""
 
     def __init__(

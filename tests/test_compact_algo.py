@@ -1,5 +1,5 @@
-"""
-compact_handler 模块级算法工具的单测。
+﻿"""
+compact_manager 模块级算法工具的单测。
 
 只测纯函数，不依赖 db / channel / bus。
 """
@@ -9,7 +9,7 @@ import pytest
 
 from ftre.utils.image_store import save_image
 
-from ftre.agent.compact_handler import (
+from ftre.agent.compact_manager import (
     get_cursor_index,
     get_pending_compact_index,
     get_previous_summary,
@@ -502,7 +502,7 @@ async def test_run_compact_llm_collects_stream(monkeypatch):
     import types
 
     from ftre_agent_core.llm import TextDelta, StepFinish
-    import ftre.agent.compact_handler as compact_module
+    import ftre.agent.compact_manager as compact_module
 
     class FakeLLMHandler:
         def __init__(self, **kwargs):
@@ -514,7 +514,7 @@ async def test_run_compact_llm_collects_stream(monkeypatch):
             yield TextDelta(text=("- 做某事" * 60))
             yield StepFinish(finish_reason="stop")
 
-    handler = object.__new__(compact_module.CompactHandler)
+    handler = object.__new__(compact_module.CompactManager)
     handler.session_manager = None
     handler.channel_manager = None
     handler.bus = None
@@ -543,7 +543,7 @@ async def test_run_compact_llm_records_llm_error(monkeypatch):
     import types
 
     from ftre_agent_core.llm import LLMError
-    import ftre.agent.compact_handler as compact_module
+    import ftre.agent.compact_manager as compact_module
 
     class FakeLLMHandler:
         def __init__(self, **kwargs):
@@ -553,7 +553,7 @@ async def test_run_compact_llm_records_llm_error(monkeypatch):
             raise LLMError("Insufficient Balance", "bad_request")
             yield
 
-    handler = object.__new__(compact_module.CompactHandler)
+    handler = object.__new__(compact_module.CompactManager)
     handler.session_manager = None
     handler.channel_manager = None
     handler.bus = None
@@ -582,10 +582,10 @@ async def test_run_compact_llm_records_llm_error(monkeypatch):
 async def test_idle_compact_unretryable_llm_error_enters_cooldown():
     import types
 
-    from ftre.agent.compact_handler import CompactHandler
+    from ftre.agent.compact_manager import CompactManager
     from ftre_agent_core.llm import LLMError
 
-    handler = object.__new__(CompactHandler)
+    handler = object.__new__(CompactManager)
     handler._compact_tasks = {}
     handler._compact_retry_after = {}
     handler._last_llm_errors = {}

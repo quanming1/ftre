@@ -42,6 +42,35 @@ class ToolRegistry:
         return len(self._tools)
 
 
+def filter_tools(all_tools: list[Tool], tools_config: dict | None) -> list[Tool]:
+    """按 agent 的 tools.allow / tools.deny 过滤工具列表。
+
+    Args:
+        all_tools: 内置工具 + 插件工具 + MCP 工具的完整列表
+        tools_config: agent.config.json 的 tools 字段，格式为
+                      {"allow": [...], "deny": [...]} 或 None
+
+    Returns:
+        过滤后的工具列表。tools_config 为 None 时返回原列表。
+    """
+    if not tools_config:
+        return all_tools
+
+    allow = set(tools_config.get("allow", []))
+    deny = set(tools_config.get("deny", []))
+
+    result = []
+    for tool in all_tools:
+        name = getattr(tool, "name", "")
+        if name in deny:
+            continue
+        # allow 为空 = 不做白名单限制，只看 deny
+        if allow and name not in allow:
+            continue
+        result.append(tool)
+    return result
+
+
 def build_default_tools(
     channel_manager=None,
     tool_registry: ToolRegistry | None = None,

@@ -15,18 +15,22 @@ logger = logging.getLogger(__name__)
 # 配置文件路径
 CONFIG_PATH = Path(os.environ.get("USERPROFILE", Path.home()) if sys.platform == "win32" else Path.home()) / ".ftre" / "config.json"
 
+# Agent 目录路径
+AGENTS_DIR = CONFIG_PATH.parent / "agents"
+
 # 默认 system prompt 文件（与 config.py 同级）
 SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "system_prompt.md"
 
 
 def _load_system_prompt() -> str:
-    """从 system_prompt.md 读取默认提示词。"""
+    """从 system_prompt.md 读取默认提示词，用 XML 标签包裹。"""
     try:
         if SYSTEM_PROMPT_PATH.exists():
-            return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+            content = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+            return f'<SYSTEM_PROMPT desc="系统提示词基座，定义运行时行为规范" path="{SYSTEM_PROMPT_PATH}">\n{content}\n</SYSTEM_PROMPT>'
     except Exception as e:
         logger.warning(f"[config] 读取 system_prompt.md 失败: {e}")
-    return "你是 ftre，一个 AI 编程助手。"
+    return f'<SYSTEM_PROMPT desc="系统提示词基座，定义运行时行为规范" path="{SYSTEM_PROMPT_PATH}">\n- 你是一个 AI 助手。\n</SYSTEM_PROMPT>'
 
 
 @dataclass
