@@ -519,8 +519,10 @@ async def update_agent(agent_id: str, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="请求体必须是 JSON")
 
-    if not isinstance(body, dict) or "llm" not in body:
-        raise HTTPException(status_code=400, detail="目前只支持更新 llm 字段")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON")
+    if not any(k in body for k in ("llm", "name", "workspace")):
+        raise HTTPException(status_code=400, detail="支持更新的字段: llm, name, workspace")
 
     try:
         updated = _agent_manager.update_agent(agent_id, body)
@@ -567,4 +569,53 @@ async def update_agent_prompt(agent_id: str, filename: str, request: Request):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"[api] 写入 prompt 文件失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/agents")
+async def create_agent_endpoint(request: Request):
+    """创建新 agent。"""
+    if _agent_manager is None:
+        raise HTTPException(status_code=503, detail="AgentManager 未初始化")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON")
+
+    agent_id = body.get("id", "")
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="id 不能为空")
+
+    try:
+        cfg = _agent_manager.create_agent_profile(
+            agent_id=agent_id,
+            name=body.get("name", ""),
+            llm_provider=body.get("provider", ""),
+            llm_model=body.get("model", ""),
+            workspace=body.get("workspace", ""),
+        )
+        return {"ok": True, "config": cfg}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[api] 创建 agent 失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/agents/{agent_id}")
+async def delete_agent_endpoint(agent_id: str):
+    """删除 agent。"""
+    if _agent_manager is None:
+        raise HTTPException(status_code=503, detail="AgentManager 未初始化")
+
+    try:
+        _agent_manager.delete_agent(agent_id)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"[api] 删除 agent 失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
