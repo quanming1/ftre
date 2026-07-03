@@ -452,12 +452,10 @@ class AgentLoop:
 
         # Step 2.8: 关键路径压缩
         config = self._load_current_config()
-        # 如果有 per-agent 配置，覆盖 llm 和 workspace
+        # 如果有 per-agent 配置，覆盖 llm（workspace 不覆盖——agent workspace 是 agent 的"家目录"，不是对话的 cwd）
         if agent_profile is not None:
             config = copy.deepcopy(config)
             config.llm = agent_profile.llm
-            if agent_profile.workspace:
-                config.workspace = agent_profile.workspace
         if need_compact:
             try:
                 silent = getattr(config.context, "silent", True)
@@ -479,9 +477,7 @@ class AgentLoop:
                 logger.exception(f"[agent-loop] 关键路径压缩异常 session={session_id}")
 
         # Step 4: 加载历史消息 + hook
-        workspace = session.get("workspace", "") or os.getcwd()
-        if agent_profile and agent_profile.workspace:
-            workspace = agent_profile.workspace
+        workspace = session.get("workspace", "") or config.workspace or os.getcwd()
         messages, hook_config = await self._build_messages(
             session_id,
             content,
