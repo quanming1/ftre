@@ -267,6 +267,51 @@ class AgentManager:
 
         return result
 
+    def update_agent(self, agent_id: str, patch: dict) -> dict:
+        """更新 agent.config.json 的字段，目前只支持 llm。
+
+        Args:
+            agent_id: agent ID
+            patch: {"llm": {"provider": "...", "model": "..."}}
+
+        Returns:
+            更新后的 agent.config.json 内容
+        """
+        agent_dir = self._agents_dir / agent_id
+        if not agent_dir.is_dir():
+            raise FileNotFoundError(f"agent '{agent_id}' 不存在")
+
+        config_path = agent_dir / "agent.config.json"
+
+        # 读取现有配置
+        cfg: dict = {}
+        if config_path.exists():
+            try:
+                cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"[agent-manager] 读取 {config_path} 失败: {e}")
+
+        # 合并 patch（目前只支持 llm 字段）
+        if "llm" in patch and isinstance(patch["llm"], dict):
+            existing_llm = cfg.get("llm", {})
+            if not isinstance(existing_llm, dict):
+                existing_llm = {}
+            existing_llm.update(patch["llm"])
+            cfg["llm"] = existing_llm
+
+        # 写回
+        config_path.write_text(
+            json.dumps(cfg, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        # 清除缓存
+        self._cache.pop(agent_id, None)
+        self._cache_key.pop(agent_id, None)
+
+        logger.info(f"[agent-manager] 已更新 agent '{agent_id}' 的配置: {patch}")
+        return cfg
+
     # ─── 默认 agent 内置提示词 ─────────────────────────────
 
     _DEFAULT_SOUL = "你是 ftre，一个 AI 编程助手。"
