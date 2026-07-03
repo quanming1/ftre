@@ -19,13 +19,18 @@ def fake_config(monkeypatch):
     def _make(data: dict) -> AgentConfig:
         holder["data"] = data
         monkeypatch.setattr(ftre_config, "load_config_file", lambda: data)
+        # 清除缓存，确保 load_config() 重新解析
+        monkeypatch.setattr(ftre_config, "_last_config", None)
+        monkeypatch.setattr(ftre_config, "_last_sig", "")
+        # 避免读取真实 ~/.ftre/agents/default/agent.config.json
+        monkeypatch.setattr(ftre_config, "_read_default_agent_llm", lambda: ("", "", ""))
         return ftre_config.load_config()
 
     return _make
 
 
 def test_context_defaults_when_missing(fake_config):
-    cfg = fake_config({"agents": {"defaults": {"model": "x", "provider": "y"}}})
+    cfg = fake_config({"agents": {"title_generation": {"provider": "x", "model": "y"}}})
     assert isinstance(cfg.context, ContextConfig)
     assert cfg.context.precompact_threshold == 0.5
     assert cfg.context.compact_threshold == 0.6
@@ -38,15 +43,13 @@ def test_context_defaults_when_missing(fake_config):
 def test_context_camel_case(fake_config):
     cfg = fake_config({
         "agents": {
-            "defaults": {
-                "context": {
-                    "precompactThreshold": 0.45,
-                    "compactThreshold": 0.7,
-                    "consolidationRatio": 0.4,
-                    "safetyBuffer": 2048,
-                    "idleCompaction": False,
-                    "silent": False,
-                }
+            "context": {
+                "precompactThreshold": 0.45,
+                "compactThreshold": 0.7,
+                "consolidationRatio": 0.4,
+                "safetyBuffer": 2048,
+                "idleCompaction": False,
+                "silent": False,
             }
         }
     })
@@ -61,13 +64,11 @@ def test_context_camel_case(fake_config):
 def test_context_snake_case_also_works(fake_config):
     cfg = fake_config({
         "agents": {
-            "defaults": {
-                "context": {
-                    "precompact_threshold": 0.4,
-                    "compact_threshold": 0.8,
-                    "consolidation_ratio": 0.6,
-                    "safety_buffer": 512,
-                }
+            "context": {
+                "precompact_threshold": 0.4,
+                "compact_threshold": 0.8,
+                "consolidation_ratio": 0.6,
+                "safety_buffer": 512,
             }
         }
     })
@@ -80,10 +81,8 @@ def test_context_snake_case_also_works(fake_config):
 def test_context_legacy_threshold_maps_to_compact_threshold(fake_config):
     cfg = fake_config({
         "agents": {
-            "defaults": {
-                "context": {
-                    "threshold": 0.75,
-                }
+            "context": {
+                "threshold": 0.75,
             }
         }
     })
@@ -94,11 +93,9 @@ def test_context_legacy_threshold_maps_to_compact_threshold(fake_config):
 def test_context_camel_takes_precedence_over_snake(fake_config):
     cfg = fake_config({
         "agents": {
-            "defaults": {
-                "context": {
-                    "consolidationRatio": 0.5,
-                    "consolidation_ratio": 0.9,  # 应被 camelCase 覆盖
-                }
+            "context": {
+                "consolidationRatio": 0.5,
+                "consolidation_ratio": 0.9,  # 应被 camelCase 覆盖
             }
         }
     })
@@ -106,8 +103,24 @@ def test_context_camel_takes_precedence_over_snake(fake_config):
 
 
 def test_context_invalid_payload_falls_back_to_defaults(fake_config):
-    cfg = fake_config({"agents": {"defaults": {"context": "not-a-dict"}}})
+    cfg = fake_config({"agents": {"context": "not-a-dict"}})
     assert cfg.context.consolidation_ratio == 0.5  # 默认
+
+
+def test_context_backward_compat_agents_defaults(fake_config):
+    """旧结构 agents.defaults.context 仍能作为回退读取。"""
+    cfg = fake_config({
+        "agents": {
+            "defaults": {
+                "context": {
+                    "compactThreshold": 0.8,
+                    "consolidationRatio": 0.3,
+                }
+            }
+        }
+    })
+    assert cfg.context.compact_threshold == 0.8
+    assert cfg.context.consolidation_ratio == 0.3
 
 
 def test_load_config_with_no_data_returns_default_agent_config(monkeypatch):

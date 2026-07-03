@@ -105,9 +105,15 @@ class AgentManager:
                 logger.warning(f"[agent-manager] 读取 {config_path} 失败: {e}")
 
         # ─── 合并 LLM ──────────────────────────────────────
-        global_defaults = self._global_data.get("agents", {}).get("defaults", {})
-        global_provider = global_defaults.get("provider", "")
-        global_model = global_defaults.get("model", "")
+        # 全局兜底：从 default agent 的 agent.config.json 读取（不再从 agents.defaults）
+        global_provider, global_model, global_workspace = self._read_default_agent_llm()
+        # 向后兼容：default agent 没有则回退到旧 agents.defaults
+        if not global_provider or not global_model:
+            legacy_defaults = self._global_data.get("agents", {}).get("defaults", {})
+            if isinstance(legacy_defaults, dict):
+                global_provider = global_provider or legacy_defaults.get("provider", "")
+                global_model = global_model or legacy_defaults.get("model", "")
+                global_workspace = global_workspace or legacy_defaults.get("workspace", "")
 
         agent_llm = agent_cfg.get("llm", {})
         if not isinstance(agent_llm, dict):
@@ -126,7 +132,7 @@ class AgentManager:
             llm = _build_llm_config(self._global_data, global_provider, global_model)
 
         # ─── 合并 workspace ─────────────────────────────────
-        workspace = agent_cfg.get("workspace", "") or global_defaults.get("workspace", "") or ""
+        workspace = agent_cfg.get("workspace", "") or global_workspace or ""
         if not isinstance(workspace, str):
             workspace = ""
 
@@ -330,6 +336,52 @@ class AgentManager:
         logger.info(f"[agent-manager] 已更新 agent '{agent_id}' 的配置: {patch}")
         return cfg
 
+    def _read_default_agent_llm(self) -> tuple[str, str, str]:
+        """读取 default agent 的 llm provider/model 和 workspace。
+
+        全局兜底配置的单一事实源——其他 agent 未指定 llm 时回退到 default agent。
+        """
+        cfg_path = self._agents_dir / "default" / "agent.config.json"
+        if not cfg_path.exists():
+            return "", "", ""
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            llm = cfg.get("llm", {})
+            if not isinstance(llm, dict):
+                llm = {}
+            workspace = cfg.get("workspace", "")
+            if not isinstance(workspace, str):
+                workspace = ""
+            return llm.get("provider", ""), llm.get("model", ""), workspace
+        except (json.JSONDecodeError, OSError):
+            return "", "", ""
+
+    def _migrate_user_prompt(self, default_dir: Path) -> None:
+        """将 config.json 旧 agents.defaults.user_prompt 迁移到 default agent 的 USER.md。
+
+        一次性迁移：USER.md 已有内容则跳过。
+        """
+        legacy_defaults = self._global_data.get("agents", {}).get("defaults", {})
+        if not isinstance(legacy_defaults, dict):
+            return
+        user_prompt = legacy_defaults.get("user_prompt", "")
+        if not user_prompt or not isinstance(user_prompt, str):
+            return
+        if not default_dir.is_dir():
+            return
+
+        user_md_path = default_dir / "USER.md"
+        existing = ""
+        if user_md_path.exists():
+            try:
+                existing = user_md_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+
+        if not existing:
+            user_md_path.write_text(user_prompt.strip(), encoding="utf-8")
+            logger.info(f"[agent-manager] 已将 config.json 的 user_prompt 迁移到 {user_md_path}")
+
     # ─── 默认 agent 内置提示词 ─────────────────────────────
 
     _DEFAULT_SOUL = "你是 ftre，一个 AI 编程助手。"
@@ -361,27 +413,57 @@ class AgentManager:
 """
 
     def ensure_default(self) -> None:
-        """首次启动时确保 default agent 存在。"""
+        """首次启动时确保 default agent 存在，并迁移旧配置。"""
         default_dir = self._agents_dir / "default"
+
+        # 迁移：将旧 agents.defaults.user_prompt 迁移到 USER.md
+        self._migrate_user_prompt(default_dir)
+
         if default_dir.exists():
             return
 
         self._agents_dir.mkdir(parents=True, exist_ok=True)
         default_dir.mkdir()
 
-        # agent.config.json — 完整配置
-        global_defaults = self._global_data.get("agents", {}).get("defaults", {})
+        # agent.config.json — 尝试选取默认 provider/model
         default_cfg: dict = {
             "id": "default",
             "name": "Ftre",
         }
-        if global_defaults.get("provider") and global_defaults.get("model"):
-            default_cfg["llm"] = {
-                "provider": global_defaults["provider"],
-                "model": global_defaults["model"],
-            }
-        if global_defaults.get("workspace"):
-            default_cfg["workspace"] = global_defaults["workspace"]
+
+        # 向后兼容：从旧 agents.defaults 读取
+        legacy_defaults = self._global_data.get("agents", {}).get("defaults", {})
+        if isinstance(legacy_defaults, dict):
+            if legacy_defaults.get("provider") and legacy_defaults.get("model"):
+                default_cfg["llm"] = {
+                    "provider": legacy_defaults["provider"],
+                    "model": legacy_defaults["model"],
+                }
+            if legacy_defaults.get("workspace"):
+                default_cfg["workspace"] = legacy_defaults["workspace"]
+
+        # 旧结构没有 → 从 providers 中选第一个可用 provider/model
+        if "llm" not in default_cfg:
+            providers = self._global_data.get("providers", {})
+            if isinstance(providers, dict) and providers:
+                first_name = next(iter(providers))
+                first_provider = providers[first_name]
+                if isinstance(first_provider, dict):
+                    models = first_provider.get("models", [])
+                    if isinstance(models, list) and models:
+                        first_model = models[0]
+                        if isinstance(first_model, dict) and first_model.get("id"):
+                            default_cfg["llm"] = {
+                                "provider": first_name,
+                                "model": first_model["id"],
+                            }
+
+        # 迁移：将旧 agents.defaults.user_prompt 写入 USER.md
+        user_md_content = ""
+        if isinstance(legacy_defaults, dict):
+            up = legacy_defaults.get("user_prompt", "")
+            if isinstance(up, str) and up.strip():
+                user_md_content = up.strip()
 
         (default_dir / "agent.config.json").write_text(
             json.dumps(default_cfg, ensure_ascii=False, indent=2),
@@ -389,7 +471,7 @@ class AgentManager:
         )
         (default_dir / "SOUL.md").write_text(self._DEFAULT_SOUL, encoding="utf-8")
         (default_dir / "AGENTS.md").write_text(self._DEFAULT_AGENTS, encoding="utf-8")
-        (default_dir / "USER.md").write_text("", encoding="utf-8")
+        (default_dir / "USER.md").write_text(user_md_content, encoding="utf-8")
 
         logger.info(f"[agent-manager] 已创建默认 agent: {default_dir}")
 
