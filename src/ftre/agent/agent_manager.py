@@ -11,7 +11,7 @@ AgentManager — 加载和管理 ~/.ftre/agents/ 下的 per-agent 配置。
 合并规则：
   - llm: 仅 provider + model 可覆盖，api_key/base_url/vision 始终用全局
   - tools: 整体替换（写了就用 agent 的，不写则全部可用）
-  - workspace: 标量覆盖
+  - workspace: Agent 的"家目录"（存放 SOUL/AGENTS/USER.md 的路径，不是对话 cwd）
   - mcp: 深度合并（按 server name 为 key）
   - plugins: 按 name 合并（同名 agent 覆盖全局，全局有但 agent 没提的保留）
   - disabled_skills: 整体替换
@@ -36,7 +36,7 @@ class AgentProfile:
     agent_id: str = "default"
     name: str = ""
     llm: LLMConfig = field(default_factory=LLMConfig)
-    workspace: str = ""
+    workspace: str = ""                    # Agent 的"家目录"（存放 prompt 文件的路径，不是对话 cwd）
     tools_config: dict | None = None         # {"allow": [...], "deny": [...]} 或 None
     mcp_config: dict = field(default_factory=dict)
     plugins_config: list = field(default_factory=list)
