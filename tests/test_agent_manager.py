@@ -413,3 +413,76 @@ def test_agent_profile_llm_fallback_on_invalid_provider(tmp_agents_dir, fake_glo
 
     assert profile.llm.model == "gpt-4o"
     assert profile.llm.api_key == "sk-global"
+
+
+def test_default_agent_config_as_global_fallback(tmp_path):
+    """Without agents.defaults, default agent's config is the global fallback."""
+    from ftre.agent.agent_manager import AgentManager
+
+    agents_dir = tmp_path / "agents"
+    # default agent with llm config
+    default_dir = agents_dir / "default"
+    default_dir.mkdir(parents=True)
+    (default_dir / "agent.config.json").write_text(json.dumps({
+        "id": "default",
+        "name": "Ftre",
+        "llm": {"provider": "openai", "model": "gpt-4o"},
+        "workspace": "/global/ws",
+    }), encoding="utf-8")
+
+    # coder agent with empty config — should inherit from default agent
+    coder_dir = agents_dir / "coder"
+    coder_dir.mkdir()
+    (coder_dir / "agent.config.json").write_text("{}", encoding="utf-8")
+
+    # No agents.defaults in global config
+    global_data = {
+        "providers": {
+            "openai": {
+                "api_key": "sk-global",
+                "api_base": "https://api.openai.com/v1",
+                "api_protocol": "openai",
+                "models": [
+                    {"id": "gpt-4o", "name": "GPT-4o", "context_window": 128000, "max_output": 16384, "vision": True},
+                ],
+            },
+        },
+        # No agents.defaults — new structure
+        "agents": {},
+    }
+
+    mgr = AgentManager(agents_dir=agents_dir, global_config_data=global_data)
+    profile = mgr.load("coder")
+
+    # coder has no llm → falls back to default agent's llm
+    assert profile.llm.model == "gpt-4o"
+    assert profile.llm.api_key == "sk-global"
+    # coder has no workspace → falls back to default agent's workspace
+    assert profile.workspace == "/global/ws"
+
+
+def test_ensure_default_picks_first_provider(tmp_path):
+    """ensure_default() picks first provider/model when agents.defaults is absent."""
+    from ftre.agent.agent_manager import AgentManager
+
+    agents_dir = tmp_path / "agents"
+    global_data = {
+        "providers": {
+            "anthropic": {
+                "api_key": "sk-ant",
+                "api_base": "https://api.anthropic.com",
+                "api_protocol": "anthropic",
+                "models": [
+                    {"id": "claude-sonnet-4", "name": "Claude", "context_window": 200000, "max_output": 16384, "vision": True},
+                ],
+            },
+        },
+        "agents": {},  # no defaults
+    }
+
+    mgr = AgentManager(agents_dir=agents_dir, global_config_data=global_data)
+    mgr.ensure_default()
+
+    cfg = json.loads((agents_dir / "default" / "agent.config.json").read_text(encoding="utf-8"))
+    assert cfg["llm"]["provider"] == "anthropic"
+    assert cfg["llm"]["model"] == "claude-sonnet-4"
