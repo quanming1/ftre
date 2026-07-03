@@ -530,3 +530,41 @@ async def update_agent(agent_id: str, request: Request):
     except Exception as e:
         logger.error(f"[api] 更新 agent 失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/agents/{agent_id}/prompts")
+async def get_agent_prompts(agent_id: str):
+    """读取 agent 的 prompt 文件（SOUL.md / AGENTS.md / USER.md）。"""
+    if _agent_manager is None:
+        raise HTTPException(status_code=503, detail="AgentManager 未初始化")
+    return {"prompts": _agent_manager.read_prompts(agent_id)}
+
+
+@router.put("/agents/{agent_id}/prompts/{filename}")
+async def update_agent_prompt(agent_id: str, filename: str, request: Request):
+    """写入 agent 的指定 prompt 文件。"""
+    if _agent_manager is None:
+        raise HTTPException(status_code=503, detail="AgentManager 未初始化")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON")
+
+    if not isinstance(body, dict) or "content" not in body:
+        raise HTTPException(status_code=400, detail="请求体必须包含 content 字段")
+
+    content = body["content"]
+    if not isinstance(content, str):
+        raise HTTPException(status_code=400, detail="content 必须是字符串")
+
+    try:
+        _agent_manager.write_prompt(agent_id, filename, content)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"[api] 写入 prompt 文件失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

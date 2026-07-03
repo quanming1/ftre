@@ -13,10 +13,15 @@ def tmp_agents_dir(tmp_path):
     """Create a temporary ~/.ftre/agents/ directory with a default agent."""
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
-    # Create default agent
+    # Create default agent with llm config
     default_dir = agents_dir / "default"
     default_dir.mkdir()
-    (default_dir / "agent.config.json").write_text("{}", encoding="utf-8")
+    (default_dir / "agent.config.json").write_text(json.dumps({
+        "id": "default",
+        "name": "Ftre",
+        "llm": {"provider": "openai", "model": "gpt-4o"},
+        "workspace": "/tmp",
+    }), encoding="utf-8")
     return agents_dir
 
 
@@ -43,13 +48,7 @@ def fake_global_config():
                 ],
             },
         },
-        "agents": {
-            "defaults": {
-                "provider": "openai",
-                "model": "gpt-4o",
-                "workspace": "/global/workspace",
-            },
-        },
+        "agents": {},
         "mcp": {
             "playwright": {
                 "type": "local",
@@ -75,7 +74,7 @@ def test_load_default_agent_uses_global_config(tmp_agents_dir, fake_global_confi
     assert profile.agent_id == "default"
     assert profile.llm.model == "gpt-4o"
     assert profile.llm.api_key == "sk-global"
-    assert profile.workspace == "/global/workspace"
+    assert profile.workspace == "/tmp"
     assert profile.tools_config is None  # no tools key → all available
     assert "playwright" in profile.mcp_config
     assert len(profile.plugins_config) == 1
@@ -339,7 +338,17 @@ def test_ensure_default_creates_agent_dir(tmp_path):
 
     agents_dir = tmp_path / "agents"
     mgr = AgentManager(agents_dir=agents_dir, global_config_data={
-        "agents": {"defaults": {"provider": "openai", "model": "gpt-4o", "workspace": "/tmp"}},
+        "providers": {
+            "openai": {
+                "api_key": "sk-test",
+                "api_base": "https://api.openai.com/v1",
+                "api_protocol": "openai",
+                "models": [
+                    {"id": "gpt-4o", "name": "GPT-4o", "context_window": 128000, "max_output": 16384, "vision": True},
+                ],
+            },
+        },
+        "agents": {},
     })
 
     mgr.ensure_default()
@@ -354,7 +363,6 @@ def test_ensure_default_creates_agent_dir(tmp_path):
     cfg = json.loads((default_dir / "agent.config.json").read_text(encoding="utf-8"))
     assert cfg["llm"]["provider"] == "openai"
     assert cfg["llm"]["model"] == "gpt-4o"
-    assert cfg["workspace"] == "/tmp"
 
 
 def test_ensure_default_idempotent(tmp_path):
@@ -370,7 +378,7 @@ def test_ensure_default_idempotent(tmp_path):
     )
 
     mgr = AgentManager(agents_dir=agents_dir, global_config_data={
-        "agents": {"defaults": {"provider": "openai", "model": "gpt-4o"}},
+        "agents": {},
     })
 
     mgr.ensure_default()

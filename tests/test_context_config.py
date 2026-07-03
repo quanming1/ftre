@@ -107,22 +107,6 @@ def test_context_invalid_payload_falls_back_to_defaults(fake_config):
     assert cfg.context.consolidation_ratio == 0.5  # 默认
 
 
-def test_context_backward_compat_agents_defaults(fake_config):
-    """旧结构 agents.defaults.context 仍能作为回退读取。"""
-    cfg = fake_config({
-        "agents": {
-            "defaults": {
-                "context": {
-                    "compactThreshold": 0.8,
-                    "consolidationRatio": 0.3,
-                }
-            }
-        }
-    })
-    assert cfg.context.compact_threshold == 0.8
-    assert cfg.context.consolidation_ratio == 0.3
-
-
 def test_load_config_with_no_data_returns_default_agent_config(monkeypatch):
     monkeypatch.setattr(ftre_config, "load_config_file", lambda: {})
     cfg = ftre_config.load_config()

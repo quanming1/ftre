@@ -111,9 +111,6 @@ class AgentConfig:
     """Agent 配置"""
     llm: LLMConfig = field(default_factory=LLMConfig)
     system_prompt: str = ""  # 默认从 system_prompt.md 加载，见 _load_system_prompt()
-    # 用户自定义提示词：已迁移到 ~/.ftre/agents/default/USER.md（由 AgentManager 注入）。
-    # 此字段保留向后兼容，新结构中始终为空。
-    user_prompt: str = ""
     max_iterations: int | None = None
     # 默认工作区。空字符串表示走进程 cwd 兜底。
     # 一个 session 没有 set_workspace 历史时使用这个值；
@@ -215,13 +212,10 @@ def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfi
 def load_config() -> AgentConfig:
     """从配置文件加载 AgentConfig（带缓存，文件变更时才重新解析并 INFO 日志）。
 
-    配置来源（新结构，无 agents.defaults 二级字段）：
+    配置来源：
     - model / provider / workspace → ~/.ftre/agents/default/agent.config.json
     - title_generation / compact_generation / context → config.json 的 agents 顶层
     - system_prompt → system_prompt.md 文件
-    - user_prompt → ~/.ftre/agents/default/USER.md（由 AgentManager 注入，不再由此函数读取）
-
-    向后兼容：若 config.json 仍有 agents.defaults，则作为回退值。
     """
     global _last_config, _last_sig
 
@@ -253,17 +247,11 @@ def load_config() -> AgentConfig:
     if not isinstance(agents_cfg, dict):
         agents_cfg = {}
 
-    # 向后兼容：agents.defaults（旧结构）
-    legacy_defaults = agents_cfg.get("defaults", {})
-    if not isinstance(legacy_defaults, dict):
-        legacy_defaults = {}
-
     # ─── model / provider / workspace：从 default agent 读取 ───
     da_provider, da_model, da_workspace = _read_default_agent_llm()
-    # default agent 没有则回退到旧 agents.defaults
-    provider_name = da_provider or legacy_defaults.get("provider", "")
-    model_id = da_model or legacy_defaults.get("model", "")
-    workspace = da_workspace or legacy_defaults.get("workspace", "") or ""
+    provider_name = da_provider
+    model_id = da_model
+    workspace = da_workspace or ""
     if not isinstance(workspace, str):
         workspace = ""
 
@@ -271,7 +259,7 @@ def load_config() -> AgentConfig:
 
     # 标题生成模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
     title_llm: LLMConfig | None = None
-    title_cfg = agents_cfg.get("title_generation") or legacy_defaults.get("title_generation") or {}
+    title_cfg = agents_cfg.get("title_generation") or {}
     if isinstance(title_cfg, dict):
         t_provider = title_cfg.get("provider", "") or ""
         t_model = title_cfg.get("model", "") or ""
@@ -283,7 +271,7 @@ def load_config() -> AgentConfig:
 
     # 上下文压缩模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
     compact_llm: LLMConfig | None = None
-    compact_cfg = agents_cfg.get("compact_generation") or legacy_defaults.get("compact_generation") or {}
+    compact_cfg = agents_cfg.get("compact_generation") or {}
     if isinstance(compact_cfg, dict):
         c_provider = compact_cfg.get("provider", "") or ""
         c_model = compact_cfg.get("model", "") or ""
@@ -295,11 +283,8 @@ def load_config() -> AgentConfig:
     # 系统提示词：从 system_prompt.md 文件加载
     system_prompt = _load_system_prompt()
 
-    # user_prompt 已迁移到 ~/.ftre/agents/default/USER.md，不再从此处读取
-    user_prompt = ""
-
     # 上下文管理配置：agents.context（缺省即代码内默认值）
-    ctx_raw = agents_cfg.get("context") or legacy_defaults.get("context") or {}
+    ctx_raw = agents_cfg.get("context") or {}
     if not isinstance(ctx_raw, dict):
         ctx_raw = {}
 
@@ -337,7 +322,6 @@ def load_config() -> AgentConfig:
     result = AgentConfig(
         llm=llm,
         system_prompt=system_prompt,
-        user_prompt=user_prompt,
         workspace=workspace,
         title_llm=title_llm,
         compact_llm=compact_llm,
