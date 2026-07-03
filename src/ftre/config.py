@@ -113,8 +113,8 @@ class AgentConfig:
     system_prompt: str = ""  # 默认从 system_prompt.md 加载，见 _load_system_prompt()
     max_iterations: int | None = None
     # 默认工作区。空字符串表示走进程 cwd 兜底。
-    # 一个 session 没有 set_workspace 历史时使用这个值；
-    # 配置项位于 ~/.ftre/agents/default/agent.config.json 的 workspace。
+    # 创建新 session 时作为预填值。
+    # 配置项：config.json 的 default_workspace（顶层）。
     workspace: str = ""
     # 标题生成专用 LLM；None 表示沿用主 llm 配置。
     # 配置项：agents.title_generation = {"provider": "...", "model": "..."}
@@ -247,11 +247,13 @@ def load_config() -> AgentConfig:
     if not isinstance(agents_cfg, dict):
         agents_cfg = {}
 
-    # ─── model / provider / workspace：从 default agent 读取 ───
-    da_provider, da_model, da_workspace = _read_default_agent_llm()
+    # ─── model / provider：从 default agent 读取 ───
+    da_provider, da_model, _ = _read_default_agent_llm()
     provider_name = da_provider
     model_id = da_model
-    workspace = da_workspace or ""
+
+    # ─── workspace：从 config.json 的 default_workspace 读取 ───
+    workspace = data.get("default_workspace", "") or ""
     if not isinstance(workspace, str):
         workspace = ""
 
