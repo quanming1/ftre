@@ -238,28 +238,46 @@ class AgentManager:
             if not entry.is_dir():
                 continue
             agent_id = entry.name
-            config_path = entry / "agent.config.json"
-            has_config = config_path.is_file()
 
-            model = ""
+            # 用 load() 获取合并后的完整配置
+            profile = self.load(agent_id)
+
+            model = profile.llm.model if profile.llm else ""
             provider = ""
-            name = agent_id
-            if has_config:
+            # 从 agent.config.json 原始数据拿 provider
+            config_path = entry / "agent.config.json"
+            if config_path.is_file():
                 try:
                     cfg = json.loads(config_path.read_text(encoding="utf-8"))
-                    name = cfg.get("name", "") or agent_id
                     llm_cfg = cfg.get("llm", {})
                     if isinstance(llm_cfg, dict):
                         provider = llm_cfg.get("provider", "")
-                        model = llm_cfg.get("model", "")
                 except (json.JSONDecodeError, OSError):
                     pass
 
+            # 工具权限
+            tools_allow: list | None = None
+            tools_deny: list | None = None
+            if profile.tools_config:
+                allow = profile.tools_config.get("allow", [])
+                deny = profile.tools_config.get("deny", [])
+                if allow:
+                    tools_allow = allow
+                if deny:
+                    tools_deny = deny
+
+            # MCP 连接
+            mcp_servers = list(profile.mcp_config.keys()) if profile.mcp_config else []
+
             result.append({
                 "id": agent_id,
-                "name": name,
+                "name": profile.name or agent_id,
                 "model": model,
                 "provider": provider,
+                "workspace": profile.workspace,
+                "tools_allow": tools_allow,
+                "tools_deny": tools_deny,
+                "mcp_servers": mcp_servers,
                 "has_soul": (entry / "SOUL.md").is_file(),
                 "has_agents_md": (entry / "AGENTS.md").is_file(),
                 "has_user_md": (entry / "USER.md").is_file(),
