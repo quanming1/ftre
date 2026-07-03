@@ -494,3 +494,137 @@ def test_ensure_default_picks_first_provider(tmp_path):
     cfg = json.loads((agents_dir / "default" / "agent.config.json").read_text(encoding="utf-8"))
     assert cfg["llm"]["provider"] == "anthropic"
     assert cfg["llm"]["model"] == "claude-sonnet-4"
+
+
+# ─── Task 7: Create and Delete agents ────────────────────────────────
+
+def test_create_agent_profile(tmp_path):
+    """create_agent_profile creates a new agent directory with config and empty md files."""
+    from ftre.agent.agent_manager import AgentManager
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    # Create default first
+    default_dir = agents_dir / "default"
+    default_dir.mkdir()
+    (default_dir / "agent.config.json").write_text(json.dumps({
+        "id": "default", "name": "Ftre",
+        "llm": {"provider": "openai", "model": "gpt-4o"},
+    }), encoding="utf-8")
+
+    global_data = {"providers": {}, "agents": {}}
+    mgr = AgentManager(agents_dir=agents_dir, global_config_data=global_data)
+
+    cfg = mgr.create_agent_profile(
+        agent_id="coder",
+        name="Coder",
+        llm_provider="openai",
+        llm_model="gpt-4o",
+        workspace="/tmp/code",
+    )
+
+    assert cfg["id"] == "coder"
+    assert cfg["name"] == "Coder"
+    assert cfg["llm"]["provider"] == "openai"
+    assert cfg["llm"]["model"] == "gpt-4o"
+    assert cfg["workspace"] == "/tmp/code"
+
+    # Files created
+    assert (agents_dir / "coder" / "agent.config.json").exists()
+    assert (agents_dir / "coder" / "SOUL.md").exists()
+    assert (agents_dir / "coder" / "AGENTS.md").exists()
+    assert (agents_dir / "coder" / "USER.md").exists()
+
+    # Can load it
+    profile = mgr.load("coder")
+    assert profile.agent_id == "coder"
+    assert profile.name == "Coder"
+
+
+def test_create_agent_duplicate_raises(tmp_path):
+    """Creating an agent that already exists raises ValueError."""
+    from ftre.agent.agent_manager import AgentManager
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    default_dir = agents_dir / "default"
+    default_dir.mkdir()
+    (default_dir / "agent.config.json").write_text("{}", encoding="utf-8")
+
+    mgr = AgentManager(agents_dir=agents_dir, global_config_data={})
+    mgr.create_agent_profile("coder", name="Coder")
+
+    import pytest
+    with pytest.raises(ValueError, match="已存在"):
+        mgr.create_agent_profile("coder", name="Coder2")
+
+
+def test_create_agent_invalid_id_raises(tmp_path):
+    """Invalid agent_id raises ValueError."""
+    from ftre.agent.agent_manager import AgentManager
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "default").mkdir()
+    (agents_dir / "default" / "agent.config.json").write_text("{}", encoding="utf-8")
+
+    mgr = AgentManager(agents_dir=agents_dir, global_config_data={})
+
+    import pytest
+    with pytest.raises(ValueError, match="只能包含"):
+        mgr.create_agent_profile("bad/id", name="Bad")
+
+
+def test_delete_agent(tmp_path):
+    """delete_agent removes the agent directory."""
+    from ftre.agent.agent_manager import AgentManager
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    default_dir = agents_dir / "default"
+    default_dir.mkdir()
+    (default_dir / "agent.config.json").write_text("{}", encoding="utf-8")
+
+    mgr = AgentManager(agents_dir=agents_dir, global_config_data={})
+    mgr.create_agent_profile("coder", name="Coder")
+    assert (agents_dir / "coder").exists()
+
+    mgr.delete_agent("coder")
+    assert not (agents_dir / "coder").exists()
+
+
+def test_delete_default_raises(tmp_path):
+    """Deleting default agent raises ValueError."""
+    from ftre.agent.agent_manager import AgentManager
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    default_dir = agents_dir / "default"
+    default_dir.mkdir()
+    (default_dir / "agent.config.json").write_text("{}", encoding="utf-8")
+
+    mgr = AgentManager(agents_dir=agents_dir, global_config_data={})
+
+    import pytest
+    with pytest.raises(ValueError, match="不允许删除 default"):
+        mgr.delete_agent("default")
+
+
+def test_update_agent_name_and_workspace(tmp_path):
+    """update_agent supports name and workspace fields."""
+    from ftre.agent.agent_manager import AgentManager
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    default_dir = agents_dir / "default"
+    default_dir.mkdir()
+    (default_dir / "agent.config.json").write_text(json.dumps({
+        "id": "default", "name": "Ftre",
+    }), encoding="utf-8")
+
+    mgr = AgentManager(agents_dir=agents_dir, global_config_data={})
+    cfg = mgr.update_agent("default", {"name": "NewName", "workspace": "/new/ws"})
+
+    assert cfg["name"] == "NewName"
+    assert cfg["workspace"] == "/new/ws"
+

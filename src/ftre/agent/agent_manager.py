@@ -285,11 +285,14 @@ class AgentManager:
         return result
 
     def update_agent(self, agent_id: str, patch: dict) -> dict:
-        """更新 agent.config.json 的字段，目前只支持 llm。
+        """更新 agent.config.json 的字段（支持 llm、name、workspace）。
 
         Args:
             agent_id: agent ID
-            patch: {"llm": {"provider": "...", "model": "..."}}
+            patch: 可包含以下字段:
+                - {"llm": {"provider": "...", "model": "..."}}
+                - {"name": "..."}
+                - {"workspace": "..."}
 
         Returns:
             更新后的 agent.config.json 内容
@@ -308,13 +311,18 @@ class AgentManager:
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[agent-manager] 读取 {config_path} 失败: {e}")
 
-        # 合并 patch（目前只支持 llm 字段）
+        # 合并 patch
         if "llm" in patch and isinstance(patch["llm"], dict):
             existing_llm = cfg.get("llm", {})
             if not isinstance(existing_llm, dict):
                 existing_llm = {}
             existing_llm.update(patch["llm"])
             cfg["llm"] = existing_llm
+
+        if "name" in patch and isinstance(patch["name"], str):
+            cfg["name"] = patch["name"]
+        if "workspace" in patch and isinstance(patch["workspace"], str):
+            cfg["workspace"] = patch["workspace"]
 
         # 写回
         config_path.write_text(
@@ -328,6 +336,84 @@ class AgentManager:
 
         logger.info(f"[agent-manager] 已更新 agent '{agent_id}' 的配置: {patch}")
         return cfg
+
+    def create_agent_profile(
+        self,
+        agent_id: str,
+        name: str = "",
+        llm_provider: str = "",
+        llm_model: str = "",
+        workspace: str = "",
+    ) -> dict:
+        """创建一个新 agent。
+
+        Args:
+            agent_id: agent ID（用作目录名，必须合法）
+            name: 显示名称
+            llm_provider: LLM provider 名称
+            llm_model: LLM model ID
+            workspace: 工作区路径
+
+        Returns:
+            创建后的 agent.config.json 内容
+
+        Raises:
+            ValueError: agent_id 非法或已存在
+        """
+        # 验证 agent_id
+        if not agent_id or not isinstance(agent_id, str):
+            raise ValueError("agent_id 不能为空")
+        if not all(c.isalnum() or c in "-_" for c in agent_id):
+            raise ValueError("agent_id 只能包含字母、数字、连字符和下划线")
+
+        agent_dir = self._agents_dir / agent_id
+        if agent_dir.exists():
+            raise ValueError(f"agent '{agent_id}' 已存在")
+
+        agent_dir.mkdir(parents=True)
+
+        cfg: dict = {"id": agent_id}
+        if name:
+            cfg["name"] = name
+        if llm_provider and llm_model:
+            cfg["llm"] = {"provider": llm_provider, "model": llm_model}
+        if workspace:
+            cfg["workspace"] = workspace
+
+        (agent_dir / "agent.config.json").write_text(
+            json.dumps(cfg, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        # 创建空的 prompt 文件
+        (agent_dir / "SOUL.md").write_text("", encoding="utf-8")
+        (agent_dir / "AGENTS.md").write_text("", encoding="utf-8")
+        (agent_dir / "USER.md").write_text("", encoding="utf-8")
+
+        logger.info(f"[agent-manager] 已创建 agent: {agent_dir}")
+        return cfg
+
+    def delete_agent(self, agent_id: str) -> None:
+        """删除一个 agent。不允许删除 default。
+
+        Raises:
+            ValueError: 尝试删除 default agent
+            FileNotFoundError: agent 不存在
+        """
+        if agent_id == "default":
+            raise ValueError("不允许删除 default agent")
+
+        agent_dir = self._agents_dir / agent_id
+        if not agent_dir.is_dir():
+            raise FileNotFoundError(f"agent '{agent_id}' 不存在")
+
+        import shutil
+        shutil.rmtree(agent_dir)
+
+        # 清除缓存
+        self._cache.pop(agent_id, None)
+        self._cache_key.pop(agent_id, None)
+
+        logger.info(f"[agent-manager] 已删除 agent: {agent_id}")
 
     def _read_default_agent_llm(self) -> tuple[str, str, str]:
         """读取 default agent 的 llm provider/model 和 workspace。
