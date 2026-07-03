@@ -138,11 +138,18 @@ async def run_gateway():
     )
 
     # 注入到 API 路由
-    from ftre.api.routes import set_agent_loop, set_command_manager
+    from ftre.api.routes import set_agent_loop, set_command_manager, set_agent_manager
     set_command_manager(cmd)
 
     # 加载配置文件
     config_data = load_config_file()
+
+    # Agent 管理器 — 加载 ~/.ftre/agents/ 下的 per-agent 配置
+    from ftre.config import AGENTS_DIR
+    from ftre.agent.agent_manager import AgentManager
+    agent_manager = AgentManager(agents_dir=AGENTS_DIR, global_config_data=config_data)
+    agent_manager.ensure_default()
+    set_agent_manager(agent_manager)
 
     # 加载插件（注册 Channel / Hook / Tool / Router 等）
     plugin_manager.load_all(config_data)
@@ -166,6 +173,7 @@ async def run_gateway():
         tool_registry=tool_registry,
         command_manager=cmd,
         plugin_manager=plugin_manager,
+        agent_manager=agent_manager,
     )
     agent_loop.start()
     set_agent_loop(agent_loop)

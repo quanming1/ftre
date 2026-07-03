@@ -54,6 +54,15 @@ def set_command_manager(cmd) -> None:
     _command_manager = cmd
 
 
+_agent_manager = None
+
+
+def set_agent_manager(mgr) -> None:
+    """注入 AgentManager 实例（启动时调用）"""
+    global _agent_manager
+    _agent_manager = mgr
+
+
 @router.get("/traces")
 async def list_traces(limit: int = 100, offset: int = 0):
     """List recent Agent traces without returning full prompt/tool payloads."""
@@ -489,3 +498,11 @@ async def serve_image(filename: str):
         raise HTTPException(status_code=404, detail="图片不存在或已被清理")
 
     return FileResponse(file_path)
+
+
+@router.get("/agents")
+async def list_agents():
+    """返回所有已注册的 agent 列表。"""
+    if _agent_manager is None:
+        return {"agents": []}
+    return {"agents": _agent_manager.list_agents()}
