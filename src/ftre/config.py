@@ -33,6 +33,32 @@ def _load_system_prompt() -> str:
     return f'<SYSTEM_PROMPT desc="系统提示词基座，定义运行时行为规范" path="{SYSTEM_PROMPT_PATH}">\n- 你是一个 AI 助手。\n</SYSTEM_PROMPT>'
 
 
+def _read_default_agent_llm() -> tuple[str, str, str]:
+    """读取 default agent 的 llm provider/model 和 workspace。
+
+    全局兜底配置的单一事实源：model/provider/workspace 不再放在 config.json 的
+    agents.defaults 中，而是由 ~/.ftre/agents/default/agent.config.json 持有。
+    前端切换 default agent 模型时写此文件，load_config() 即可读到最新值。
+
+    Returns: (provider, model, workspace)
+    """
+    cfg_path = AGENTS_DIR / "default" / "agent.config.json"
+    if not cfg_path.exists():
+        return "", "", ""
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        llm = cfg.get("llm", {})
+        if not isinstance(llm, dict):
+            llm = {}
+        workspace = cfg.get("workspace", "")
+        if not isinstance(workspace, str):
+            workspace = ""
+        return llm.get("provider", ""), llm.get("model", ""), workspace
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[config] 读取 default agent 配置失败: {e}")
+        return "", "", ""
+
+
 @dataclass
 class LLMConfig:
     """
@@ -61,7 +87,7 @@ class LLMConfig:
 
 @dataclass
 class ContextConfig:
-    """上下文管理（压缩）配置 —— 对应 config.json 的 agents.defaults.context。
+    """上下文管理（压缩）配置 —— 对应 config.json 的 agents.context。
 
     所有字段都有默认值，缺省即沿用代码内常量；旧配置零改动可用。
     详细设计见文档 docs/context-management.md。
@@ -85,20 +111,20 @@ class AgentConfig:
     """Agent 配置"""
     llm: LLMConfig = field(default_factory=LLMConfig)
     system_prompt: str = ""  # 默认从 system_prompt.md 加载，见 _load_system_prompt()
-    # 用户自定义提示词：客户端设置，存于 config.json 的 agents.defaults.user_prompt。
-    # 与内置 system_prompt 分离，由 context_govern 插件在每轮构建消息时注入。
+    # 用户自定义提示词：已迁移到 ~/.ftre/agents/default/USER.md（由 AgentManager 注入）。
+    # 此字段保留向后兼容，新结构中始终为空。
     user_prompt: str = ""
     max_iterations: int | None = None
     # 默认工作区。空字符串表示走进程 cwd 兜底。
     # 一个 session 没有 set_workspace 历史时使用这个值；
-    # 配置项位于 config.json 的 agents.defaults.workspace。
+    # 配置项位于 ~/.ftre/agents/default/agent.config.json 的 workspace。
     workspace: str = ""
     # 标题生成专用 LLM；None 表示沿用主 llm 配置。
-    # 配置项：agents.defaults.title_generation = {"provider": "...", "model": "..."}
+    # 配置项：agents.title_generation = {"provider": "...", "model": "..."}
     # 设计动机：标题生成是高频小请求，独立挂到便宜/快的模型上，避免占用主对话的高级模型配额。
     title_llm: LLMConfig | None = None
     # 上下文压缩专用 LLM；None 表示沿用主 llm 配置。
-    # 配置项：agents.defaults.compact_generation = {"provider": "...", "model": "..."}
+    # 配置项：agents.compact_generation = {"provider": "...", "model": "..."}
     # 设计动机：压缩是后台高频长上下文调用，可用便宜/大窗口模型降低成本。
     compact_llm: LLMConfig | None = None
     # 上下文管理配置（步骤 6）
@@ -110,8 +136,10 @@ class AgentConfig:
 # 每次都读文件+打日志会刷屏。用 _last_config 缓存 + mtime 检测变更：
 # - 首次加载 / 文件变更 → INFO 日志
 # - 重复加载同一文件 → DEBUG 日志（不再刷屏）
+# 缓存签名同时跟踪 config.json 和 default agent config 的 mtime，
+# 因为 model/provider/workspace 现在从 default agent 读取。
 _last_config: AgentConfig | None = None
-_last_mtime: float = 0.0
+_last_sig: str = ""
 
 
 def load_config_file() -> dict:
@@ -185,16 +213,33 @@ def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfi
 
 
 def load_config() -> AgentConfig:
-    """从配置文件加载 AgentConfig（带缓存，文件变更时才重新解析并 INFO 日志）"""
-    global _last_config, _last_mtime
+    """从配置文件加载 AgentConfig（带缓存，文件变更时才重新解析并 INFO 日志）。
 
-    # mtime 检测：文件没变就直接返回缓存
+    配置来源（新结构，无 agents.defaults 二级字段）：
+    - model / provider / workspace → ~/.ftre/agents/default/agent.config.json
+    - title_generation / compact_generation / context → config.json 的 agents 顶层
+    - system_prompt → system_prompt.md 文件
+    - user_prompt → ~/.ftre/agents/default/USER.md（由 AgentManager 注入，不再由此函数读取）
+
+    向后兼容：若 config.json 仍有 agents.defaults，则作为回退值。
+    """
+    global _last_config, _last_sig
+
+    # mtime 检测：config.json + default agent config
     try:
         current_mtime = CONFIG_PATH.stat().st_mtime
     except OSError:
         current_mtime = 0.0
 
-    if _last_config is not None and current_mtime == _last_mtime:
+    da_cfg_path = AGENTS_DIR / "default" / "agent.config.json"
+    try:
+        da_mtime = da_cfg_path.stat().st_mtime if da_cfg_path.exists() else 0.0
+    except OSError:
+        da_mtime = 0.0
+
+    current_sig = f"{current_mtime}|{da_mtime}"
+
+    if _last_config is not None and current_sig == _last_sig:
         logger.debug("[config] 缓存命中，跳过重新解析")
         return _last_config
 
@@ -204,14 +249,29 @@ def load_config() -> AgentConfig:
         # 文件不存在/空时返回默认配置（不缓存，下次文件出现会重新加载）
         return AgentConfig()
 
-    defaults = data.get("agents", {}).get("defaults", {})
-    model_id = defaults.get("model", "")
-    provider_name = defaults.get("provider", "")
+    agents_cfg = data.get("agents", {})
+    if not isinstance(agents_cfg, dict):
+        agents_cfg = {}
+
+    # 向后兼容：agents.defaults（旧结构）
+    legacy_defaults = agents_cfg.get("defaults", {})
+    if not isinstance(legacy_defaults, dict):
+        legacy_defaults = {}
+
+    # ─── model / provider / workspace：从 default agent 读取 ───
+    da_provider, da_model, da_workspace = _read_default_agent_llm()
+    # default agent 没有则回退到旧 agents.defaults
+    provider_name = da_provider or legacy_defaults.get("provider", "")
+    model_id = da_model or legacy_defaults.get("model", "")
+    workspace = da_workspace or legacy_defaults.get("workspace", "") or ""
+    if not isinstance(workspace, str):
+        workspace = ""
+
     llm = _build_llm_config(data, provider_name, model_id)
 
     # 标题生成模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
     title_llm: LLMConfig | None = None
-    title_cfg = defaults.get("title_generation") or {}
+    title_cfg = agents_cfg.get("title_generation") or legacy_defaults.get("title_generation") or {}
     if isinstance(title_cfg, dict):
         t_provider = title_cfg.get("provider", "") or ""
         t_model = title_cfg.get("model", "") or ""
@@ -223,7 +283,7 @@ def load_config() -> AgentConfig:
 
     # 上下文压缩模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
     compact_llm: LLMConfig | None = None
-    compact_cfg = defaults.get("compact_generation") or {}
+    compact_cfg = agents_cfg.get("compact_generation") or legacy_defaults.get("compact_generation") or {}
     if isinstance(compact_cfg, dict):
         c_provider = compact_cfg.get("provider", "") or ""
         c_model = compact_cfg.get("model", "") or ""
@@ -232,22 +292,14 @@ def load_config() -> AgentConfig:
             if built.model:
                 compact_llm = built
 
-    workspace = defaults.get("workspace", "") or ""
-    if not isinstance(workspace, str):
-        workspace = ""
+    # 系统提示词：从 system_prompt.md 文件加载
+    system_prompt = _load_system_prompt()
 
-    # 系统提示词：优先从 config.json 读取，否则从 system_prompt.md 加载
-    system_prompt = defaults.get("system_prompt", "") or ""
-    if not system_prompt:
-        system_prompt = _load_system_prompt()
+    # user_prompt 已迁移到 ~/.ftre/agents/default/USER.md，不再从此处读取
+    user_prompt = ""
 
-    # 用户自定义提示词（客户端可设置，缺省为空）
-    user_prompt = defaults.get("user_prompt", "") or ""
-    if not isinstance(user_prompt, str):
-        user_prompt = ""
-
-    # 上下文管理配置：agents.defaults.context（缺省即代码内默认值）
-    ctx_raw = defaults.get("context") or {}
+    # 上下文管理配置：agents.context（缺省即代码内默认值）
+    ctx_raw = agents_cfg.get("context") or legacy_defaults.get("context") or {}
     if not isinstance(ctx_raw, dict):
         ctx_raw = {}
 
@@ -268,7 +320,7 @@ def load_config() -> AgentConfig:
 
     # 配置日志统一降为 DEBUG，避免每次重新加载刷屏
     is_first_load = _last_config is None
-    config_changed = not is_first_load and current_mtime != _last_mtime
+    config_changed = not is_first_load and current_sig != _last_sig
     logger.debug(
         f"[config] model={llm.model}, provider={provider_name}, "
         f"context_window={llm.context_window}, max_output={llm.max_output}, "
@@ -294,7 +346,7 @@ def load_config() -> AgentConfig:
 
     # 更新缓存
     _last_config = result
-    _last_mtime = current_mtime
+    _last_sig = current_sig
 
     return result
 
