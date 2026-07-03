@@ -1,4 +1,4 @@
-"""
+﻿"""
 AgentLoop - 全局单例，消费所有 session 的 inbound 消息
 
 职责：
@@ -38,11 +38,11 @@ from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 from ftre.config import AgentConfig, load_config
 from ftre.session import SessionManager
 from ftre.session.multimodal import build_user_content, normalize_stored_user_content
-from ftre.tools import ToolRegistry, build_default_tools
+from ftre.tools import ToolRegistry
 from ftre.tools._workspace import WorkspaceAccessor
 from ftre.utils import Pipeline
 from ftre.trace_store import SQLiteTraceExporter, TRACE_DB_PATH
-from .compact_handler import CompactHandler
+from .compact_manager import CompactManager
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,7 @@ class AgentLoop:
         tool_registry: ToolRegistry | None = None,
         command_manager=None,
         plugin_manager=None,
+        agent_manager=None,
     ):
         self.bus = bus
         self.session_manager = session_manager
@@ -80,6 +81,7 @@ class AgentLoop:
         self.tool_registry = tool_registry
         self.command_manager = command_manager
         self.plugin_manager = plugin_manager
+        self.agent_manager = agent_manager
         self._injected_config = config
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -114,7 +116,7 @@ class AgentLoop:
         self._pipeline.use(self._step_compact, name="compact")
         self._pipeline.use(self._step_run, name="run")
 
-        self.compact_handler = CompactHandler(
+        self.compact_manager = CompactManager(
             session_manager=self.session_manager,
             channel_manager=self.channel_manager,
             bus=self.bus,
@@ -124,7 +126,7 @@ class AgentLoop:
         self._register_commands()
 
     def _initial_context_cfg(self):
-        """实例化时读一次 ContextConfig 用于 CompactHandler 默认参数。"""
+        """实例化时读一次 ContextConfig 用于 CompactManager 默认参数。"""
         try:
             cfg = self._load_current_config()
             return cfg.context
@@ -172,7 +174,7 @@ class AgentLoop:
             config = self._load_current_config()
 
             # 先尝试启用 pending compact（秒级，不用调 LLM）
-            enabled = await self.compact_handler.enable_pending_compact(
+            enabled = await self.compact_manager.enable_pending_compact(
                 session_id, channel_id,
                 config=config,
                 silent=False,
@@ -180,7 +182,7 @@ class AgentLoop:
 
             # 没有 pending → 直接压缩（enabled=True）
             if not enabled:
-                await self.compact_handler.compact(
+                await self.compact_manager.compact(
                     session_id, channel_id,
                     config=config,
                     silent=False,
@@ -244,7 +246,7 @@ class AgentLoop:
         self._session_tasks.clear()
 
         # 4. 取消所有后台 idle 压缩 task
-        self.compact_handler.cancel_all_compact_tasks()
+        self.compact_manager.cancel_all_compact_tasks()
         for sid, future in self._subagent_done_futures.items():
             if not future.done():
                 future.set_result(
@@ -361,7 +363,7 @@ class AgentLoop:
 
         try:
             config = self._load_current_config()
-            need = await self.compact_handler.should_compact(
+            need = await self.compact_manager.should_compact(
                 session_id,
                 channel_id,
                 config,
@@ -419,6 +421,12 @@ class AgentLoop:
             logger.warning("[agent-loop] 收到无 session_id 的消息，忽略")
             return
 
+        # Step 1.5: 解析 agent_id，加载 per-agent 配置
+        agent_id = (inbound.metadata or {}).get("agent_id", "") or "default"
+        agent_profile = None
+        if self.agent_manager is not None:
+            agent_profile = self.agent_manager.load(agent_id)
+
         # Step 2: 鉴权
         session = await self.session_manager.get_session(session_id)
         if session is None:
@@ -444,18 +452,24 @@ class AgentLoop:
 
         # Step 2.8: 关键路径压缩
         config = self._load_current_config()
+        # 如果有 per-agent 配置，覆盖 llm 和 workspace
+        if agent_profile is not None:
+            config = copy.deepcopy(config)
+            config.llm = agent_profile.llm
+            if agent_profile.workspace:
+                config.workspace = agent_profile.workspace
         if need_compact:
             try:
                 silent = getattr(config.context, "silent", True)
                 # 先尝试启用 pending compact（秒级）
-                enabled = await self.compact_handler.enable_pending_compact(
+                enabled = await self.compact_manager.enable_pending_compact(
                     session_id, inbound.from_channel,
                     config=config,
                     silent=silent,
                 )
                 if not enabled:
                     # 没有 pending → 直接压缩
-                    await self.compact_handler.compact(
+                    await self.compact_manager.compact(
                         session_id, inbound.from_channel,
                         config=config,
                         silent=silent,
@@ -466,6 +480,8 @@ class AgentLoop:
 
         # Step 4: 加载历史消息 + hook
         workspace = session.get("workspace", "") or os.getcwd()
+        if agent_profile and agent_profile.workspace:
+            workspace = agent_profile.workspace
         messages, hook_config = await self._build_messages(
             session_id,
             content,
@@ -474,11 +490,17 @@ class AgentLoop:
             inbound_data=inbound.data,
             channel_id=inbound.from_channel,
             workspace=workspace,
+            agent_dir=(agent_profile.agent_dir if agent_profile else ""),
         )
 
         # Step 5: 创建 Agent + 注册到 _active_agents
-        agent = self._create_agent(
-            hook_config,
+        assert self.agent_manager is not None, "agent_manager must be provided"
+        agent = self.agent_manager.create_agent(
+            profile=agent_profile,
+            config=hook_config,
+            channel_manager=self.channel_manager,
+            tool_registry=self.tool_registry,
+            tracer=self.tracer,
             channel_id=inbound.from_channel,
             session_id=session_id,
         )
@@ -589,7 +611,7 @@ class AgentLoop:
                 if isinstance(event, UsageUpdateEvent) and inbound.from_channel != SUBAGENT_CHANNEL_ID:
                     try:
                         _cfg = self._load_current_config()
-                        await self.compact_handler.maybe_schedule_idle_compact(session_id, inbound.from_channel, _cfg)
+                        await self.compact_manager.maybe_schedule_idle_compact(session_id, inbound.from_channel, _cfg)
                     except Exception:
                         logger.debug("[agent-loop] 调度 usage 压缩失败", exc_info=True)
 
@@ -647,7 +669,7 @@ class AgentLoop:
             if inbound.from_channel != SUBAGENT_CHANNEL_ID:
                 try:
                     _cfg = self._load_current_config()
-                    await self.compact_handler.maybe_schedule_idle_compact(session_id, inbound.from_channel, _cfg)
+                    await self.compact_manager.maybe_schedule_idle_compact(session_id, inbound.from_channel, _cfg)
                 except Exception:
                     logger.debug("[agent-loop] 调度 idle 压缩失败", exc_info=True)
 
@@ -684,6 +706,7 @@ class AgentLoop:
         inbound_data: dict | None = None,
         channel_id: str = "",
         workspace: str = "",
+        agent_dir: str = "",
     ) -> tuple[list[dict], AgentConfig]:
         """构建 LLM 输入消息，触发 before_messages_build hook。"""
         events = await self.session_manager.get_messages_by_session(session_id)
@@ -697,6 +720,7 @@ class AgentLoop:
                 channel_id=channel_id,
                 inbound_data=inbound_data or {},
                 workspace=workspace,
+                agent_dir=agent_dir,
                 config=hook_config,
                 events=events,
             )
@@ -726,83 +750,3 @@ class AgentLoop:
             return history, hook_config
 
         return [{"role": "user", "content": user_content}], hook_config
-
-    def _create_agent(
-        self,
-        config: AgentConfig,
-        *,
-        channel_id: str | None = None,
-        session_id: str | None = None,
-    ) -> ReActAgent:
-        """根据配置创建 ReActAgent 实例。"""
-        c = copy.deepcopy(config)
-        tools = build_default_tools(
-            channel_manager=self.channel_manager,
-            tool_registry=self.tool_registry,
-            llm_config=c.llm,
-        )
-
-        system_prompt = self._compose_system_prompt(
-            c, channel_id=channel_id, session_id=session_id
-        )
-        max_iterations = c.max_iterations
-        max_tokens = c.llm.max_output
-
-        return ReActAgent(
-            model=c.llm.model,
-            api_key=c.llm.api_key,
-            api_base=c.llm.api_base,
-            api_type=c.llm.api_type,
-            system_prompt=system_prompt,
-            tools=tools,
-            max_iterations=max_iterations,
-            max_tokens=max_tokens,
-            tracer=self.tracer,
-        )
-
-    def _compose_system_prompt(
-        self,
-        config: AgentConfig,
-        *,
-        channel_id: str | None = None,
-        session_id: str | None = None,
-    ) -> str:
-        """合成最终 system prompt：基础提示词 + 插件注入 + <env> 环境块。"""
-        c = config
-        system_prompt = c.system_prompt
-
-        env_lines = [
-            "<FTRE_SYSTEM_FACT>",
-            "<env>",
-            f"channel_id={channel_id or ''}",
-            f"session_id={session_id or ''}",
-            f"os={os.name}",
-        ]
-        # 路径书写提示：按操作系统区分。重点防止 AI 在构造命令/参数字符串时
-        # 因反斜杠转义出错（如把 `\\npm` 写成 `\npm` 被解析成换行）。
-        if os.name == "nt":
-            env_lines.append(
-                "当前是 Windows 系统。书写路径时优先使用正斜杠 /（如 "
-                "C:/Users/name/AppData/Roaming/npm/x.cmd），Windows 下的命令与 "
-                "Node/npm 系工具都能正确识别正斜杠，可彻底避免反斜杠转义问题。"
-                "如果必须用反斜杠，在 JSON/字符串里务必写成双反斜杠 \\\\；切勿漏写，"
-                "尤其当反斜杠后面跟 n、t、r 等字母时（如 \\npm、\\temp），单反斜杠会被"
-                "当成换行/制表符等转义字符，导致路径被截断、命令执行失败。"
-            )
-        else:
-            env_lines.append(
-                "当前是类 Unix 系统（Linux/macOS）。路径使用正斜杠 /，区分大小写；"
-                "优先使用绝对路径或 ~ 展开，避免依赖当前工作目录。"
-            )
-        if getattr(c.llm, "vision", False):
-            env_lines.append(
-                "vision=true：你当前使用的模型具备识图（视觉理解）能力，可以直接"
-                "看懂图片、截图、浏览器画面和 UI 视觉状态，不要因为自己是文本模型"
-                "而拒绝看图。需要理解视觉内容时，使用 read 工具读取图片文件。"
-                "read 支持图片的绝对路径、相对当前工作区路径，以及 HTTP(S) 图片 URL；"
-                "读取图片后可用于辅助修改 UI、判断浏览器操控结果、检查视觉回归和还原设计细节。"
-            )
-        env_lines.append("</env>")
-        env_lines.append("</FTRE_SYSTEM_FACT>")
-
-        return system_prompt + "\n\n" + "\n".join(env_lines)

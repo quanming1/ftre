@@ -66,15 +66,30 @@ class ContextGovernPlugin(Plugin):
     # ─── AGENTS.md 注入 ────────────────────────────────────────
 
     def _inject_agents_md(self, ctx) -> None:
-        """读取工作区下的 AGENTS.md（如有），注入到 config.system_prompt。"""
+        """读取 AGENTS.md 并注入到 config.system_prompt。
+
+        优先级：agent_dir/AGENTS.md > workspace/AGENTS.md。
+        """
         import os
 
-        ws = (ctx.workspace or "").strip()
-        if not ws or not os.path.isdir(ws):
-            return
+        # 优先从 agent_dir 读取
+        agent_dir = (getattr(ctx, "agent_dir", "") or "").strip()
+        agents_path = ""
 
-        agents_path = os.path.join(ws, "AGENTS.md")
-        if not os.path.isfile(agents_path):
+        if agent_dir and os.path.isdir(agent_dir):
+            candidate = os.path.join(agent_dir, "AGENTS.md")
+            if os.path.isfile(candidate):
+                agents_path = candidate
+
+        # agent_dir 没有 → 回退 workspace
+        if not agents_path:
+            ws = (ctx.workspace or "").strip()
+            if ws and os.path.isdir(ws):
+                candidate = os.path.join(ws, "AGENTS.md")
+                if os.path.isfile(candidate):
+                    agents_path = candidate
+
+        if not agents_path:
             return
 
         try:

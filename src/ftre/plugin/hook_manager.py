@@ -68,6 +68,7 @@ class MessagesBuildContext:
     channel_id: str
     inbound_data: dict
     workspace: str
+    agent_dir: str = ""
     event_loop: Any = None
 
     # 可改
