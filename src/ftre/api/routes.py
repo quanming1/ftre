@@ -506,3 +506,27 @@ async def list_agents():
     if _agent_manager is None:
         return {"agents": []}
     return {"agents": _agent_manager.list_agents()}
+
+
+@router.patch("/agents/{agent_id}")
+async def update_agent(agent_id: str, request: Request):
+    """更新 agent.config.json 的字段。目前只支持 llm。"""
+    if _agent_manager is None:
+        raise HTTPException(status_code=503, detail="AgentManager 未初始化")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON")
+
+    if not isinstance(body, dict) or "llm" not in body:
+        raise HTTPException(status_code=400, detail="目前只支持更新 llm 字段")
+
+    try:
+        updated = _agent_manager.update_agent(agent_id, body)
+        return {"ok": True, "config": updated}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"agent '{agent_id}' 不存在")
+    except Exception as e:
+        logger.error(f"[api] 更新 agent 失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
