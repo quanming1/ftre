@@ -238,5 +238,3 @@ def _validate_mcp_server(payload: dict) -> tuple[dict, str | None]:
             "disabled": disabled,
             "timeout": int(payload.get("timeout", 30_000)),
         }, None
-
-    return {}, "未知 type"
