@@ -172,6 +172,9 @@ class PluginManager:
         if not PLUGINS_DIR.exists():
             return
 
+        if str(PLUGINS_DIR) not in sys.path:
+            sys.path.insert(0, str(PLUGINS_DIR))
+
         for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
             if not plugin_dir.is_dir() or plugin_dir.name.startswith("_"):
                 continue
