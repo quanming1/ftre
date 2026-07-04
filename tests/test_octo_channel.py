@@ -8,15 +8,15 @@ class TestExtractParentGroupNo:
     """extract_parent_group_no 工具函数测试"""
 
     def test_plain_group_no_returns_unchanged(self):
-        from octo_channel import extract_parent_group_no
+        from _api import extract_parent_group_no
         assert extract_parent_group_no("fb924c042aee4cd6b055ca61ac340093") == "fb924c042aee4cd6b055ca61ac340093"
 
     def test_thread_compound_extracts_group_no(self):
-        from octo_channel import extract_parent_group_no
+        from _api import extract_parent_group_no
         assert extract_parent_group_no("fb924c042aee4cd6b055ca61ac340093____2064912548183937024") == "fb924c042aee4cd6b055ca61ac340093"
 
     def test_empty_string_returns_empty(self):
-        from octo_channel import extract_parent_group_no
+        from _api import extract_parent_group_no
         assert extract_parent_group_no("") == ""
 
 
@@ -51,7 +51,7 @@ class TestOctoBotApi:
 
     @pytest.mark.asyncio
     async def test_register_bot_returns_credentials(self):
-        from octo_channel import OctoBotApi
+        from _api import OctoBotApi
         api = OctoBotApi("https://api.example.com", "bf_test_token")
         mock_session = MagicMock()
         mock_resp = AsyncMock()
@@ -76,7 +76,7 @@ class TestOctoBotApi:
 
     @pytest.mark.asyncio
     async def test_send_message_calls_api(self):
-        from octo_channel import OctoBotApi
+        from _api import OctoBotApi
         api = OctoBotApi("https://api.example.com", "bf_test_token")
         mock_session = MagicMock()
         mock_resp = AsyncMock()
@@ -123,18 +123,18 @@ class TestOctoChannel:
 
     def _make_channel(self, config, bus, **kwargs):
         """创建 OctoChannel 实例并 mock 掉所有外部 API 调用。"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
         ch = OctoChannel(config, bus, **kwargs)
         ch.api.get_channel_messages = AsyncMock(return_value=[])
         ch.api.get_group_members = AsyncMock(return_value=[])
         return ch
 
     @pytest.mark.asyncio
-    @patch("octo_channel.subprocess.Popen")
-    @patch("octo_channel.aiohttp.ClientSession")
+    @patch("_channel.subprocess.Popen")
+    @patch("_channel.aiohttp.ClientSession")
     async def test_start_launches_bridge_and_connects(self, mock_session_cls, mock_popen, mock_bus, channel_config):
         """start() should launch bridge subprocess and connect to local WS"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         mock_proc = MagicMock()
         mock_proc.pid = 12345
@@ -167,7 +167,7 @@ class TestOctoChannel:
     @pytest.mark.asyncio
     async def test_send_extracts_text_and_calls_api(self, mock_bus, channel_config):
         """send() should extract text from BusMessage and call send_message with correct channel_type"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
         ch.api.send_message = AsyncMock(return_value={"message_id": "msg_1"})
@@ -196,7 +196,7 @@ class TestOctoChannel:
     @pytest.mark.asyncio
     async def test_ws_text_frame_triggers_receive(self, mock_bus, channel_config):
         """WS TEXT frame (flat WuKongIM format) should parse to user_message and call receive()"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -224,7 +224,7 @@ class TestOctoChannel:
 
     @pytest.mark.asyncio
     async def test_ws_message_uses_external_session_mapping(self, mock_bus, channel_config):
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         session_manager = FakeExternalSessionManager()
         ch = OctoChannel(channel_config, mock_bus, session_manager=session_manager)
@@ -250,7 +250,7 @@ class TestOctoChannel:
 
     @pytest.mark.asyncio
     async def test_skips_self_message(self, mock_bus, channel_config):
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel({**channel_config, "bot_id": "bot_123"}, mock_bus)
 
@@ -270,7 +270,7 @@ class TestOctoChannel:
 
     @pytest.mark.asyncio
     async def test_allows_self_event_message(self, mock_bus, channel_config):
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel({**channel_config, "bot_id": "bot_123"}, mock_bus)
 
@@ -295,7 +295,7 @@ class TestOctoChannel:
     @pytest.mark.asyncio
     async def test_ws_dm_event_uses_from_uid_as_channel(self, mock_bus, channel_config):
         """DM 事件无 channel_id，应使用 from_uid 作为 channel_id，channel_type=1"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -320,7 +320,7 @@ class TestOctoChannel:
 
     @pytest.mark.asyncio
     async def test_send_uses_external_session_mapping(self, mock_bus, channel_config):
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         session_manager = FakeExternalSessionManager()
         ch = OctoChannel(channel_config, mock_bus, session_manager=session_manager)
@@ -349,7 +349,7 @@ class TestOctoChannel:
     @pytest.mark.asyncio
     async def test_stop_closes_ws_and_session(self, mock_bus, channel_config):
         """stop() should close WS connection and HTTP session"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
         mock_ws = AsyncMock()
@@ -372,7 +372,7 @@ class TestOctoChannelPlugin:
         """BEFORE_AGENT_RUN hook 应在 system 消息中注入 Octo 提示"""
         from ftre.plugin import AgentRunContext, BEFORE_AGENT_RUN, HookManager
         hooks = HookManager()
-        from octo_channel import OctoChannelPlugin
+        from _plugin import OctoChannelPlugin
         plugin = OctoChannelPlugin()
         hooks.register(BEFORE_AGENT_RUN, plugin._on_agent_run)
 
@@ -396,7 +396,7 @@ class TestOctoChannelPlugin:
         """如果没有 system 消息，应插入一条新的"""
         from ftre.plugin import AgentRunContext, BEFORE_AGENT_RUN, HookManager
         hooks = HookManager()
-        from octo_channel import OctoChannelPlugin
+        from _plugin import OctoChannelPlugin
         plugin = OctoChannelPlugin()
         hooks.register(BEFORE_AGENT_RUN, plugin._on_agent_run)
 
@@ -418,7 +418,7 @@ class TestOctoChannelPlugin:
         """非 octo channel 的消息不应注入提示"""
         from ftre.plugin import AgentRunContext, BEFORE_AGENT_RUN, HookManager
         hooks = HookManager()
-        from octo_channel import OctoChannelPlugin
+        from _plugin import OctoChannelPlugin
         plugin = OctoChannelPlugin()
         hooks.register(BEFORE_AGENT_RUN, plugin._on_agent_run)
 
@@ -444,7 +444,7 @@ class TestOctoChannelIntegration:
     @pytest.mark.asyncio
     async def test_full_round_trip_ws_to_send(self):
         """模拟：WS 收到消息 → Channel._handle_message() → Channel.send() 回复"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         bus = MagicMock()
         bus.publish_inbound = AsyncMock()
@@ -522,7 +522,7 @@ class TestOctoMentionGate:
 
     def _make_channel(self, config, bus, **kwargs):
         """创建 OctoChannel 实例并 mock 掉所有外部 API 调用。"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
         ch = OctoChannel(config, bus, **kwargs)
         ch.api.get_channel_messages = AsyncMock(return_value=[])
         ch.api.get_group_members = AsyncMock(return_value=[])
@@ -531,7 +531,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_group_mentioned_by_uid_dispatches(self, mock_bus, channel_config):
         """群聊中直接 @bot（uids 包含 bot_uid）→ 应投递消息"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -553,7 +553,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_group_mentioned_by_ais_dispatches(self, mock_bus, channel_config):
         """群聊中 @AI → 应投递消息"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -575,7 +575,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_group_not_mentioned_skipped(self, mock_bus, channel_config):
         """群聊中未被 @ → 不应投递消息"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -596,7 +596,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_dm_always_dispatches(self, mock_bus, channel_config):
         """私聊消息始终投递，不受 require_mention 影响"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -617,7 +617,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_group_require_mention_false_always_dispatches(self, mock_bus, channel_config):
         """require_mention=False 时群聊消息始终投递"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         config = {**channel_config, "require_mention": False}
         ch = OctoChannel(config, mock_bus)
@@ -639,7 +639,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_self_message_always_skipped(self, mock_bus, channel_config):
         """自己的消息始终跳过（即使有 @）"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -662,7 +662,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_other_bot_mentioned_does_not_trigger(self, mock_bus, channel_config):
         """群聊中 @ 了其他 bot（非自己）→ 不应投递"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -684,7 +684,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_text_fallback_mention_detection(self, mock_bus, channel_config):
         """文本兜底：内容包含 @bot名称 但无 mention payload → 应投递"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -705,7 +705,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_text_fallback_no_match_without_at(self, mock_bus, channel_config):
         """文本兜底：内容包含 bot 名称但无 @ 前缀 → 不触发"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -728,7 +728,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_thread_mentioned_dispatches(self, mock_bus, channel_config):
         """讨论串中 @bot → 应投递消息"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -750,7 +750,7 @@ class TestOctoMentionGate:
     @pytest.mark.asyncio
     async def test_thread_not_mentioned_skipped(self, mock_bus, channel_config):
         """讨论串中未被 @ → 不应投递消息"""
-        from octo_channel import OctoChannel
+        from _channel import OctoChannel
 
         ch = OctoChannel(channel_config, mock_bus)
 
@@ -875,7 +875,7 @@ class TestOctoManagementTool:
 
     @pytest.mark.asyncio
     async def test_list_groups(self, mock_api):
-        from octo_channel import create_octo_management_tool
+        from _tools import create_octo_management_tool
         import json
 
         tool = create_octo_management_tool(mock_api)
@@ -887,7 +887,7 @@ class TestOctoManagementTool:
 
     @pytest.mark.asyncio
     async def test_group_info(self, mock_api):
-        from octo_channel import create_octo_management_tool
+        from _tools import create_octo_management_tool
         import json
 
         tool = create_octo_management_tool(mock_api)
@@ -898,7 +898,7 @@ class TestOctoManagementTool:
 
     @pytest.mark.asyncio
     async def test_group_info_missing_id(self, mock_api):
-        from octo_channel import create_octo_management_tool
+        from _tools import create_octo_management_tool
         import json
 
         tool = create_octo_management_tool(mock_api)
@@ -909,7 +909,7 @@ class TestOctoManagementTool:
 
     @pytest.mark.asyncio
     async def test_group_members(self, mock_api):
-        from octo_channel import create_octo_management_tool
+        from _tools import create_octo_management_tool
         import json
 
         tool = create_octo_management_tool(mock_api)
@@ -921,7 +921,7 @@ class TestOctoManagementTool:
 
     @pytest.mark.asyncio
     async def test_search_members(self, mock_api):
-        from octo_channel import create_octo_management_tool
+        from _tools import create_octo_management_tool
         import json
 
         tool = create_octo_management_tool(mock_api)
@@ -932,7 +932,7 @@ class TestOctoManagementTool:
 
     @pytest.mark.asyncio
     async def test_unknown_action(self, mock_api):
-        from octo_channel import create_octo_management_tool
+        from _tools import create_octo_management_tool
         import json
 
         tool = create_octo_management_tool(mock_api)
@@ -941,7 +941,7 @@ class TestOctoManagementTool:
         assert data["success"] is False
 
     def test_tool_name_and_schema(self, mock_api):
-        from octo_channel import create_octo_management_tool
+        from _tools import create_octo_management_tool
 
         tool = create_octo_management_tool(mock_api)
         assert tool.name == "octo_management"
