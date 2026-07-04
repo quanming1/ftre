@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
+    from ftre.agent.agent_manager import AgentProfile
     from ftre.config import AgentConfig
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,8 @@ class AgentRunContext:
     # mutable — OpenAI 格式的消息列表，每项 {"role": str, "content": str|list}
     messages: list[dict]
     config: "AgentConfig"
+    agent_profile: "AgentProfile | None" = None
+
 
 
 # hook 函数签名：接收 ctx，返回（可能被改写的）ctx

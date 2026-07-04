@@ -569,6 +569,7 @@ class AgentLoop:
                 channel_id=inbound.from_channel,
                 messages=messages,
                 config=hook_config,
+                agent_profile=agent_profile,
             )
             ctx = self.hook_manager.trigger_sync(BEFORE_AGENT_RUN, ctx)
             messages = ctx.messages
