@@ -90,39 +90,41 @@ def test_load_default_agent_uses_global_config(tmp_agents_dir, fake_global_confi
 def test_tool_filter_allow_deny():
     """filter_tools respects allow and deny lists."""
     from ftre.tools import filter_tools
-    from ftre_agent_core.tool import Tool
+    from ftre_agent_core.tool import Tool, ToolRegistry
 
     def _noop(**kw):
         return ""
 
-    tools = [
-        Tool(name="bash", description="", parameters=[], func=_noop),
-        Tool(name="read", description="", parameters=[], func=_noop),
-        Tool(name="write", description="", parameters=[], func=_noop),
-        Tool(name="cron", description="", parameters=[], func=_noop),
-        Tool(name="mcp__playwright__browser_navigate", description="", parameters=[], func=_noop),
-    ]
+    def _make_registry():
+        r = ToolRegistry()
+        for name in ["bash", "read", "write", "cron", "mcp__playwright__browser_navigate"]:
+            r.register(Tool(name=name, description="", parameters=[], func=_noop))
+        return r
 
     # No config → all tools
-    assert len(filter_tools(tools, None)) == 5
+    assert len(_make_registry()) == 5
 
     # Allow only bash and read
-    result = filter_tools(tools, {"allow": ["bash", "read"]})
-    assert [t.name for t in result] == ["bash", "read"]
+    r = _make_registry()
+    filter_tools(r, {"allow": ["bash", "read"]})
+    assert r.names == ["bash", "read"]
 
     # Deny cron
-    result = filter_tools(tools, {"deny": ["cron"]})
-    assert "cron" not in [t.name for t in result]
-    assert len(result) == 4
+    r = _make_registry()
+    filter_tools(r, {"deny": ["cron"]})
+    assert "cron" not in r.names
+    assert len(r) == 4
 
     # Allow + Deny combined
-    result = filter_tools(tools, {"allow": ["bash", "read", "cron"], "deny": ["cron"]})
-    assert [t.name for t in result] == ["bash", "read"]
+    r = _make_registry()
+    filter_tools(r, {"allow": ["bash", "read", "cron"], "deny": ["cron"]})
+    assert r.names == ["bash", "read"]
 
     # Empty allow = no whitelist restriction, only deny applies
-    result = filter_tools(tools, {"allow": [], "deny": ["write"]})
-    assert "write" not in [t.name for t in result]
-    assert len(result) == 4
+    r = _make_registry()
+    filter_tools(r, {"allow": [], "deny": ["write"]})
+    assert "write" not in r.names
+    assert len(r) == 4
 
 
 def test_load_agent_with_tool_overrides(tmp_agents_dir, fake_global_config):

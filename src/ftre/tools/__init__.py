@@ -18,61 +18,64 @@ from .task import create_task_tool
 from .write import create_write_tool
 
 
-def filter_tools(all_tools: list[Tool], tools_config: dict | None) -> list[Tool]:
-    """按 agent 的 tools.allow / tools.deny 过滤工具列表。
+def filter_tools(registry: ToolRegistry, tools_config: dict | None) -> ToolRegistry:
+    """按 agent 的 tools.allow / tools.deny 在 registry 上原地过滤。
 
     Args:
-        all_tools: 内置工具 + 插件工具 + MCP 工具的完整列表
+        registry: 已注册所有工具的 ToolRegistry
         tools_config: agent.config.json 的 tools 字段，格式为
                       {"allow": [...], "deny": [...]} 或 None
 
     Returns:
-        过滤后的工具列表。tools_config 为 None 时返回原列表。
+        过滤后的同一个 registry（原地修改）。
+        tools_config 为 None 时不做任何操作。
     """
     if not tools_config:
-        return all_tools
+        return registry
 
     allow = set(tools_config.get("allow", []))
     deny = set(tools_config.get("deny", []))
 
-    result = []
-    for tool in all_tools:
-        name = getattr(tool, "name", "")
+    for name in list(registry.names):
         if name in deny:
-            continue
-        # allow 为空 = 不做白名单限制，
-        if not allow or name in allow:
-            result.append(tool)
+            registry.unregister(name)
+        elif allow and name not in allow:
+            registry.unregister(name)
 
-    return result
+    return registry
 
 
 def build_default_tools(
     channel_manager=None,
     tool_registry: ToolRegistry | None = None,
     llm_config=None,
-) -> list[Tool]:
+) -> ToolRegistry:
     """构建默认工具集：bash + read + write + edit + set_workspace + cron
-    + task + send_message
+    + task + send_message + 插件注册的全局工具
 
     Args:
-        channel_manager: ChannelManager 实例（用于 send_message 工具）
-        llm_config: 当前 Agent 的 llm 配置。
+        channel_manager: ChannelManager 实例（用于 send_message / task 工具）
+        tool_registry: 全局插件 ToolRegistry，其工具会被合并进来
+        llm_config: 当前 Agent 的 llm 配置
+
+    Returns:
+        一个新的 ToolRegistry，包含内置工具 + 全局插件工具。
     """
-    tools = [
-        create_bash_tool(),
-        create_read_tool(vision=getattr(llm_config, "vision", False)),
-        create_write_tool(),
-        create_edit_tool(),
-        create_set_workspace_tool(),
-        create_cron_tool(),
-    ]
+    registry = ToolRegistry()
+
+    registry.register(create_bash_tool())
+    registry.register(create_read_tool(vision=getattr(llm_config, "vision", False)))
+    registry.register(create_write_tool())
+    registry.register(create_edit_tool())
+    registry.register(create_set_workspace_tool())
+    registry.register(create_cron_tool())
 
     if channel_manager:
-        tools.append(create_task_tool(channel_manager))
-        tools.append(create_send_message_tool(channel_manager))
+        registry.register(create_task_tool(channel_manager))
+        registry.register(create_send_message_tool(channel_manager))
 
     if tool_registry is not None:
-        tools.extend(tool_registry.snapshot())
+        for tool in tool_registry.snapshot():
+            registry.register(tool)
 
-    return tools
+    return registry
