@@ -588,7 +588,7 @@ class AgentManager:
             api_base=c.llm.api_base,
             api_type=c.llm.api_type,
             system_prompt=system_prompt,
-            tools=registry,
+            tool_registry=registry,
             max_iterations=c.max_iterations,
             max_tokens=c.llm.max_output,
             tracer=tracer,
