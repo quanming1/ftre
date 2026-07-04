@@ -290,10 +290,10 @@ class McpManager:
             return
         from .adapter import MCP_TOOL_PREFIX, build_mcp_tools
 
-        self._tool_registry._tools = [
-            t for t in self._tool_registry._tools
-            if not getattr(t, "name", "").startswith(MCP_TOOL_PREFIX)
-        ]
+        # 移除旧的 MCP 工具（通过公共 API，同时清理 _tools 和 _inject_map）
+        for name in list(self._tool_registry.names):
+            if name.startswith(MCP_TOOL_PREFIX):
+                self._tool_registry.unregister(name)
         mcp_tools = await build_mcp_tools(self)
         for tool in mcp_tools:
             try:
