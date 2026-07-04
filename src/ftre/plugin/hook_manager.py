@@ -100,7 +100,7 @@ class AgentRunContext:
     messages: list[dict]
     config: "AgentConfig"
     agent_profile: "AgentProfile | None" = None
-    tool_registry: "ToolRegistry | None" = None
+    agent_tool_registry: "ToolRegistry | None" = None
 
 
 
