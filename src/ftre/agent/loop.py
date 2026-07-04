@@ -40,7 +40,7 @@ from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 from ftre.config import AgentConfig, load_config
 from ftre.session import SessionManager
 from ftre.session.multimodal import build_user_content, normalize_stored_user_content
-from ftre.tools import ToolRegistry
+from ftre_agent_core.tool import ToolRegistry
 from ftre.tools._workspace import WorkspaceAccessor
 from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
 from ftre.utils import Pipeline

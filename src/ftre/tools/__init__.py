@@ -5,8 +5,11 @@ ftre 内置工具集
 通过 runtime_context['workspace'] = WorkspaceAccessor(...) 注入一个对 DB 的
 同步外观，工具用 Injected("workspace") 拿到它后调 ws.get() / ws.set(...)
 读写持久化的 cwd。
+
+ToolRegistry 统一使用 ftre_agent_core.tool.ToolRegistry，插件注册的工具和
+ReActAgent 内部的工具注册表是同一个实现。
 """
-from ftre_agent_core.tool import Tool
+from ftre_agent_core.tool import Tool, ToolRegistry
 
 from .bash import create_bash_tool
 from .cron import create_cron_tool
@@ -16,30 +19,6 @@ from .send_message import create_send_message_tool
 from .set_workspace import create_set_workspace_tool
 from .task import create_task_tool
 from .write import create_write_tool
-
-
-class ToolRegistry:
-    """运行时工具注册表，供插件注册额外 Tool。"""
-
-    def __init__(self) -> None:
-        self._tools: list[Tool] = []
-
-    def register(self, tool: Tool) -> None:
-        """注册一个工具；工具名不能重复。"""
-        if any(getattr(t, "name", None) == getattr(tool, "name", None) for t in self._tools):
-            raise ValueError(f"tool already registered: {getattr(tool, 'name', '')}")
-        self._tools.append(tool)
-
-    def snapshot(self) -> list[Tool]:
-        """返回当前已注册工具的快照。"""
-        return list(self._tools)
-
-    def truncate(self, size: int) -> None:
-        """回滚到指定大小，用于插件 setup 失败时清理。"""
-        del self._tools[size:]
-
-    def __len__(self) -> int:
-        return len(self._tools)
 
 
 def filter_tools(all_tools: list[Tool], tools_config: dict | None) -> list[Tool]:
@@ -64,10 +43,10 @@ def filter_tools(all_tools: list[Tool], tools_config: dict | None) -> list[Tool]
         name = getattr(tool, "name", "")
         if name in deny:
             continue
-        # allow 为空 = 不做白名单限制，只看 deny
-        if allow and name not in allow:
-            continue
-        result.append(tool)
+        # allow 为空 = 不做白名单限制，
+        if not allow or name in allow:
+            result.append(tool)
+
     return result
 
 
