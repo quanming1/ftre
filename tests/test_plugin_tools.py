@@ -25,12 +25,15 @@ def _dummy_tool(name: str = "dummy") -> Tool:
     )
 
 
-def test_tool_registry_rejects_duplicate_names():
+def test_tool_registry_overwrites_duplicate_names():
+    """agent-core 的 ToolRegistry 对重名工具采取覆盖策略（后者替换前者）。"""
     registry = ToolRegistry()
     registry.register(_dummy_tool("dup"))
 
-    with pytest.raises(ValueError, match="tool already registered"):
-        registry.register(_dummy_tool("dup"))
+    # 同名工具直接覆盖，不报错
+    registry.register(_dummy_tool("dup"))
+    assert len(registry) == 1
+    assert registry.get("dup") is not None
 
 
 def test_build_default_tools_includes_registry_tools():

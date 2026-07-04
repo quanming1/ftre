@@ -23,8 +23,7 @@ from fastapi import APIRouter
 
 from ftre.bus import EventBus
 from ftre.channel import Channel, ChannelManager
-from ftre_agent_core.tool import Tool
-from ftre.tools import ToolRegistry
+from ftre_agent_core.tool import Tool, ToolRegistry
 
 from .hook_manager import HookManager
 
@@ -206,13 +205,16 @@ class PluginManager:
             routers=self._routers,
         )
 
-        tool_count = len(self._tool_registry)
+        tool_names_before = set(self._tool_registry.names)
         try:
             plugin.setup()
             self._plugins[plugin.name] = plugin
             logger.warning(f"[plugin] 已加载: {plugin.name} v{plugin.version}")
         except Exception as e:
-            self._tool_registry.truncate(tool_count)
+            # 回滚：unregister setup 期间新注册的工具
+            for name in self._tool_registry.names:
+                if name not in tool_names_before:
+                    self._tool_registry.unregister(name)
             logger.error(f"[plugin] {plugin.name} setup 失败: {e}")
 
     def unload(self, name: str) -> None:
