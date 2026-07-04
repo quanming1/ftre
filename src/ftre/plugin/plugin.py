@@ -167,7 +167,7 @@ class PluginManager:
 
         # ─── 阶段 2: 扫描外部插件目录 ─────────────────────────
         # 约定：~/.ftre/plugins/ 下每个子目录是一个插件 package。
-        # 扫描子目录中所有非 _ 前缀的 .py 文件，找 Plugin 子类。
+        # 入口固定为 __init__.py，从中找 Plugin 子类。
         logger.warning(f"[plugin] 扫描外部插件: {PLUGINS_DIR}")
         if not PLUGINS_DIR.exists():
             return
@@ -176,23 +176,24 @@ class PluginManager:
             if not plugin_dir.is_dir() or plugin_dir.name.startswith("_"):
                 continue
 
+            init_file = plugin_dir / "__init__.py"
+            if not init_file.is_file():
+                continue
+
             if str(plugin_dir) not in sys.path:
                 sys.path.insert(0, str(plugin_dir))
 
-            for py_file in sorted(plugin_dir.glob("*.py")):
-                if py_file.name.startswith("_"):
-                    continue
-                try:
-                    mod = importlib.import_module(py_file.stem)
-                    for attr in vars(mod).values():
-                        if (isinstance(attr, type)
-                            and issubclass(attr, Plugin)
-                            and attr is not Plugin
-                            and attr.name):
-                            plugin = attr()
-                            self._load(plugin, configs.get(plugin.name, {}))
-                except Exception as e:
-                    logger.error(f"[plugin] {plugin_dir.name}/{py_file.name} 加载失败: {e}")
+            try:
+                mod = importlib.import_module(plugin_dir.name)
+                for attr in vars(mod).values():
+                    if (isinstance(attr, type)
+                        and issubclass(attr, Plugin)
+                        and attr is not Plugin
+                        and attr.name):
+                        plugin = attr()
+                        self._load(plugin, configs.get(plugin.name, {}))
+            except Exception as e:
+                logger.error(f"[plugin] {plugin_dir.name} 加载失败: {e}")
 
     def _load(self, plugin: Plugin, config: dict) -> None:
         """加载单个插件"""
