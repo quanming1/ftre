@@ -4,11 +4,12 @@ ftre CLI 入口
 用法：
   ftre gateway    启动 WebSocket 网关服务
 """
-import sys
-import os
+
 import asyncio
-import logging
 import json
+import logging
+import os
+import sys
 
 # Windows CMD 默认不认 ANSI 转义码，激活虚拟终端支持
 if sys.platform == "win32":
@@ -87,13 +88,14 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 # httpx 的 HTTP 请求日志也刷屏
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-from ftre.bus import EventBus
-from ftre.channel import WebSocketChannel, SubagentChannel, ChannelManager
-from ftre.session import SessionManager
-from ftre.plugin import PluginManager, HookManager
-from ftre.agent.loop import AgentLoop
-from ftre.config import load_config_file, load_gateway_address
 from ftre_agent_core.tool import ToolRegistry
+
+from ftre.agent.loop import AgentLoop
+from ftre.bus import EventBus
+from ftre.channel import ChannelManager, SubagentChannel, WebSocketChannel
+from ftre.config import load_config_file, load_gateway_address
+from ftre.plugin import HookManager, PluginManager
+from ftre.session import SessionManager
 from ftre.tools.cron import CronScheduler
 
 
@@ -108,6 +110,7 @@ async def run_gateway():
 
     # 注入到 API 路由
     from ftre.api.routes import set_session_manager
+
     set_session_manager(session_manager)
 
     # 消息总线
@@ -124,6 +127,7 @@ async def run_gateway():
 
     # Command 管理器 — 注册斜杠指令
     from ftre.command import CommandManager
+
     cmd = CommandManager()
 
     # Plugin 管理器 — 加载内置/外部插件（可注册 Channel / Hook / Tool 等）
@@ -138,15 +142,17 @@ async def run_gateway():
     )
 
     # 注入到 API 路由
-    from ftre.api.routes import set_agent_loop, set_command_manager, set_agent_manager
+    from ftre.api.routes import set_agent_loop, set_agent_manager, set_command_manager
+
     set_command_manager(cmd)
 
     # 加载配置文件
     config_data = load_config_file()
 
     # Agent 管理器 — 加载 ~/.ftre/agents/ 下的 per-agent 配置
-    from ftre.config import AGENTS_DIR
     from ftre.agent.agent_manager import AgentManager
+    from ftre.config import AGENTS_DIR
+
     agent_manager = AgentManager(agents_dir=AGENTS_DIR, global_config_data=config_data)
     agent_manager.ensure_default()
     set_agent_manager(agent_manager)
@@ -182,7 +188,9 @@ async def run_gateway():
     await mgr.start()
 
     # Cron 调度器 — 扫描 ~/.ftre/cron/ 触发定时任务
-    cron_scheduler = CronScheduler(bus=bus, session_manager=session_manager, channel_manager=mgr)
+    cron_scheduler = CronScheduler(
+        bus=bus, session_manager=session_manager, channel_manager=mgr
+    )
     cron_scheduler.start()
 
     # 保持进程运行，直到 Ctrl+C
