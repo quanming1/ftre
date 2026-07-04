@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from ftre.agent.agent_manager import AgentProfile
     from ftre.config import AgentConfig
+    from ftre_agent_core.tool import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ class AgentRunContext:
     messages: list[dict]
     config: "AgentConfig"
     agent_profile: "AgentProfile | None" = None
+    tool_registry: "ToolRegistry | None" = None
 
 
 
