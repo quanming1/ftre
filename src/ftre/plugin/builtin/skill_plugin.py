@@ -273,10 +273,13 @@ class SkillPlugin(Plugin):
         if not descriptions:
             return ""
 
-        # 过滤掉被禁用的 skill
-        if self._disabled_skills:
+        # 过滤掉被禁用的 skill（per-agent disabled_skills 覆盖全局）
+        disabled = self._disabled_skills
+        if agent_profile is not None and agent_profile.disabled_skills:
+            disabled = set(agent_profile.disabled_skills)
+        if disabled:
             descriptions = [
-                d for d in descriptions if d["name"] not in self._disabled_skills
+                d for d in descriptions if d["name"] not in disabled
             ]
         if not descriptions:
             return ""
@@ -297,7 +300,7 @@ class SkillPlugin(Plugin):
 def create_load_skill_tool(skills_dir: Path, disabled_skills: set[str] | None = None) -> Tool:
     """Create the loadSkill tool."""
 
-    _disabled = disabled_skills or set()
+    _disabled = disabled_skills if disabled_skills is not None else set()
 
     def loadSkill(skill: str, agent_profile=Injected("agent_profile")) -> str:
         skill_name = (skill or "").strip()
@@ -306,7 +309,12 @@ def create_load_skill_tool(skills_dir: Path, disabled_skills: set[str] | None = 
         if Path(skill_name).name != skill_name:
             return f"[error] invalid skill name: {skill!r}"
 
-        if skill_name in _disabled:
+        # per-agent disabled_skills 覆盖全局
+        effective_disabled = _disabled
+        if agent_profile is not None and agent_profile.disabled_skills:
+            effective_disabled = set(agent_profile.disabled_skills)
+
+        if skill_name in effective_disabled:
             return f"[error] skill '{skill_name}' is disabled"
 
         # 搜索顺序：agent 私有目录 → 全局目录
