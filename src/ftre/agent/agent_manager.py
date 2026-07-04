@@ -569,13 +569,13 @@ class AgentManager:
             c.llm = profile.llm
 
         # 构建 + 过滤工具
-        tools = build_default_tools(
+        registry = build_default_tools(
             channel_manager=channel_manager,
             tool_registry=tool_registry,
             llm_config=c.llm,
         )
         if profile is not None and profile.tools_config:
-            tools = filter_tools(tools, profile.tools_config)
+            filter_tools(registry, profile.tools_config)
 
         # 合成 system prompt
         system_prompt = self._compose_system_prompt(
@@ -588,7 +588,7 @@ class AgentManager:
             api_base=c.llm.api_base,
             api_type=c.llm.api_type,
             system_prompt=system_prompt,
-            tools=tools,
+            tools=registry,
             max_iterations=c.max_iterations,
             max_tokens=c.llm.max_output,
             tracer=tracer,

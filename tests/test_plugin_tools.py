@@ -41,27 +41,21 @@ def test_build_default_tools_includes_registry_tools():
     registry = ToolRegistry()
     registry.register(_dummy_tool("extra"))
 
-    names = [tool.name for tool in build_default_tools(tool_registry=registry)]
+    result = build_default_tools(tool_registry=registry)
 
-    assert "extra" in names
+    assert "extra" in result.names
 
 
 def test_build_default_tools_omits_see_img_without_vision():
-    names = [
-        tool.name
-        for tool in build_default_tools(llm_config=SimpleNamespace(vision=False))
-    ]
+    result = build_default_tools(llm_config=SimpleNamespace(vision=False))
 
-    assert "see_img" not in names
+    assert "see_img" not in result.names
 
 
 def test_build_default_tools_omits_see_img_with_vision():
-    names = [
-        tool.name
-        for tool in build_default_tools(llm_config=SimpleNamespace(vision=True))
-    ]
+    result = build_default_tools(llm_config=SimpleNamespace(vision=True))
 
-    assert "see_img" not in names
+    assert "see_img" not in result.names
 
 
 def test_read_tool_reads_relative_image_path(tmp_path):
