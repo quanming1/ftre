@@ -14,7 +14,7 @@ from xml.sax.saxutils import escape
 from fastapi import APIRouter, HTTPException, Request
 
 from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
-from ftre_agent_core.tool import Tool, ToolParameter
+from ftre_agent_core.tool import Tool, ToolParameter, Injected
 from ftre.api import skill as skill_store
 
 
@@ -51,15 +51,15 @@ class SkillPlugin(Plugin):
     def _inject_system_prompt(self, ctx):
         parts = [
             "<skill_desc>\n"
-            "Skill 是 ~/.ftre/skills 下的本地能力说明。"
-            f"当前电脑上的 Skill 文件夹绝对路径是 {get_skills_dir_path(self._skills_dir)}。"
+            "Skill 是本地能力说明文件。全局 Skill 存放在 ~/.ftre/skills，"
+            "Agent 私有 Skill 存放在 ~/.ftre/agents/<agent_name>/skills。"
             "如果用户点名某个 Skill，或用户需求与下方任一 Skill 的能力描述匹配，"
             "且该 Skill 的完整内容尚未在当前对话历史中被加载过，"
             "请调用 loadSkill 读取该 Skill 的完整内容，再按 Skill 内容执行任务。"
             "同一个 Skill 在当前对话中只需加载一次，不要重复加载。"
             "\n</skill_desc>"
         ]
-        skill_list = self._build_skill_list_prompt()
+        skill_list = self._build_skill_list_prompt(ctx)
         if skill_list:
             parts.append(skill_list)
         append_to_first_system(ctx.messages, "\n\n".join(parts))
@@ -84,11 +84,36 @@ class SkillPlugin(Plugin):
         router = APIRouter(prefix="/skills")
 
         @router.get("")
-        async def list_skills():
+        async def list_skills(agent_id: str | None = None):
             skills = skill_store.list_skills()
             # 附加 disabled 状态
             for s in skills:
                 s["disabled"] = s.get("name", "") in self._disabled_skills
+
+            # 合并 agent 私有 skill（私有同名覆盖全局）
+            if agent_id:
+                from ftre.config import AGENTS_DIR
+                private_dir = AGENTS_DIR / agent_id / "skills"
+                if private_dir.is_dir():
+                    private_descs = list_skill_descriptions(private_dir)
+                    private_names = {d["name"] for d in private_descs}
+                    # 移除被私有覆盖的全局条目
+                    skills = [s for s in skills if s["name"] not in private_names]
+                    # 追加私有条目
+                    for d in private_descs:
+                        skills.append({
+                            "name": d["name"],
+                            "description": d["description"],
+                            "kind": "dir",
+                            "updated_at": 0.0,
+                            "disabled": d["name"] in self._disabled_skills,
+                            "scope": "private",
+                        })
+                    # 为全局条目标注 scope
+                    for s in skills:
+                        if "scope" not in s:
+                            s["scope"] = "global"
+
             return {"skills": skills}
 
         @router.get("/{name}")
@@ -231,8 +256,20 @@ class SkillPlugin(Plugin):
 
         return router
 
-    def _build_skill_list_prompt(self) -> str:
+    def _build_skill_list_prompt(self, ctx) -> str:
+        # 全局 skill
         descriptions = list_skill_descriptions(self._skills_dir)
+
+        # 合并 agent 私有 skill（私有同名覆盖全局）
+        agent_profile = getattr(ctx, "agent_profile", None)
+        if agent_profile is not None and agent_profile.agent_dir:
+            private_dir = Path(agent_profile.agent_dir) / "skills"
+            private_descs = list_skill_descriptions(private_dir)
+            if private_descs:
+                private_names = {d["name"] for d in private_descs}
+                descriptions = [d for d in descriptions if d["name"] not in private_names]
+                descriptions.extend(private_descs)
+
         if not descriptions:
             return ""
 
@@ -245,7 +282,7 @@ class SkillPlugin(Plugin):
             return ""
 
         lines = [
-            "<skill_list desc=\"以下是你当前可以使用的全部 skill，通过 loadSkill 工具按名称加载对应 skill 后再使用\">",
+            "<skill_list desc=\"以下是你当前可以使用的全部 skill（含全局和当前 agent 私有），通过 loadSkill 工具按名称加载对应 skill 后再使用\">",
         ]
         for item in descriptions:
             lines.append(
@@ -262,7 +299,7 @@ def create_load_skill_tool(skills_dir: Path, disabled_skills: set[str] | None = 
 
     _disabled = disabled_skills or set()
 
-    def loadSkill(skill: str) -> str:
+    def loadSkill(skill: str, agent_profile=Injected("agent_profile")) -> str:
         skill_name = (skill or "").strip()
         if not skill_name:
             return "[error] skill name is required"
@@ -272,14 +309,22 @@ def create_load_skill_tool(skills_dir: Path, disabled_skills: set[str] | None = 
         if skill_name in _disabled:
             return f"[error] skill '{skill_name}' is disabled"
 
-        candidates = (
-            skills_dir / f"{skill_name}.md",
-            skills_dir / skill_name / "SKILL.md",
-            skills_dir / skill_name / "skill.md",
-        )
-        for path in candidates:
-            if path.is_file():
-                return _read_text_safe(path).strip()
+        # 搜索顺序：agent 私有目录 → 全局目录
+        search_dirs = [skills_dir]
+        if agent_profile is not None and agent_profile.agent_dir:
+            private_dir = Path(agent_profile.agent_dir) / "skills"
+            if private_dir not in search_dirs:
+                search_dirs.insert(0, private_dir)
+
+        for d in search_dirs:
+            candidates = (
+                d / f"{skill_name}.md",
+                d / skill_name / "SKILL.md",
+                d / skill_name / "skill.md",
+            )
+            for path in candidates:
+                if path.is_file():
+                    return _read_text_safe(path).strip()
         return f"[error] skill not found: {skill_name}"
 
     return Tool(
