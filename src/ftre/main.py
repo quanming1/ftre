@@ -93,7 +93,7 @@ from ftre.session import SessionManager
 from ftre.plugin import PluginManager, HookManager
 from ftre.agent.loop import AgentLoop
 from ftre.config import load_config_file, load_gateway_address
-from ftre.tools import ToolRegistry
+from ftre_agent_core.tool import ToolRegistry
 from ftre.tools.cron import CronScheduler
 
 
