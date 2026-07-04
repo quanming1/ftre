@@ -12,6 +12,7 @@ AgentLoop - 全局单例，消费所有 session 的 inbound 消息
 - 系统级指令绕过 session lock，在锁外直接执行
 - Agent 执行全在主事件循环，Task.cancel() 在 LLM stream 的 await 处立即生效
 """
+
 import asyncio
 import copy
 import logging
@@ -19,29 +20,31 @@ import os
 import uuid
 from concurrent.futures import Future
 
-from ftre_agent_core.agent import ReActAgent
 from ftre_agent_core import Tracer
+from ftre_agent_core.agent import ReActAgent
 from ftre_agent_core.agent.event import (
     AgentEvent,
+    AssistantMessageCompleteEvent,
     DoneEvent,
     DoneReason,
     ErrorEvent,
-    AssistantMessageCompleteEvent,
     ReasoningCompleteEvent,
     ToolCallEvent,
     ToolResultEvent,
     UsageUpdateEvent,
     UserMessageEvent,
 )
-from ftre.bus import BusMessage, EventBus, GLOBAL_CHANNEL, GLOBAL_SESSION
+
+from ftre.bus import GLOBAL_CHANNEL, GLOBAL_SESSION, BusMessage, EventBus
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 from ftre.config import AgentConfig, load_config
 from ftre.session import SessionManager
 from ftre.session.multimodal import build_user_content, normalize_stored_user_content
 from ftre.tools import ToolRegistry
 from ftre.tools._workspace import WorkspaceAccessor
+from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
 from ftre.utils import Pipeline
-from ftre.trace_store import SQLiteTraceExporter, TRACE_DB_PATH
+
 from .compact_manager import CompactManager
 
 logger = logging.getLogger(__name__)
@@ -132,15 +135,19 @@ class AgentLoop:
             return cfg.context
         except Exception:
             from ftre.config import ContextConfig
+
             return ContextConfig()
 
     def _register_commands(self) -> None:
         """注册内置斜杠指令。"""
         if self.command_manager is None:
             return
+
         # /cancel：系统级指令，在锁外执行，立即取消当前 session 的 Agent
         def _on_cancel(ctx):
-            sid = ctx.meta["inbound"].from_session or ctx.meta["inbound"].data.get("session_id", "")
+            sid = ctx.meta["inbound"].from_session or ctx.meta["inbound"].data.get(
+                "session_id", ""
+            )
             agent = self._active_agents.get(sid)
             if agent:
                 agent.cancel_nowait()
@@ -148,6 +155,7 @@ class AgentLoop:
             if task and not task.done():
                 task.cancel()
                 logger.info(f"[agent-loop] cancel task 已取消 session={sid}")
+
         self.command_manager.register(
             "/cancel",
             _on_cancel,
@@ -175,7 +183,8 @@ class AgentLoop:
 
             # 先尝试启用 pending compact（秒级，不用调 LLM）
             enabled = await self.compact_manager.enable_pending_compact(
-                session_id, channel_id,
+                session_id,
+                channel_id,
                 config=config,
                 silent=False,
             )
@@ -183,7 +192,8 @@ class AgentLoop:
             # 没有 pending → 直接压缩（enabled=True）
             if not enabled:
                 await self.compact_manager.compact(
-                    session_id, channel_id,
+                    session_id,
+                    channel_id,
                     config=config,
                     silent=False,
                     enabled=True,
@@ -192,7 +202,9 @@ class AgentLoop:
             logger.exception(f"[agent-loop] /compact 执行异常 session={session_id}")
         finally:
             self._compacting_sessions.discard(session_id)
-            await self._publish_session_status_async(session_id, self.get_session_status(session_id))
+            await self._publish_session_status_async(
+                session_id, self.get_session_status(session_id)
+            )
 
     def start(self) -> None:
         """启动消费循环"""
@@ -211,7 +223,9 @@ class AgentLoop:
             return "compacting"
         return "idle"
 
-    def register_subagent_done_future(self, session_id: str, future: Future[dict]) -> bool:
+    def register_subagent_done_future(
+        self, session_id: str, future: Future[dict]
+    ) -> bool:
         """注册 subagent 单轮执行完成通知；返回 False 表示已有等待者。"""
         existing = self._subagent_done_futures.get(session_id)
         if existing is not None and not existing.done():
@@ -338,14 +352,18 @@ class AgentLoop:
         if session_id and content:
             try:
                 await self.session_manager.save_message(
-                    session_id, "user_message", {
+                    session_id,
+                    "user_message",
+                    {
                         "event_id": uuid.uuid4().hex[:16],
                         "content": normalize_stored_user_content(content),
                         "metadata": {"hide": False},
                     },
                 )
             except Exception:
-                logger.exception(f"[agent-loop] 指令消息持久化失败 session={session_id}")
+                logger.exception(
+                    f"[agent-loop] 指令消息持久化失败 session={session_id}"
+                )
 
         # 3. 再执行指令 handler
         await self.command_manager.try_dispatch(data)
@@ -430,7 +448,9 @@ class AgentLoop:
         # Step 2: 鉴权
         session = await self.session_manager.get_session(session_id)
         if session is None:
-            logger.warning(f"[agent-loop] session 不存在，拒绝执行: session={session_id}")
+            logger.warning(
+                f"[agent-loop] session 不存在，拒绝执行: session={session_id}"
+            )
             return
         if session["channel_id"] != inbound.from_channel:
             logger.warning(
@@ -461,14 +481,16 @@ class AgentLoop:
                 silent = getattr(config.context, "silent", True)
                 # 先尝试启用 pending compact（秒级）
                 enabled = await self.compact_manager.enable_pending_compact(
-                    session_id, inbound.from_channel,
+                    session_id,
+                    inbound.from_channel,
                     config=config,
                     silent=silent,
                 )
                 if not enabled:
                     # 没有 pending → 直接压缩
                     await self.compact_manager.compact(
-                        session_id, inbound.from_channel,
+                        session_id,
+                        inbound.from_channel,
                         config=config,
                         silent=silent,
                         enabled=True,
@@ -546,6 +568,7 @@ class AgentLoop:
             "bus": self.bus,
             "agent_loop": self,
             "llm_config": hook_config.llm,
+            "agent_profile": agent_profile,
             "workspace": WorkspaceAccessor(
                 session_id=session_id,
                 session_manager=self.session_manager,
@@ -563,7 +586,8 @@ class AgentLoop:
 
         # Step 7.5: before_agent_run hook（插件注入对话上下文 / 系统身份）
         if self.hook_manager is not None:
-            from ftre.plugin import AgentRunContext, BEFORE_AGENT_RUN
+            from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext
+
             ctx = AgentRunContext(
                 session_id=session_id,
                 channel_id=inbound.from_channel,
@@ -605,10 +629,15 @@ class AgentLoop:
                 # usage_update 时检查是否需要预压缩。
                 # maybe_schedule_idle_compact 自带去重，确保同一 session 只有一个 compact task 在飞，
                 # 所以即使 usage_update 频繁也不会反复调度。
-                if isinstance(event, UsageUpdateEvent) and inbound.from_channel != SUBAGENT_CHANNEL_ID:
+                if (
+                    isinstance(event, UsageUpdateEvent)
+                    and inbound.from_channel != SUBAGENT_CHANNEL_ID
+                ):
                     try:
                         _cfg = self._load_current_config()
-                        await self.compact_manager.maybe_schedule_idle_compact(session_id, inbound.from_channel, _cfg)
+                        await self.compact_manager.maybe_schedule_idle_compact(
+                            session_id, inbound.from_channel, _cfg
+                        )
                     except Exception:
                         logger.debug("[agent-loop] 调度 usage 压缩失败", exc_info=True)
 
@@ -666,7 +695,9 @@ class AgentLoop:
             if inbound.from_channel != SUBAGENT_CHANNEL_ID:
                 try:
                     _cfg = self._load_current_config()
-                    await self.compact_manager.maybe_schedule_idle_compact(session_id, inbound.from_channel, _cfg)
+                    await self.compact_manager.maybe_schedule_idle_compact(
+                        session_id, inbound.from_channel, _cfg
+                    )
                 except Exception:
                     logger.debug("[agent-loop] 调度 idle 压缩失败", exc_info=True)
 
@@ -711,7 +742,8 @@ class AgentLoop:
         # 触发 before_messages_build hook（插件做孤立事件清理、相邻性修复、裁剪、标题生成等）
         hook_config = copy.deepcopy(config)
         if self.hook_manager is not None:
-            from ftre.plugin import MessagesBuildContext, BEFORE_MESSAGES_BUILD
+            from ftre.plugin import BEFORE_MESSAGES_BUILD, MessagesBuildContext
+
             ctx = MessagesBuildContext(
                 session_id=session_id,
                 channel_id=channel_id,
