@@ -8,7 +8,8 @@ from ftre_agent_core.tool import Tool
 from ftre.agent.loop import AgentLoop
 from ftre.config import AgentConfig, LLMConfig
 from ftre.plugin import BEFORE_AGENT_RUN, HookManager, Plugin, PluginManager
-from ftre.tools import ToolRegistry, build_default_tools
+from ftre_agent_core.tool import ToolRegistry
+from ftre.tools import build_default_tools
 from ftre.tools._workspace import WorkspaceAccessor
 from ftre.tools.read import create_read_tool
 

@@ -5,9 +5,6 @@ ftre 内置工具集
 通过 runtime_context['workspace'] = WorkspaceAccessor(...) 注入一个对 DB 的
 同步外观，工具用 Injected("workspace") 拿到它后调 ws.get() / ws.set(...)
 读写持久化的 cwd。
-
-ToolRegistry 统一使用 ftre_agent_core.tool.ToolRegistry，插件注册的工具和
-ReActAgent 内部的工具注册表是同一个实现。
 """
 from ftre_agent_core.tool import Tool, ToolRegistry
 
