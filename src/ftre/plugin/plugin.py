@@ -166,27 +166,33 @@ class PluginManager:
                 logger.error(f"[plugin] 内置插件 {py_file.name} 加载失败: {e}")
 
         # ─── 阶段 2: 扫描外部插件目录 ─────────────────────────
+        # 约定：~/.ftre/plugins/ 下每个子目录是一个插件 package。
+        # 扫描子目录中所有非 _ 前缀的 .py 文件，找 Plugin 子类。
         logger.warning(f"[plugin] 扫描外部插件: {PLUGINS_DIR}")
         if not PLUGINS_DIR.exists():
             return
 
-        if str(PLUGINS_DIR) not in sys.path:
-            sys.path.insert(0, str(PLUGINS_DIR))
-
-        for py_file in PLUGINS_DIR.glob("*.py"):
-            if py_file.name.startswith("_"):
+        for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
+            if not plugin_dir.is_dir() or plugin_dir.name.startswith("_"):
                 continue
-            try:
-                mod = importlib.import_module(py_file.stem)
-                for attr in vars(mod).values():
-                    if (isinstance(attr, type)
-                        and issubclass(attr, Plugin)
-                        and attr is not Plugin
-                        and attr.name):
-                        plugin = attr()
-                        self._load(plugin, configs.get(plugin.name, {}))
-            except Exception as e:
-                logger.error(f"[plugin] {py_file.name} 加载失败: {e}")
+
+            if str(plugin_dir) not in sys.path:
+                sys.path.insert(0, str(plugin_dir))
+
+            for py_file in sorted(plugin_dir.glob("*.py")):
+                if py_file.name.startswith("_"):
+                    continue
+                try:
+                    mod = importlib.import_module(py_file.stem)
+                    for attr in vars(mod).values():
+                        if (isinstance(attr, type)
+                            and issubclass(attr, Plugin)
+                            and attr is not Plugin
+                            and attr.name):
+                            plugin = attr()
+                            self._load(plugin, configs.get(plugin.name, {}))
+                except Exception as e:
+                    logger.error(f"[plugin] {plugin_dir.name}/{py_file.name} 加载失败: {e}")
 
     def _load(self, plugin: Plugin, config: dict) -> None:
         """加载单个插件"""
