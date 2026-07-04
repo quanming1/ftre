@@ -594,6 +594,7 @@ class AgentLoop:
                 messages=messages,
                 config=hook_config,
                 agent_profile=agent_profile,
+                tool_registry=agent.tool_registry,
             )
             ctx = self.hook_manager.trigger_sync(BEFORE_AGENT_RUN, ctx)
             messages = ctx.messages
