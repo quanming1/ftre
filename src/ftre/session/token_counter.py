@@ -1,12 +1,11 @@
 """
 Token 估算（字符级粗估，不依赖 tiktoken）
 
-用于"还没经过 LLM 实算"那部分事件的预估，配合最近一次真实 usage_update
+用于"还没经过 LLM 实算"那部分消息的预估，配合最近一次真实 usage
 拼出 session 当前总用量。
 
-策略：先复用 SessionManager.to_openai_messages 把事件流折成 OpenAI 协议
-消息（单一信任源；tool_call 合并 / 多模态等规则不再手写），再对每条
-message 做字符级估算。
+策略：先复用 SessionManager.to_openai_messages 把消息列表折成 OpenAI 协议
+消息（单一信任源），再对每条 message 做字符级估算。
 
 规则：
 - CJK 字符: 1 字 ≈ 1 token
@@ -75,11 +74,11 @@ def _estimate_message(message: dict[str, Any]) -> int:
     return tokens
 
 
-def estimate_events_tokens(events: list[dict[str, Any]]) -> int:
-    """估算一批事件折成 OpenAI messages 后的总 token"""
-    if not events:
+def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
+    """估算一批消息折成 OpenAI messages 后的总 token"""
+    if not messages:
         return 0
     # 延迟 import，避免与 manager 循环
     from .manager import SessionManager
 
-    return sum(_estimate_message(m) for m in SessionManager.to_openai_messages(events))
+    return sum(_estimate_message(m) for m in SessionManager.to_openai_messages(messages))

@@ -17,8 +17,6 @@ import aiosqlite
 from ftre_agent_core.agent.event import (
     AgentEvent,
     AssistantMessageCompleteEvent,
-    ReasoningCompleteEvent,
-    ToolCallEvent,
     ToolResultEvent,
     UserMessageEvent,
 )
@@ -127,6 +125,10 @@ class SessionManager:
         )
         await self._migrate_backfill_message_event_id()
         await self._db.commit()
+
+        # 旧事件格式 → 新消息格式迁移
+        from ftre.session.migrate_events import migrate_events_to_messages
+        await migrate_events_to_messages(self._db)
 
     async def _migrate_add_column(
         self, table: str, column: str, decl: str
@@ -615,37 +617,25 @@ class SessionManager:
         prune: dict | None = None,
     ) -> list[dict]:
         """
-        将事件流重建为 OpenAI 格式消息列表。
+        将消息列表转为 OpenAI 格式消息列表。
+
+        新格式直读 assistant_message_complete 的 content[]（含 text / thinking / toolCall），
+        不再需要 pending_* 缓冲逻辑。
 
         config 可传入当前模型配置；当 config["llm"]["vision"] 为 false 时，
         历史用户消息里的图片附件会被降级成文本提示。
 
         prune 参数（L1 工具输出修剪，对喂给 LLM 的视图生效，不改 DB）：
         - prune={"protect_turns": 2, "max_chars": 2000, "head_chars": 1000, "tail_chars": 1000}
-        - 最近 protect_turns 个可见 user_message 之内的 tool_result 不截断（AI 最近动作要看到全文）
+        - 最近 protect_turns 个可见 user_message 之内的 tool_result 不截断
         - 之外的 tool_result：单条超过 max_chars 就截断为 head_chars + 占位 + tail_chars
         - error 非空的失败结果不截断（通常很短且关键）
-        - 历史回放（GET /messages）等场景不传 prune，保留完整原文给前端
-
-        转换规则：
-        - user_message        → {"role": "user", "content": ...}
-        - TOOL_CALL           → 连续的合并为 {"role": "assistant", "tool_calls": [...]}
-        - TOOL_RESULT         → {"role": "tool", "tool_call_id": ..., "content": ...}
-        - MESSAGE_COMPLETE    → {"role": "assistant", "content": ...}
-        - REASONING_COMPLETE  → 暂存并合并到下一条 assistant message 的 reasoning_content
-        - EXTERNAL_MESSAGE    → {"role": "assistant", "name": "<src>", "content": "[来自 ...]"}
-                                其他 AI agent 通过 send_message 发来的消息
-        - 其他类型跳过
         """
         messages: list[dict] = []
-        pending_tool_calls: list[dict] = []
-        pending_reasoning: str | None = None
-        pending_assistant_content: Any = None
-        pending_assistant_reasoning: str | None = None
         llm_config = (config or {}).get("llm") or {}
         include_images = bool(llm_config.get("vision", False))
-        # ─── L1 prune 预处理：算出"受保护索引集"（最近 N 个可见 user_message 内）───
-        # 受保护索引内的 tool_result 不修剪。这之外的 tool_result 单条超 max_chars 就截断。
+
+        # ─── L1 prune 预处理 ───
         prune_protected: set[int] = set()
         prune_max_chars = 0
         prune_head_chars = 0
@@ -656,7 +646,6 @@ class SessionManager:
             prune_tail_chars = int(prune.get("tail_chars", 1000) or 0)
             protect_turns = int(prune.get("protect_turns", 2) or 0)
             if prune_max_chars > 0 and protect_turns > 0:
-                # 倒序扫，遇到第 protect_turns 个可见 user_message 即停。其后的所有索引都受保护。
                 seen_user = 0
                 for i in range(len(events) - 1, -1, -1):
                     prune_protected.add(i)
@@ -668,110 +657,12 @@ class SessionManager:
                         if seen_user >= protect_turns:
                             break
 
-        def _maybe_prune_tool_result(idx: int, result: str, error) -> str:
-            """对 tool_result 做 head/tail 截断（只对超长且不在保护区内的）。"""
-            if not prune_max_chars or idx in prune_protected:
-                return result
-            if error:  # 失败结果通常很短且关键，不截
-                return result
-            if not isinstance(result, str) or len(result) <= prune_max_chars:
-                return result
-            cut = len(result) - prune_head_chars - prune_tail_chars
-            head = result[:prune_head_chars]
-            tail = result[-prune_tail_chars:] if prune_tail_chars else ""
-            return f"{head}\n…[L1 修剪 {cut} 字符]…\n{tail}"
-
-        def _take_reasoning() -> str | None:
-            nonlocal pending_reasoning
-            text = pending_reasoning
-            pending_reasoning = None
-            return text
-
-        def _coerce_user_message_content(content: Any) -> str | list[dict]:
-            from .multimodal import normalize_user_content
-
-            return normalize_user_content(content, include_images=include_images)
-
-        def _flush_pending_assistant():
-            nonlocal pending_assistant_content, pending_assistant_reasoning
-            if pending_assistant_content is None:
-                return
-            msg = format_assistant_message(
-                content=pending_assistant_content,
-                reasoning=pending_assistant_reasoning,
-            )
-            messages.append(msg)
-            pending_assistant_content = None
-            pending_assistant_reasoning = None
-
-        def _flush_tool_calls():
-            nonlocal pending_tool_calls, pending_assistant_content, pending_assistant_reasoning
-            if pending_tool_calls:
-                if pending_assistant_content is not None:
-                    msg = format_assistant_message(
-                        content=pending_assistant_content,
-                        reasoning=pending_assistant_reasoning,
-                        tool_calls=pending_tool_calls,
-                    )
-                    pending_assistant_content = None
-                    pending_assistant_reasoning = None
-                else:
-                    msg = format_assistant_message(
-                        reasoning=_take_reasoning(),
-                        tool_calls=pending_tool_calls,
-                    )
-                messages.append(msg)
-                pending_tool_calls = []
-            else:
-                _flush_pending_assistant()
-
         for idx, event in enumerate(events):
-            # 尝试转为 AgentEvent class（Agent 事件用类型安全方式访问）
-            _ae: AgentEvent | None = None
             _t = event["type"]
-            if _t not in ("context_compact", "external_message"):
-                try:
-                    _ae = AgentEvent.from_dict(event)
-                except (KeyError, ValueError):
-                    _ae = None
+            data = event.get("data") or {}
 
-            if isinstance(_ae, ReasoningCompleteEvent):
-                _flush_pending_assistant()
-                # 一轮 LLM 思考的完整文本，挂到下一条 assistant message 上
-                pending_reasoning = _ae.content or None
-
-            elif isinstance(_ae, ToolCallEvent):
-                pending_tool_calls.append({
-                    "id": _ae.tool_id,
-                    "type": "function",
-                    "function": {
-                        "name": _ae.tool_name,
-                        "arguments": _serialize_arguments(_ae.arguments),
-                    },
-                })
-
-            elif isinstance(_ae, ToolResultEvent):
-                _flush_tool_calls()
-                result_content = _ae.result
-                error = _ae.error
-                if prune_max_chars > 0:
-                    result_content = _maybe_prune_tool_result(idx, result_content, error)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": _ae.tool_id,
-                    "content": result_content,
-                })
-
-            elif isinstance(_ae, AssistantMessageCompleteEvent):
-                _flush_tool_calls()
-                pending_assistant_content = _ae.content
-                pending_assistant_reasoning = _take_reasoning()
-
-            elif isinstance(_ae, UserMessageEvent):
-                _flush_tool_calls()
-                _take_reasoning()
-                data = event["data"]
-                content = _ae.content
+            if _t == "user_message":
+                content = data.get("content", "")
                 attachments = data.get("attachments") or []
                 if attachments:
                     from .multimodal import build_user_content
@@ -780,45 +671,71 @@ class SessionManager:
                         attachments,
                         include_images=include_images,
                     )
+                from .multimodal import normalize_user_content
                 messages.append({
                     "role": "user",
-                    "content": _coerce_user_message_content(content),
+                    "content": normalize_user_content(content, include_images=include_images),
+                })
+
+            elif _t == "assistant_message_complete":
+                blocks = data.get("content", [])
+                metadata = data.get("metadata", {})
+                text_parts = [b["text"] for b in blocks if b.get("type") == "text"]
+                thinking_parts = [b["thinking"] for b in blocks if b.get("type") == "thinking"]
+                tool_calls = [
+                    {
+                        "id": b["id"],
+                        "type": "function",
+                        "function": {
+                            "name": b["name"],
+                            "arguments": _serialize_arguments(b.get("arguments", {})),
+                        },
+                    }
+                    for b in blocks if b.get("type") == "toolCall"
+                ]
+                messages.append(format_assistant_message(
+                    content="\n".join(text_parts) if text_parts else None,
+                    reasoning="\n".join(thinking_parts) if thinking_parts else None,
+                    tool_calls=tool_calls or None,
+                ))
+
+            elif _t == "tool_result":
+                result_content = data.get("result", "")
+                error = data.get("error")
+                if prune_max_chars > 0:
+                    if idx not in prune_protected and not error:
+                        if isinstance(result_content, str) and len(result_content) > prune_max_chars:
+                            cut = len(result_content) - prune_head_chars - prune_tail_chars
+                            head = result_content[:prune_head_chars]
+                            tail = result_content[-prune_tail_chars:] if prune_tail_chars else ""
+                            result_content = f"{head}\n…[L1 修剪 {cut} 字符]…\n{tail}"
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": data.get("id", ""),
+                    "content": result_content,
                 })
 
             elif _t == "external_message":
-                _flush_tool_calls()
-                _take_reasoning()
-                d = event["data"]
-                from_ch = d.get("from_channel", "")
-                from_sid = d.get("from_session", "")
+                from_ch = data.get("from_channel", "")
+                from_sid = data.get("from_session", "")
                 src = f"{from_ch}::{from_sid}" if from_ch or from_sid else "external"
                 messages.append({
                     "role": "assistant",
                     "name": _safe_name(src),
-                    "content": f"[来自 {src} 的消息] {d.get('content', '')}",
+                    "content": f"[来自 {src} 的消息] {data.get('content', '')}",
                 })
 
             elif _t == "context_compact":
-                # 压缩事件 = 游标。按事件顺序处理：
-                # - 清空之前累积的 messages，注入 summary 作为新起点；
-                # - 该事件之后的事件照常重建 → 自动形成 tail（最近原文）。
-                # - 多条 context_compact 时后一条会再次清空 messages，等价于"以最后
-                #   一条为准 + 保留其后 tail"。
-                # - enabled=false 的 pending 压缩事件只是预生成摘要，不参与上下文重建。
-                data = event["data"] or {}
                 if data.get("enabled", True) is not True:
                     continue
-                _flush_tool_calls()
-                _take_reasoning()
-                summary = data.get("summary", "")
                 messages = []
+                summary = data.get("summary", "")
                 if summary:
                     messages.append({
                         "role": "user",
                         "content": f"[历史上下文摘要]\n{summary}",
                     })
 
-        _flush_tool_calls()
         return messages
 
 
@@ -839,24 +756,14 @@ def _safe_name(s: str) -> str:
 
 
 def _find_anchor(events: list[MessageModel]) -> tuple[int, dict | None, str]:
-    """倒序找最晚的"携带 usage 的事件"，返回 (index, usage_dict, source)"""
-    from ftre_agent_core.agent.event import AgentEvent, UsageUpdateEvent, DoneEvent
+    """倒序找最晚的带 usage 的 assistant_message_complete。"""
     for i in range(len(events) - 1, -1, -1):
         ev = events[i]
-        _ae = None
-        try:
-            _ae = AgentEvent.from_dict(ev)
-        except (KeyError, ValueError):
-            pass
-        if not isinstance(_ae, (UsageUpdateEvent, DoneEvent)):
+        if ev["type"] != "assistant_message_complete":
             continue
-        usage = None
-        if isinstance(_ae, UsageUpdateEvent):
-            usage = _ae.usage
-        elif isinstance(_ae, DoneEvent) and _ae.usage:
-            usage = _ae.usage
+        usage = (ev.get("data") or {}).get("metadata", {}).get("usage")
         if usage:
-            return i, usage, ev["type"]
+            return i, usage, "assistant_message_complete"
     return -1, None, ""
 
 
@@ -880,13 +787,13 @@ def _compute_token_usage(session_id: str, events: list[MessageModel]) -> dict:
 
     见 SessionManager.get_token_usage 文档。
     """
-    from .token_counter import estimate_events_tokens
+    from .token_counter import estimate_messages_tokens
 
     anchor_index, anchor_usage, anchor_source = _find_anchor(events)
 
     # 锚点之后的事件用字符级粗估（无锚点时即全量估算）
     pending_events = events[anchor_index + 1:] if anchor_index >= 0 else events
-    pending_estimated = estimate_events_tokens(pending_events)
+    pending_estimated = estimate_messages_tokens(pending_events)
 
     if anchor_usage is None:
         return {
