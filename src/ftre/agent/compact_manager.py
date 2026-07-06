@@ -30,8 +30,6 @@ import time
 from ftre_agent_core.agent.event import (
     AgentEvent,
     AssistantMessageCompleteEvent,
-    ReasoningCompleteEvent,
-    ToolCallEvent,
     ToolResultEvent,
     UserMessageEvent,
 )
@@ -135,8 +133,8 @@ class CompactManager:
         cw = getattr(config.llm, "context_window", None)
         if not cw or cw <= 0:
             return False
-        from ftre.session.token_counter import estimate_events_tokens
-        estimated = estimate_events_tokens(events)
+        from ftre.session.token_counter import estimate_messages_tokens
+        estimated = estimate_messages_tokens(events)
         if estimated <= 0:
             return False
         return (estimated / cw) >= threshold
@@ -176,7 +174,7 @@ class CompactManager:
         data = dict(pending_event.get("data") or {})
         data["enabled"] = True
         # 补算 tokens_after（启用时才算，因为 pending 时不参与上下文）
-        from ftre.session.token_counter import estimate_events_tokens
+        from ftre.session.token_counter import estimate_messages_tokens
         synthetic = {
             "type": "context_compact",
             "data": data,
@@ -184,7 +182,7 @@ class CompactManager:
         }
         # 启用后，这条 compact 之后的 tail 事件 + compact 自身
         tail_events = events[pending_idx + 1:]
-        data["tokens_after"] = estimate_events_tokens([synthetic, *tail_events])
+        data["tokens_after"] = estimate_messages_tokens([synthetic, *tail_events])
 
         try:
             await self.session_manager.update_message_data(event_id, data)
@@ -272,8 +270,8 @@ class CompactManager:
         if not cw or cw <= 0:
             logger.info(f"[compact] session={session_id} context_window={cw} 无效，跳过")
             return None
-        from ftre.session.token_counter import estimate_events_tokens
-        tokens_before = estimate_events_tokens(events)
+        from ftre.session.token_counter import estimate_messages_tokens
+        tokens_before = estimate_messages_tokens(events)
         current_ratio = tokens_before / cw
 
         # 4. 通知前端开始
@@ -312,7 +310,7 @@ class CompactManager:
                 "timestamp": now,
             }
             # compact 在末尾，后面没有 tail 了
-            payload["tokens_after"] = estimate_events_tokens([synthetic])
+            payload["tokens_after"] = estimate_messages_tokens([synthetic])
         if silent:
             payload["silent"] = True
 
@@ -519,13 +517,13 @@ def _serialize_events(
     *,
     tool_output_max_chars: int = 2000,
 ) -> str:
-    """把事件流序列化为 LLM 可读的纯文本（源自 OpenCode serialize 模式）。
+    """把消息列表序列化为 LLM 可读的纯文本（源自 OpenCode serialize 模式）。
 
     规则（对齐 OpenCode）：
     - 用户消息：[User]: 内容
-    - AI 回复：[Assistant]: 内容
-    - AI 思考：[Assistant reasoning]: 内容
-    - 工具调用：[Assistant tool call]: name(args)
+    - AI 回复：[Assistant]: 内容（从 content[] 的 text 块提取）
+    - AI 思考：[Assistant reasoning]: 内容（从 content[] 的 thinking 块提取）
+    - 工具调用：[Assistant tool call]: name(args)（从 content[] 的 toolCall 块提取）
     - 工具结果：[Tool result]: 输出（截断至 tool_output_max_chars）
     - 工具错误：[Tool error]: 错误信息
     - 多条消息之间用 \\n\\n 分隔
@@ -534,50 +532,45 @@ def _serialize_events(
     parts: list[str] = []
 
     for ev in chunk:
-        # 尝试转为 AgentEvent class；非 Agent 事件（context_compact）保留 dict
-        agent_ev: AgentEvent | None = None
-        try:
-            agent_ev = AgentEvent.from_dict(ev) if ev.get("type", "") not in (
-                "context_compact", "context_compact_enabled",
-                "context_compact_failed",
-            ) else None
-        except (KeyError, ValueError):
-            agent_ev = None
-
-        if agent_ev is not None:
-            if isinstance(agent_ev, AssistantMessageCompleteEvent):
-                parts.append(f"[Assistant]: {agent_ev.content}")
-            elif isinstance(agent_ev, ReasoningCompleteEvent):
-                if agent_ev.content:
-                    parts.append(f"[Assistant reasoning]: {agent_ev.content}")
-            elif isinstance(agent_ev, ToolCallEvent):
-                args_str = json.dumps(agent_ev.arguments, ensure_ascii=False)
-                parts.append(f"[Assistant tool call]: {agent_ev.tool_name}({args_str})")
-            elif isinstance(agent_ev, ToolResultEvent):
-                result = agent_ev.result
-                if len(result) > TOOL_OUTPUT_MAX_CHARS:
-                    result = result[:TOOL_OUTPUT_MAX_CHARS] + "\n[truncated]"
-                parts.append(f"[Tool result]: {result}")
-            elif isinstance(agent_ev, UserMessageEvent):
-                content = agent_ev.content
-                if isinstance(content, list):
-                    content = "\n".join(
-                        str(p.get("text") or p.get("data") or "")
-                        for p in content
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    )
-                attachments = (ev.get("data") or {}).get("attachments") or []
-                att_lines = [
-                    f"[附件 {a.get('mime_type', a.get('mime', '未知'))}: {a.get('name', a.get('uri', ''))}]"
-                    for a in attachments if isinstance(a, dict)
-                ]
-                lines = [f"[User]: {content}"] + att_lines
-                parts.append("\n".join(lines))
-            continue
-
-        # ─── 非 Agent 事件仍用 dict 访问 ──────
         t = ev.get("type", "")
         d = ev.get("data") or {}
+
+        if t == "assistant_message_complete":
+            blocks = d.get("content", [])
+            for b in blocks:
+                bt = b.get("type", "")
+                if bt == "thinking" and b.get("thinking"):
+                    parts.append(f"[Assistant reasoning]: {b['thinking']}")
+                elif bt == "text" and b.get("text"):
+                    parts.append(f"[Assistant]: {b['text']}")
+                elif bt == "toolCall":
+                    args_str = json.dumps(b.get("arguments", {}), ensure_ascii=False)
+                    parts.append(f"[Assistant tool call]: {b.get('name', '?')}({args_str})")
+
+        elif t == "tool_result":
+            result = d.get("result", "")
+            if len(result) > TOOL_OUTPUT_MAX_CHARS:
+                result = result[:TOOL_OUTPUT_MAX_CHARS] + "\n[truncated]"
+            if d.get("error"):
+                parts.append(f"[Tool error]: {result}")
+            else:
+                parts.append(f"[Tool result]: {result}")
+
+        elif t == "user_message":
+            content = d.get("content", "")
+            if isinstance(content, list):
+                content = "\n".join(
+                    str(p.get("text") or p.get("data") or "")
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            attachments = d.get("attachments") or []
+            att_lines = [
+                f"[附件 {a.get('mime_type', a.get('mime', '未知'))}: {a.get('name', a.get('uri', ''))}]"
+                for a in attachments if isinstance(a, dict)
+            ]
+            lines = [f"[User]: {content}"] + att_lines
+            parts.append("\n".join(lines))
 
     return "\n\n".join(parts)
 
