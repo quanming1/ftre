@@ -28,10 +28,7 @@ from ftre_agent_core.agent.event import (
     DoneEvent,
     DoneReason,
     ErrorEvent,
-    ReasoningCompleteEvent,
-    ToolCallEvent,
     ToolResultEvent,
-    UsageUpdateEvent,
     UserMessageEvent,
 )
 from ftre_agent_core.tool import ToolRegistry
@@ -413,11 +410,8 @@ class AgentLoop:
     # 需要持久化的事件类型（dataclass 类型，用 isinstance 检查）
     _PERSISTENT_CLASSES: tuple[type, ...] = (
         AssistantMessageCompleteEvent,
-        ReasoningCompleteEvent,
-        ToolCallEvent,
         ToolResultEvent,
         DoneEvent,
-        UsageUpdateEvent,
         ErrorEvent,
         UserMessageEvent,
     )
@@ -631,7 +625,8 @@ class AgentLoop:
                 # maybe_schedule_idle_compact 自带去重，确保同一 session 只有一个 compact task 在飞，
                 # 所以即使 usage_update 频繁也不会反复调度。
                 if (
-                    isinstance(event, UsageUpdateEvent)
+                    isinstance(event, AssistantMessageCompleteEvent)
+                    and event.metadata.get("usage")
                     and inbound.from_channel != SUBAGENT_CHANNEL_ID
                 ):
                     try:
