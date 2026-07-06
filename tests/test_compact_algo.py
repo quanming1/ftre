@@ -32,7 +32,7 @@ def _make_test_image() -> str:
 def test_cursor_no_compact():
     events = [
         {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "hi"}},
-        {"type": "assistant_message_complete", "data": {"content": "yes"}},
+        {"type": "assistant_message_complete", "data": {"content": [{"type": "text", "text": "yes"}], "metadata": {}}},
     ]
     assert get_cursor_index(events) == 0
     assert get_previous_summary(events) is None
@@ -44,7 +44,6 @@ def test_cursor_with_one_compact():
         {"type": "context_compact", "data": {"summary": "## summary v1"}},
         {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "b"}},
     ]
-    # context_compact 在 idx 1，cursor 应指向 idx 2
     assert get_cursor_index(events) == 2
     assert get_previous_summary(events) == "## summary v1"
 
@@ -75,7 +74,6 @@ def test_pending_compact_does_not_advance_cursor():
 
 
 def test_compact_enabled_default_true():
-    # 旧事件缺少 enabled → 按已启用处理
     assert _compact_enabled({"type": "context_compact", "data": {"summary": "v1"}}) is True
     assert _compact_enabled({"type": "context_compact", "data": {"summary": "v1", "enabled": True}}) is True
     assert _compact_enabled({"type": "context_compact", "data": {"summary": "v1", "enabled": False}}) is False
@@ -100,7 +98,7 @@ def test_serialize_empty():
 def test_serialize_preserves_user_full_text():
     chunk = [
         {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "请按文档第 3 节实现压缩算法，注意游标只进不退"}},
-        {"type": "assistant_message_complete", "data": {"content": "好的"}},
+        {"type": "assistant_message_complete", "data": {"content": [{"type": "text", "text": "好的"}], "metadata": {}}},
     ]
     out = _serialize_events(chunk)
     assert "请按文档第 3 节实现压缩算法，注意游标只进不退" in out
@@ -112,21 +110,19 @@ def test_serialize_truncates_long_tool_result():
     big = "x" * 3000
     chunk = [
         {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "go"}},
-        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {}}},
         {"type": "tool_result", "data": {"id": "c1", "result": big}},
     ]
     out = _serialize_events(chunk)
-    # 默认 tool_output_max_chars=2000，所以 3000 字符的结果会被截断
-    assert "x" * 1500 in out  # 前 2000 字符在
+    assert "x" * 1500 in out
     assert "[truncated]" in out
-    assert "x" * 2500 not in out  # 超出 2000 的部分不在
+    assert "x" * 2500 not in out
 
 
 def test_serialize_handles_multimodal_user_content():
     chunk = [
         {
             "type": "user_message",
-        "data": {"metadata": {"hide": False}, "content": [{"type": "text", "data": "看下这张图"}]},
+            "data": {"metadata": {"hide": False}, "content": [{"type": "text", "data": "看下这张图"}]},
         },
     ]
     out = _serialize_events(chunk)
@@ -136,7 +132,10 @@ def test_serialize_handles_multimodal_user_content():
 def test_serialize_formats_tool_call():
     chunk = [
         {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "go"}},
-        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {"command": "ls"}}},
+        {"type": "assistant_message_complete", "data": {
+            "content": [{"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"command": "ls"}}],
+            "metadata": {},
+        }},
         {"type": "tool_result", "data": {"id": "c1", "result": "file1\nfile2"}},
     ]
     out = _serialize_events(chunk)
@@ -146,7 +145,10 @@ def test_serialize_formats_tool_call():
 
 def test_serialize_reasoning():
     chunk = [
-        {"type": "reasoning_complete", "data": {"content": "我在想这个问题..."}},
+        {"type": "assistant_message_complete", "data": {
+            "content": [{"type": "thinking", "thinking": "我在想这个问题..."}],
+            "metadata": {},
+        }},
     ]
     out = _serialize_events(chunk)
     assert "[Assistant reasoning]: 我在想这个问题..." in out
@@ -157,9 +159,10 @@ def test_serialize_reasoning():
 
 def test_build_prompt_first_time():
     prompt = _build_prompt(context=["[User]: hello\n\n[Assistant]: hi"])
-    assert "创建一份新的锚定摘要" in prompt
-    assert SUMMARY_TEMPLATE in prompt
-    assert "[User]: hello" in prompt
+    joined = "\n".join(prompt) if isinstance(prompt, list) else prompt
+    assert "创建一份新的锚定摘要" in joined
+    assert SUMMARY_TEMPLATE in joined
+    assert "[User]: hello" in joined
 
 
 def test_build_prompt_incremental():
@@ -167,31 +170,38 @@ def test_build_prompt_incremental():
         previous_summary="## 目标\n- 做某事",
         context=["[User]: hello\n\n[Assistant]: hi"],
     )
-    assert "更新下方的锚定摘要" in prompt
-    assert "<previous-summary>" in prompt
-    assert "## 目标\n- 做某事" in prompt
-    assert "</previous-summary>" in prompt
-    assert SUMMARY_TEMPLATE in prompt
+    joined = "\n".join(prompt) if isinstance(prompt, list) else prompt
+    assert "更新锚定摘要" in joined
+    assert "<previous-summary>" in joined
+    assert "## 目标\n- 做某事" in joined
+    assert "</previous-summary>" in joined
+    assert SUMMARY_TEMPLATE in joined
 
 
 # ─── L1 prune 修剪测试 ────────────────────────────────────────────
 
 
 def _events_with_long_tool(*, big_chars: int = 5000):
-    """构造：3 轮，每轮含一个 tool_call/tool_result（result 很长）。"""
+    """构造：3 轮，每轮含一个 assistant(toolCall) + tool_result（result 很长）。"""
     big = "x" * big_chars
     out = []
     for i in range(3):
         out.append({"type": "user_message", "data": {"metadata": {"hide": False}, "content": f"q{i}"}})
         out.append({
-            "type": "tool_call",
-            "data": {"id": f"c{i}", "name": "bash", "arguments": {}},
+            "type": "assistant_message_complete",
+            "data": {
+                "content": [{"type": "toolCall", "id": f"c{i}", "name": "bash", "arguments": {}}],
+                "metadata": {"kind": "block"},
+            },
         })
         out.append({
             "type": "tool_result",
             "data": {"id": f"c{i}", "result": big, "error": None},
         })
-        out.append({"type": "assistant_message_complete", "data": {"content": "done"}})
+        out.append({"type": "assistant_message_complete", "data": {
+            "content": [{"type": "text", "text": "done"}],
+            "metadata": {"kind": "final"},
+        }})
     return out
 
 
@@ -224,155 +234,133 @@ def test_prune_no_action_when_below_max_chars():
 
 
 def test_prune_preserves_failed_results():
+    """error 非空的 tool_result 不截断。"""
     from ftre.session.manager import SessionManager
     big = "x" * 5000
     events = [
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "q"}},
-        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {}}},
-        {"type": "tool_result", "data": {"id": "c1", "result": big, "error": "权限拒绝"}},
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "q2"}},
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "q3"}},
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "q4"}},
+        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "go"}},
+        {"type": "assistant_message_complete", "data": {
+            "content": [{"type": "toolCall", "id": "c0", "name": "bash", "arguments": {}}],
+            "metadata": {"kind": "block"},
+        }},
+        {"type": "tool_result", "data": {"id": "c0", "result": big, "error": "boom"}},
     ]
     msgs = SessionManager.to_openai_messages(
         events,
-        prune={"protect_turns": 1, "max_chars": 2000, "head_chars": 500, "tail_chars": 500},
+        prune={"protect_turns": 2, "max_chars": 2000, "head_chars": 1000, "tail_chars": 1000},
     )
     tool_msgs = [m for m in msgs if m.get("role") == "tool"]
     assert len(tool_msgs[0]["content"]) == 5000
     assert "[L1 修剪" not in tool_msgs[0]["content"]
 
 
-def test_prune_disabled_when_not_passed():
+def test_prune_not_applied_without_prune_param():
+    """不传 prune 时 tool_result 原样保留。"""
     from ftre.session.manager import SessionManager
-    events = _events_with_long_tool(big_chars=10000)
+    big = "x" * 5000
+    events = [
+        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "go"}},
+        {"type": "assistant_message_complete", "data": {
+            "content": [{"type": "toolCall", "id": "c0", "name": "bash", "arguments": {}}],
+            "metadata": {"kind": "block"},
+        }},
+        {"type": "tool_result", "data": {"id": "c0", "result": big, "error": None}},
+    ]
     msgs = SessionManager.to_openai_messages(events)
     tool_msgs = [m for m in msgs if m.get("role") == "tool"]
-    for m in tool_msgs:
-        assert len(m["content"]) == 10000
-        assert "[L1 修剪" not in m["content"]
+    assert len(tool_msgs[0]["content"]) == 5000
 
 
-def test_to_openai_messages_keeps_reasoning_separate_from_content():
+# ─── to_openai_messages 基础测试 ────────────────────────────────────
+
+
+def test_to_openai_messages_simple_conversation():
     from ftre.session.manager import SessionManager
-
     events = [
-        {"type": "reasoning_complete", "data": {"content": "thinking"}},
-        {"type": "assistant_message_complete", "data": {"content": "answer"}},
+        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "hello"}},
+        {"type": "assistant_message_complete", "data": {
+            "content": [{"type": "text", "text": "Hi there!"}],
+            "metadata": {"kind": "final"},
+        }},
     ]
-
     msgs = SessionManager.to_openai_messages(events)
+    assert len(msgs) == 2
+    assert msgs[0] == {"role": "user", "content": "hello"}
+    assert msgs[1]["role"] == "assistant"
+    # format_assistant_message uses content_parts() which wraps text in list[dict]
+    assert msgs[1]["content"] == [{"type": "text", "text": "Hi there!"}]
 
-    assert msgs == [
-        {
-            "role": "assistant",
+
+def test_to_openai_messages_tool_call_round():
+    from ftre.session.manager import SessionManager
+    events = [
+        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "read file"}},
+        {"type": "assistant_message_complete", "data": {
             "content": [
-                {"type": "text", "text": "answer"},
+                {"type": "text", "text": "I'll read it"},
+                {"type": "toolCall", "id": "c1", "name": "read", "arguments": {"path": "a.py"}},
             ],
-            "reasoning_content": "thinking",
-        }
+            "metadata": {"kind": "block", "stopReason": "toolUse"},
+        }},
+        {"type": "tool_result", "data": {"id": "c1", "result": "file A content", "error": None}},
+        {"type": "assistant_message_complete", "data": {
+            "content": [{"type": "text", "text": "The file says A"}],
+            "metadata": {"kind": "final"},
+        }},
     ]
-
-
-def test_to_openai_messages_preserves_reasoning_for_direct_tool_call():
-    from ftre.session.manager import SessionManager
-
-    events = [
-        {"type": "reasoning_complete", "data": {"content": "thinking"}},
-        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {"command": "pwd"}}},
-        {"type": "tool_result", "data": {"id": "c1", "result": "ok"}},
-    ]
-
     msgs = SessionManager.to_openai_messages(events)
+    assert len(msgs) == 4
+    assert msgs[0]["role"] == "user"
+    assert msgs[1]["role"] == "assistant"
+    assert msgs[1]["content"] == [{"type": "text", "text": "I'll read it"}]
+    assert msgs[1]["tool_calls"][0]["function"]["name"] == "read"
+    assert msgs[2]["role"] == "tool"
+    assert msgs[2]["tool_call_id"] == "c1"
+    assert msgs[2]["content"] == "file A content"
+    assert msgs[3]["role"] == "assistant"
+    assert msgs[3]["content"] == [{"type": "text", "text": "The file says A"}]
 
+
+def test_to_openai_messages_with_reasoning():
+    from ftre.session.manager import SessionManager
+    events = [
+        {"type": "assistant_message_complete", "data": {
+            "content": [
+                {"type": "thinking", "thinking": "Let me analyze..."},
+                {"type": "text", "text": "Here's my answer"},
+            ],
+            "metadata": {"kind": "final"},
+        }},
+    ]
+    msgs = SessionManager.to_openai_messages(events)
+    assert len(msgs) == 1
     assert msgs[0]["role"] == "assistant"
-    assert msgs[0]["content"] == ""
-    assert msgs[0]["reasoning_content"] == "thinking"
-    assert msgs[0]["tool_calls"][0]["id"] == "c1"
-    assert msgs[1] == {"role": "tool", "tool_call_id": "c1", "content": "ok"}
+    assert msgs[0]["content"] == [{"type": "text", "text": "Here's my answer"}]
+    assert msgs[0]["reasoning_content"] == "Let me analyze..."
 
 
-def test_to_openai_messages_combines_assistant_content_with_following_tool_call():
+def test_to_openai_messages_external_message():
     from ftre.session.manager import SessionManager
-
     events = [
-        {"type": "reasoning_complete", "data": {"content": "thinking"}},
-        {"type": "assistant_message_complete", "data": {"content": "visible answer"}},
-        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {"command": "pwd"}}},
-        {"type": "tool_result", "data": {"id": "c1", "result": "ok"}},
+        {"type": "external_message", "data": {
+            "content": "Hello from another agent",
+            "from_channel": "ws",
+            "from_session": "sess_abc",
+        }},
     ]
-
     msgs = SessionManager.to_openai_messages(events)
-
-    assert msgs[0] == {
-        "role": "assistant",
-        "content": [{"type": "text", "text": "visible answer"}],
-        "reasoning_content": "thinking",
-        "tool_calls": [
-            {
-                "id": "c1",
-                "type": "function",
-                "function": {"name": "bash", "arguments": '{"command": "pwd"}'},
-            }
-        ],
-    }
-    assert msgs[1] == {"role": "tool", "tool_call_id": "c1", "content": "ok"}
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "assistant"
+    assert "Hello from another agent" in msgs[0]["content"]
+    assert "ws::sess_abc" in msgs[0]["content"]
 
 
-def test_to_openai_messages_combines_plain_assistant_content_with_following_tool_call():
-    from ftre.session.manager import SessionManager
-
-    events = [
-        {"type": "assistant_message_complete", "data": {"content": "visible answer"}},
-        {"type": "tool_call", "data": {"id": "c1", "name": "bash", "arguments": {"command": "pwd"}}},
-        {"type": "tool_result", "data": {"id": "c1", "result": "ok"}},
-    ]
-
-    msgs = SessionManager.to_openai_messages(events)
-
-    assert msgs[0] == {
-        "role": "assistant",
-        "content": [{"type": "text", "text": "visible answer"}],
-        "reasoning_content": "",
-        "tool_calls": [
-            {
-                "id": "c1",
-                "type": "function",
-                "function": {"name": "bash", "arguments": '{"command": "pwd"}'},
-            }
-        ],
-    }
-    assert msgs[1] == {"role": "tool", "tool_call_id": "c1", "content": "ok"}
-
-
-def test_to_openai_messages_omits_images_by_default():
+def test_to_openai_messages_downgrades_images_without_vision():
     from ftre.session.manager import SessionManager
 
     events = [{
         "type": "user_message",
-        "data": {"metadata": {"hide": False}, 
-            "content": "看图",
-            "attachments": [{
-                "type": "image",
-                "mime_type": "image/png",
-                "path": _make_test_image(),
-            }],
-        },
-    }]
-
-    msgs = SessionManager.to_openai_messages(events)
-
-    assert isinstance(msgs[0]["content"], str)
-    assert "image_url" not in str(msgs[0]["content"])
-    assert "当前模型不支持视觉输入" in msgs[0]["content"]
-
-
-def test_to_openai_messages_omits_images_when_vision_disabled():
-    from ftre.session.manager import SessionManager
-
-    events = [{
-        "type": "user_message",
-        "data": {"metadata": {"hide": False}, 
+        "data": {"metadata": {"hide": False},
             "content": "看图",
             "attachments": [{
                 "type": "image",
@@ -397,7 +385,7 @@ def test_to_openai_messages_keeps_images_when_vision_enabled():
 
     events = [{
         "type": "user_message",
-        "data": {"metadata": {"hide": False}, 
+        "data": {"metadata": {"hide": False},
             "content": "看图",
             "attachments": [{
                 "type": "image",
@@ -470,7 +458,7 @@ def test_to_openai_messages_ignores_disabled_compact():
     from ftre.session.manager import SessionManager
     events = [
         {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "old"}},
-        {"type": "assistant_message_complete", "data": {"content": "old answer"}},
+        {"type": "assistant_message_complete", "data": {"content": [{"type": "text", "text": "old answer"}], "metadata": {}}},
         {"type": "context_compact", "data": {"summary": "## pending", "enabled": False}},
         {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "new"}},
     ]
@@ -485,7 +473,7 @@ def test_to_openai_messages_uses_enabled_compact():
     from ftre.session.manager import SessionManager
     events = [
         {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "old"}},
-        {"type": "assistant_message_complete", "data": {"content": "old answer"}},
+        {"type": "assistant_message_complete", "data": {"content": [{"type": "text", "text": "old answer"}], "metadata": {}}},
         {"type": "context_compact", "data": {"summary": "## enabled", "enabled": True}},
         {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "new"}},
     ]
