@@ -21,6 +21,7 @@ from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.websockets import WebSocketState
 
 from ftre.bus import BusMessage, EventBus, GLOBAL_SESSION
 from .base import Channel
@@ -51,80 +52,35 @@ MAX_ATTACHMENTS_PER_MESSAGE = 8
 # 所以在 WS channel 内短暂缓存，等客户端 attach 后补发。
 VOLATILE_EVENT_TYPES = frozenset({
     "assistant_message",
-    "reasoning",
-    "tool_call_streaming",
     "context_compact_start",
 })
 # 对应的稳定事件到达后，说明这类流式增量已经被最终事件覆盖/持久化，
 # 可以从 volatile buffer 删除，避免客户端 attach 后看到旧草稿。
 VOLATILE_CLEAR_BY_TYPE = {
     "assistant_message_complete": {"assistant_message"},
-    "reasoning_complete": {"reasoning"},
-    "tool_call": {"tool_call_streaming"},
-    "tool_result": {"tool_call_streaming"},
     "context_compact_done": {"context_compact_start"},
     "context_compact_failed": {"context_compact_start"},
 }
 # 一轮执行结束、失败或进入重试后，旧的临时流式片段都不应该再 replay。
 VOLATILE_CLEAR_ALL_TYPES = frozenset({"done", "error", "retry"})
 
-def _extract_tool_call_ids(data: dict) -> list[str]:
-    """从稳定事件 data 中提取所有 tool_call id。
-
-    msg.data 结构为 {"type": "<ev_type>", "data": {<event_fields>}}。
-    - tool_call: data.data.id 是 tool_call_id
-    - tool_result: data.data.id 是 tool_call_id
-    """
-    inner = data.get("data")
-    if not isinstance(inner, dict):
-        return []
-
-    tc_id = inner.get("id")
-    if isinstance(tc_id, str) and tc_id:
-        return [tc_id]
-    return []
-
 
 def _match_volatile_clear(
     item: dict,
     event_types: set[str] | frozenset[str],
-    tool_call_ids: set[str] | frozenset[str] | None,
 ) -> bool:
     """返回 True 表示这条 volatile 帧应该被清理。"""
     item_data = item.get("data") or {}
     item_ev_type = item_data.get("type", "")
-
-    # 类型不匹配 → 不清理
-    if item_ev_type not in event_types:
-        return False
-
-    # 没有指定 tool_call_ids → 按类型清理（向后兼容：done/error/retry 等全局清理）
-    if tool_call_ids is None:
-        return True
-
-    # 指定了 tool_call_ids → 只清理匹配的 tool call streaming
-    if item_ev_type == "tool_call_streaming":
-        # tool_call_streaming 事件里，data.data.tool_calls 是 ToolInputDelta 列表
-        # 每条 delta 包含 {type, id, name, text}，其中 id 是 tool_call_id
-        inner = item_data.get("data")
-        if isinstance(inner, dict):
-            tool_calls = inner.get("tool_calls")
-            if isinstance(tool_calls, list):
-                for tc in tool_calls:
-                    if isinstance(tc, dict) and tc.get("id") in tool_call_ids:
-                        return True
-        return False
-
-    # assistant_message / reasoning：按类型清理即可
-    return True
+    return item_ev_type in event_types
 
 
 class _VolatileReplayBuffer:
     """缓存未入库的流式事件，供客户端 attach 时补发。
 
     这个类只处理 WS 层的临时恢复，不替代数据库历史：
-    - DB 负责稳定消息（*_complete、tool_call、tool_result 等）。
-    - 这里负责还没稳定落库的流式片段（assistant_message、reasoning 等）。
+    - DB 负责稳定消息（*_complete、tool_result 等）。
+    - 这里负责还没稳定落库的流式片段（assistant_message）。
     - attach 时 replay 当前 session 的临时片段，随后客户端继续接收 live 流。
     """
 
@@ -146,19 +102,13 @@ class _VolatileReplayBuffer:
             await self._clear(session_id)
             return metadata
 
-        # 稳定事件到达后，只清理它所覆盖的那一类流式草稿。
-        # 例如 assistant_message_complete 只清 assistant_message，不影响 tool_call_streaming。
+        # 持久化事件（assistant_message_complete / tool_result 等）已入库，
+        # 客户端 HTTP 可拉取，不需要进 volatile buffer。
+        # 只需清除它覆盖的流式草稿。
         clear_types = VOLATILE_CLEAR_BY_TYPE.get(ev_type)
         if clear_types:
-            # 对 tool_call / tool_result，只清理匹配的 tool_call_id，
-            # 避免清除其他正在流式中的 tool call 片段。
-            tool_call_ids = None
-            if ev_type in ("tool_call", "tool_result") and isinstance(msg.data, dict):
-                tids = _extract_tool_call_ids(msg.data)
-                if tids:
-                    tool_call_ids = frozenset(tids)
-            await self._clear(session_id, event_types=clear_types, tool_call_ids=tool_call_ids)
-            return await self._append(session_id, msg, metadata)
+            await self._clear(session_id, event_types=clear_types)
+            return metadata
 
         # 其他事件要么已经会入库，要么不是流式片段，不进入 volatile buffer。
         if ev_type not in VOLATILE_EVENT_TYPES:
@@ -185,7 +135,7 @@ class _VolatileReplayBuffer:
                 session_id,
                 deque(),
             ).append({
-                "id": msg.id,
+                "frame_id": msg.id,
                 "type": msg.type,
                 "data": msg.data,
                 "metadata": event_metadata,
@@ -213,7 +163,6 @@ class _VolatileReplayBuffer:
         session_id: str,
         *,
         event_types: set[str] | frozenset[str] | None = None,
-        tool_call_ids: set[str] | frozenset[str] | None = None,
     ) -> None:
         async with self._lock:
             if event_types is None:
@@ -224,14 +173,10 @@ class _VolatileReplayBuffer:
             if not buf:
                 return
 
-            # 只删除被稳定事件覆盖的类型；
-            # 如果指定了 tool_call_ids，只删除匹配的 tool call（避免清掉其他正在流式中的 tool call）。
             kept = deque(
                 (
                     item for item in buf
-                    if not _match_volatile_clear(
-                        item, event_types, tool_call_ids
-                    )
+                    if not _match_volatile_clear(item, event_types)
                 ),
             )
             if kept:
@@ -400,7 +345,7 @@ class WebSocketChannel(Channel):
             return
 
         payload = {
-            "id": msg.id,
+            "frame_id": msg.id,
             "type": msg.type,
             "data": msg.data,
             "metadata": {
@@ -414,18 +359,26 @@ class WebSocketChannel(Channel):
         # 拷贝一份再迭代，避免发送过程中其它路径改动 set
         dead: list[WebSocket] = []
         for ws in targets:
+            # 跳过已经断开的 ws，避免 send_text 触发 application_state=DISCONNECTED
+            # 进而干扰 _ws_endpoint 的 receive_text() 循环。
+            if ws.application_state != WebSocketState.CONNECTED:
+                dead.append(ws)
+                continue
             try:
                 await ws.send_text(text)
             except Exception as e:
                 logger.debug(f"[ws-channel] send 失败，准备关闭: {e}")
                 dead.append(ws)
 
-        # 主动关闭坏连接，receive 循环 finally 会兜底清理索引
+        # 只对仍然处于 CONNECTED 状态的坏连接调用 close()。
+        # 如果 application_state 已经是 DISCONNECTED（send_text 时 OSError 导致），
+        # close() 会抛 RuntimeError，不需要再调用。
         for ws in dead:
-            try:
-                await ws.close()
-            except Exception:
-                pass
+            if ws.application_state != WebSocketState.DISCONNECTED:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
 
     # ============================================================
     # WebSocket 端点
@@ -444,6 +397,15 @@ class WebSocketChannel(Channel):
                 await self._on_message(raw, ws)
         except WebSocketDisconnect:
             pass
+        except RuntimeError as e:
+            # Starlette 的 send() 在 OSError 时会把 application_state 设为 DISCONNECTED。
+            # 此时 receive_text() 会抛 RuntimeError("WebSocket is not connected...")
+            # 而非 WebSocketDisconnect。这是正常的连接断开，不需要 WARNING。
+            msg_str = str(e)
+            if "not connected" in msg_str:
+                logger.debug(f"[ws-channel] connection closed by send failure: {e}")
+            else:
+                logger.warning(f"[ws-channel] connection error: {e}")
         except Exception as e:
             logger.warning(f"[ws-channel] connection error: {e}")
         finally:
@@ -526,7 +488,7 @@ class WebSocketChannel(Channel):
             metadata = frame.get("metadata") or {}
             if not isinstance(metadata, dict):
                 metadata = {}
-            frame_id = frame.get("id") or ""
+            frame_id = frame.get("frame_id") or ""
             if frame_id:
                 metadata = {**metadata, "frame_id": frame_id}
             await self.receive(
@@ -549,13 +511,13 @@ class WebSocketChannel(Channel):
         ok, err = _validate_attachments(data.get("attachments"))
         if not ok:
             logger.warning(f"[ws-channel] user_message 附件非法: {err}")
-            await self._reject(ws, frame.get("id", ""), session_id, err)
+            await self._reject(ws, frame.get("frame_id", ""), session_id, err)
             return
 
         # 附件落盘：base64 → temp 文件路径，事件链路不再携带 base64
         _persist_attachments(data.get("attachments"))
 
-        # user_message 隐式 attach（保持向后兼容）
+        # user_message 隐式 attach：接收消息的 ws 自动跟踪该 session
         self._attach(session_id, ws)
 
         metadata = frame.get("metadata") or {}
@@ -563,7 +525,7 @@ class WebSocketChannel(Channel):
             metadata = {}
         # 把客户端协议帧 id 装进 metadata.frame_id，AgentLoop echo 时
         # 回填给前端，前端用它去重本地乐观占位。
-        frame_id = frame.get("id") or ""
+        frame_id = frame.get("frame_id") or ""
         if frame_id:
             metadata = {**metadata, "frame_id": frame_id}
 
@@ -572,7 +534,7 @@ class WebSocketChannel(Channel):
     async def _reject(self, ws: WebSocket, frame_id: str, session_id: str, reason: str) -> None:
         """向客户端回写一帧拒绝消息（不入 Bus）"""
         payload = {
-            "id": frame_id or "",
+            "frame_id": frame_id or "",
             "type": "error",
             "data": {
                 "code": "invalid_input",
