@@ -47,48 +47,53 @@ class ContextGovernPlugin(Plugin):
     def _inject_agents_md(self, ctx) -> None:
         """读取 AGENTS.md 并注入到 config.system_prompt。
 
-        优先级：agent_dir/AGENTS.md > workspace/AGENTS.md。
+        注入两份（如果都存在）：
+        1. agent_dir/AGENTS.md — Agent 行为规则
+        2. workspace/AGENTS.md — 项目约定
         """
         import os
 
-        # 优先从 agent_dir 读取
-        agent_dir = (getattr(ctx, "agent_dir", "") or "").strip()
-        agents_path = ""
+        injected: list[tuple[str, str]] = []  # [(path, content), ...]
 
+        # 1. agent_dir/AGENTS.md
+        agent_dir = (getattr(ctx, "agent_dir", "") or "").strip()
         if agent_dir and os.path.isdir(agent_dir):
             candidate = os.path.join(agent_dir, "AGENTS.md")
             if os.path.isfile(candidate):
-                agents_path = candidate
+                try:
+                    content = open(candidate, encoding="utf-8").read().strip()
+                    if content:
+                        injected.append((candidate, content))
+                except OSError:
+                    logger.warning(f"[context_govern] 无法读取 {candidate}")
 
-        # agent_dir 没有 → 回退 workspace
-        if not agents_path:
-            ws = (ctx.workspace or "").strip()
-            if ws and os.path.isdir(ws):
-                candidate = os.path.join(ws, "AGENTS.md")
-                if os.path.isfile(candidate):
-                    agents_path = candidate
+        # 2. workspace/AGENTS.md
+        ws = (getattr(ctx, "workspace", "") or "").strip()
+        if ws and os.path.isdir(ws):
+            candidate = os.path.join(ws, "AGENTS.md")
+            if os.path.isfile(candidate):
+                try:
+                    content = open(candidate, encoding="utf-8").read().strip()
+                    if content:
+                        injected.append((candidate, content))
+                except OSError:
+                    logger.warning(f"[context_govern] 无法读取 {candidate}")
 
-        if not agents_path:
-            return
-
-        try:
-            content = open(agents_path, encoding="utf-8").read().strip()
-        except OSError:
-            logger.warning(f"[context_govern] 无法读取 {agents_path}")
-            return
-
-        if not content:
+        if not injected:
             return
 
         current = (ctx.config.system_prompt or "").strip()
-        ctx.config.system_prompt = (
-            f"""{current}
+        for path, content in injected:
+            current = (
+                f"""{current}
 
-<AGENTS_RULE desc="以下是用户在工作区自定义的规则与指令，你必须严格遵守" path="{agents_path}">
+<AGENTS_RULE desc="以下是用户在工作区自定义的规则与指令，你必须严格遵守" path="{path}">
 {content}
 </AGENTS_RULE>"""
-        )
-        logger.info(f"[context_govern] 已注入 {agents_path} ({len(content)} chars)")
+            )
+            logger.info(f"[context_govern] 已注入 {path} ({len(content)} chars)")
+
+        ctx.config.system_prompt = current
 
     # ─── 孤立事件清理 ─────────────────────────────────────────
 
