@@ -66,7 +66,11 @@ class SkillPlugin(Plugin):
         return ctx
 
     def _load_disabled_skills(self) -> set[str]:
-        """从 config.json 读取 disabled_skills 数组。"""
+        """从 config.json 读取全局 disabled_skills 数组。
+
+        per-agent 的 disabled_skills 由 AgentManager 合并到 profile.disabled_skills，
+        在 hook 和 loadSkill 工具中通过 agent_profile 覆盖。
+        """
         from ftre.config import CONFIG_PATH
         try:
             if not CONFIG_PATH.exists():
@@ -85,10 +89,24 @@ class SkillPlugin(Plugin):
 
         @router.get("")
         async def list_skills(agent_id: str | None = None):
+            # 确定 effective disabled_skills：per-agent 覆盖全局
+            effective_disabled = self._disabled_skills
+            if agent_id:
+                from ftre.config import AGENTS_DIR
+                agent_cfg_path = AGENTS_DIR / agent_id / "agent.config.json"
+                if agent_cfg_path.exists():
+                    try:
+                        agent_cfg = json.loads(agent_cfg_path.read_text(encoding="utf-8"))
+                        if "disabled_skills" in agent_cfg:
+                            arr = agent_cfg.get("disabled_skills", [])
+                            effective_disabled = {str(s) for s in arr} if isinstance(arr, list) else set()
+                    except Exception:
+                        pass
+
             skills = skill_store.list_skills()
             # 附加 disabled 状态
             for s in skills:
-                s["disabled"] = s.get("name", "") in self._disabled_skills
+                s["disabled"] = s.get("name", "") in effective_disabled
 
             # 合并 agent 私有 skill（私有同名覆盖全局）
             if agent_id:
@@ -106,7 +124,7 @@ class SkillPlugin(Plugin):
                             "description": d["description"],
                             "kind": "dir",
                             "updated_at": 0.0,
-                            "disabled": d["name"] in self._disabled_skills,
+                            "disabled": d["name"] in effective_disabled,
                             "scope": "private",
                         })
                     # 为全局条目标注 scope
@@ -202,18 +220,29 @@ class SkillPlugin(Plugin):
             return None
 
         @router.patch("/{name}/toggle")
-        async def toggle_skill_disabled(name: str):
-            """切换 Skill 的禁用状态。"""
+        async def toggle_skill_disabled(name: str, agent_id: str | None = None):
+            """切换 Skill 的禁用状态。
+
+            传 agent_id 时操作 agent.config.json 的 disabled_skills（per-agent），
+            不传时操作 config.json 的 disabled_skills（全局）。
+            """
             if not skill_store.is_valid_name(name):
                 raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name}")
 
-            from ftre.config import CONFIG_PATH
+            if agent_id:
+                from ftre.config import AGENTS_DIR
+                config_path = AGENTS_DIR / agent_id / "agent.config.json"
+            else:
+                from ftre.config import CONFIG_PATH
+                config_path = CONFIG_PATH
+
             import tempfile
+            import os as _os
 
             config_data = {}
-            if CONFIG_PATH.exists():
+            if config_path.exists():
                 try:
-                    config_data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                    config_data = json.loads(config_path.read_text(encoding="utf-8"))
                 except Exception:
                     config_data = {}
 
@@ -232,15 +261,14 @@ class SkillPlugin(Plugin):
             config_data["disabled_skills"] = arr
 
             # 原子写入
-            CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            config_path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp_path = tempfile.mkstemp(
-                prefix=".config.", suffix=".tmp", dir=str(CONFIG_PATH.parent)
+                prefix=".config.", suffix=".tmp", dir=str(config_path.parent)
             )
-            import os as _os
             try:
                 with _os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(config_data, f, ensure_ascii=False, indent=2)
-                _os.replace(tmp_path, CONFIG_PATH)
+                _os.replace(tmp_path, config_path)
             except Exception:
                 try:
                     _os.unlink(tmp_path)
@@ -248,9 +276,10 @@ class SkillPlugin(Plugin):
                     pass
                 raise
 
-            # 更新内存缓存
-            self._disabled_skills.clear()
-            self._disabled_skills.update(arr)
+            # 更新内存缓存（仅全局 toggle 时更新，per-agent 的由 profile 覆盖）
+            if not agent_id:
+                self._disabled_skills.clear()
+                self._disabled_skills.update(arr)
 
             return {"name": name, "disabled": disabled}
 

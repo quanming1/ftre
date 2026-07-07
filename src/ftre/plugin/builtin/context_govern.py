@@ -2,15 +2,35 @@
 context_govern — 上下文治理插件
 
 通过 before_messages_build hook 对事件流做处理：
-1. 丢弃孤立的 tool_call / tool_result（配对校验）
-2. 修复 tool_call / tool_result 相邻性（OpenAI 协议要求）
-3. 丢弃 tool_call 被裁剪后残留的悬挂 tool_result
+1. 丢弃孤立的 toolCall / tool_result（配对校验）
+2. 去重 toolCall block + tool_result 事件（同一 id 只保留第一个）
+3. 丢弃 toolCall 被裁剪后残留的悬挂 tool_result
+
+新协议下 tool_call 不再是独立事件，而是嵌在 assistant_message_complete 的
+content[] 中（type="toolCall"）。所有配对逻辑都从这里提取 call id。
+新协议下 toolCall 天然紧邻其 tool_result（runner 先 yield amc 再 yield
+tool_result），无需相邻性修复。
 """
 import logging
+import os
 
 from ftre.plugin import Plugin, BEFORE_MESSAGES_BUILD
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_call_ids(events: list) -> set[str]:
+    """从所有 assistant_message_complete 的 content[] 中提取 toolCall id。"""
+    call_ids: set[str] = set()
+    for ev in events:
+        if ev.get("type") == "assistant_message_complete":
+            data = ev.get("data") or {}
+            for block in data.get("content", []):
+                if isinstance(block, dict) and block.get("type") == "toolCall":
+                    tid = block.get("id", "")
+                    if tid:
+                        call_ids.add(tid)
+    return call_ids
 
 
 class ContextGovernPlugin(Plugin):
@@ -21,22 +41,19 @@ class ContextGovernPlugin(Plugin):
         self.api.register_hook(BEFORE_MESSAGES_BUILD, self._govern)
 
     async def _govern(self, ctx):
-        """before_messages_build hook：清理孤立事件 + 修复相邻性 + 丢弃悬挂 tool_result + 注入 AGENTS.md"""
+        """before_messages_build hook：清理孤立事件 + 去重 + 丢弃悬挂 tool_result + 注入 AGENTS.md"""
         events = ctx.events
 
-        # Step 1: 丢弃孤立的 tool_call / tool_result（OpenAI 协议要求配对）
+        # Step 1: 丢弃孤立的 toolCall / tool_result（OpenAI 协议要求配对）
         events = self._drop_orphan_tool_events(events)
 
-        # Step 1.5: 去重 tool_call（同一 id 只保留第一个）
-        events = self._dedup_tool_calls(events)
+        # Step 2: 去重 toolCall block + tool_result 事件（同一 id 只保留第一个）
+        events = self._dedup_tool_events(events)
 
-        # Step 2: 修复 tool_call / tool_result 相邻性
-        events = self._ensure_adjacency(events)
-
-        # Step 3: 丢弃 tool_call 被裁剪后残留的悬挂 tool_result
+        # Step 3: 丢弃 toolCall 被裁剪后残留的悬挂 tool_result
         events = self._drop_dangling_tool_results(events)
 
-        # Step 4: 注入工作区下的 AGENTS.md 到系统提示词
+        # Step 4: 注入 AGENTS.md 到系统提示词
         self._inject_agents_md(ctx)
 
         ctx.events = events
@@ -47,12 +64,10 @@ class ContextGovernPlugin(Plugin):
     def _inject_agents_md(self, ctx) -> None:
         """读取 AGENTS.md 并注入到 config.system_prompt。
 
-        注入两份（如果都存在）：
+        注入两份（如果都存在，叠加注入）：
         1. agent_dir/AGENTS.md — Agent 行为规则
         2. workspace/AGENTS.md — 项目约定
         """
-        import os
-
         injected: list[tuple[str, str]] = []  # [(path, content), ...]
 
         # 1. agent_dir/AGENTS.md
@@ -61,7 +76,8 @@ class ContextGovernPlugin(Plugin):
             candidate = os.path.join(agent_dir, "AGENTS.md")
             if os.path.isfile(candidate):
                 try:
-                    content = open(candidate, encoding="utf-8").read().strip()
+                    with open(candidate, encoding="utf-8") as f:
+                        content = f.read().strip()
                     if content:
                         injected.append((candidate, content))
                 except OSError:
@@ -73,7 +89,8 @@ class ContextGovernPlugin(Plugin):
             candidate = os.path.join(ws, "AGENTS.md")
             if os.path.isfile(candidate):
                 try:
-                    content = open(candidate, encoding="utf-8").read().strip()
+                    with open(candidate, encoding="utf-8") as f:
+                        content = f.read().strip()
                     if content:
                         injected.append((candidate, content))
                 except OSError:
@@ -85,11 +102,10 @@ class ContextGovernPlugin(Plugin):
         current = (ctx.config.system_prompt or "").strip()
         for path, content in injected:
             current = (
-                f"""{current}
-
-<AGENTS_RULE desc="以下是用户在工作区自定义的规则与指令，你必须严格遵守" path="{path}">
-{content}
-</AGENTS_RULE>"""
+                f"{current}\n\n"
+                f'<AGENTS_RULE desc="以下是用户在工作区自定义的规则与指令，你必须严格遵守" path="{path}">\n'
+                f"{content}\n"
+                f"</AGENTS_RULE>"
             )
             logger.info(f"[context_govern] 已注入 {path} ({len(content)} chars)")
 
@@ -99,77 +115,133 @@ class ContextGovernPlugin(Plugin):
 
     def _drop_orphan_tool_events(self, events: list) -> list:
         """
-        丢弃孤立的 tool_call / tool_result 事件。
+        丢弃孤立的 toolCall / tool_result 事件。
 
-        OpenAI 协议要求 tool_calls 必须有对应 tool_result 配对，反之亦然。
-        孤立事件（cancelled / timed_out / 崩溃残留）会导致 LLM 400 报错。
+        新协议下 toolCall 嵌在 assistant_message_complete 的 content[] 中，
+        tool_result 是独立事件。两者必须配对。
+
+        - tool_result 没有 matching toolCall → 丢弃 tool_result
+        - toolCall 没有 matching tool_result → 从 content[] 中移除该 block
         """
         if not events:
             return events
 
-        call_ids: set[str] = set()
+        call_ids = _extract_call_ids(events)
         result_ids: set[str] = set()
         for ev in events:
-            t = ev.get("type")
-            if t == "tool_call":
-                call_ids.add((ev.get("data") or {}).get("id", ""))
-            elif t == "tool_result":
+            if ev.get("type") == "tool_result":
                 result_ids.add((ev.get("data") or {}).get("id", ""))
 
         paired = call_ids & result_ids
-        if len(call_ids) == len(paired) and len(result_ids) == len(paired):
+        orphan_calls = call_ids - paired
+        orphan_results = result_ids - paired
+
+        if not orphan_calls and not orphan_results:
             return events
 
-        dropped = 0
+        dropped_results = 0
+        stripped_calls = 0
         out: list = []
+
         for ev in events:
             t = ev.get("type")
-            if t in ("tool_call", "tool_result"):
-                if (ev.get("data") or {}).get("id", "") not in paired:
-                    dropped += 1
-                    continue
-            out.append(ev)
 
-        if dropped:
-            logger.info(f"[context_govern] 丢弃 {dropped} 个孤立 tool 事件")
+            if t == "tool_result":
+                tid = (ev.get("data") or {}).get("id", "")
+                if tid in orphan_results:
+                    dropped_results += 1
+                    continue
+                out.append(ev)
+
+            elif t == "assistant_message_complete":
+                data = ev.get("data") or {}
+                content = data.get("content", [])
+                if orphan_calls:
+                    new_content = []
+                    for block in content:
+                        if (
+                            isinstance(block, dict)
+                            and block.get("type") == "toolCall"
+                            and block.get("id", "") in orphan_calls
+                        ):
+                            stripped_calls += 1
+                            continue
+                        new_content.append(block)
+                    if len(new_content) != len(content):
+                        data["content"] = new_content
+                out.append(ev)
+
+            else:
+                out.append(ev)
+
+        if dropped_results:
+            logger.info(f"[context_govern] 丢弃 {dropped_results} 个孤立 tool_result")
+        if stripped_calls:
+            logger.info(f"[context_govern] 移除 {stripped_calls} 个孤立 toolCall block")
         return out
 
-    def _dedup_tool_calls(self, events: list) -> list:
+    def _dedup_tool_events(self, events: list) -> list:
         """
-        去重 tool_call 事件（同一 id 只保留第一个）。
+        去重 toolCall block + tool_result 事件（同一 id 只保留第一个）。
 
-        DB 中可能存了重复的 tool_call 事件，导致 to_openai_messages 把
-        同一个 id 加到 assistant message 的 tool_calls 数组里两次，
-        LLM 报 "Duplicate value for 'tool_call_id'"。
+        同一 id 可能因 DB 重复写入出现多次：
+        - toolCall block 出现在多个 amc 的 content[] 中 → 只保留第一个
+        - tool_result 事件出现多条 → 只保留第一条
         """
         if not events:
             return events
 
-        seen_ids: set[str] = set()
+        seen_call_ids: set[str] = set()
+        seen_result_ids: set[str] = set()
+        dropped_calls = 0
+        dropped_results = 0
         out: list = []
-        dropped = 0
+
         for ev in events:
             t = ev.get("type")
-            if t == "tool_call":
+
+            if t == "assistant_message_complete":
+                data = ev.get("data") or {}
+                content = data.get("content", [])
+                new_content = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "toolCall":
+                        tid = block.get("id", "")
+                        if tid and tid in seen_call_ids:
+                            dropped_calls += 1
+                            continue
+                        if tid:
+                            seen_call_ids.add(tid)
+                    new_content.append(block)
+                if len(new_content) != len(content):
+                    data["content"] = new_content
+                out.append(ev)
+
+            elif t == "tool_result":
                 tid = (ev.get("data") or {}).get("id", "")
-                if tid and tid in seen_ids:
-                    dropped += 1
+                if tid and tid in seen_result_ids:
+                    dropped_results += 1
                     continue
                 if tid:
-                    seen_ids.add(tid)
-            out.append(ev)
+                    seen_result_ids.add(tid)
+                out.append(ev)
 
-        if dropped:
-            logger.info(f"[context_govern] 丢弃 {dropped} 个重复 tool_call")
+            else:
+                out.append(ev)
+
+        if dropped_calls:
+            logger.info(f"[context_govern] 移除 {dropped_calls} 个重复 toolCall block")
+        if dropped_results:
+            logger.info(f"[context_govern] 移除 {dropped_results} 个重复 tool_result")
         return out
 
     def _drop_dangling_tool_results(self, events: list) -> list:
         """
-        丢弃 tool_call 尚未出现就被引用到的 tool_result。
+        丢弃 toolCall 尚未出现就被引用到的 tool_result。
 
-        压缩裁剪后，events 开头可能出现 tool_result 而其 tool_call 已被裁掉。
-        这会导致 to_openai_messages 产出的第一条消息带悬挂 tool_call_id，
-        LLM 报 ``unexpected tool_use_id found in tool_result blocks``。
+        压缩裁剪后，events 开头可能出现 tool_result 而其 toolCall 所在的
+        assistant_message_complete 已被裁掉。这会导致 to_openai_messages 产出
+        的第一条消息带悬挂 tool_call_id，LLM 报错。
         """
         if not events:
             return events
@@ -177,83 +249,34 @@ class ContextGovernPlugin(Plugin):
         seen_call_ids: set[str] = set()
         dropped = 0
         out: list = []
+
         for ev in events:
             t = ev.get("type")
-            tid = (ev.get("data") or {}).get("id", "")
-            if t == "tool_call":
-                if tid:
-                    seen_call_ids.add(tid)
+            data = ev.get("data") or {}
+
+            if t == "assistant_message_complete":
+                # 记录此事件中所有 toolCall id
+                for block in data.get("content", []):
+                    if isinstance(block, dict) and block.get("type") == "toolCall":
+                        tid = block.get("id", "")
+                        if tid:
+                            seen_call_ids.add(tid)
                 out.append(ev)
+
             elif t == "tool_result":
+                tid = data.get("id", "")
                 if not tid or tid in seen_call_ids:
                     out.append(ev)
                 else:
                     dropped += 1
                     logger.debug(
                         f"[context_govern] 丢弃悬挂 tool_result id={tid}: "
-                        f"tool_call 已被裁剪或尚未出现"
+                        f"toolCall 已被裁剪或尚未出现"
                     )
+
             else:
                 out.append(ev)
 
         if dropped:
             logger.info(f"[context_govern] 丢弃 {dropped} 个悬挂 tool_result")
-        return out
-
-    # ─── 相邻性修复 ─────────────────────────────────────────
-
-    def _ensure_adjacency(self, events: list) -> list:
-        """
-        保证每个 tool_call 紧跟着对应的 tool_result。
-
-        tool_call 之后被 external_message 等事件打断时，把 tool_result 移到
-        紧贴 tool_call 之后。没有打断时返回原列表（零拷贝）。
-        重复的 tool_result（同一 tool_call_id 多条）会被去重。
-        """
-        if not events:
-            return events
-
-        call_idx_by_id: dict[str, int] = {}
-        pairs: list[tuple[int, int]] = []
-        seen_result_ids: set[str] = set()  # 记录已处理的 tool_result id
-        duplicate_result_indices: set[int] = set()  # 重复 tool_result 的位置
-        for i, ev in enumerate(events):
-            t = ev.get("type")
-            data = ev.get("data") or {}
-            tid = data.get("id", "")
-            if not tid:
-                continue
-            if t == "tool_call":
-                call_idx_by_id[tid] = i
-            elif t == "tool_result":
-                if tid in seen_result_ids:
-                    # 重复的 tool_result，标记丢弃
-                    duplicate_result_indices.add(i)
-                elif tid in call_idx_by_id:
-                    seen_result_ids.add(tid)
-                    call_i = call_idx_by_id.pop(tid)
-                    if i != call_i + 1:
-                        pairs.append((call_i, i))
-
-        if not pairs and not duplicate_result_indices:
-            return events
-
-        result_indices_to_skip = {result_i for _, result_i in pairs}
-        result_indices_to_skip |= duplicate_result_indices
-        moves: dict[int, int] = {call_i: result_i for call_i, result_i in pairs}
-
-        out: list = []
-        for i, ev in enumerate(events):
-            if i in result_indices_to_skip:
-                continue
-            out.append(ev)
-            if i in moves:
-                out.append(events[moves[i]])
-
-        fixed = len(pairs)
-        dropped_dup = len(duplicate_result_indices)
-        if fixed:
-            logger.info(f"[context_govern] 修复 {fixed} 对不相邻的 tool_call/tool_result")
-        if dropped_dup:
-            logger.info(f"[context_govern] 丢弃 {dropped_dup} 个重复 tool_result")
         return out

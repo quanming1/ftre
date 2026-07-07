@@ -13,12 +13,15 @@ import json
 import logging
 import os
 import tempfile
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
 from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
 from ftre.mcp.manager import McpManager
-from ftre.config import CONFIG_PATH
+from ftre.mcp.config import McpServerConfig
+from ftre.mcp.adapter import build_mcp_tools_for_servers
+from ftre.config import CONFIG_PATH, AGENTS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +52,61 @@ class McpPlugin(Plugin):
             logger.warning("[mcp-plugin] 无事件循环，MCP 连接未启动")
 
     async def _inject_system_prompt(self, ctx):
-        prompt = (
-            "<mcp_desc>\n"
-            "你可以通过 MCP (Model Context Protocol) 调用外部工具。"
-            "MCP 工具名格式为 `mcp__{服务器名}__{工具名}`。\n"
-            "调用 MCP 工具时，参数会自动传递给对应的 MCP 服务器处理。"
-            "\n</mcp_desc>"
-        )
-        append_to_first_system(ctx.messages, prompt)
+        """BEFORE_AGENT_RUN hook：为 agent 注入私有 MCP 工具 + 系统提示词。
+
+        流程：
+        1. 从 profile.mcp_config 找出私有/覆盖的 server（不在全局 config.json 或配置不同）
+        2. ensure_connections → 连入共享连接池（已连接且配置相同则跳过）
+        3. build_mcp_tools_for_servers → 构建 Tool 列表
+        4. 注册到 ctx.agent_tool_registry（per-agent registry）
+        5. 注入系统提示词（列出所有已连接 server）
+        """
+        profile = ctx.agent_profile
+
+        # 读取全局 MCP 配置，用于区分公共/私有
+        global_mcp = _read_config_json().get("mcp", {})
+
+        # 找出私有或覆盖的 server
+        private_configs: list[McpServerConfig] = []
+        if profile and profile.mcp_config:
+            for name, raw in profile.mcp_config.items():
+                if not isinstance(raw, dict):
+                    continue
+                global_raw = global_mcp.get(name)
+                if global_raw == raw:
+                    # 与全局配置完全一致 → 已通过全局 registry 注册，跳过
+                    continue
+                # 私有（不在全局）或覆盖（配置不同）
+                cfg = McpServerConfig.from_raw(name, raw)
+                if cfg:
+                    private_configs.append(cfg)
+
+        # 连接 + 注册私有 MCP 工具
+        if private_configs and ctx.agent_tool_registry:
+            connected = await self._manager.ensure_connections(private_configs)
+            if connected:
+                tools = await build_mcp_tools_for_servers(self._manager, connected)
+                for tool in tools:
+                    ctx.agent_tool_registry.register(tool)
+                logger.info(
+                    f"[mcp-plugin] agent={profile.agent_id if profile else '?'}: "
+                    f"注册 {len(tools)} 个私有 MCP 工具 "
+                    f"(servers={list(connected)})"
+                )
+
+        # 注入系统提示词（列出所有已连接 server，含全局 + 私有）
+        all_connected = self._manager.get_connected_servers()
+        if all_connected:
+            prompt = (
+                "<mcp_desc>\n"
+                "你可以通过 MCP (Model Context Protocol) 调用外部工具。"
+                "MCP 工具名格式为 `mcp__{服务器名}__{工具名}`。\n"
+                f"当前已连接的 MCP 服务器：{', '.join(all_connected)}\n"
+                "调用 MCP 工具时，参数会自动传递给对应的 MCP 服务器处理。"
+                "\n</mcp_desc>"
+            )
+            append_to_first_system(ctx.messages, prompt)
+
         return ctx
 
     async def _start_connections(self) -> None:
@@ -70,25 +120,62 @@ class McpPlugin(Plugin):
             logger.exception("[mcp-plugin] 后台启动失败")
 
     def _build_router(self) -> APIRouter:
-        """构建 MCP CRUD 路由"""
+        """构建 MCP CRUD 路由
+
+        通过 ?scope=global|private 区分操作目标：
+        - global  → config.json 的 mcp 段（公共，所有 agent 共享）
+        - private → agent.config.json 的 mcp 段（私有，仅对该 agent 可见）
+        private scope 需额外传 ?agent_id=xxx（默认 "default"）
+        """
         router = APIRouter(prefix="/mcp")
 
         @router.get("")
-        async def list_mcp_servers():
-            config_data = _read_config_json()
-            mcp_raw = config_data.get("mcp", {})
+        async def list_mcp_servers(scope: str = "all", agent_id: str = "default"):
+            """列出 MCP 服务器。
+
+            scope=all     → 公共 + 私有合并返回（每条带 scope 字段）
+            scope=global  → 仅公共
+            scope=private → 仅私有
+            """
             status_map = self._manager.get_status()
             servers = []
-            for name, c in (mcp_raw or {}).items():
-                if not isinstance(c, dict):
-                    continue
-                entry = {**c, "name": name}
-                entry["status"] = status_map.get(name, "disconnected")
-                servers.append(entry)
+
+            if scope in ("all", "global"):
+                global_mcp = _read_config_json().get("mcp", {})
+                for name, c in (global_mcp or {}).items():
+                    if not isinstance(c, dict):
+                        continue
+                    entry = {**c, "name": name, "scope": "global"}
+                    entry["status"] = status_map.get(name, "disconnected")
+                    servers.append(entry)
+
+            if scope in ("all", "private"):
+                agent_mcp = _read_agent_config_json(agent_id).get("mcp", {})
+                for name, c in (agent_mcp or {}).items():
+                    if not isinstance(c, dict):
+                        continue
+                    # all 模式下，如果 agent 覆盖了同名的全局 server，更新它
+                    if scope == "all":
+                        # 找到并替换已有的 global 条目
+                        for i, s in enumerate(servers):
+                            if s["name"] == name:
+                                entry = {**c, "name": name, "scope": "private"}
+                                entry["status"] = status_map.get(name, "disconnected")
+                                servers[i] = entry
+                                break
+                        else:
+                            entry = {**c, "name": name, "scope": "private"}
+                            entry["status"] = status_map.get(name, "disconnected")
+                            servers.append(entry)
+                    else:
+                        entry = {**c, "name": name, "scope": "private"}
+                        entry["status"] = status_map.get(name, "disconnected")
+                        servers.append(entry)
+
             return {"servers": servers}
 
         @router.post("", status_code=201)
-        async def create_mcp_server(request: Request):
+        async def create_mcp_server(request: Request, scope: str = "global", agent_id: str = "default"):
             try:
                 payload = await request.json()
             except json.JSONDecodeError as e:
@@ -106,22 +193,34 @@ class McpPlugin(Plugin):
             if err:
                 raise HTTPException(status_code=400, detail=err)
 
-            config_data = _read_config_json()
-            mcp = config_data.setdefault("mcp", {})
-            if name in mcp:
-                raise HTTPException(status_code=409, detail=f"MCP 服务器已存在: {name}")
-            mcp[name] = cleaned
-            _write_config_json(config_data)
+            if scope == "private":
+                config_data = _read_agent_config_json(agent_id)
+                mcp = config_data.setdefault("mcp", {})
+                if name in mcp:
+                    raise HTTPException(status_code=409, detail=f"MCP 服务器已存在: {name}")
+                mcp[name] = cleaned
+                _write_agent_config_json(agent_id, config_data)
+            else:
+                config_data = _read_config_json()
+                mcp = config_data.setdefault("mcp", {})
+                if name in mcp:
+                    raise HTTPException(status_code=409, detail=f"MCP 服务器已存在: {name}")
+                mcp[name] = cleaned
+                _write_config_json(config_data)
+                if not cleaned.get("disabled"):
+                    await self._manager.reload_and_register({name: cleaned}, source="api-create")
 
-            if not cleaned.get("disabled"):
-                await self._manager.reload_and_register({name: cleaned}, source="api-create")
-
-            return {"name": name, **cleaned, "status": "connected" if not cleaned.get("disabled") else "disabled"}
+            return {"name": name, **cleaned, "scope": scope, "status": "connected" if not cleaned.get("disabled") else "disabled"}
 
         @router.patch("/{name}")
-        async def update_mcp_server(name: str, request: Request):
-            config_data = _read_config_json()
-            mcp = config_data.get("mcp", {})
+        async def update_mcp_server(name: str, request: Request, scope: str = "global", agent_id: str = "default"):
+            if scope == "private":
+                config_data = _read_agent_config_json(agent_id)
+                mcp = config_data.get("mcp", {})
+            else:
+                config_data = _read_config_json()
+                mcp = config_data.get("mcp", {})
+
             if name not in mcp:
                 raise HTTPException(status_code=404, detail=f"MCP 服务器不存在: {name}")
 
@@ -138,22 +237,35 @@ class McpPlugin(Plugin):
                 raise HTTPException(status_code=400, detail=err)
 
             mcp[name] = cleaned
-            _write_config_json(config_data)
 
-            await self._manager.reload_and_register(mcp, source="api-update")
-            return {"name": name, **cleaned}
+            if scope == "private":
+                _write_agent_config_json(agent_id, config_data)
+            else:
+                _write_config_json(config_data)
+                await self._manager.reload_and_register(mcp, source="api-update")
+
+            return {"name": name, **cleaned, "scope": scope}
 
         @router.delete("/{name}", status_code=204)
-        async def delete_mcp_server(name: str):
-            config_data = _read_config_json()
-            mcp = config_data.get("mcp", {})
+        async def delete_mcp_server(name: str, scope: str = "global", agent_id: str = "default"):
+            if scope == "private":
+                config_data = _read_agent_config_json(agent_id)
+                mcp = config_data.get("mcp", {})
+            else:
+                config_data = _read_config_json()
+                mcp = config_data.get("mcp", {})
+
             if name not in mcp:
                 raise HTTPException(status_code=404, detail=f"MCP 服务器不存在: {name}")
 
             del mcp[name]
-            _write_config_json(config_data)
 
-            await self._manager.reload_and_register(mcp, source="api-delete")
+            if scope == "private":
+                _write_agent_config_json(agent_id, config_data)
+            else:
+                _write_config_json(config_data)
+                await self._manager.reload_and_register(mcp, source="api-delete")
+
             return None
 
         return router
@@ -188,6 +300,38 @@ def _write_config_json(data: dict) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, CONFIG_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _agent_config_path(agent_id: str) -> Path:
+    """返回指定 agent 的 agent.config.json 路径"""
+    return AGENTS_DIR / agent_id / "agent.config.json"
+
+
+def _read_agent_config_json(agent_id: str) -> dict:
+    """读取指定 agent 的 agent.config.json"""
+    path = _agent_config_path(agent_id)
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_agent_config_json(agent_id: str, data: dict) -> None:
+    """原子写入指定 agent 的 agent.config.json"""
+    path = _agent_config_path(agent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".agent.config.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
     except Exception:
         try:
             os.unlink(tmp_path)
