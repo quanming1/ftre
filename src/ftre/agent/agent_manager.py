@@ -23,6 +23,7 @@ import logging
 import os
 import copy
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 from ftre.config import AgentConfig, LLMConfig, _build_llm_config
@@ -634,6 +635,7 @@ class AgentManager:
             f"channel_id={channel_id or ''}",
             f"session_id={session_id or ''}",
             f"os={os.name}",
+            f"date={date.today().isoformat()}",
         ]
         if os.name == "nt":
             env_lines.append(
