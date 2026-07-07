@@ -48,7 +48,7 @@ class SkillPlugin(Plugin):
         self.api.register_router(self._build_router())
         self.api.register_hook(BEFORE_AGENT_RUN, self._inject_system_prompt)
 
-    def _inject_system_prompt(self, ctx):
+    async def _inject_system_prompt(self, ctx):
         parts = [
             "<skill_desc>\n"
             "Skill 是本地能力说明文件。全局 Skill 存放在 ~/.ftre/skills，"

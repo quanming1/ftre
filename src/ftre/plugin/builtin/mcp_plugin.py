@@ -48,7 +48,7 @@ class McpPlugin(Plugin):
         else:
             logger.warning("[mcp-plugin] 无事件循环，MCP 连接未启动")
 
-    def _inject_system_prompt(self, ctx):
+    async def _inject_system_prompt(self, ctx):
         prompt = (
             "<mcp_desc>\n"
             "你可以通过 MCP (Model Context Protocol) 调用外部工具。"
