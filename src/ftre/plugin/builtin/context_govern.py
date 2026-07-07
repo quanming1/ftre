@@ -20,7 +20,7 @@ class ContextGovernPlugin(Plugin):
     def setup(self) -> None:
         self.api.register_hook(BEFORE_MESSAGES_BUILD, self._govern)
 
-    def _govern(self, ctx):
+    async def _govern(self, ctx):
         """before_messages_build hook：清理孤立事件 + 修复相邻性 + 丢弃悬挂 tool_result + 注入 AGENTS.md"""
         events = ctx.events
 

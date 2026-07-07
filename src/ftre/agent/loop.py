@@ -590,7 +590,7 @@ class AgentLoop:
                 agent_profile=agent_profile,
                 agent_tool_registry=agent.tool_registry,
             )
-            ctx = self.hook_manager.trigger_sync(BEFORE_AGENT_RUN, ctx)
+            ctx = await self.hook_manager.trigger(BEFORE_AGENT_RUN, ctx)
             messages = ctx.messages
 
         subagent_status = "completed"
@@ -749,7 +749,7 @@ class AgentLoop:
                 config=hook_config,
                 events=events,
             )
-            ctx = self.hook_manager.trigger_sync(BEFORE_MESSAGES_BUILD, ctx)
+            ctx = await self.hook_manager.trigger(BEFORE_MESSAGES_BUILD, ctx)
             hook_config = ctx.config
             events = ctx.events
 

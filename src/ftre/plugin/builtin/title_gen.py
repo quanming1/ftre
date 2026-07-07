@@ -44,7 +44,7 @@ class TitleGenPlugin(Plugin):
             f"(input_truncate={self._input_truncate}, max_chars={self._max_chars})"
         )
 
-    def _on_build(self, ctx):
+    async def _on_build(self, ctx):
         """before_messages_build hook：首条消息时异步生成标题"""
         session_id = ctx.session_id
 
@@ -68,7 +68,7 @@ class TitleGenPlugin(Plugin):
             )
             return ctx
 
-        # 注意：_on_build 运行在主事件循环线程上（trigger_sync 同步调用）。
+        # 注意：_on_build 运行在主事件循环线程上（await trigger 调用）。
         # 这里【不能】用 run_coroutine_threadsafe(...).result() 去查 session——那会把协程
         # 排回当前正阻塞的事件循环，造成自我等待死锁（表现为 5s TimeoutError，并卡死整个
         # 事件循环）。因此 session 是否已有标题的检查移到 worker 线程里做。
