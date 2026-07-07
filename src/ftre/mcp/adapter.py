@@ -241,23 +241,40 @@ def create_mcp_tool(
     )
 
 
+async def build_mcp_tools_for_servers(
+    manager: McpManager,
+    server_names: set[str],
+) -> list[Tool]:
+    """为指定服务器构建 ftre Tool 实例列表。
+
+    只从 server_names 指定的服务器发现工具，不影响连接池中其他服务器。
+    返回的 Tool 列表未注册到任何 registry，由调用方决定注册目标。
+
+    Args:
+        manager: McpManager 实例
+        server_names: 需要构建工具的服务器名集合
+    """
+    mcp_tools = await manager.list_tools_for_servers(server_names)
+    if not mcp_tools:
+        return []
+
+    tools: list[Tool] = []
+    for server_name, mcp_tool in mcp_tools:
+        try:
+            tool = create_mcp_tool(server_name, mcp_tool, manager)
+            tools.append(tool)
+            logger.info(f"[mcp] 构建工具: {tool.name} (来自 {server_name})")
+        except Exception as e:
+            logger.warning(f"[mcp] 工具转换失败: {server_name}/{mcp_tool.name} — {e}")
+
+    return tools
+
+
 async def build_mcp_tools(manager: McpManager) -> list[Tool]:
     """从所有已连接的 MCP 服务器发现并转换工具
 
     Returns:
         ftre Tool 实例列表，可直接注册到 ToolRegistry
     """
-    all_mcp_tools = await manager.list_all_tools()
-    if not all_mcp_tools:
-        return []
-
-    tools: list[Tool] = []
-    for server_name, mcp_tool in all_mcp_tools:
-        try:
-            tool = create_mcp_tool(server_name, mcp_tool, manager)
-            tools.append(tool)
-            logger.info(f"[mcp] 注册工具: {tool.name} (来自 {server_name})")
-        except Exception as e:
-            logger.warning(f"[mcp] 工具转换失败: {server_name}/{mcp_tool.name} — {e}")
-
-    return tools
+    all_servers = set(manager.get_connected_servers())
+    return await build_mcp_tools_for_servers(manager, all_servers)
