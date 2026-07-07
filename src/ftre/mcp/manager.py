@@ -359,3 +359,82 @@ class McpManager:
         if conn:
             logger.info(f"[mcp] 移除服务器: {name}")
             await conn.disconnect()
+
+    # ─── Agent 私有 MCP 支持 ──────────────────────────────────────
+
+    async def ensure_connection(self, config: McpServerConfig) -> bool:
+        """确保单个服务器已连接，复用已有连接或创建新连接。
+
+        - 已连接且 config 相同 → 复用，不二次加载
+        - 已连接但 config 不同 → 断开重连
+        - 未连接 → 新建连接
+
+        连接创建后长期存活于连接池，下次调用直接复用。
+        """
+        existing = self._connections.get(config.name)
+        if existing and existing.is_connected and existing.config == config:
+            return True
+
+        if existing:
+            await self._remove_connection(config.name)
+
+        conn = McpConnection(config)
+        self._connections[config.name] = conn
+        return await conn.connect()
+
+    async def ensure_connections(self, configs: list[McpServerConfig]) -> set[str]:
+        """批量确保服务器已连接。
+
+        Returns:
+            成功连接的 server name 集合。
+        """
+        results = await asyncio.gather(
+            *(self.ensure_connection(cfg) for cfg in configs),
+            return_exceptions=True,
+        )
+        success: set[str] = set()
+        for cfg, result in zip(configs, results):
+            if result is True:
+                success.add(cfg.name)
+            elif isinstance(result, Exception):
+                logger.warning(f"[mcp] ensure_connection 失败: {cfg.name} — {result}")
+        logger.info(f"[mcp] ensure_connections: {len(success)}/{len(configs)} 连接成功")
+        return success
+
+    async def list_tools_for_servers(
+        self, server_names: set[str]
+    ) -> list[tuple[str, McpToolDef]]:
+        """只列出指定服务器的工具（仅查已连接的）。"""
+        targets = [
+            (name, conn)
+            for name, conn in self._connections.items()
+            if name in server_names and conn.is_connected
+        ]
+        if not targets:
+            return []
+
+        results = await asyncio.gather(
+            *(conn.list_tools() for _, conn in targets),
+            return_exceptions=True,
+        )
+        all_tools: list[tuple[str, McpToolDef]] = []
+        for (name, _), tools in zip(targets, results):
+            if isinstance(tools, Exception):
+                logger.warning(f"[mcp] list_tools 失败: {name} — {tools}")
+                continue
+            for tool in tools:
+                all_tools.append((name, tool))
+        return all_tools
+
+    def build_system_hint_for_servers(self, server_names: list[str]) -> str:
+        """为指定服务器列表生成系统提示词片段。"""
+        if not server_names:
+            return ""
+        lines = [
+            "",
+            "## MCP 工具",
+            "你可以通过 MCP (Model Context Protocol) 调用外部工具。MCP 工具名格式为 `mcp__{服务器名}__{工具名}`。",
+            f"当前已连接的 MCP 服务器：{', '.join(server_names)}",
+            "调用 MCP 工具时，参数会自动传递给对应的 MCP 服务器处理。",
+        ]
+        return "\n".join(lines)
