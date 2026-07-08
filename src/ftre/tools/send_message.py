@@ -16,12 +16,13 @@ send_message 工具 - 向另一个 session 发送一条消息
 - subagent 不允许 send_message（结果应通过 task 返回值传回）
 - 不能给当前 session 自己发（直接在回复里输出即可）
 """
+
 import asyncio
 
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
+
 from ftre.bus import BusMessage
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
-
 
 # kind=invoke 时拼到 content 头部的来源标注模板
 _INVOKE_PREFIX_TEMPLATE = (
@@ -100,9 +101,21 @@ def create_send_message_tool(channel_manager) -> Tool:
             "subagent 内禁止调用，禁止发给当前 session 自己。"
         ),
         parameters=[
-            ToolParameter(name="channel_id", type="string", description="目标频道 ID（如 ws、telegram）", required=True),
-            ToolParameter(name="session_id", type="string", description="目标 session ID", required=True),
-            ToolParameter(name="content", type="string", description="消息内容", required=True),
+            ToolParameter(
+                name="channel_id",
+                type="string",
+                description="目标频道 ID（如 ws、telegram）",
+                required=True,
+            ),
+            ToolParameter(
+                name="session_id",
+                type="string",
+                description="目标 session ID",
+                required=True,
+            ),
+            ToolParameter(
+                name="content", type="string", description="消息内容", required=True
+            ),
             ToolParameter(
                 name="kind",
                 type="string",
@@ -119,6 +132,7 @@ def create_send_message_tool(channel_manager) -> Tool:
 # 维持原有行为：直接 save_message + publish_outbound，
 # 后续若要重构为 Channel.receive 统一入口再单独动这块。
 # ============================================================
+
 
 def _do_notify(
     *,
@@ -150,15 +164,16 @@ def _do_notify(
         event_loop,
     ).result(timeout=10)
     # 2) outbound 推送给前端（连接活跃时实时显示）
-    asyncio.run_coroutine_threadsafe(
-        bus.publish_outbound(msg), event_loop
-    ).result(timeout=10)
+    asyncio.run_coroutine_threadsafe(bus.publish_outbound(msg), event_loop).result(
+        timeout=10
+    )
 
 
 # ============================================================
 # invoke 路径：通过目标 Channel.receive() 投递一条 user_message
 # AgentLoop 会自动持久化 user_message 并 echo 给目标 session 前端。
 # ============================================================
+
 
 def _do_invoke(
     *,

@@ -11,7 +11,6 @@ import sys
 import time
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parent
 DESKTOP_ROOT = Path(r"E:\binn\ftre-desktop")
 DOCS_ROOT = Path(r"E:\ftre-docs")
@@ -35,6 +34,7 @@ def _resolve_port(name: str) -> int:
 GATEWAY_PORT = _resolve_port("gateway")
 DESKTOP_PORT = _resolve_port("frontend")
 DOCS_PORT = _resolve_port("docs")
+
 STARTUP_TIMEOUT_SECONDS = 60
 
 
@@ -56,7 +56,9 @@ def wait_for_port(port: int, process: subprocess.Popen, label: str) -> None:
         if exit_code is not None:
             raise RuntimeError(f"{label} exited during startup (code {exit_code})")
         time.sleep(0.5)
-    raise TimeoutError(f"{label} did not listen on port {port} within {STARTUP_TIMEOUT_SECONDS}s")
+    raise TimeoutError(
+        f"{label} did not listen on port {port} within {STARTUP_TIMEOUT_SECONDS}s"
+    )
 
 
 def resolve_pnpm() -> str:
