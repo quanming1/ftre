@@ -6,6 +6,7 @@ from ftre_agent_core.tool import Tool, ToolParameter, Injected
 from .read import _resolve
 from ._io import read_text, write_text_new, write_text_preserving, _NEWLINE_LABEL
 from ._workspace import WorkspaceAccessor
+from ._diff import build_diff_metadata
 
 
 def create_write_tool() -> Tool:
@@ -16,7 +17,7 @@ def create_write_tool() -> Tool:
     - 新文件：utf-8 + LF
     """
 
-    def write(path: str, content: str, ws: WorkspaceAccessor = Injected("workspace")) -> str:
+    def write(path: str, content: str, ws: WorkspaceAccessor = Injected("workspace")) -> str | tuple[str, dict]:
         try:
             if not isinstance(ws, WorkspaceAccessor):
                 return "[error] runtime_context.workspace 未注入"
@@ -30,22 +31,26 @@ def create_write_tool() -> Tool:
 
             if p.exists():
                 original = read_text(p)
+                content_old = original.text
                 n = write_text_preserving(p, normalized, original)
                 encoding, newline = original.encoding, original.newline
                 action = "已覆盖"
             else:
+                content_old = ""
                 n = write_text_new(p, normalized, encoding="utf-8", newline="\n")
                 encoding, newline = "utf-8", "\n"
                 action = "已创建"
 
             newline_label = _NEWLINE_LABEL.get(newline, repr(newline))
-            return (
+            result = (
                 "<FTRE_SYSTEM_FACT>\n"
                 f"[file] {p}\n"
                 f"[meta] encoding={encoding} newline={newline_label} size={n}bytes\n"
                 f"{action}\n"
                 "</FTRE_SYSTEM_FACT>"
             )
+            diff_meta = build_diff_metadata(str(p), content_old, normalized)
+            return result, diff_meta
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}"
 
