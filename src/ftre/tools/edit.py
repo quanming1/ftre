@@ -6,6 +6,7 @@ from ftre_agent_core.tool import Tool, ToolParameter, Injected
 from .read import _resolve
 from ._io import read_text, write_text_preserving, _NEWLINE_LABEL
 from ._workspace import WorkspaceAccessor
+from ._diff import build_diff_metadata
 
 
 def _line_numbers_of_matches(text: str, needle: str, max_show: int = 5) -> list[int]:
@@ -59,10 +60,10 @@ def _format_result(p, old_lines: int, new_lines: int, n: int, tf) -> str:
     )
 
 
-def _edit_by_string(p, content: str, old_str: str, new_norm: str, tf) -> str:
+def _edit_by_string(p, content: str, old_str: str, new_norm: str, tf) -> tuple[str, dict]:
     """字符串模式：old_str 须在文件中唯一匹配后替换。"""
     if not old_str:
-        return "[error] 字符串模式需要 old_str；若要按行替换请改用 start_line / end_line"
+        return "[error] 字符串模式需要 old_str；若要按行替换请改用 start_line / end_line", {}
     old_norm = old_str.replace("\r\n", "\n").replace("\r", "\n")
     count = content.count(old_norm)
 
@@ -71,7 +72,7 @@ def _edit_by_string(p, content: str, old_str: str, new_norm: str, tf) -> str:
             "提示：old_str 必须与文件中的字节完全一致（含缩进/换行）。"
             "建议先用 read 工具读取目标区间，再复制对应文本作为 old_str。"
         )
-        return f"[error] 未找到 old_str。{hint}"
+        return f"[error] 未找到 old_str。{hint}", {}
 
     if count > 1:
         line_nos = _line_numbers_of_matches(content, old_norm)
@@ -79,13 +80,16 @@ def _edit_by_string(p, content: str, old_str: str, new_norm: str, tf) -> str:
         return (
             f"[error] old_str 匹配到 {count} 处（行号 {line_nos}{more}），需要唯一匹配。"
             f"请在 old_str 中加入更多上下文（前后行）以唯一定位。"
-        )
+        ), {}
 
-    n = write_text_preserving(p, content.replace(old_norm, new_norm, 1), tf)
-    return _format_result(p, old_norm.count("\n") + 1, new_norm.count("\n") + 1, n, tf)
+    new_content = content.replace(old_norm, new_norm, 1)
+    n = write_text_preserving(p, new_content, tf)
+    result = _format_result(p, old_norm.count("\n") + 1, new_norm.count("\n") + 1, n, tf)
+    diff_meta = build_diff_metadata(str(p), content, new_content)
+    return result, diff_meta
 
 
-def _edit_by_line(p, content: str, new_norm: str, start_line: int, end_line: int, tf) -> str:
+def _edit_by_line(p, content: str, new_norm: str, start_line: int, end_line: int, tf) -> tuple[str, dict]:
     """行号模式：用 new_str 替换 [start_line, end_line] 闭区间内的行（1-indexed）。
 
     end_line<=0 表示只替换 start_line 单行；new_str 为空串等价于删除该区间。
@@ -97,10 +101,10 @@ def _edit_by_line(p, content: str, new_norm: str, start_line: int, end_line: int
     total = len(lines)
 
     if start_line > total:
-        return f"[error] start_line={start_line} 超出文件总行数 {total}"
+        return f"[error] start_line={start_line} 超出文件总行数 {total}", {}
     end = end_line if end_line > 0 else start_line
     if end < start_line:
-        return f"[error] end_line={end_line} 小于 start_line={start_line}"
+        return f"[error] end_line={end_line} 小于 start_line={start_line}", {}
     end = min(end, total)
 
     start_idx = start_line - 1
@@ -111,7 +115,9 @@ def _edit_by_line(p, content: str, new_norm: str, start_line: int, end_line: int
         new_content += "\n"
 
     n = write_text_preserving(p, new_content, tf)
-    return _format_result(p, end - start_idx, len(replacement), n, tf)
+    result = _format_result(p, end - start_idx, len(replacement), n, tf)
+    diff_meta = build_diff_metadata(str(p), content, new_content)
+    return result, diff_meta
 
 
 def create_edit_tool() -> Tool:
@@ -130,7 +136,7 @@ def create_edit_tool() -> Tool:
         start_line: int = 0,
         end_line: int = 0,
         ws: WorkspaceAccessor = Injected("workspace"),
-    ) -> str:
+    ) -> str | tuple[str, dict]:
         try:
             if not isinstance(ws, WorkspaceAccessor):
                 return "[error] runtime_context.workspace 未注入"
