@@ -163,7 +163,7 @@ def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> To
         end_line: int = 0,
         ws: WorkspaceAccessor = Injected("workspace"),
         llm_config=Injected("llm_config"),
-    ) -> str | UserMessageEvent:
+    ) -> str | UserMessageEvent | tuple[str, dict]:
         try:
             if not isinstance(ws, WorkspaceAccessor):
                 return "[error] runtime_context.workspace 未注入"
@@ -215,7 +215,19 @@ def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> To
             note = ""
             if tf.encoding not in ("utf-8", "utf-8-sig"):
                 note = f"[encoding] 内容已从 {tf.encoding} 转为 UTF-8 呈现\n"
-            return truncate_output(meta + "\n" + note + "\n" + "\n".join(numbered))
+            result_str = truncate_output(meta + "\n" + note + "\n" + "\n".join(numbered))
+
+            # 返回内容快照 metadata，供前端 Inspector 面板直接展示（不回读磁盘）。
+            display_path = str(p).replace("\\", "/")
+            actual_start = start_line if start_line > 0 else 1
+            actual_end = end_line if end_line > 0 else len(lines)
+            snapshot_meta = {
+                "file": display_path,
+                "content": tf.text,
+                "start_line": actual_start,
+                "end_line": actual_end,
+            }
+            return result_str, snapshot_meta
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}"
 
