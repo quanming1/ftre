@@ -366,7 +366,7 @@ class CompactManager:
             prompt_parts = _build_prompt(
                 previous_summary=previous_summary,
                 context=[context],
-                min_chars=max(200, int(_estimate_body_chars(context) * 0.6)),
+                min_chars=max(20000, int(_estimate_body_chars(context) * 0.6)),
             )
 
             messages = [
@@ -390,7 +390,7 @@ class CompactManager:
                     collected.append(ev.text)
 
             summary = "".join(collected).strip()
-            if not summary or len(summary) < 200 or "## " not in summary:
+            if not summary or "## " not in summary:
                 logger.warning(f"[compact] LLM 摘要不合格 len={len(summary)}, content={summary!r}")
                 return None
             return summary
