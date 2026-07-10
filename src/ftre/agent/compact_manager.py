@@ -316,7 +316,9 @@ class CompactManager:
 
         try:
             await self.session_manager.save_message(
-                session_id, "context_compact", payload, timestamp=now)
+                session_id, "context_compact", payload,
+                timestamp=now,
+            )
         except Exception:
             logger.exception(f"[compact] 写入 DB 失败 session={session_id}")
             return None
