@@ -62,7 +62,7 @@ VOLATILE_CLEAR_BY_TYPE = {
     "context_compact_failed": {"context_compact_start"},
 }
 # 一轮执行结束、失败或进入重试后，旧的临时流式片段都不应该再 replay。
-VOLATILE_CLEAR_ALL_TYPES = frozenset({"done", "error", "retry"})
+VOLATILE_CLEAR_ALL_TYPES = frozenset({"step", "retry"})
 
 
 def _match_volatile_clear(

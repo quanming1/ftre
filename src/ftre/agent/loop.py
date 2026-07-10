@@ -17,7 +17,6 @@ import asyncio
 import copy
 import logging
 import os
-import uuid
 from concurrent.futures import Future
 
 from ftre_agent_core import Tracer
@@ -25,9 +24,9 @@ from ftre_agent_core.agent import ReActAgent
 from ftre_agent_core.agent.event import (
     AgentEvent,
     AssistantMessageCompleteEvent,
-    DoneEvent,
+    StepEvent,
+    StepPhase,
     DoneReason,
-    ErrorEvent,
     ToolResultEvent,
     UserMessageEvent,
 )
@@ -352,7 +351,6 @@ class AgentLoop:
                     session_id,
                     "user_message",
                     {
-                        "event_id": uuid.uuid4().hex[:16],
                         "content": normalize_stored_user_content(content),
                         "metadata": {"hide": False},
                     },
@@ -411,8 +409,6 @@ class AgentLoop:
     _PERSISTENT_CLASSES: tuple[type, ...] = (
         AssistantMessageCompleteEvent,
         ToolResultEvent,
-        DoneEvent,
-        ErrorEvent,
         UserMessageEvent,
     )
 
@@ -519,39 +515,8 @@ class AgentLoop:
         self._active_agents[session_id] = agent
         await self._publish_session_status_async(session_id, "running")
 
-        # Step 6: 持久化用户输入
-        # 归一化存储格式：只保留 UI/DB 可回放的 user parts。
-        # LLM API 格式在构建上下文时由 build_user_content() 统一转换。
+        # Step 6: 归一化用户输入存储格式，放入 runtime_context 供 core yield
         stored_content = normalize_stored_user_content(content)
-        user_event_id = uuid.uuid4().hex[:16]
-        stored_user_data = {
-            "event_id": user_event_id,
-            "content": stored_content,
-            "attachments": attachments,
-            "metadata": {"hide": False},
-        }
-        await self.session_manager.save_message(
-            session_id,
-            "user_message",
-            stored_user_data,
-        )
-
-        # Step 6.5: echo user_message 给前端
-        # 透传 inbound.metadata（含 frame_id），前端用 frame_id 与本地乐观占位去重
-        echo = BusMessage(
-            type="agent_event",
-            from_channel=inbound.from_channel,
-            to_channel=inbound.to_channel,
-            from_session=inbound.from_session,
-            to_session=inbound.to_session,
-            data={
-                "type": "user_message",
-                "event_id": user_event_id,
-                "data": {**inbound.data, "event_id": user_event_id},
-            },
-            metadata=inbound.metadata,
-        )
-        await self.bus.publish_outbound(echo)
 
         # Step 7: 构建运行时上下文（工具共享数据）
         runtime_context = {
@@ -575,6 +540,10 @@ class AgentLoop:
                 "session_id": session_id,
                 "channel_id": inbound.from_channel,
                 "workspace": workspace,
+            },
+            "user_input": {
+                "content": stored_content,
+                "metadata": {"hide": False, "agent_id": agent_id},
             },
         }
 
@@ -605,11 +574,41 @@ class AgentLoop:
                 # 检查 cancel：Task.cancel() 会在 await 处抛 CancelledError，
                 # 但 async for 的 yield 不一定被 cancel 打断（取决于 generator 内部实现），
                 # 所以在这里也检查 CancellationToken 作为补充。
-                if isinstance(event, self._PERSISTENT_CLASSES):
+                # 可见 user_message（用户输入）：持久化 + echo（用 inbound 原始格式 + frame_id）
+                if isinstance(event, UserMessageEvent) and not event.metadata.get("hide"):
                     event_data = event._data_dict()
-                    event_data["event_id"] = event.event_id
+                    event_data["attachments"] = attachments
                     await self.session_manager.save_message(
-                        session_id, event.type.value, event_data
+                        session_id, event.type.value, event_data,
+                        event_id=event.event_id,
+                        turn_id=event.turn_id,
+                        timestamp=event.timestamp,
+                    )
+                    echo = BusMessage(
+                        type="agent_event",
+                        from_channel=inbound.from_channel,
+                        to_channel=inbound.to_channel,
+                        from_session=inbound.from_session,
+                        to_session=inbound.to_session,
+                        data={
+                            "type": "user_message",
+                            "event_id": event.event_id,
+                            "timestamp": event.timestamp,
+                            "turn_id": event.turn_id,
+                            "data": {**inbound.data, "event_id": event.event_id},
+                        },
+                        metadata=inbound.metadata,
+                    )
+                    await self.bus.publish_outbound(echo)
+                    continue
+
+                # 持久化：_PERSISTENT_CLASSES + 所有 StepEvent
+                if isinstance(event, (self._PERSISTENT_CLASSES, StepEvent)):
+                    await self.session_manager.save_message(
+                        session_id, event.type.value, event._data_dict(),
+                        event_id=event.event_id,
+                        turn_id=event.turn_id,
+                        timestamp=event.timestamp,
                     )
 
                 out = BusMessage(
@@ -641,28 +640,58 @@ class AgentLoop:
             subagent_status = "cancelled"
             # Task.cancel() 导致的 CancelledError：Agent 被 cancel 中断
             logger.info(f"[agent-loop] Agent 被 cancel 中断 session={session_id}")
-            # 发送 done 事件让前端知道已停止
-            done_evt = BusMessage(
+            # 发送 step turn_end 事件让前端知道已停止
+            fallback = StepEvent(
+                phase=StepPhase.TURN_END,
+                success=False,
+                reason=DoneReason.CANCELLED,
+            )
+            # 从 agent.state 恢复 turn_id（state.start() 在 run() 首行已执行）
+            object.__setattr__(fallback, "turn_id", agent.state.turn_id)
+            # 持久化 fallback 事件，确保历史回放时 turn 有完整的 turn_end
+            await self.session_manager.save_message(
+                session_id, fallback.type.value, fallback._data_dict(),
+                event_id=fallback.event_id,
+                turn_id=fallback.turn_id,
+                timestamp=fallback.timestamp,
+            )
+            out = BusMessage(
                 type="agent_event",
                 from_channel=inbound.from_channel,
                 to_channel=inbound.to_channel,
                 from_session=inbound.from_session,
                 to_session=inbound.to_session,
-                data=DoneEvent(success=False, reason=DoneReason.CANCELLED).to_dict(),
+                data=fallback.to_dict(),
             )
-            await self.bus.publish_outbound(done_evt)
+            await self.bus.publish_outbound(out)
         except Exception:
             subagent_status = "error"
             logger.exception(f"[agent-loop] _run 异常 (session={session_id})")
-            err_evt = BusMessage(
+            fallback = StepEvent(
+                phase=StepPhase.TURN_END,
+                success=False,
+                reason=DoneReason.ERROR,
+                error_message="Agent 执行异常",
+                error_code="unknown",
+            )
+            # 从 agent.state 恢复 turn_id（state.start() 在 run() 首行已执行）
+            object.__setattr__(fallback, "turn_id", agent.state.turn_id)
+            # 持久化 fallback 事件，确保历史回放时 turn 有完整的 turn_end
+            await self.session_manager.save_message(
+                session_id, fallback.type.value, fallback._data_dict(),
+                event_id=fallback.event_id,
+                turn_id=fallback.turn_id,
+                timestamp=fallback.timestamp,
+            )
+            out = BusMessage(
                 type="agent_event",
                 from_channel=inbound.from_channel,
                 to_channel=inbound.to_channel,
                 from_session=inbound.from_session,
                 to_session=inbound.to_session,
-                data=DoneEvent(success=False, reason=DoneReason.ERROR).to_dict(),
+                data=fallback.to_dict(),
             )
-            await self.bus.publish_outbound(err_evt)
+            await self.bus.publish_outbound(out)
         finally:
             # 只有当前 agent 仍是注册的那个才清理。
             if self._active_agents.get(session_id) is agent:

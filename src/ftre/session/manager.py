@@ -3,7 +3,10 @@ SessionManager - 会话与消息持久化（SQLite）
 
 两张表：
 - sessions: 会话元信息（id, channel_id, title, created_at, updated_at）
-- messages: 事件流（id, session_id, type, data, timestamp）
+- messages: 事件流（id, session_id, type, data, timestamp, turn_id）
+  - id = event_id（AgentEvent 顶层字段）
+  - type/timestamp/turn_id 是事件公共字段，独立列
+  - data 只存事件特有字段（content / result / phase ...）
 """
 import json
 import time
@@ -36,11 +39,12 @@ class SessionModel(TypedDict):
 
 class MessageModel(TypedDict):
     """事件/消息记录"""
-    id: str              # 消息唯一标识
+    id: str              # 事件唯一标识（= event_id）
     session_id: str      # 所属会话 ID
-    type: str            # 事件类型（user_message / TOOL_CALL / TOOL_RESULT / MESSAGE_COMPLETE / ...）
-    data: dict[str, Any] # 事件数据（JSON）
+    type: str            # 事件类型（user_message / assistant_message_complete / tool_result / step / ...）
+    data: dict[str, Any] # 事件特有字段（不含 event_id / turn_id）
     timestamp: float     # 事件时间戳
+    turn_id: str         # 所属 Turn 的标识
 
 class ExternalSessionModel(TypedDict):
     channel_id: str
@@ -86,7 +90,8 @@ class SessionManager:
                 session_id  TEXT NOT NULL,
                 type        TEXT NOT NULL,
                 data        TEXT NOT NULL DEFAULT '{}',
-                timestamp   REAL NOT NULL
+                timestamp   REAL NOT NULL,
+                turn_id     TEXT NOT NULL DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -123,12 +128,13 @@ class SessionManager:
             "SET channel_id = substr(id, 1, instr(id, '::') - 1) "
             "WHERE channel_id = '' AND instr(id, '::') > 0"
         )
-        await self._migrate_backfill_message_event_id()
+        # 老库迁移：messages 表新增 turn_id 列
+        await self._migrate_add_column(
+            "messages", "turn_id", "TEXT NOT NULL DEFAULT ''"
+        )
+        # 回填：从 data JSON 中提取 event_id / turn_id 到独立列，并从 data 中移除
+        await self._migrate_messages_extract_fields()
         await self._db.commit()
-
-        # 旧事件格式 → 新消息格式迁移
-        from ftre.session.migrate_events import migrate_events_to_messages
-        await migrate_events_to_messages(self._db)
 
     async def _migrate_add_column(
         self, table: str, column: str, decl: str
@@ -142,17 +148,41 @@ class SessionManager:
         await self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
         logger.warning(f"[session] 迁移：{table}.{column} 已添加")
 
-    async def _migrate_backfill_message_event_id(self) -> None:
-        """Backfill legacy rows so HTTP history and WS replay share an event id."""
+    async def _migrate_messages_extract_fields(self) -> None:
+        """将 data JSON 中的 event_id / turn_id 提取到独立列，并从 data 中移除。
+
+        新 schema 中 id 列直接用 event_id，turn_id 是独立列，
+        data 只保留事件特有字段。
+        """
+        # 1. 回填 turn_id 列（从 data JSON 中提取）
         await self._db.execute(
             """
             UPDATE messages
-            SET data = json_set(data, '$.event_id', id)
+            SET turn_id = json_extract(data, '$.turn_id')
             WHERE json_valid(data)
-              AND (
-                json_extract(data, '$.event_id') IS NULL
-                OR json_extract(data, '$.event_id') = ''
-              )
+              AND json_extract(data, '$.turn_id') IS NOT NULL
+              AND turn_id = ''
+            """
+        )
+        # 2. 回填 id 列（从 data JSON 中的 event_id 提取，仅当 id 为自动生成的旧值）
+        await self._db.execute(
+            """
+            UPDATE messages
+            SET id = json_extract(data, '$.event_id')
+            WHERE json_valid(data)
+              AND json_extract(data, '$.event_id') IS NOT NULL
+              AND json_extract(data, '$.event_id') != ''
+              AND json_extract(data, '$.event_id') != id
+            """
+        )
+        # 3. 从 data 中移除 event_id 和 turn_id（纯化 data）
+        await self._db.execute(
+            """
+            UPDATE messages
+            SET data = json_remove(data, '$.event_id', '$.turn_id')
+            WHERE json_valid(data)
+              AND (json_extract(data, '$.event_id') IS NOT NULL
+                   OR json_extract(data, '$.turn_id') IS NOT NULL)
             """
         )
 
@@ -428,33 +458,34 @@ class SessionManager:
         type: str,
         data: dict[str, Any],
         *,
+        event_id: str | None = None,
+        turn_id: str = "",
         timestamp: float | None = None,
     ) -> str:
         """
         保存一条消息/事件到指定 session。
         同时更新 session 的 updated_at。
-        返回生成的 message id。
+        返回 event_id（即消息行主键）。
 
+        event_id 传入则用作行主键；不传则自动生成。
+        turn_id 默认空串（不在 turn 内的事件）。
         timestamp 可选：传入则消息行用该值（用于把 context_compact 等"游标"事件
         插到历史中间——按 ASC 排序时排在某个边界事件之前）。session.updated_at
         始终用真实当前时间，不会因游标回插而错乱会话列表排序。
         """
-        msg_id = uuid.uuid4().hex[:16]
-        stored_data = dict(data or {})
-        if not stored_data.get("event_id"):
-            stored_data["event_id"] = msg_id
+        eid = event_id or uuid.uuid4().hex[:16]
         now = time.time()
         ts = now if timestamp is None else float(timestamp)
         await self._db.execute(
-            "INSERT INTO messages (id, session_id, type, data, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (msg_id, session_id, type, json.dumps(stored_data, ensure_ascii=False), ts),
+            "INSERT INTO messages (id, session_id, type, data, timestamp, turn_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (eid, session_id, type, json.dumps(data or {}, ensure_ascii=False), ts, turn_id),
         )
         await self._db.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?",
             (now, session_id),
         )
         await self._db.commit()
-        return msg_id
+        return eid
 
     async def update_message_data(self, message_id: str, data: dict[str, Any]) -> None:
         """更新一条事件的 data，不改变 timestamp。"""
@@ -487,6 +518,7 @@ class SessionManager:
                 type=r["type"],
                 data=json.loads(r["data"]),
                 timestamp=r["timestamp"],
+                turn_id=r["turn_id"],
             )
             for r in rows
         ]
@@ -567,6 +599,7 @@ class SessionManager:
                 type=r["type"],
                 data=json.loads(r["data"]),
                 timestamp=r["timestamp"],
+                turn_id=r["turn_id"],
             )
             for r in rows
         ]
