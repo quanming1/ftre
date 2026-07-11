@@ -17,6 +17,7 @@ import asyncio
 import copy
 import logging
 import os
+import uuid
 from concurrent.futures import Future
 
 from ftre_agent_core import Tracer
@@ -515,7 +516,7 @@ class AgentLoop:
         self._active_agents[session_id] = agent
         await self._publish_session_status_async(session_id, "running")
 
-        # Step 6: 归一化用户输入存储格式，放入 runtime_context 供 core yield
+        # Step 6: 归一化用户输入存储格式
         stored_content = normalize_stored_user_content(content)
 
         # Step 7: 构建运行时上下文（工具共享数据）
@@ -540,10 +541,6 @@ class AgentLoop:
                 "session_id": session_id,
                 "channel_id": inbound.from_channel,
                 "workspace": workspace,
-            },
-            "user_input": {
-                "content": stored_content,
-                "metadata": {"hide": False, "agent_id": agent_id},
             },
         }
 
@@ -574,16 +571,41 @@ class AgentLoop:
                 # 检查 cancel：Task.cancel() 会在 await 处抛 CancelledError，
                 # 但 async for 的 yield 不一定被 cancel 打断（取决于 generator 内部实现），
                 # 所以在这里也检查 CancellationToken 作为补充。
-                # 可见 user_message（用户输入）：持久化 + echo（用 inbound 原始格式 + frame_id）
-                if isinstance(event, UserMessageEvent) and not event.metadata.get("hide"):
-                    event_data = event._data_dict()
-                    event_data["attachments"] = attachments
+
+                # turn_start：先入库 + 派发前端，再持久化 + echo 用户输入
+                if isinstance(event, StepEvent) and event.phase == StepPhase.TURN_START:
+                    # 1. 持久化 turn_start
                     await self.session_manager.save_message(
-                        session_id, event.type.value, event_data,
+                        session_id, event.type.value, event._data_dict(),
                         event_id=event.event_id,
                         turn_id=event.turn_id,
                         timestamp=event.timestamp,
                     )
+                    # 2. 派发 turn_start 给前端
+                    out = BusMessage(
+                        type="agent_event",
+                        from_channel=inbound.from_channel,
+                        to_channel=inbound.to_channel,
+                        from_session=inbound.from_session,
+                        to_session=inbound.to_session,
+                        data=event.to_dict(),
+                    )
+                    await self.bus.publish_outbound(out)
+                    # 3. 持久化用户输入（用 turn_start 的 turn_id）
+                    user_event_id = uuid.uuid4().hex[:16]
+                    user_data = {
+                        "content": stored_content,
+                        "metadata": {"hide": False, "agent_id": agent_id},
+                    }
+                    if attachments:
+                        user_data["attachments"] = attachments
+                    await self.session_manager.save_message(
+                        session_id, "user_message", user_data,
+                        event_id=user_event_id,
+                        turn_id=event.turn_id,
+                        timestamp=event.timestamp,
+                    )
+                    # 4. echo 用户输入给前端（用 inbound 原始格式 + frame_id 去重）
                     echo = BusMessage(
                         type="agent_event",
                         from_channel=inbound.from_channel,
@@ -592,10 +614,10 @@ class AgentLoop:
                         to_session=inbound.to_session,
                         data={
                             "type": "user_message",
-                            "event_id": event.event_id,
+                            "event_id": user_event_id,
                             "timestamp": event.timestamp,
                             "turn_id": event.turn_id,
-                            "data": {**inbound.data, "event_id": event.event_id},
+                            "data": {**inbound.data, "event_id": user_event_id},
                         },
                         metadata=inbound.metadata,
                     )
