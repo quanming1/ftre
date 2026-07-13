@@ -562,7 +562,6 @@ class AgentManager:
             tracer=tracer,
             hook_manager=hook_manager,
         )
-        )
 
     @staticmethod
     def _compose_system_prompt(
