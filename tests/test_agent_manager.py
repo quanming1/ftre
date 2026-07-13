@@ -64,11 +64,18 @@ def fake_global_config():
     }
 
 
+@pytest.fixture(autouse=True)
+def _mock_load_config_file(monkeypatch, fake_global_config):
+    """Patch load_config_file so AgentManager reads the fake config instead of the real file."""
+    from ftre.agent import agent_manager as am
+    monkeypatch.setattr(am, "load_config_file", lambda: fake_global_config)
+
+
 def test_load_default_agent_uses_global_config(tmp_agents_dir, fake_global_config):
     """Loading 'default' with empty agent.config.json inherits everything from global."""
     from ftre.agent.agent_manager import AgentManager
 
-    mgr = AgentManager(agents_dir=tmp_agents_dir, global_config_data=fake_global_config)
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("default")
 
     assert profile.agent_id == "default"
@@ -142,7 +149,7 @@ def test_load_agent_with_tool_overrides(tmp_agents_dir, fake_global_config):
         "workspace": "/custom/workspace",
     }), encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=tmp_agents_dir, global_config_data=fake_global_config)
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("coder")
 
     assert profile.llm.model == "gpt-4o-mini"
@@ -164,7 +171,7 @@ def test_load_agent_with_mcp_merge(tmp_agents_dir, fake_global_config):
         },
     }), encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=tmp_agents_dir, global_config_data=fake_global_config)
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("coder")
 
     assert "playwright" in profile.mcp_config
@@ -186,7 +193,7 @@ def test_load_agent_with_plugins_merge(tmp_agents_dir, fake_global_config):
         ],
     }), encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=tmp_agents_dir, global_config_data=fake_global_config)
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("coder")
 
     plugin_names = [p["name"] for p in profile.plugins_config]
@@ -206,7 +213,7 @@ def test_load_agent_with_disabled_skills_override(tmp_agents_dir, fake_global_co
         "disabled_skills": ["playwright-mcp", "brainstorming"],
     }), encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=tmp_agents_dir, global_config_data=fake_global_config)
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("coder")
 
     assert profile.disabled_skills == ["playwright-mcp", "brainstorming"]
@@ -217,7 +224,7 @@ def test_load_nonexistent_agent_falls_back_to_default(tmp_agents_dir, fake_globa
     """Loading a non-existent agent_id falls back to 'default'."""
     from ftre.agent.agent_manager import AgentManager
 
-    mgr = AgentManager(agents_dir=tmp_agents_dir, global_config_data=fake_global_config)
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("nonexistent")
 
     assert profile.agent_id == "default"
@@ -234,7 +241,7 @@ def test_load_agent_reads_md_files(tmp_agents_dir, fake_global_config):
     (coder_dir / "AGENTS.md").write_text("# Coding Rules\n\nAlways test.", encoding="utf-8")
     (coder_dir / "USER.md").write_text("Call me boss.", encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=tmp_agents_dir, global_config_data=fake_global_config)
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("coder")
 
     assert profile.soul_prompt == "You are a coding expert."
@@ -253,7 +260,7 @@ def test_list_agents(tmp_agents_dir, fake_global_config):
     }), encoding="utf-8")
     (coder_dir / "SOUL.md").write_text("expert", encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=tmp_agents_dir, global_config_data=fake_global_config)
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
     agents = mgr.list_agents()
 
     assert len(agents) == 2
@@ -334,24 +341,25 @@ def test_context_govern_falls_back_to_workspace_agents_md(tmp_path):
 
 # ─── Task 6: Integration tests ───────────────────────────────────────
 
-def test_ensure_default_creates_agent_dir(tmp_path):
+def test_ensure_default_creates_agent_dir(tmp_path, monkeypatch):
     """ensure_default() creates default/ with agent.config.json and md templates."""
     from ftre.agent.agent_manager import AgentManager
 
     agents_dir = tmp_path / "agents"
-    mgr = AgentManager(agents_dir=agents_dir, global_config_data={
+    global_data = {
         "providers": {
             "openai": {
                 "api_key": "sk-test",
                 "api_base": "https://api.openai.com/v1",
-                "api_protocol": "openai",
                 "models": [
-                    {"id": "gpt-4o", "name": "GPT-4o", "context_window": 128000, "max_output": 16384, "vision": True},
+                    {"id": "gpt-4o", "name": "GPT-4o", "context_window": 128000},
                 ],
             },
         },
         "agents": {},
-    })
+    }
+    monkeypatch.setattr("ftre.agent.agent_manager.load_config_file", lambda: global_data)
+    mgr = AgentManager(agents_dir=agents_dir)
 
     mgr.ensure_default()
 
@@ -367,7 +375,7 @@ def test_ensure_default_creates_agent_dir(tmp_path):
     assert cfg["llm"]["model"] == "gpt-4o"
 
 
-def test_ensure_default_idempotent(tmp_path):
+def test_ensure_default_idempotent(tmp_path, monkeypatch):
     """ensure_default() does not overwrite existing default agent."""
     from ftre.agent.agent_manager import AgentManager
 
@@ -379,9 +387,8 @@ def test_ensure_default_idempotent(tmp_path):
         encoding="utf-8",
     )
 
-    mgr = AgentManager(agents_dir=agents_dir, global_config_data={
-        "agents": {},
-    })
+    monkeypatch.setattr("ftre.agent.agent_manager.load_config_file", lambda: {})
+    mgr = AgentManager(agents_dir=agents_dir)
 
     mgr.ensure_default()
 
@@ -399,7 +406,7 @@ def test_agent_profile_llm_uses_agent_provider_model(tmp_agents_dir, fake_global
         "llm": {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
     }), encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=tmp_agents_dir, global_config_data=fake_global_config)
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("coder")
 
     assert profile.llm.model == "claude-sonnet-4-20250514"
@@ -418,7 +425,7 @@ def test_agent_profile_llm_fallback_on_invalid_provider(tmp_agents_dir, fake_glo
         "llm": {"provider": "nonexistent", "model": "fake-model"},
     }), encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=tmp_agents_dir, global_config_data=fake_global_config)
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("coder")
 
     assert profile.llm.model == "gpt-4o"
@@ -461,7 +468,7 @@ def test_default_agent_config_as_global_fallback(tmp_path):
         "agents": {},
     }
 
-    mgr = AgentManager(agents_dir=agents_dir, global_config_data=global_data)
+    mgr = AgentManager(agents_dir=agents_dir)
     profile = mgr.load("coder")
 
     # coder has no llm → falls back to default agent's llm
@@ -471,7 +478,7 @@ def test_default_agent_config_as_global_fallback(tmp_path):
     assert profile.workspace == "/global/ws"
 
 
-def test_ensure_default_picks_first_provider(tmp_path):
+def test_ensure_default_picks_first_provider(tmp_path, monkeypatch):
     """ensure_default() picks first provider/model when agents.defaults is absent."""
     from ftre.agent.agent_manager import AgentManager
 
@@ -490,7 +497,8 @@ def test_ensure_default_picks_first_provider(tmp_path):
         "agents": {},  # no defaults
     }
 
-    mgr = AgentManager(agents_dir=agents_dir, global_config_data=global_data)
+    monkeypatch.setattr("ftre.agent.agent_manager.load_config_file", lambda: global_data)
+    mgr = AgentManager(agents_dir=agents_dir)
     mgr.ensure_default()
 
     cfg = json.loads((agents_dir / "default" / "agent.config.json").read_text(encoding="utf-8"))
@@ -515,7 +523,7 @@ def test_create_agent_profile(tmp_path):
     }), encoding="utf-8")
 
     global_data = {"providers": {}, "agents": {}}
-    mgr = AgentManager(agents_dir=agents_dir, global_config_data=global_data)
+    mgr = AgentManager(agents_dir=agents_dir)
 
     cfg = mgr.create_agent_profile(
         agent_id="coder",
@@ -553,7 +561,7 @@ def test_create_agent_duplicate_raises(tmp_path):
     default_dir.mkdir()
     (default_dir / "agent.config.json").write_text("{}", encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=agents_dir, global_config_data={})
+    mgr = AgentManager(agents_dir=agents_dir)
     mgr.create_agent_profile("coder", name="Coder")
 
     import pytest
@@ -570,7 +578,7 @@ def test_create_agent_invalid_id_raises(tmp_path):
     (agents_dir / "default").mkdir()
     (agents_dir / "default" / "agent.config.json").write_text("{}", encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=agents_dir, global_config_data={})
+    mgr = AgentManager(agents_dir=agents_dir)
 
     import pytest
     with pytest.raises(ValueError, match="只能包含"):
@@ -587,7 +595,7 @@ def test_delete_agent(tmp_path):
     default_dir.mkdir()
     (default_dir / "agent.config.json").write_text("{}", encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=agents_dir, global_config_data={})
+    mgr = AgentManager(agents_dir=agents_dir)
     mgr.create_agent_profile("coder", name="Coder")
     assert (agents_dir / "coder").exists()
 
@@ -605,7 +613,7 @@ def test_delete_default_raises(tmp_path):
     default_dir.mkdir()
     (default_dir / "agent.config.json").write_text("{}", encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=agents_dir, global_config_data={})
+    mgr = AgentManager(agents_dir=agents_dir)
 
     import pytest
     with pytest.raises(ValueError, match="不允许删除 default"):
@@ -624,7 +632,7 @@ def test_update_agent_name_and_workspace(tmp_path):
         "id": "default", "name": "Ftre",
     }), encoding="utf-8")
 
-    mgr = AgentManager(agents_dir=agents_dir, global_config_data={})
+    mgr = AgentManager(agents_dir=agents_dir)
     cfg = mgr.update_agent("default", {"name": "NewName", "workspace": "/new/ws"})
 
     assert cfg["name"] == "NewName"
