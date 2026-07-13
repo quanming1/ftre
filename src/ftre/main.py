@@ -122,6 +122,11 @@ async def run_gateway():
     # Hook 管理器 — 让插件能挂到内部生命周期挂点
     hook_manager = HookManager()
 
+    # Core Hook 管理器 — 支持 block 决策（on_stop / on_pre_tool 等）
+    from ftre_agent_core.hooks import FtreCoreHookManager
+
+    core_hook_manager = FtreCoreHookManager()
+
     # Tool 注册表 — 插件注册工具，Agent 构建工具集时读取
     tool_registry = ToolRegistry()
 
@@ -139,6 +144,7 @@ async def run_gateway():
         tool_registry=tool_registry,
         event_loop=lambda: event_loop,
         command_manager=cmd,
+        core_hook_manager=core_hook_manager,
     )
 
     # 注入到 API 路由
@@ -153,7 +159,7 @@ async def run_gateway():
     from ftre.agent.agent_manager import AgentManager
     from ftre.config import AGENTS_DIR
 
-    agent_manager = AgentManager(agents_dir=AGENTS_DIR, global_config_data=config_data)
+    agent_manager = AgentManager(agents_dir=AGENTS_DIR)
     agent_manager.ensure_default()
     set_agent_manager(agent_manager)
 
@@ -176,6 +182,7 @@ async def run_gateway():
         session_manager=session_manager,
         channel_manager=mgr,
         hook_manager=hook_manager,
+        core_hook_manager=core_hook_manager,
         tool_registry=tool_registry,
         command_manager=cmd,
         plugin_manager=plugin_manager,
