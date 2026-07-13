@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from ftre.config import AgentConfig, LLMConfig, _build_llm_config
+from ftre.config import AgentConfig, LLMConfig, _build_llm_config, load_config_file
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +51,8 @@ class AgentProfile:
 class AgentManager:
     """加载和管理 ~/.ftre/agents/ 下的 agent 配置。"""
 
-    def __init__(self, agents_dir: Path, global_config_data: dict | None = None):
+    def __init__(self, agents_dir: Path):
         self._agents_dir = Path(agents_dir)
-        self._global_data = global_config_data or {}
-        self._cache: dict[str, AgentProfile] = {}
-        self._cache_key: dict[str, str] = {}
 
     def load(self, agent_id: str) -> AgentProfile:
         """加载 agent 配置。agent_id 不存在时回退到 default。"""
@@ -68,33 +65,14 @@ class AgentManager:
                 # default 也不存在——返回空 profile（走全局兜底）
                 return AgentProfile(agent_id="default")
 
-        # mtime 缓存检查
-        config_path = agent_dir / "agent.config.json"
-        try:
-            current_sig = str(config_path.stat().st_mtime) if config_path.exists() else "0"
-        except OSError:
-            current_sig = "0"
-
-        # 也检查 md 文件的 mtime
-        for md_name in ("SOUL.md", "AGENTS.md", "USER.md"):
-            md_path = agent_dir / md_name
-            try:
-                if md_path.exists():
-                    current_sig += "|" + str(md_path.stat().st_mtime)
-                else:
-                    current_sig += "|0"
-            except OSError:
-                current_sig += "|0"
-
-        if agent_id in self._cache and self._cache_key.get(agent_id) == current_sig:
-            return self._cache[agent_id]
-
-        profile = self._load_and_merge(agent_id, agent_dir)
-        self._cache[agent_id] = profile
-        self._cache_key[agent_id] = current_sig
+        # 每次加载 Agent 都读取最新的供应商模型配置，确保 vision 等模型属性不使用启动时快照。
+        global_data = load_config_file()
+        profile = self._load_and_merge(agent_id, agent_dir, global_data)
         return profile
 
-    def _load_and_merge(self, agent_id: str, agent_dir: Path) -> AgentProfile:
+    def _load_and_merge(
+        self, agent_id: str, agent_dir: Path, global_data: dict
+    ) -> AgentProfile:
         """读取 agent.config.json 并与全局配置合并。"""
         # 读取 agent.config.json
         agent_cfg: dict = {}
@@ -116,14 +94,14 @@ class AgentManager:
         provider = agent_llm.get("provider", "") or global_provider
         model = agent_llm.get("model", "") or global_model
 
-        llm = _build_llm_config(self._global_data, provider, model)
+        llm = _build_llm_config(global_data, provider, model)
         if not llm.model:
             # agent 指定的 provider/model 在全局找不到 → 回退全局默认
             logger.warning(
                 f"[agent-manager] agent '{agent_id}' 的 provider={provider} model={model} "
                 f"在全局配置中找不到，回退到全局默认"
             )
-            llm = _build_llm_config(self._global_data, global_provider, global_model)
+            llm = _build_llm_config(global_data, global_provider, global_model)
 
         # ─── 合并 workspace ─────────────────────────────────
         workspace = agent_cfg.get("workspace", "") or global_workspace or ""
@@ -136,7 +114,7 @@ class AgentManager:
             tools_config = None
 
         # ─── 合并 MCP（深度合并） ───────────────────────────
-        global_mcp = self._global_data.get("mcp", {})
+        global_mcp = global_data.get("mcp", {})
         agent_mcp = agent_cfg.get("mcp", {})
         if not isinstance(agent_mcp, dict):
             agent_mcp = {}
@@ -145,7 +123,7 @@ class AgentManager:
         merged_mcp = {**global_mcp, **agent_mcp}
 
         # ─── 合并 plugins（按 name 合并） ───────────────────
-        global_plugins = self._global_data.get("plugins", [])
+        global_plugins = global_data.get("plugins", [])
         agent_plugins = agent_cfg.get("plugins", [])
         if not isinstance(global_plugins, list):
             global_plugins = []
@@ -159,7 +137,7 @@ class AgentManager:
             if not isinstance(disabled_skills, list):
                 disabled_skills = []
         else:
-            disabled_skills = self._global_data.get("disabled_skills", [])
+            disabled_skills = global_data.get("disabled_skills", [])
             if not isinstance(disabled_skills, list):
                 disabled_skills = []
 
@@ -332,9 +310,6 @@ class AgentManager:
         )
 
         # 清除缓存
-        self._cache.pop(agent_id, None)
-        self._cache_key.pop(agent_id, None)
-
         logger.info(f"[agent-manager] 已更新 agent '{agent_id}' 的配置: {patch}")
         return cfg
 
@@ -411,9 +386,6 @@ class AgentManager:
         shutil.rmtree(agent_dir)
 
         # 清除缓存
-        self._cache.pop(agent_id, None)
-        self._cache_key.pop(agent_id, None)
-
         logger.info(f"[agent-manager] 已删除 agent: {agent_id}")
 
     def _read_default_agent_llm(self) -> tuple[str, str, str]:
@@ -482,7 +454,7 @@ class AgentManager:
             "name": "Ftre",
         }
 
-        providers = self._global_data.get("providers", {})
+        providers = load_config_file().get("providers", {})
         if isinstance(providers, dict) and providers:
             first_name = next(iter(providers))
             first_provider = providers[first_name]
@@ -535,12 +507,6 @@ class AgentManager:
             raise FileNotFoundError(f"agent '{agent_id}' 不存在且 default 也不存在")
 
         filepath = agent_dir / filename
-        filepath.write_text(content, encoding="utf-8")
-
-        # 清除该 agent 的缓存，下次 load() 会重新读取
-        self._cache.pop(agent_id, None)
-        self._cache_key.pop(agent_id, None)
-
         logger.info(f"[agent-manager] 已写入 {filepath} ({len(content)} chars)")
 
     # ─── Agent 构建（委托自 AgentLoop） ────────────────────
@@ -555,6 +521,7 @@ class AgentManager:
         tracer=None,
         channel_id: str | None = None,
         session_id: str | None = None,
+        hook_manager=None,
     ):
         """根据 AgentProfile + 全局 config 构建 ReActAgent。
 
@@ -593,6 +560,8 @@ class AgentManager:
             max_iterations=c.max_iterations,
             max_tokens=c.llm.max_output,
             tracer=tracer,
+            hook_manager=hook_manager,
+        )
         )
 
     @staticmethod
