@@ -2,14 +2,14 @@
 context_govern — 上下文治理插件
 
 通过 before_messages_build hook 对事件流做处理：
-1. 丢弃孤立的 toolCall / tool_result（配对校验）
+1. tool 事件配对治理：孤立清理 + 悬挂丢弃 + 不相邻修复（tool_result 提到 toolCall 后紧邻位置）
 2. 去重 toolCall block + tool_result 事件（同一 id 只保留第一个）
-3. 丢弃 toolCall 被裁剪后残留的悬挂 tool_result
 
 新协议下 tool_call 不再是独立事件，而是嵌在 assistant_message_complete 的
-content[] 中（type="toolCall"）。所有配对逻辑都从这里提取 call id。
-新协议下 toolCall 天然紧邻其 tool_result（runner 先 yield amc 再 yield
-tool_result），无需相邻性修复。
+content[] 中（type="toolCall"）。tool_result 是独立事件。
+由于 DB 按 timestamp 排序，tool_result 的 timestamp 可能比 toolCall 之间插入的
+user_message 更大，导致读取历史时顺序非法。不相邻修复确保 to_openai_messages
+产出的消息序列满足 OpenAI 协议。
 """
 import logging
 import os
@@ -17,20 +17,6 @@ import os
 from ftre.plugin import Plugin, BEFORE_MESSAGES_BUILD
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_call_ids(events: list) -> set[str]:
-    """从所有 assistant_message_complete 的 content[] 中提取 toolCall id。"""
-    call_ids: set[str] = set()
-    for ev in events:
-        if ev.get("type") == "assistant_message_complete":
-            data = ev.get("data") or {}
-            for block in data.get("content", []):
-                if isinstance(block, dict) and block.get("type") == "toolCall":
-                    tid = block.get("id", "")
-                    if tid:
-                        call_ids.add(tid)
-    return call_ids
 
 
 class ContextGovernPlugin(Plugin):
@@ -41,19 +27,16 @@ class ContextGovernPlugin(Plugin):
         self.api.register_hook(BEFORE_MESSAGES_BUILD, self._govern)
 
     async def _govern(self, ctx):
-        """before_messages_build hook：清理孤立事件 + 去重 + 丢弃悬挂 tool_result + 注入 AGENTS.md"""
+        """before_messages_build hook：tool 事件配对治理 + 去重 + 顺序修复 + 注入 AGENTS.md"""
         events = ctx.events
 
-        # Step 1: 丢弃孤立的 toolCall / tool_result（OpenAI 协议要求配对）
-        events = self._drop_orphan_tool_events(events)
+        # Step 1: 配对治理 — 孤立清理 + 悬挂丢弃 + 不相邻修复
+        events = self._fix_tool_events(events)
 
         # Step 2: 去重 toolCall block + tool_result 事件（同一 id 只保留第一个）
         events = self._dedup_tool_events(events)
 
-        # Step 3: 丢弃 toolCall 被裁剪后残留的悬挂 tool_result
-        events = self._drop_dangling_tool_results(events)
-
-        # Step 4: 注入 AGENTS.md 到系统提示词
+        # Step 3: 注入 AGENTS.md 到系统提示词
         self._inject_agents_md(ctx)
 
         ctx.events = events
@@ -111,34 +94,40 @@ class ContextGovernPlugin(Plugin):
 
         ctx.config.system_prompt = current
 
-    # ─── 孤立事件清理 ─────────────────────────────────────────
+    # ─── tool 事件配对治理 ─────────────────────────────────────
 
-    def _drop_orphan_tool_events(self, events: list) -> list:
+    def _fix_tool_events(self, events: list) -> list:
         """
-        丢弃孤立的 toolCall / tool_result 事件。
+        一次性处理 tool_call / tool_result 的配对问题：
 
-        新协议下 toolCall 嵌在 assistant_message_complete 的 content[] 中，
-        tool_result 是独立事件。两者必须配对。
-
-        - tool_result 没有 matching toolCall → 丢弃 tool_result
-        - toolCall 没有 matching tool_result → 从 content[] 中移除该 block
+        1. 孤立清理：tool_result 无匹配 toolCall → 丢弃；toolCall 无匹配 tool_result → 移除 block
+        2. 悬挂丢弃：tool_result 的 toolCall 已被裁剪 → 丢弃
+        3. 不相邻修复：toolCall 和 tool_result 之间夹杂了其他事件（如 user_message）
+           → 把 tool_result 强行提到 toolCall 后面紧邻位置
         """
         if not events:
             return events
 
-        call_ids = _extract_call_ids(events)
+        # ── 收集 call_ids / result_ids ──
+        call_ids: set[str] = set()
         result_ids: set[str] = set()
         for ev in events:
-            if ev.get("type") == "tool_result":
+            t = ev.get("type")
+            if t == "assistant_message_complete":
+                data = ev.get("data") or {}
+                for block in data.get("content", []):
+                    if isinstance(block, dict) and block.get("type") == "toolCall":
+                        tid = block.get("id", "")
+                        if tid:
+                            call_ids.add(tid)
+            elif t == "tool_result":
                 result_ids.add((ev.get("data") or {}).get("id", ""))
 
         paired = call_ids & result_ids
         orphan_calls = call_ids - paired
         orphan_results = result_ids - paired
 
-        if not orphan_calls and not orphan_results:
-            return events
-
+        # ── 单遍处理：丢弃孤立 + 收集待排序的 tool_result ──
         dropped_results = 0
         stripped_calls = 0
         out: list = []
@@ -146,14 +135,7 @@ class ContextGovernPlugin(Plugin):
         for ev in events:
             t = ev.get("type")
 
-            if t == "tool_result":
-                tid = (ev.get("data") or {}).get("id", "")
-                if tid in orphan_results:
-                    dropped_results += 1
-                    continue
-                out.append(ev)
-
-            elif t == "assistant_message_complete":
+            if t == "assistant_message_complete":
                 data = ev.get("data") or {}
                 content = data.get("content", [])
                 if orphan_calls:
@@ -171,13 +153,88 @@ class ContextGovernPlugin(Plugin):
                         data["content"] = new_content
                 out.append(ev)
 
+            elif t == "tool_result":
+                tid = (ev.get("data") or {}).get("id", "")
+                # 孤立/悬挂 tool_result（无匹配 toolCall）→ 丢弃
+                if tid in orphan_results:
+                    dropped_results += 1
+                    continue
+                out.append(ev)
+
             else:
                 out.append(ev)
 
         if dropped_results:
-            logger.info(f"[context_govern] 丢弃 {dropped_results} 个孤立 tool_result")
+            logger.info(f"[context_govern] 丢弃 {dropped_results} 个孤立/悬挂 tool_result")
         if stripped_calls:
             logger.info(f"[context_govern] 移除 {stripped_calls} 个孤立 toolCall block")
+
+        # ── 不相邻修复：把 tool_result 提到 toolCall 后面紧邻位置 ──
+        events = self._fix_tool_result_order(out)
+        return events
+
+    def _fix_tool_result_order(self, events: list) -> list:
+        """
+        确保每个 tool_result 紧跟在发起它的 assistant_message_complete(toolCall) 之后。
+        如果中间夹杂了其他事件（如 user_message），把 tool_result 提上去。
+        """
+        if not events:
+            return events
+
+        # 找所有 tool_result 的位置
+        result_positions: dict[str, int] = {}
+        for i, ev in enumerate(events):
+            if ev.get("type") == "tool_result":
+                tid = (ev.get("data") or {}).get("id", "")
+                if tid and tid not in result_positions:
+                    result_positions[tid] = i
+
+        if not result_positions:
+            return events
+
+        moved = 0
+        used_results: set[str] = set()
+        out: list = []
+
+        for i, ev in enumerate(events):
+            t = ev.get("type")
+
+            if t == "assistant_message_complete":
+                out.append(ev)
+                # 提取这个 amc 里的所有 toolCall id
+                for block in (ev.get("data") or {}).get("content", []):
+                    if isinstance(block, dict) and block.get("type") == "toolCall":
+                        tid = block.get("id", "")
+                        if not tid or tid not in result_positions:
+                            continue
+                        if tid in used_results:
+                            continue
+                        result_idx = result_positions[tid]
+                        # 如果 tool_result 就在紧邻位置（i+1），不移动
+                        if result_idx == i + 1:
+                            # 紧邻位置不需要提前，让正常遍历处理
+                            continue
+                        # tool_result 在更后面，中间夹了其他事件 → 提上来
+                        out.append(events[result_idx])
+                        used_results.add(tid)
+                        moved += 1
+                        logger.info(
+                            f"[context_govern] 修复 tool_result 顺序: id={tid} "
+                            f"从位置 {result_idx} 提到 amc(位置 {i}) 之后"
+                        )
+
+            elif t == "tool_result":
+                tid = (ev.get("data") or {}).get("id", "")
+                if tid in used_results:
+                    continue  # 已经被提前了，跳过原位置
+                out.append(ev)
+
+            else:
+                out.append(ev)
+
+        if moved:
+            logger.info(f"[context_govern] 共修复 {moved} 个 tool_result 顺序")
+
         return out
 
     def _dedup_tool_events(self, events: list) -> list:
@@ -233,50 +290,4 @@ class ContextGovernPlugin(Plugin):
             logger.info(f"[context_govern] 移除 {dropped_calls} 个重复 toolCall block")
         if dropped_results:
             logger.info(f"[context_govern] 移除 {dropped_results} 个重复 tool_result")
-        return out
-
-    def _drop_dangling_tool_results(self, events: list) -> list:
-        """
-        丢弃 toolCall 尚未出现就被引用到的 tool_result。
-
-        压缩裁剪后，events 开头可能出现 tool_result 而其 toolCall 所在的
-        assistant_message_complete 已被裁掉。这会导致 to_openai_messages 产出
-        的第一条消息带悬挂 tool_call_id，LLM 报错。
-        """
-        if not events:
-            return events
-
-        seen_call_ids: set[str] = set()
-        dropped = 0
-        out: list = []
-
-        for ev in events:
-            t = ev.get("type")
-            data = ev.get("data") or {}
-
-            if t == "assistant_message_complete":
-                # 记录此事件中所有 toolCall id
-                for block in data.get("content", []):
-                    if isinstance(block, dict) and block.get("type") == "toolCall":
-                        tid = block.get("id", "")
-                        if tid:
-                            seen_call_ids.add(tid)
-                out.append(ev)
-
-            elif t == "tool_result":
-                tid = data.get("id", "")
-                if not tid or tid in seen_call_ids:
-                    out.append(ev)
-                else:
-                    dropped += 1
-                    logger.debug(
-                        f"[context_govern] 丢弃悬挂 tool_result id={tid}: "
-                        f"toolCall 已被裁剪或尚未出现"
-                    )
-
-            else:
-                out.append(ev)
-
-        if dropped:
-            logger.info(f"[context_govern] 丢弃 {dropped} 个悬挂 tool_result")
         return out
