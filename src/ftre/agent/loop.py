@@ -31,6 +31,7 @@ from ftre_agent_core.agent.event import (
     ToolResultEvent,
     UserMessageEvent,
 )
+from ftre_agent_core.hooks import FtreCoreHookManager
 from ftre_agent_core.tool import ToolRegistry
 
 from ftre.bus import GLOBAL_CHANNEL, GLOBAL_SESSION, BusMessage, EventBus
@@ -69,6 +70,7 @@ class AgentLoop:
         channel_manager=None,
         config: AgentConfig = None,
         hook_manager=None,
+        core_hook_manager: FtreCoreHookManager | None = None,
         tool_registry: ToolRegistry | None = None,
         command_manager=None,
         plugin_manager=None,
@@ -78,6 +80,7 @@ class AgentLoop:
         self.session_manager = session_manager
         self.channel_manager = channel_manager
         self.hook_manager = hook_manager
+        self.core_hook_manager = core_hook_manager or FtreCoreHookManager()
         self.tool_registry = tool_registry
         self.command_manager = command_manager
         self.plugin_manager = plugin_manager
@@ -512,6 +515,7 @@ class AgentLoop:
             tracer=self.tracer,
             channel_id=inbound.from_channel,
             session_id=session_id,
+            hook_manager=self.core_hook_manager,
         )
         self._active_agents[session_id] = agent
         await self._publish_session_status_async(session_id, "running")
