@@ -42,6 +42,7 @@ def create_plan_tool() -> Tool:
         steps: list = None,
         step_id: str = "",
         status: str = "",
+        updates: list = None,
         session_id: str = Injected("session_id"),
         event_loop=Injected("event_loop"),
         session_manager=Injected("session_manager"),
@@ -74,11 +75,6 @@ def create_plan_tool() -> Tool:
 
         # ── update ──────────────────────────────────────────
         if action == "update":
-            if not step_id.strip():
-                return "[error] action=update 时 step_id 不能为空"
-            if not status.strip():
-                return "[error] action=update 时 status 不能为空"
-
             metadata = _run_async(
                 session_manager.get_session_metadata(session_id),
                 event_loop,
@@ -87,22 +83,46 @@ def create_plan_tool() -> Tool:
             if not plan_data:
                 return "[error] 当前 session 没有 plan，请先使用 action=create 创建"
 
-            new_status = status.strip()
-            if new_status not in ("pending", "in_progress", "completed"):
+            # 构建更新列表：updates 数组优先，否则用单个 step_id + status
+            if updates:
+                update_list = updates
+            elif step_id.strip() and status.strip():
+                update_list = [{"id": step_id.strip(), "status": status.strip()}]
+            else:
                 return (
-                    "[error] status 必须是 pending / in_progress / completed 之一，"
-                    f"收到: {new_status}"
+                    "[error] action=update 需要 updates 数组或 step_id + status。\n"
+                    "单个更新：step_id + status\n"
+                    "批量更新：updates=[{\"id\": \"2\", \"status\": \"completed\"}, {\"id\": \"3\", \"status\": \"in_progress\"}]"
                 )
 
-            found = False
-            for s in plan_data.get("steps", []):
-                if s.get("id") == step_id.strip():
-                    s["status"] = new_status
-                    found = True
-                    break
-            if not found:
+            # 校验并执行更新
+            valid_statuses = ("pending", "in_progress", "completed")
+            updated_ids: list[str] = []
+            not_found_ids: list[str] = []
+
+            for u in update_list:
+                if not isinstance(u, dict):
+                    continue
+                uid = str(u.get("id", "")).strip()
+                ustatus = str(u.get("status", "")).strip()
+                if not uid or not ustatus:
+                    continue
+                if ustatus not in valid_statuses:
+                    return f"[error] status 必须是 {'/'.join(valid_statuses)} 之一，收到: {ustatus}"
+
+                found = False
+                for s in plan_data.get("steps", []):
+                    if s.get("id") == uid:
+                        s["status"] = ustatus
+                        found = True
+                        updated_ids.append(uid)
+                        break
+                if not found:
+                    not_found_ids.append(uid)
+
+            if not updated_ids:
                 return (
-                    f"[error] 未找到 step_id={step_id} 的步骤。"
+                    f"[error] 未找到任何匹配的步骤。"
                     f"现有步骤: {[s.get('id') for s in plan_data.get('steps', [])]}"
                 )
 
@@ -112,7 +132,10 @@ def create_plan_tool() -> Tool:
                 ),
                 event_loop,
             )
-            return _format_plan_response(f"已更新步骤 {step_id}", plan_data)
+            suffix = ""
+            if not_found_ids:
+                suffix = f"\n⚠ 未找到的步骤 id: {not_found_ids}"
+            return _format_plan_response(f"已更新步骤 {updated_ids}", plan_data) + suffix
 
         # ── complete ────────────────────────────────────────
         if action == "complete":
@@ -230,15 +253,25 @@ def create_plan_tool() -> Tool:
             ToolParameter(
                 name="step_id",
                 type="string",
-                description="要更新的步骤 id（action=update 时必填）",
+                description="要更新的步骤 id（action=update 单个更新时使用，与 updates 二选一）",
                 required=False,
             ),
             ToolParameter(
                 name="status",
                 type="string",
-                description="步骤新状态（action=update 时必填）：pending / in_progress / completed",
+                description="步骤新状态（action=update 单个更新时使用）：pending / in_progress / completed",
                 required=False,
                 enum=["pending", "in_progress", "completed"],
+            ),
+            ToolParameter(
+                name="updates",
+                type="array",
+                description=(
+                    "批量更新步骤状态（action=update 时使用，与 step_id + status 二选一）。"
+                    "每项含：id(string) + status(string: pending/in_progress/completed)。\n"
+                    '示例：[{"id": "2", "status": "completed"}, {"id": "3", "status": "in_progress"}]'
+                ),
+                required=False,
             ),
         ],
         func=plan,
