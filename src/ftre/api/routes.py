@@ -211,13 +211,15 @@ async def get_messages(
     before_ts 为游标，只返回 timestamp < before_ts 的事件（用于加载更早）。
     """
     status = _agent_loop.get_session_status(session_id) if _agent_loop else "idle"
+    session = await _session_manager.get_session(session_id)
+    metadata = session["metadata"] if session else {}
     if limit_turns is not None and limit_turns > 0:
         messages, has_more = await _session_manager.get_recent_messages_by_turns(
             session_id, limit_turns, before_ts=before_ts
         )
-        return {"messages": messages, "has_more": has_more, "status": status}
+        return {"messages": messages, "has_more": has_more, "status": status, "metadata": metadata}
     messages = await _session_manager.get_messages_by_session(session_id)
-    return {"messages": messages, "status": status}
+    return {"messages": messages, "status": status, "metadata": metadata}
 
 
 @router.get("/sessions/{session_id}/token_usage")
