@@ -29,6 +29,7 @@ from .hook_manager import HookManager
 
 if TYPE_CHECKING:
     from ftre.session import SessionManager
+    from ftre_agent_core.hooks import FtreCoreHookManager
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class FtrePluginApi:
         channel_manager: ChannelManager,
         session_manager: "SessionManager",
         hook_manager: HookManager,
+        core_hook_manager: "FtreCoreHookManager",
         config: dict,
         tool_registry: ToolRegistry,
         event_loop: Callable | None = None,
@@ -56,6 +58,7 @@ class FtrePluginApi:
         self.channel_manager = channel_manager
         self.config = config
         self._hook_manager = hook_manager
+        self._core_hook_manager = core_hook_manager
         self._tool_registry = tool_registry
         self._event_loop = event_loop
         self._command_manager = command_manager
@@ -91,6 +94,15 @@ class FtrePluginApi:
         """
         self._hook_manager.register(point, fn)
 
+    def register_core_hook(self, point: str, fn: Callable) -> None:
+        """
+        在 core hook point 注册一个 hook 函数（如 ON_STOP）。
+
+        core hook 使用 HookInput/HookOutput 模型，见 ftre_agent_core.hooks。
+        hook 函数签名：(input) -> HookOutput | None。
+        """
+        self._core_hook_manager.register(point, fn)
+
     def register_router(self, router: APIRouter) -> None:
         """注册 FastAPI APIRouter，路由会在 WebSocketChannel 启动时挂载到 /api prefix 下。"""
         self._routers.append(router)
@@ -118,6 +130,7 @@ class PluginManager:
         channel_manager: ChannelManager,
         session_manager: "SessionManager",
         hook_manager: HookManager,
+        core_hook_manager: "FtreCoreHookManager",
         tool_registry: ToolRegistry | None = None,
         event_loop: Callable | None = None,
         command_manager: object | None = None,
@@ -126,6 +139,7 @@ class PluginManager:
         self._channel_manager = channel_manager
         self._session_manager = session_manager
         self._hook_manager = hook_manager
+        self._core_hook_manager = core_hook_manager
         self._plugins: dict[str, Plugin] = {}
         self._tool_registry = tool_registry if tool_registry is not None else ToolRegistry()
         self._event_loop = event_loop
@@ -208,6 +222,7 @@ class PluginManager:
             channel_manager=self._channel_manager,
             session_manager=self._session_manager,
             hook_manager=self._hook_manager,
+            core_hook_manager=self._core_hook_manager,
             config=config,
             tool_registry=self._tool_registry,
             event_loop=self._event_loop,
