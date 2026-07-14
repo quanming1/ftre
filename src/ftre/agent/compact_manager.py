@@ -384,6 +384,7 @@ class CompactManager:
                 api_base=llm_cfg.api_base,
                 api_type=llm_cfg.api_type,
                 temperature=0.0,
+                reasoning_effort=getattr(llm_cfg, "reasoning_effort", ""),
             )
 
             collected: list[str] = []

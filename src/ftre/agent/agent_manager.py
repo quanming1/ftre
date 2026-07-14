@@ -85,7 +85,7 @@ class AgentManager:
 
         # ─── 合并 LLM ──────────────────────────────────────
         # 全局兜底：从 default agent 的 agent.config.json 读取
-        global_provider, global_model, global_workspace = self._read_default_agent_llm()
+        global_provider, global_model, global_workspace, global_reffort = self._read_default_agent_llm()
 
         agent_llm = agent_cfg.get("llm", {})
         if not isinstance(agent_llm, dict):
@@ -93,15 +93,17 @@ class AgentManager:
 
         provider = agent_llm.get("provider", "") or global_provider
         model = agent_llm.get("model", "") or global_model
+        # reasoning_effort: agent 自身配置优先，其次全局默认
+        reasoning_effort = agent_llm.get("reasoning_effort", "") or global_reffort
 
-        llm = _build_llm_config(global_data, provider, model)
+        llm = _build_llm_config(global_data, provider, model, reasoning_effort=reasoning_effort)
         if not llm.model:
             # agent 指定的 provider/model 在全局找不到 → 回退全局默认
             logger.warning(
                 f"[agent-manager] agent '{agent_id}' 的 provider={provider} model={model} "
                 f"在全局配置中找不到，回退到全局默认"
             )
-            llm = _build_llm_config(global_data, global_provider, global_model)
+            llm = _build_llm_config(global_data, global_provider, global_model, reasoning_effort=global_reffort)
 
         # ─── 合并 workspace ─────────────────────────────────
         workspace = agent_cfg.get("workspace", "") or global_workspace or ""
@@ -222,7 +224,8 @@ class AgentManager:
 
             model = profile.llm.model if profile.llm else ""
             provider = ""
-            # 从 agent.config.json 原始数据拿 provider
+            reasoning_effort = ""
+            # 从 agent.config.json 原始数据拿 provider 和 reasoning_effort
             config_path = entry / "agent.config.json"
             if config_path.is_file():
                 try:
@@ -230,6 +233,7 @@ class AgentManager:
                     llm_cfg = cfg.get("llm", {})
                     if isinstance(llm_cfg, dict):
                         provider = llm_cfg.get("provider", "")
+                        reasoning_effort = llm_cfg.get("reasoning_effort", "")
                 except (json.JSONDecodeError, OSError):
                     pass
 
@@ -252,6 +256,7 @@ class AgentManager:
                 "name": profile.name or agent_id,
                 "model": model,
                 "provider": provider,
+                "reasoning_effort": reasoning_effort,
                 "workspace": profile.workspace,
                 "tools_allow": tools_allow,
                 "tools_deny": tools_deny,
@@ -388,14 +393,14 @@ class AgentManager:
         # 清除缓存
         logger.info(f"[agent-manager] 已删除 agent: {agent_id}")
 
-    def _read_default_agent_llm(self) -> tuple[str, str, str]:
-        """读取 default agent 的 llm provider/model 和 workspace。
+    def _read_default_agent_llm(self) -> tuple[str, str, str, str]:
+        """读取 default agent 的 llm provider/model/workspace/reasoning_effort。
 
         全局兜底配置的单一事实源——其他 agent 未指定 llm 时回退到 default agent。
         """
         cfg_path = self._agents_dir / "default" / "agent.config.json"
         if not cfg_path.exists():
-            return "", "", ""
+            return "", "", "", ""
         try:
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
             llm = cfg.get("llm", {})
@@ -404,9 +409,14 @@ class AgentManager:
             workspace = cfg.get("workspace", "")
             if not isinstance(workspace, str):
                 workspace = ""
-            return llm.get("provider", ""), llm.get("model", ""), workspace
+            return (
+                llm.get("provider", ""),
+                llm.get("model", ""),
+                workspace,
+                llm.get("reasoning_effort", ""),
+            )
         except (json.JSONDecodeError, OSError):
-            return "", "", ""
+            return "", "", "", ""
 
     # ─── 默认 agent 内置提示词 ─────────────────────────────
 
@@ -559,6 +569,7 @@ class AgentManager:
             tool_registry=registry,
             max_iterations=c.max_iterations,
             max_tokens=c.llm.max_output,
+            reasoning_effort=c.llm.reasoning_effort,
             tracer=tracer,
             hook_manager=hook_manager,
         )

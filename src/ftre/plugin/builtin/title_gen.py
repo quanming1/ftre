@@ -160,6 +160,7 @@ class TitleGenPlugin(Plugin):
             api_key=llm_cfg.api_key,
             api_base=llm_cfg.api_base,
             api_type=llm_cfg.api_type,
+            reasoning_effort=getattr(llm_cfg, "reasoning_effort", ""),
         )
         messages = [
             {"role": "system", "content": self._system_prompt},
