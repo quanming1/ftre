@@ -1,4 +1,4 @@
-"""
+﻿"""
 SessionManager - 会话与消息持久化（SQLite）
 
 两张表：
@@ -33,6 +33,7 @@ class SessionModel(TypedDict):
     channel_id: str      # 来源 channel（如 'ws' / 'cron' / 'cli'）
     title: str           # 对话标题
     workspace: str       # 当前工作区绝对路径（cwd 来源；为空表示未设置）
+    metadata: dict       # 会话级元数据（JSON 解析后的 dict，如 plan 等）
     created_at: float    # 创建时间戳
     updated_at: float    # 最后活跃时间戳
 
@@ -77,12 +78,13 @@ class SessionManager:
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
-                id          TEXT PRIMARY KEY,
-                channel_id  TEXT NOT NULL DEFAULT '',
-                title       TEXT NOT NULL DEFAULT '',
-                workspace   TEXT NOT NULL DEFAULT '',
-                created_at  REAL NOT NULL,
-                updated_at  REAL NOT NULL
+                id            TEXT PRIMARY KEY,
+                channel_id    TEXT NOT NULL DEFAULT '',
+                title         TEXT NOT NULL DEFAULT '',
+                workspace     TEXT NOT NULL DEFAULT '',
+                metadata      TEXT NOT NULL DEFAULT '{}',
+                created_at    REAL NOT NULL,
+                updated_at    REAL NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -116,6 +118,9 @@ class SessionManager:
         )
         await self._migrate_add_column(
             "sessions", "workspace", "TEXT NOT NULL DEFAULT ''"
+        )
+        await self._migrate_add_column(
+            "sessions", "metadata", "TEXT NOT NULL DEFAULT '{}'"
         )
         # 索引：channel_id + updated_at（按 channel 过滤会话列表用）
         await self._db.execute(
@@ -196,6 +201,24 @@ class SessionManager:
         """生成新的 session_id"""
         return f"sess_{uuid.uuid4().hex[:12]}"
 
+    @staticmethod
+    def _row_to_session_model(row) -> SessionModel:
+        """把 aiosqlite.Row 转成 SessionModel，安全解析 metadata 列。"""
+        raw = row["metadata"] if "metadata" in row.keys() else "{}"
+        try:
+            metadata = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+        return SessionModel(
+            id=row["id"],
+            channel_id=row["channel_id"],
+            title=row["title"],
+            workspace=row["workspace"] if "workspace" in row.keys() else "",
+            metadata=metadata,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
     # ============================================================
     # Session CRUD
     # ============================================================
@@ -209,8 +232,8 @@ class SessionManager:
         sid = f"{channel_id}::{self.create_id()}"
         now = time.time()
         await self._db.execute(
-            "INSERT INTO sessions (id, channel_id, title, workspace, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, channel_id, title, workspace, metadata, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, '{}', ?, ?)",
             (sid, channel_id, title, workspace, now, now),
         )
         await self._db.commit()
@@ -262,8 +285,8 @@ class SessionManager:
 
         session_id = f"{channel_id}::{self.create_id()}"
         await self._db.execute(
-            "INSERT INTO sessions (id, channel_id, title, workspace, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, channel_id, title, workspace, metadata, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, '{}', ?, ?)",
             (session_id, channel_id, title, workspace, now, now),
         )
         await self._db.execute(
@@ -307,14 +330,7 @@ class SessionManager:
         row = await cursor.fetchone()
         if not row:
             return None
-        return SessionModel(
-            id=row["id"],
-            channel_id=row["channel_id"],
-            title=row["title"],
-            workspace=row["workspace"] if "workspace" in row.keys() else "",
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        return self._row_to_session_model(row)
 
     async def update_session(
         self,
@@ -341,6 +357,44 @@ class SessionManager:
         sql = f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?"
         await self._db.execute(sql, tuple(params))
         await self._db.commit()
+
+    async def get_session_metadata(self, session_id: str) -> dict[str, Any]:
+        """读取 session 的完整 metadata（解析后的 dict）。session 不存在返回空 dict。"""
+        cursor = await self._db.execute(
+            "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return {}
+        try:
+            return json.loads(row["metadata"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    async def update_session_metadata(
+        self, session_id: str, key: str, value: Any | None
+    ) -> dict[str, Any]:
+        """合并写入 metadata 的单个 key。
+
+        Args:
+            key: metadata 中的字段名
+            value: 要写入的值；传 None 表示删除该 key
+
+        Returns:
+            写入后的完整 metadata dict
+        """
+        metadata = await self.get_session_metadata(session_id)
+        if value is None:
+            metadata.pop(key, None)
+        else:
+            metadata[key] = value
+        now = time.time()
+        await self._db.execute(
+            "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), now, session_id),
+        )
+        await self._db.commit()
+        return metadata
 
     async def delete_session(self, session_id: str) -> None:
         """删除 session 及其所有 messages"""
@@ -380,17 +434,7 @@ class SessionManager:
             tuple(params),
         )
         rows = await cursor.fetchall()
-        return [
-            SessionModel(
-                id=r["id"],
-                channel_id=r["channel_id"],
-                title=r["title"],
-                workspace=r["workspace"] if "workspace" in r.keys() else "",
-                created_at=r["created_at"],
-                updated_at=r["updated_at"],
-            )
-            for r in rows
-        ]
+        return [self._row_to_session_model(r) for r in rows]
 
     async def count_sessions(
         self,
