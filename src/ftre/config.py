@@ -33,18 +33,18 @@ def _load_system_prompt() -> str:
     return f'<SYSTEM_PROMPT desc="系统提示词基座，定义运行时行为规范" path="{SYSTEM_PROMPT_PATH}">\n- 你是一个 AI 助手。\n</SYSTEM_PROMPT>'
 
 
-def _read_default_agent_llm() -> tuple[str, str, str]:
-    """读取 default agent 的 llm provider/model 和 workspace。
+def _read_default_agent_llm() -> tuple[str, str, str, str]:
+    """读取 default agent 的 llm provider/model/workspace/reasoning_effort。
 
     全局兜底配置的单一事实源：model/provider/workspace 不再放在 config.json 的
     agents.defaults 中，而是由 ~/.ftre/agents/default/agent.config.json 持有。
     前端切换 default agent 模型时写此文件，load_config() 即可读到最新值。
 
-    Returns: (provider, model, workspace)
+    Returns: (provider, model, workspace, reasoning_effort)
     """
     cfg_path = AGENTS_DIR / "default" / "agent.config.json"
     if not cfg_path.exists():
-        return "", "", ""
+        return "", "", "", ""
     try:
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         llm = cfg.get("llm", {})
@@ -53,10 +53,15 @@ def _read_default_agent_llm() -> tuple[str, str, str]:
         workspace = cfg.get("workspace", "")
         if not isinstance(workspace, str):
             workspace = ""
-        return llm.get("provider", ""), llm.get("model", ""), workspace
+        return (
+            llm.get("provider", ""),
+            llm.get("model", ""),
+            workspace,
+            llm.get("reasoning_effort", ""),
+        )
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"[config] 读取 default agent 配置失败: {e}")
-        return "", "", ""
+        return "", "", "", ""
 
 
 @dataclass
@@ -66,7 +71,10 @@ class LLMConfig:
 
     - 来自 providers[provider]：api_key / api_base / api_type
     - 来自 providers[provider].models[] 中匹配 default model 的条目：
-      name / id / context_window / max_output / vision
+      name / id / context_window / max_output / vision / reasoning_effort_values
+
+    - reasoning_effort：运行时选择的 effort 值（来自 agent.config.json，可被用户切换）
+      空串 "" 表示不启用 reasoning（不传该参数给 API）
 
     `model` 是派生字段，当前由 `_build_model_name()` 直接返回 `model_id`（不做前缀拼接），
     供 ReActAgent 直接使用。原始 id 保留在 `id` 里，避免上层重复解析。
@@ -81,6 +89,9 @@ class LLMConfig:
     context_window: int | None = None
     max_output: int | None = None
     vision: bool = False
+    # reasoning（来自 config.json model 条目 + agent.config.json 运行时覆盖）
+    reasoning_effort: str = ""
+    reasoning_effort_values: list[str] = field(default_factory=list)
     # 派生：LiteLLM 模型名（含 provider 前缀）
     model: str = ""
 
@@ -180,12 +191,19 @@ def _find_model_entry(provider: dict, model_id: str) -> dict:
     return {}
 
 
-def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfig:
+def _build_llm_config(
+    data: dict,
+    provider_name: str,
+    model_id: str,
+    reasoning_effort: str = "",
+) -> LLMConfig:
     """
     根据顶层 config dict + provider + model id，构造一个 LLMConfig。
 
     传入的 model_id 在 provider.models 里找不到就回到空 LLMConfig（model="" 表示未配置，
     调用方据此决定是否启用相关功能）。
+
+    reasoning_effort 为运行时覆盖值（来自 agent.config.json），空串表示不启用。
     """
     if not provider_name or not model_id:
         return LLMConfig()
@@ -195,16 +213,31 @@ def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfi
     protocol = provider.get("api_protocol", "openai")
     model_entry = _find_model_entry(provider, model_id)
 
+    # api_type: per-model 覆盖优先，否则按 protocol 推断
+    # "openai" → "completions"（Chat Completions）
+    # 模型条目可设 "api_type": "responses" 走 Responses API（支持 reasoning + tools）
+    model_api_type = model_entry.get("api_type", "")
+    if model_api_type:
+        api_type = model_api_type
+    elif protocol == "openai":
+        api_type = "completions"
+    else:
+        api_type = protocol
+
     cw = model_entry.get("context_window")
     mo = model_entry.get("max_output")
+    rev = model_entry.get("reasoning_effort_values")
     return LLMConfig(
         api_key=provider.get("api_key", ""),
         api_base=provider.get("api_base", ""),
+        api_type=api_type,
         name=model_entry.get("name", ""),
         id=model_id,
         context_window=cw if isinstance(cw, int) else None,
         max_output=mo if isinstance(mo, int) else None,
         vision=bool(model_entry.get("vision", False)),
+        reasoning_effort=reasoning_effort,
+        reasoning_effort_values=rev if isinstance(rev, list) else [],
         model=_build_model_name(model_id, protocol),
     )
 
@@ -248,7 +281,7 @@ def load_config() -> AgentConfig:
         agents_cfg = {}
 
     # ─── model / provider：从 default agent 读取 ───
-    da_provider, da_model, _ = _read_default_agent_llm()
+    da_provider, da_model, _, da_reasoning_effort = _read_default_agent_llm()
     provider_name = da_provider
     model_id = da_model
 
@@ -257,7 +290,7 @@ def load_config() -> AgentConfig:
     if not isinstance(workspace, str):
         workspace = ""
 
-    llm = _build_llm_config(data, provider_name, model_id)
+    llm = _build_llm_config(data, provider_name, model_id, reasoning_effort=da_reasoning_effort)
 
     # 标题生成模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
     title_llm: LLMConfig | None = None
