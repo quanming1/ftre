@@ -44,7 +44,7 @@ from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
 from ftre.utils import Pipeline
 
 from .compact_manager import CompactManager
-from ftre.command.types import Handled, SendMessage, SubmitPrompt
+from ftre.command.types import Handled, SendMessage, RewritePrompt
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +272,7 @@ class AgentLoop:
 
         系统级指令已在 _dispatch 锁外处理，这里只处理普通指令（如 /compact）。
         流程：先判断是否命中 → 执行 handler → 按 CommandResult 分发。
-        返回 True 继续 pipeline（未匹配 / SubmitPrompt / Passthrough），返回 False 短路。
+        返回 True 继续 pipeline（未匹配 / RewritePrompt / Passthrough），返回 False 短路。
         """
         if not self.command_manager:
             return True
@@ -291,7 +291,7 @@ class AgentLoop:
         inbound = data.inbound
         session_id = inbound.from_session or inbound.data.get("session_id", "")
         match result:
-            case SubmitPrompt(content=prompt_content):
+            case RewritePrompt(content=prompt_content):
                 # 原始输入保留在 inbound.data["content"]（入库 + echo）
                 # 替换后的 prompt 写入 inbound.data metadata.prompt_override（发给 LLM，不入库正文）
                 inbound_data = data.inbound.data
@@ -420,7 +420,7 @@ class AgentLoop:
                 logger.exception(f"[agent-loop] 关键路径压缩异常 session={session_id}")
 
         # Step 4: 加载历史消息 + hook
-        # prompt_override（来自 SubmitPrompt，存在 inbound.data metadata）发给 LLM，持久化用原始 content
+        # prompt_override（来自 RewritePrompt，存在 inbound.data metadata）发给 LLM，持久化用原始 content
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
         prompt_override = (inbound.data.get("metadata") or {}).get("prompt_override")
         llm_content = prompt_override if prompt_override else content
@@ -528,7 +528,7 @@ class AgentLoop:
                     # 3. 持久化用户输入（用 turn_start 的 turn_id）
                     user_event_id = uuid.uuid4().hex[:16]
                     user_metadata = {"hide": False, "agent_id": agent_id}
-                    # SubmitPrompt 的 prompt_override 存入 metadata，converter 重建消息时可读
+                    # RewritePrompt 的 prompt_override 存入 metadata，converter 重建消息时可读
                     prompt_override = (inbound.data.get("metadata") or {}).get("prompt_override")
                     if prompt_override:
                         user_metadata["prompt_override"] = prompt_override
