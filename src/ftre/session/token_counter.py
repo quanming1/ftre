@@ -79,6 +79,6 @@ def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     if not messages:
         return 0
     # 延迟 import，避免与 manager 循环
-    from .manager import SessionManager
+    from .converter import to_openai
 
-    return sum(_estimate_message(m) for m in SessionManager.to_openai_messages(messages))
+    return sum(_estimate_message(m) for m in to_openai(messages))
