@@ -725,6 +725,8 @@ class SessionManager:
             if d.get("mode") == "fast" and d.get("enabled", True) is True:
                 compacted_ids.update(d.get("events", []))
 
+        fast_hint_inserted = False
+
         # ─── L1 prune 预处理 ───
         prune_protected: set[int] = set()
         prune_max_chars = 0
@@ -826,6 +828,12 @@ class SessionManager:
                 if data.get("enabled", True) is not True:
                     continue  # pending，跳过
                 if mode == "fast":
+                    if not fast_hint_inserted:
+                        messages.append({
+                            "role": "user",
+                            "content": "<FTRE_COMPACT_NOTICE>Prior tool outputs have been fast-compacted to placeholders. Re-invoke the relevant tools if you need their actual content.</FTRE_COMPACT_NOTICE>",
+                        })
+                        fast_hint_inserted = True
                     continue  # fast 不清空，靠 compacted_ids 标记
                 # summary：清空之前所有消息，注入摘要
                 messages = []
