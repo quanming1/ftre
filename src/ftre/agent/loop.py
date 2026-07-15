@@ -44,7 +44,7 @@ from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
 from ftre.utils import Pipeline
 
 from .compact_manager import CompactManager
-from ftre.command.types import Handled, SendMessage, RewritePrompt
+from ftre.command.types import Handled, Passthrough, RewritePrompt, SendMessage
 
 logger = logging.getLogger(__name__)
 
