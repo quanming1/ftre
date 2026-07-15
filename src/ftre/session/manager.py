@@ -707,10 +707,23 @@ class SessionManager:
         - 最近 protect_turns 个可见 user_message 之内的 tool_result 不截断
         - 之外的 tool_result：单条超过 max_chars 就截断为 head_chars + 占位 + tail_chars
         - error 非空的失败结果不截断（通常很短且关键）
+
+        context_compact 两种模式：
+        - mode=summary（默认，含旧事件）: enabled=True → 清空之前所有消息 + 注入 summary
+        - mode=fast: enabled=True → 不清空，后续 tool_result 检查 compacted_ids 替换为占位符
         """
         messages: list[dict] = []
         llm_config = (config or {}).get("llm") or {}
         include_images = bool(llm_config.get("vision", False))
+
+        # ─── fast compact 预扫描：收集被裁剪的 event id ───
+        compacted_ids: set[str] = set()
+        for event in events:
+            if event["type"] != "context_compact":
+                continue
+            d = event.get("data") or {}
+            if d.get("mode") == "fast" and d.get("enabled", True) is True:
+                compacted_ids.update(d.get("events", []))
 
         # ─── L1 prune 预处理 ───
         prune_protected: set[int] = set()
@@ -757,6 +770,9 @@ class SessionManager:
             elif _t == "assistant_message_complete":
                 blocks = data.get("content", [])
                 metadata = data.get("metadata", {})
+                # fast compact 裁剪的消息剥离 thinking
+                if event.get("id") in compacted_ids:
+                    blocks = [b for b in blocks if b.get("type") != "thinking"]
                 text_parts = [b["text"] for b in blocks if b.get("type") == "text"]
                 thinking_parts = [b["thinking"] for b in blocks if b.get("type") == "thinking"]
                 tool_calls = [
@@ -779,7 +795,10 @@ class SessionManager:
             elif _t == "tool_result":
                 result_content = data.get("result", "")
                 error = data.get("error")
-                if prune_max_chars > 0:
+                # fast compact：被裁剪的 tool_result 替换为占位符
+                if event.get("id") in compacted_ids:
+                    result_content = "[工具输出已压缩]"
+                elif prune_max_chars > 0:
                     if idx not in prune_protected and not error:
                         if isinstance(result_content, str) and len(result_content) > prune_max_chars:
                             cut = len(result_content) - prune_head_chars - prune_tail_chars
@@ -803,8 +822,12 @@ class SessionManager:
                 })
 
             elif _t == "context_compact":
+                mode = data.get("mode", "summary")  # 旧事件无 mode 默认 summary
                 if data.get("enabled", True) is not True:
-                    continue
+                    continue  # pending，跳过
+                if mode == "fast":
+                    continue  # fast 不清空，靠 compacted_ids 标记
+                # summary：清空之前所有消息，注入摘要
                 messages = []
                 summary = data.get("summary", "")
                 if summary:

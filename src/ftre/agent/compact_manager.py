@@ -26,6 +26,8 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import asdict, dataclass, field
+from typing import Literal
 
 from ftre_agent_core.agent.event import (
     AgentEvent,
@@ -41,6 +43,36 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PRECOMPACT_THRESHOLD = 0.5
 DEFAULT_COMPACT_THRESHOLD = 0.6
+
+# compress-fast 默认保留最近 N 条 tool_result 完整
+DEFAULT_FAST_KEEP_RECENT = 3
+
+
+@dataclass
+class ContextCompactData:
+    """context_compact 事件的 data 字段。
+
+    两种模式：
+      summary: 调 LLM 生成摘要，替换之前的消息
+      fast:    零 LLM 成本，裁剪旧 tool_result 输出为占位符
+    """
+
+    # ── 公共字段 ──
+    mode: Literal["summary", "fast"] = "summary"
+    enabled: bool = False                    # False=后台预压缩(pending), True=已启用
+    trigger: Literal["auto", "manual", "idle"] = "auto"
+    silent: bool = True
+
+    # ── fast 模式：被裁剪的 event id 列表 ──
+    events: list[str] = field(default_factory=list)
+
+    # ── summary 模式 ──
+    summary: str = ""
+    events_before: int = 0
+    trigger_ratio: float = 0.0
+    enable_ratio: float = 0.0
+    tokens_before: int = 0
+    tokens_after: int = 0
 
 # 不可重试的 LLM 错误码 → 触发冷却退避
 COMPACT_UNRETRYABLE_LLM_CODES = {"auth_error", "bad_request", "content_filter"}
@@ -239,6 +271,88 @@ class CompactManager:
             config=config, silent=silent, enabled=enabled,
         )
 
+    # ─── 快速压缩（零 LLM 成本） ───────────────────────────────────
+
+    async def compress_fast(
+        self,
+        session_id: str,
+        channel_id: str,
+        *,
+        config,
+        silent: bool = False,
+        keep_recent: int = DEFAULT_FAST_KEEP_RECENT,
+    ) -> bool:
+        """快速压缩：不调 LLM，直接裁剪旧 tool_result 输出为占位符。
+
+        策略：保留最近 keep_recent 条 tool_result 完整，其余的 event id
+        记录在 context_compact(mode=fast).events 中。to_openai_messages
+        遇到这些 id 的 tool_result 时替换为 "[工具输出已压缩]"。
+
+        Returns:
+            True: 执行了裁剪
+            False: 没有 tool_result 可裁剪
+        """
+        events = await self.session_manager.get_messages_by_session(session_id)
+        if not events:
+            return False
+
+        # 找所有 tool_result
+        tool_results = [e for e in events if e.get("type") == "tool_result"]
+        if len(tool_results) <= keep_recent:
+            logger.info(
+                f"[compact-fast] session={session_id} tool_result 数 "
+                f"{len(tool_results)} <= keep_recent={keep_recent}，跳过"
+            )
+            return False
+
+        to_compact = tool_results[:-keep_recent] if keep_recent > 0 else tool_results
+        compacted_ids = [e.get("id", "") for e in to_compact if e.get("id")]
+
+        # 估算压缩前后 token
+        from ftre.session.token_counter import estimate_messages_tokens
+        tokens_before = estimate_messages_tokens(events)
+
+        payload = asdict(ContextCompactData(
+            mode="fast",
+            enabled=True,
+            trigger="manual",
+            silent=silent,
+            events=compacted_ids,
+        ))
+
+        # tokens_after = tokens_before 减去被裁剪的 tool_result 估算差值
+        compacted_events = to_compact
+        compacted_tokens = estimate_messages_tokens(compacted_events)
+        tokens_after = max(0, tokens_before - compacted_tokens)
+        payload["tokens_before"] = tokens_before
+        payload["tokens_after"] = tokens_after
+
+        try:
+            await self.session_manager.save_message(
+                session_id, "context_compact", payload,
+                timestamp=time.time(),
+            )
+        except Exception:
+            logger.exception(f"[compact-fast] 写入 DB 失败 session={session_id}")
+            return False
+
+        # 通知前端
+        done_data = {
+            "mode": "fast",
+            "events": len(compacted_ids),
+            "tokens_before": tokens_before,
+            "tokens_after": tokens_after,
+        }
+        if silent:
+            done_data["silent"] = True
+        await self._notify(session_id, channel_id, "context_compact_done", done_data, silent=silent)
+
+        logger.info(
+            f"[compact-fast] session={session_id} 裁剪 {len(compacted_ids)} 条 tool_result, "
+            f"tokens {tokens_before} → {tokens_after}"
+        )
+        return True
+
     async def _do_compact(
         self,
         session_id: str,
@@ -295,14 +409,17 @@ class CompactManager:
 
         # 7. 写入 compact event（timestamp=当前时间，放末尾）
         now = time.time()
-        payload: dict = {
-            "summary": summary,
-            "enabled": enabled,
-            "trigger_ratio": current_ratio,
-            "enable_ratio": getattr(config.context, "compact_threshold", DEFAULT_COMPACT_THRESHOLD),
-            "events_before": len(head_events),
-            "tokens_before": tokens_before,
-        }
+        payload: dict = asdict(ContextCompactData(
+            mode="summary",
+            enabled=enabled,
+            trigger="manual" if not getattr(config.context, "idle_compaction", True) else "auto",
+            silent=silent,
+            summary=summary,
+            events_before=len(head_events),
+            trigger_ratio=current_ratio,
+            enable_ratio=getattr(config.context, "compact_threshold", DEFAULT_COMPACT_THRESHOLD),
+            tokens_before=tokens_before,
+        ))
         if enabled:
             synthetic = {
                 "type": "context_compact",
@@ -311,8 +428,6 @@ class CompactManager:
             }
             # compact 在末尾，后面没有 tail 了
             payload["tokens_after"] = estimate_messages_tokens([synthetic])
-        if silent:
-            payload["silent"] = True
 
         try:
             await self.session_manager.save_message(
