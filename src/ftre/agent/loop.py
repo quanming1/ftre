@@ -838,16 +838,10 @@ class AgentLoop:
         )
 
         if events:
-            prune_opts = {
-                "protect_turns": 2,
-                "max_chars": 2000,
-                "head_chars": 1000,
-                "tail_chars": 1000,
-            }
-            history = SessionManager.to_openai_messages(
+            from ftre.session.converter import to_openai
+            history = to_openai(
                 events,
                 config={"llm": {"vision": hook_config.llm.vision}},
-                prune=prune_opts,
             )
             history.append({"role": "user", "content": user_content})
             return history, hook_config

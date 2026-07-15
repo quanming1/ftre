@@ -296,8 +296,13 @@ class CompactManager:
         if not events:
             return False
 
-        # 找所有 tool_result
-        tool_results = [e for e in events if e.get("type") == "tool_result"]
+        # 只从最后一个 enabled summary compact 之后找 tool_result
+        # 之前的事件已被 summary 替换，to_openai_messages 不会加载它们
+        cursor_idx = get_cursor_index(events)
+        active_events = events[cursor_idx + 1:] if cursor_idx is not None else events
+
+        # 找活跃区间内的 tool_result
+        tool_results = [e for e in active_events if e.get("type") == "tool_result"]
         if len(tool_results) <= keep_recent:
             logger.info(
                 f"[compact-fast] session={session_id} tool_result 数 "
@@ -308,9 +313,9 @@ class CompactManager:
         to_compact = tool_results[:-keep_recent] if keep_recent > 0 else tool_results
         compacted_ids = [e.get("id", "") for e in to_compact if e.get("id")]
 
-        # 估算压缩前后 token
+        # 估算压缩前后 token（只算活跃区间）
         from ftre.session.token_counter import estimate_messages_tokens
-        tokens_before = estimate_messages_tokens(events)
+        tokens_before = estimate_messages_tokens(active_events)
 
         payload = asdict(ContextCompactData(
             mode="fast",
