@@ -30,7 +30,7 @@ def _scan_compacted_ids(events: list[MessageModel]) -> set[str]:
         if event["type"] != "context_compact":
             continue
         d = event.get("data") or {}
-        if d.get("mode") == "fast" and d.get("enabled", True) is True:
+        if d.get("mode") == "fast":
             compacted_ids.update(d.get("events", []))
     return compacted_ids
 
@@ -135,8 +135,6 @@ def to_openai(
         # ── context_compact ──
         elif _t == "context_compact":
             mode = data.get("mode", "summary")
-            if data.get("enabled", True) is not True:
-                continue
             if mode == "fast":
                 if not fast_hint_inserted:
                     messages.append({
