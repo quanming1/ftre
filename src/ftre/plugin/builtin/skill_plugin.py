@@ -47,6 +47,70 @@ class SkillPlugin(Plugin):
         )
         self.api.register_router(self._build_router())
         self.api.register_hook(BEFORE_AGENT_RUN, self._inject_system_prompt)
+        self._register_skill_commands()
+
+    def _register_skill_commands(self) -> None:
+        """把所有全局 Skill 注册为 /<skill-name> slash command。"""
+        descriptions = list_skill_descriptions(self._skills_dir)
+        for item in descriptions:
+            name = item["name"]
+            body = self._read_skill_body(name)
+            if body is None:
+                continue
+            self._register_single_skill_command(name, body)
+
+    def _register_single_skill_command(self, skill_name: str, body: str) -> None:
+        """注册单个 Skill 为 slash command。
+
+        body 参数保留兼容签名，实际不注入 body——agent 通过 loadSkill 工具自行加载。
+        """
+        from ftre.command.types import CommandDef, SubmitPrompt
+
+        cmd_mgr = self.api.command_manager
+        if cmd_mgr is None:
+            return
+
+        skill_file = _find_skill_file(skill_name, self._skills_dir)
+        desc = extract_skill_description(skill_file) if skill_file else skill_name
+
+        def _make_handler(name: str):
+            def handler(ctx):
+                parts = [
+                    f'<selected_skill name="{name}">',
+                    f"The user has selected this Skill via /skill:{name}.",
+                    f"Call the loadSkill tool immediately to load its full content",
+                    f"(skip if already loaded in this conversation),",
+                    f"then follow the Skill's instructions to complete the task.",
+                    "</selected_skill>",
+                ]
+                user_input = (ctx.args or "").strip()
+                if user_input:
+                    parts.append(f"\n<user_input>\n{user_input}\n</user_input>")
+                return SubmitPrompt(content="\n".join(parts))
+            return handler
+
+        cmd_def = CommandDef(
+            command=f"/skill:{skill_name}",
+            description=desc,
+            args_hint="[prompt]",
+            source="skill",
+            handler=_make_handler(skill_name),
+        )
+        cmd_mgr.register_def(cmd_def)
+
+    def _unregister_skill_command(self, skill_name: str) -> None:
+        """注销单个 Skill 的 slash command。"""
+        cmd_mgr = self.api.command_manager
+        if cmd_mgr is None:
+            return
+        cmd_mgr.unregister(f"/skill:{skill_name}")
+
+    def _read_skill_body(self, skill_name: str) -> str | None:
+        """读取 Skill 正文内容。"""
+        skill_file = _find_skill_file(skill_name, self._skills_dir)
+        if skill_file is None:
+            return None
+        return _read_text_safe(skill_file).strip()
 
     async def _inject_system_prompt(self, ctx):
         parts = [
@@ -181,6 +245,10 @@ class SkillPlugin(Plugin):
                 raise HTTPException(status_code=409, detail=f"Skill 已存在: {name}")
             except OSError as e:
                 raise HTTPException(status_code=500, detail=f"创建失败: {e}")
+
+            # 同步注册 slash command
+            self._register_single_skill_command(name, content)
+
             return skill
 
         @router.put("/{name}")
@@ -205,6 +273,11 @@ class SkillPlugin(Plugin):
                 raise HTTPException(status_code=500, detail=f"保存失败: {e}")
             if skill is None:
                 raise HTTPException(status_code=404, detail=f"Skill 不存在: {name}")
+
+            # 同步更新 slash command（先注销再注册）
+            self._unregister_skill_command(name)
+            self._register_single_skill_command(name, content)
+
             return skill
 
         @router.delete("/{name}", status_code=204)
@@ -217,6 +290,10 @@ class SkillPlugin(Plugin):
                 raise HTTPException(status_code=500, detail=f"删除失败: {e}")
             if not ok:
                 raise HTTPException(status_code=404, detail=f"Skill 不存在: {name}")
+
+            # 同步注销 slash command
+            self._unregister_skill_command(name)
+
             return None
 
         @router.patch("/{name}/toggle")

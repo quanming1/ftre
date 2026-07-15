@@ -190,6 +190,10 @@ async def run_gateway():
     agent_loop.start()
     set_agent_loop(agent_loop)
 
+    # 注册内置斜杠指令
+    from ftre.command.builtin import register_builtin_commands
+    register_builtin_commands(cmd, agent_loop)
+
     # 启动所有 Channel + 分发循环
     await mgr.start()
 
