@@ -54,7 +54,6 @@ class PipelineData:
     """Pipeline 各阶段共享的状态对象。"""
     inbound: BusMessage
     need_compact: bool = False
-    prompt_override: str | None = None  # SubmitPrompt 替换后的 prompt，发给 LLM 但不入库
 
 
 class AgentLoop:
@@ -293,9 +292,12 @@ class AgentLoop:
         session_id = inbound.from_session or inbound.data.get("session_id", "")
         match result:
             case SubmitPrompt(content=prompt_content):
-                # 原始输入保留在 inbound.data["content"]（_run_async 会持久化它）
-                # 替换后的 prompt 存到 prompt_override，_run_async 发给 LLM 但不入库
-                data.prompt_override = prompt_content
+                # 原始输入保留在 inbound.data["content"]（入库 + echo）
+                # 替换后的 prompt 写入 inbound.data metadata.prompt_override（发给 LLM，不入库正文）
+                inbound_data = data.inbound.data
+                if not isinstance(inbound_data.get("metadata"), dict):
+                    inbound_data["metadata"] = {}
+                inbound_data["metadata"]["prompt_override"] = prompt_content
                 return True
             case SendMessage(content=msg, level=level):
                 await self._persist_command_input(data)
@@ -338,7 +340,7 @@ class AgentLoop:
     async def _step_run(self, data: PipelineData) -> bool:
         """执行阶段：在主事件循环直接 await Agent 运行。"""
         inbound = data.inbound
-        await self._run_async(inbound, data.need_compact, data.prompt_override)
+        await self._run_async(inbound, data.need_compact)
         return False
 
     # ─── Agent 执行 ─────────────────────────────────────────
@@ -350,7 +352,7 @@ class AgentLoop:
         UserMessageEvent,
     )
 
-    async def _run_async(self, inbound: BusMessage, need_compact: bool = False, prompt_override: str | None = None) -> None:
+    async def _run_async(self, inbound: BusMessage, need_compact: bool = False) -> None:
         """异步执行 Agent，事件逐条投递到 Bus。
 
         主循环化后跑在主事件循环里，不再需要 executor 线程。
@@ -418,9 +420,10 @@ class AgentLoop:
                 logger.exception(f"[agent-loop] 关键路径压缩异常 session={session_id}")
 
         # Step 4: 加载历史消息 + hook
-        # prompt_override（来自 SubmitPrompt）发给 LLM，但持久化用原始 content
+        # prompt_override（来自 SubmitPrompt，存在 inbound.data metadata）发给 LLM，持久化用原始 content
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
-        llm_content = prompt_override or content
+        prompt_override = (inbound.data.get("metadata") or {}).get("prompt_override")
+        llm_content = prompt_override if prompt_override else content
         messages, hook_config = await self._build_messages(
             session_id,
             llm_content,
@@ -524,9 +527,14 @@ class AgentLoop:
                     await self.bus.publish_outbound(out)
                     # 3. 持久化用户输入（用 turn_start 的 turn_id）
                     user_event_id = uuid.uuid4().hex[:16]
+                    user_metadata = {"hide": False, "agent_id": agent_id}
+                    # SubmitPrompt 的 prompt_override 存入 metadata，converter 重建消息时可读
+                    prompt_override = (inbound.data.get("metadata") or {}).get("prompt_override")
+                    if prompt_override:
+                        user_metadata["prompt_override"] = prompt_override
                     user_data = {
                         "content": stored_content,
-                        "metadata": {"hide": False, "agent_id": agent_id},
+                        "metadata": user_metadata,
                     }
                     if attachments:
                         user_data["attachments"] = attachments
