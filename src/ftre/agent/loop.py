@@ -271,7 +271,7 @@ class AgentLoop:
         """普通指令预处理：匹配普通指令（锁内）。
 
         系统级指令已在 _dispatch 锁外处理，这里只处理普通指令（如 /compact）。
-        流程：先判断是否命中 → 命中则持久化 user_message → 执行 handler → 按 CommandResult 分发。
+        流程：先判断是否命中 → 执行 handler → 按 CommandResult 分发。
         返回 True 继续 pipeline（未匹配 / SubmitPrompt / Passthrough），返回 False 短路。
         """
         if not self.command_manager:
@@ -282,41 +282,27 @@ class AgentLoop:
         if cmd_def is None:
             return True
 
-        # 2. 命中 → 先持久化用户输入（格式与 _run_async Step 6 对齐）
-        inbound = data.inbound
-        session_id = inbound.from_session or inbound.data.get("session_id", "")
-        content = inbound.data.get("content", "")
-        if session_id and content:
-            try:
-                await self.session_manager.save_message(
-                    session_id,
-                    "user_message",
-                    {
-                        "content": normalize_stored_user_content(content),
-                        "metadata": {"hide": False},
-                    },
-                )
-            except Exception:
-                logger.exception(
-                    f"[agent-loop] 指令消息持久化失败 session={session_id}"
-                )
-
-        # 3. 执行 handler，得到 CommandResult
+        # 2. 执行 handler，得到 CommandResult
         result = await self.command_manager.try_dispatch(data)
         if result is None:
             return True  # 不应该发生（match 已命中），安全默认
 
-        # 4. 根据返回值决定下一步
+        # 3. 根据返回值决定下一步
+        inbound = data.inbound
+        session_id = inbound.from_session or inbound.data.get("session_id", "")
         match result:
             case SubmitPrompt(content=prompt_content):
-                # 替换 inbound content，继续 pipeline → LLM
+                # 替换 inbound content，继续 pipeline → _run_async 会持久化替换后的 content
                 data.inbound.data["content"] = prompt_content
                 return True
             case SendMessage(content=msg, level=level):
-                # 推消息给前端，短路
+                # 短路：持久化原始用户输入，推消息给前端
+                await self._persist_command_input(data)
                 await self._send_command_message(session_id, inbound.from_channel, msg, level)
                 return False
             case Handled():
+                # 短路：持久化原始用户输入
+                await self._persist_command_input(data)
                 return False
             case Passthrough():
                 return True
@@ -731,6 +717,26 @@ class AgentLoop:
             },
         )
         await self.bus.publish_outbound(evt)
+
+    async def _persist_command_input(self, data: PipelineData) -> None:
+        """持久化指令原始输入（仅短路指令用，SubmitPrompt 不需要——_run_async 会持久化）。"""
+        inbound = data.inbound
+        session_id = inbound.from_session or inbound.data.get("session_id", "")
+        content = inbound.data.get("content", "")
+        if session_id and content:
+            try:
+                await self.session_manager.save_message(
+                    session_id,
+                    "user_message",
+                    {
+                        "content": normalize_stored_user_content(content),
+                        "metadata": {"hide": False},
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    f"[agent-loop] 指令消息持久化失败 session={session_id}"
+                )
 
     def _load_current_config(self) -> AgentConfig:
         """读取当前生效的配置"""
