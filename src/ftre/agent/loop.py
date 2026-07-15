@@ -54,6 +54,7 @@ class PipelineData:
     """Pipeline 各阶段共享的状态对象。"""
     inbound: BusMessage
     need_compact: bool = False
+    prompt_override: str | None = None  # SubmitPrompt 替换后的 prompt，发给 LLM 但不入库
 
 
 class AgentLoop:
@@ -292,16 +293,15 @@ class AgentLoop:
         session_id = inbound.from_session or inbound.data.get("session_id", "")
         match result:
             case SubmitPrompt(content=prompt_content):
-                # 替换 inbound content，继续 pipeline → _run_async 会持久化替换后的 content
-                data.inbound.data["content"] = prompt_content
+                # 原始输入保留在 inbound.data["content"]（_run_async 会持久化它）
+                # 替换后的 prompt 存到 prompt_override，_run_async 发给 LLM 但不入库
+                data.prompt_override = prompt_content
                 return True
             case SendMessage(content=msg, level=level):
-                # 短路：持久化原始用户输入，推消息给前端
                 await self._persist_command_input(data)
                 await self._send_command_message(session_id, inbound.from_channel, msg, level)
                 return False
             case Handled():
-                # 短路：持久化原始用户输入
                 await self._persist_command_input(data)
                 return False
             case Passthrough():
@@ -336,16 +336,9 @@ class AgentLoop:
         return True
 
     async def _step_run(self, data: PipelineData) -> bool:
-        """执行阶段：在主事件循环直接 await Agent 运行。
-
-        主循环化后，Agent 的 LLM stream 在主循环的 await 处让出控制权，
-        Task.cancel() 的 CancelledError 在下一个 LLM chunk await 处立即抛出，
-        实现毫秒级响应的 cancel。
-        """
+        """执行阶段：在主事件循环直接 await Agent 运行。"""
         inbound = data.inbound
-        need_compact = data.need_compact
-
-        await self._run_async(inbound, need_compact)
+        await self._run_async(inbound, data.need_compact, data.prompt_override)
         return False
 
     # ─── Agent 执行 ─────────────────────────────────────────
@@ -357,7 +350,7 @@ class AgentLoop:
         UserMessageEvent,
     )
 
-    async def _run_async(self, inbound: BusMessage, need_compact: bool = False) -> None:
+    async def _run_async(self, inbound: BusMessage, need_compact: bool = False, prompt_override: str | None = None) -> None:
         """异步执行 Agent，事件逐条投递到 Bus。
 
         主循环化后跑在主事件循环里，不再需要 executor 线程。
@@ -425,10 +418,12 @@ class AgentLoop:
                 logger.exception(f"[agent-loop] 关键路径压缩异常 session={session_id}")
 
         # Step 4: 加载历史消息 + hook
+        # prompt_override（来自 SubmitPrompt）发给 LLM，但持久化用原始 content
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
+        llm_content = prompt_override or content
         messages, hook_config = await self._build_messages(
             session_id,
-            content,
+            llm_content,
             attachments,
             config,
             inbound_data=inbound.data,
