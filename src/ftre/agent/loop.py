@@ -18,12 +18,12 @@ import copy
 import logging
 import os
 import uuid
+from dataclasses import dataclass
 from concurrent.futures import Future
 
 from ftre_agent_core import Tracer
 from ftre_agent_core.agent import ReActAgent
 from ftre_agent_core.agent.event import (
-    AgentEvent,
     AssistantMessageCompleteEvent,
     StepEvent,
     StepPhase,
@@ -44,8 +44,16 @@ from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
 from ftre.utils import Pipeline
 
 from .compact_manager import CompactManager
+from ftre.command.types import Handled, SendMessage, SubmitPrompt
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PipelineData:
+    """Pipeline 各阶段共享的状态对象。"""
+    inbound: BusMessage
+    need_compact: bool = False
 
 
 class AgentLoop:
@@ -125,8 +133,6 @@ class AgentLoop:
             threshold=self._initial_context_cfg().compact_threshold,
         )
 
-        self._register_commands()
-
     def _initial_context_cfg(self):
         """实例化时读一次 ContextConfig 用于 CompactManager 默认参数。"""
         try:
@@ -136,86 +142,6 @@ class AgentLoop:
             from ftre.config import ContextConfig
 
             return ContextConfig()
-
-    def _register_commands(self) -> None:
-        """注册内置斜杠指令。"""
-        if self.command_manager is None:
-            return
-
-        # /cancel：系统级指令，在锁外执行，立即取消当前 session 的 Agent
-        def _on_cancel(ctx):
-            sid = ctx.meta["inbound"].from_session or ctx.meta["inbound"].data.get(
-                "session_id", ""
-            )
-            agent = self._active_agents.get(sid)
-            if agent:
-                agent.cancel_nowait()
-            task = self._session_tasks.get(sid)
-            if task and not task.done():
-                task.cancel()
-                logger.info(f"[agent-loop] cancel task 已取消 session={sid}")
-
-        self.command_manager.register(
-            "/cancel",
-            _on_cancel,
-            description="取消当前会话执行",
-            system=True,
-        )
-        # /compact：普通指令，在锁内执行，串行安全
-        self.command_manager.register(
-            "/compact",
-            self._cmd_compact,
-            description="压缩当前会话上下文",
-        )
-        # /compress-fast：零 LLM 成本的快速压缩
-        self.command_manager.register(
-            "/compress-fast",
-            self._cmd_compress_fast,
-            description="快速压缩：裁剪旧工具输出，不调 LLM",
-        )
-
-    async def _cmd_compact(self, ctx) -> None:
-        """/compact 指令：在当前位置直接执行压缩，执行完 pipeline 自动短路。"""
-        inbound = ctx.meta["inbound"]
-        session_id = inbound.from_session
-        channel_id = inbound.from_channel
-
-        self._compacting_sessions.add(session_id)
-        await self._publish_session_status_async(session_id, "compacting")
-
-        try:
-            config = self._load_current_config()
-            await self.compact_manager.compact(
-                session_id,
-                channel_id,
-                config=config,
-                silent=False,
-                trigger="manual",
-            )
-        except Exception:
-            logger.exception(f"[agent-loop] /compact 执行异常 session={session_id}")
-        finally:
-            self._compacting_sessions.discard(session_id)
-            await self._publish_session_status_async(
-                session_id, self.get_session_status(session_id)
-            )
-
-    async def _cmd_compress_fast(self, ctx) -> None:
-        """/compress-fast 指令：零 LLM 成本，裁剪旧 tool_result 输出为占位符。"""
-        inbound = ctx.meta["inbound"]
-        session_id = inbound.from_session
-        channel_id = inbound.from_channel
-
-        try:
-            config = self._load_current_config()
-            await self.compact_manager.compress_fast(
-                session_id,
-                channel_id,
-                config=config,
-                silent=False,
-            )
-        except Exception:
-            logger.exception(f"[agent-loop] /compress-fast 执行异常 session={session_id}")
 
     def start(self) -> None:
         """启动消费循环"""
@@ -291,7 +217,7 @@ class AgentLoop:
         try:
             async for msg in self.bus.subscribe_inbound():
                 try:
-                    data = {"inbound": msg}
+                    data = PipelineData(inbound=msg)
                     task = asyncio.create_task(self._dispatch(data))
                     # 注册到 dispatch_tasks 集合，stop() 时可统一 cancel
                     self._dispatch_tasks.add(task)
@@ -301,7 +227,7 @@ class AgentLoop:
         except asyncio.CancelledError:
             pass
 
-    async def _dispatch(self, data: dict) -> None:
+    async def _dispatch(self, data: PipelineData) -> None:
         """单条消息的派发入口。
 
         处理顺序：
@@ -316,7 +242,7 @@ class AgentLoop:
             return
 
         # ─── 普通消息：获取 per-session lock → 跑 pipeline ───
-        inbound = data["inbound"]
+        inbound = data.inbound
         session_id = inbound.data.get("session_id", "") or inbound.from_session
 
         if session_id:
@@ -341,12 +267,12 @@ class AgentLoop:
 
     # ─── pipeline 各阶段 ────────────────────────────────────
 
-    async def _step_command(self, data: dict) -> bool:
+    async def _step_command(self, data: PipelineData) -> bool:
         """普通指令预处理：匹配普通指令（锁内）。
 
         系统级指令已在 _dispatch 锁外处理，这里只处理普通指令（如 /compact）。
-        流程：先判断是否命中 → 命中则持久化 user_message → 再执行指令 handler。
-        返回 True 继续 pipeline（未匹配），返回 False 短路（已执行）。
+        流程：先判断是否命中 → 命中则持久化 user_message → 执行 handler → 按 CommandResult 分发。
+        返回 True 继续 pipeline（未匹配 / SubmitPrompt / Passthrough），返回 False 短路。
         """
         if not self.command_manager:
             return True
@@ -357,7 +283,7 @@ class AgentLoop:
             return True
 
         # 2. 命中 → 先持久化用户输入（格式与 _run_async Step 6 对齐）
-        inbound = data["inbound"]
+        inbound = data.inbound
         session_id = inbound.from_session or inbound.data.get("session_id", "")
         content = inbound.data.get("content", "")
         if session_id and content:
@@ -375,13 +301,31 @@ class AgentLoop:
                     f"[agent-loop] 指令消息持久化失败 session={session_id}"
                 )
 
-        # 3. 再执行指令 handler
-        await self.command_manager.try_dispatch(data)
-        return False
+        # 3. 执行 handler，得到 CommandResult
+        result = await self.command_manager.try_dispatch(data)
+        if result is None:
+            return True  # 不应该发生（match 已命中），安全默认
 
-    async def _step_compact(self, data: dict) -> bool:
-        """压缩阶段：只判断是否需要自动压缩，把结论写入 data['need_compact']。"""
-        inbound = data["inbound"]
+        # 4. 根据返回值决定下一步
+        match result:
+            case SubmitPrompt(content=prompt_content):
+                # 替换 inbound content，继续 pipeline → LLM
+                data.inbound.data["content"] = prompt_content
+                return True
+            case SendMessage(content=msg, level=level):
+                # 推消息给前端，短路
+                await self._send_command_message(session_id, inbound.from_channel, msg, level)
+                return False
+            case Handled():
+                return False
+            case Passthrough():
+                return True
+            case _:
+                return True
+
+    async def _step_compact(self, data: PipelineData) -> bool:
+        """压缩阶段：只判断是否需要自动压缩，把结论写入 data.need_compact。"""
+        inbound = data.inbound
         if inbound.type != "user_message":
             return True
         session_id = inbound.data.get("session_id", "") or inbound.from_session
@@ -398,22 +342,22 @@ class AgentLoop:
                 threshold=getattr(config.context, "compact_threshold", 0.7),
             )
             if need:
-                data["need_compact"] = True
+                data.need_compact = True
                 logger.info(f"[agent-loop] 需要关键路径压缩 session={session_id}")
         except Exception:
             logger.exception(f"[agent-loop] should_compact 异常 session={session_id}")
 
         return True
 
-    async def _step_run(self, data: dict) -> bool:
+    async def _step_run(self, data: PipelineData) -> bool:
         """执行阶段：在主事件循环直接 await Agent 运行。
 
         主循环化后，Agent 的 LLM stream 在主循环的 await 处让出控制权，
         Task.cancel() 的 CancelledError 在下一个 LLM chunk await 处立即抛出，
         实现毫秒级响应的 cancel。
         """
-        inbound = data["inbound"]
-        need_compact = bool(data.get("need_compact"))
+        inbound = data.inbound
+        need_compact = data.need_compact
 
         await self._run_async(inbound, need_compact)
         return False
@@ -767,6 +711,23 @@ class AgentLoop:
             data={
                 "type": "session_status",
                 "data": {"session_id": session_id, "status": status},
+            },
+        )
+        await self.bus.publish_outbound(evt)
+
+    async def _send_command_message(
+        self, session_id: str, channel_id: str, content: str, level: str = "info"
+    ) -> None:
+        """指令 handler 返回 SendMessage 时，推一条 info/error 消息给前端。"""
+        evt = BusMessage(
+            type="session_event",
+            from_channel=channel_id,
+            to_channel=channel_id,
+            from_session=session_id,
+            to_session=session_id,
+            data={
+                "type": "command_message",
+                "data": {"content": content, "level": level},
             },
         )
         await self.bus.publish_outbound(evt)
