@@ -64,7 +64,7 @@ class SkillPlugin(Plugin):
 
         body 参数保留兼容签名，实际不注入 body——agent 通过 loadSkill 工具自行加载。
         """
-        from ftre.command.types import CommandDef, SubmitPrompt
+        from ftre.command.types import CommandDef, RewritePrompt
 
         cmd_mgr = self.api.command_manager
         if cmd_mgr is None:
@@ -86,7 +86,7 @@ class SkillPlugin(Plugin):
                 user_input = (ctx.args or "").strip()
                 if user_input:
                     parts.append(f"\n<user_input>\n{user_input}\n</user_input>")
-                return SubmitPrompt(content="\n".join(parts))
+                return RewritePrompt(content="\n".join(parts))
             return handler
 
         cmd_def = CommandDef(

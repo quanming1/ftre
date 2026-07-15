@@ -11,7 +11,7 @@
     result = await cmd.try_dispatch(data)             # 锁内
     if result is not None:                            # 匹配到
         match result:
-            case SubmitPrompt(...): ...  # 继续 pipeline
+            case RewritePrompt(...): ...  # 继续 pipeline
             case Handled(): ...          # 短路
 
 内部自动判断 inbound.type、提取文本、前缀匹配，调用方无需关心细节。

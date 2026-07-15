@@ -7,7 +7,7 @@ from .types import (
     Handler,
     Passthrough,
     SendMessage,
-    SubmitPrompt,
+    RewritePrompt,
 )
 
 __all__ = [
@@ -19,5 +19,5 @@ __all__ = [
     "Handler",
     "Passthrough",
     "SendMessage",
-    "SubmitPrompt",
+    "RewritePrompt",
 ]

@@ -13,8 +13,8 @@ from typing import Any, Awaitable, Callable, Union
 
 
 @dataclass
-class SubmitPrompt:
-    """把 prompt 提交给 LLM，继续 pipeline。"""
+class RewritePrompt:
+    """重写发给 LLM 的 prompt，原始用户输入保留入库，继续 pipeline。"""
     content: str | list[dict]
     model_override: str | None = None
 
@@ -38,7 +38,7 @@ class Passthrough:
     pass
 
 
-CommandResult = Union[SubmitPrompt, SendMessage, Handled, Passthrough]
+CommandResult = Union[RewritePrompt, SendMessage, Handled, Passthrough]
 """handler 返回值联合类型。None 视为 Handled（兼容旧 handler）。"""
 
 
@@ -76,7 +76,7 @@ Handler = Callable[[CommandContext], CommandResult | Awaitable[CommandResult] | 
 """指令处理函数。
 
 返回 CommandResult 决定 pipeline 走向：
-- SubmitPrompt → 替换 inbound content，继续 → LLM
+- RewritePrompt → 重写发给 LLM 的 prompt，原始输入保留入库，继续 → LLM
 - SendMessage  → 推消息给前端，短路
 - Handled      → 短路
 - Passthrough  → 继续 → LLM
