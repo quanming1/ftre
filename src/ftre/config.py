@@ -92,10 +92,10 @@ class ContextConfig:
     所有字段都有默认值，缺省即沿用代码内常量；旧配置零改动可用。
     详细设计见文档 docs/context-management.md。
     """
-    # 预压缩水位：estimated_tokens / context_window ≥ 此值时后台准备摘要
+    # 后台预压缩水位：每轮 LLM 回复结束后检查，≥ 此值时后台调 LLM 生成摘要
     precompact_threshold: float = 0.5
-    # 启用压缩水位：estimated_tokens / context_window ≥ 此值时启用已准备的摘要
-    compact_threshold: float = 0.6
+    # 强制压缩水位：用户发消息时检查，≥ 此值时阻塞式压缩
+    compact_threshold: float = 0.7
     # 压缩目标比例：target = budget * consolidation_ratio
     consolidation_ratio: float = 0.5
     # 预算安全垫：budget = context_window - max_output - safety_buffer

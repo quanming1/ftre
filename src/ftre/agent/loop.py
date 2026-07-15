@@ -121,7 +121,6 @@ class AgentLoop:
 
         self.compact_manager = CompactManager(
             session_manager=self.session_manager,
-            channel_manager=self.channel_manager,
             bus=self.bus,
             threshold=self._initial_context_cfg().compact_threshold,
         )
@@ -186,24 +185,13 @@ class AgentLoop:
 
         try:
             config = self._load_current_config()
-
-            # 先尝试启用 pending compact（秒级，不用调 LLM）
-            enabled = await self.compact_manager.enable_pending_compact(
+            await self.compact_manager.compact(
                 session_id,
                 channel_id,
                 config=config,
                 silent=False,
+                trigger="manual",
             )
-
-            # 没有 pending → 直接压缩（enabled=True）
-            if not enabled:
-                await self.compact_manager.compact(
-                    session_id,
-                    channel_id,
-                    config=config,
-                    silent=False,
-                    enabled=True,
-                )
         except Exception:
             logger.exception(f"[agent-loop] /compact 执行异常 session={session_id}")
         finally:
@@ -407,7 +395,7 @@ class AgentLoop:
                 session_id,
                 channel_id,
                 config,
-                threshold=getattr(config.context, "precompact_threshold", 0.5),
+                threshold=getattr(config.context, "compact_threshold", 0.7),
             )
             if need:
                 data["need_compact"] = True
@@ -496,22 +484,13 @@ class AgentLoop:
         if need_compact:
             try:
                 silent = getattr(config.context, "silent", True)
-                # 先尝试启用 pending compact（秒级）
-                enabled = await self.compact_manager.enable_pending_compact(
+                await self.compact_manager.compact(
                     session_id,
                     inbound.from_channel,
                     config=config,
                     silent=silent,
+                    trigger="auto",
                 )
-                if not enabled:
-                    # 没有 pending → 直接压缩
-                    await self.compact_manager.compact(
-                        session_id,
-                        inbound.from_channel,
-                        config=config,
-                        silent=silent,
-                        enabled=True,
-                    )
             except Exception:
                 logger.exception(f"[agent-loop] 关键路径压缩异常 session={session_id}")
 

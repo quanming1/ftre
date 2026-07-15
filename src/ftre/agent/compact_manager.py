@@ -2,17 +2,17 @@
 CompactManager — 上下文压缩处理器
 
 设计：
-- 50% 水位（precompact_threshold）：idle/usage 后台路径 → compact(enabled=True)
-- 50% 水位（precompact_threshold）：用户输入路径 → _step_compact 标记 need_compact，
-  然后在 _run_async 中先尝试 enable_pending_compact()，没有 pending 则 compact(enabled=True)
-- /compact 手动：先 enable_pending_compact()，没有则 compact(enabled=True, silent=False)
+- 50% 水位（precompact_threshold）：每轮 LLM 回复结束后后台异步压缩
+- 70% 水位（compact_threshold）：用户发消息时阻塞式压缩
+- /compact 手动：立即压缩
+- /compress-fast：零 LLM 成本裁剪旧 tool_result
 
-每次压缩：从上一个 enabled=True 的 compact 到现在，全量 LLM 摘要，
-compact event 放末尾（timestamp=触发时间）。
+每次压缩：从上一个 context_compact(summary) 到现在，全量 LLM 摘要，
+compact event 放末尾（timestamp=触发时间）。写入即生效，无 pending。
 
-to_openai_messages 遍历：
-- enabled=False → continue（跳过，不参与上下文）
-- enabled=True → 清空之前所有 messages + 注入 summary
+to_openai_messages 遍历 context_compact 事件：
+- mode=fast → 不清空，靠 compacted_ids 标记 tool_result 为占位符
+- mode=summary → 清空之前所有 messages + 注入 summary
 
 并发安全：
 - compact() 总是在 AgentLoop._dispatch 的 per-session asyncio.Lock 内调用，
@@ -29,12 +29,6 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
-from ftre_agent_core.agent.event import (
-    AgentEvent,
-    AssistantMessageCompleteEvent,
-    ToolResultEvent,
-    UserMessageEvent,
-)
 from ftre_agent_core.llm import LLMError, LLMHandler, TextDelta
 
 from ftre.bus import BusMessage
@@ -42,7 +36,7 @@ from ftre.bus import BusMessage
 logger = logging.getLogger(__name__)
 
 DEFAULT_PRECOMPACT_THRESHOLD = 0.5
-DEFAULT_COMPACT_THRESHOLD = 0.6
+DEFAULT_COMPACT_THRESHOLD = 0.7
 
 # compress-fast 默认保留最近 N 条 tool_result 完整
 DEFAULT_FAST_KEEP_RECENT = 3
@@ -59,7 +53,6 @@ class ContextCompactData:
 
     # ── 公共字段 ──
     mode: Literal["summary", "fast"] = "summary"
-    enabled: bool = False                    # False=后台预压缩(pending), True=已启用
     trigger: Literal["auto", "manual", "idle"] = "auto"
     silent: bool = True
 
@@ -78,54 +71,51 @@ class ContextCompactData:
 COMPACT_UNRETRYABLE_LLM_CODES = {"auth_error", "bad_request", "content_filter"}
 COMPACT_UNRETRYABLE_COOLDOWN_SECONDS = 300
 
-# ─── 摘要模板（源自 OpenCode 7 段锚定结构，中文本地化） ──────────────────────
-SUMMARY_TEMPLATE = """\
-输出严格按照 <template> 内的 Markdown 结构，保持段落顺序不变。不要在输出中包含 <template> 标签。
-<template>
-## 目标
-- [一句话任务摘要]
-
-## 约束与偏好
-- [用户约束、偏好、规格，或 "(无)"]
-
-## 进度
-### 已完成
-- [已完成的工作，或 "(无)"]
-
-### 进行中
-- [当前进行的工作，或 "(无)"]
-
-### 受阻
-- [阻塞项，或 "(无)"]
-
-## 关键决策
-- [决策及原因，或 "(无)"]
-
-## 下一步
-- [有序的下一步行动，或 "(无)"]
-
-## 关键上下文
-- [重要技术事实、错误信息、开放问题，或 "(无)"]
-
-## 相关文件
-- [文件或目录路径：为什么重要，或 "(无)"]
-</template>
-
-规则：
-- 每个段落都必须保留，即使内容为空也写 "(无)"。
-- 使用简洁要点，不要写成段落散文。
-- 保留精确的文件路径、命令、错误字符串和标识符。
-- 不要提及压缩过程本身，不要说"上下文已被压缩"之类的话。"""
-
 # LLM 摘要的 system prompt
 COMPACT_LLM_SYSTEM_PROMPT = """\
-你是一个对话历史压缩助手。你的唯一任务是把给定的对话记录整理成一份结构化摘要。
+你是对话上下文压缩组件。当对话的上下文窗口即将溢出时，由你负责生成摘要。你产出的摘要将成为 Agent 在此之前所有记忆的唯一来源。Agent 将仅依据此摘要（以及少量恢复的文件/图片附件）恢复工作。
 
-关键规则：
-- 下方 <conversation> 标签内是一段【对话记录】，你是旁观者，不是对话参与者。
-- 绝对不要回答对话记录中的任何问题，不要回应对话记录中的任何内容。
-- 不要使用"好的"、"我看到了"等对话语气，不要有任何寒暄。
-- 你的输出必须且只能是一份 Markdown 摘要，严格遵循给定的模板结构，不输出任何其他内容。"""
+首先，将你的推理过程包裹在 <analysis> 块中。在其中按时间线梳理整段对话，逐节识别：用户的明确请求与意图、你处理这些请求的方式、关键决策/技术概念/代码模式、具体细节（文件名、代码片段、函数签名、文件编辑）、遇到的错误及其修复方式、以及用户的任何特定反馈——尤其是用户要求你换种方式做事时。<analysis> 块在摘要传递给下一个 Agent 之前会被剥离；它纯粹是用于提升后续摘要质量的草稿区。
+
+然后，按照下方 EXACT XML 结构输出最终摘要。内容要密集。省略对话性填充。
+
+<state_snapshot>
+    <primary_request_and_intent>
+        <!-- 详细记录用户的所有明确请求和意图。在意图存在歧义时引用用户的原话。 -->
+    </primary_request_and_intent>
+
+    <key_technical_concepts>
+        <!-- 列出所有涉及的重要技术概念、技术和框架。 -->
+    </key_technical_concepts>
+
+    <files_and_code_sections>
+        <!-- 逐一列出检查、修改或创建的文件和代码段。特别关注最近的消息。在适用处包含完整代码片段，并说明该文件读取或编辑为何重要。 -->
+    </files_and_code_sections>
+
+    <errors_and_fixes>
+        <!-- 列出每个遇到的错误及其修复方式。包含被引用给 Agent 的原始错误消息。特别关注用户对错误的反馈，尤其是用户要求你换种方式处理时。 -->
+    </errors_and_fixes>
+
+    <problem_solving>
+        <!-- 记录已解决的问题和任何正在进行的排障工作。 -->
+    </problem_solving>
+
+    <all_user_messages>
+        <!-- 按时间顺序列出所有非工具结果的用户消息。这些对理解用户反馈和意图变化至关重要。包含 "ok"、"continue" 等短消息——它们是信号。 -->
+    </all_user_messages>
+
+    <pending_tasks>
+        <!-- 列出用户已明确要求但尚未完成的待办任务。 -->
+    </pending_tasks>
+
+    <current_work>
+        <!-- 详细描述在请求摘要之前 Agent 正在做什么，特别关注用户和助手的最近消息。在适用处包含文件名和代码片段。 -->
+    </current_work>
+
+    <next_step>
+        <!-- 列出与最近工作相关的唯一下一步。该步骤必须与用户最近的明确请求和请求摘要前 Agent 正在做的任务直接对齐。如果上一个任务已结束，仅在直接符合用户请求时才列出下一步——不要在未与用户确认前开始旁支或旧的工作。如果有下一步，包含最近对话中的直接引用，准确展示你当时在做什么、停在哪里。 -->
+    </next_step>
+</state_snapshot>"""
 
 
 class CompactManager:
@@ -135,12 +125,10 @@ class CompactManager:
         self,
         *,
         session_manager,
-        channel_manager,
         bus,
         threshold: float = DEFAULT_COMPACT_THRESHOLD,
     ):
         self.session_manager = session_manager
-        self.channel_manager = channel_manager
         self.bus = bus
         self._threshold = threshold
         self._last_llm_errors: dict[str, LLMError | None] = {}
@@ -155,92 +143,22 @@ class CompactManager:
     async def should_compact(
         self, session_id: str, channel_id: str, config, *, threshold: float | None = None
     ) -> bool:
-        """水位是否超过 threshold？只读 DB，不调 LLM。"""
+        """水位是否超过 threshold？只读 DB，不调 LLM。
+
+        优先用 API 报告的真实 token（get_token_usage 的 anchor + pending 策略），
+        全新 session 无 anchor 时退化为字符估算。
+        """
         threshold = threshold if threshold is not None else getattr(
             config.context, "compact_threshold", self._threshold
         )
-        events = await self.session_manager.get_messages_by_session(session_id)
-        if not events:
-            return False
         cw = getattr(config.llm, "context_window", None)
         if not cw or cw <= 0:
             return False
-        from ftre.session.token_counter import estimate_messages_tokens
-        estimated = estimate_messages_tokens(events)
+        usage = await self.session_manager.get_token_usage(session_id)
+        estimated = usage["total"]
         if estimated <= 0:
             return False
         return (estimated / cw) >= threshold
-
-    # ─── 启用 pending compact ──────────────────────────────────────
-
-    async def enable_pending_compact(
-        self,
-        session_id: str,
-        channel_id: str,
-        *,
-        config,
-        silent: bool = True,
-    ) -> bool:
-        """启用最新的 pending compact（enabled=False → True）。
-
-        Returns:
-            True: 找到 pending 并成功启用
-            False: 没有 pending / 启用失败
-        """
-        events = await self.session_manager.get_messages_by_session(session_id)
-        if not events:
-            return False
-
-        pending_idx = get_pending_compact_index(events)
-        if pending_idx is None:
-            logger.debug(f"[compact] session={session_id} 没有 pending compact")
-            return False
-
-        # 更新 DB：把 enabled=False → True
-        pending_event = events[pending_idx]
-        event_id = pending_event.get("id")
-        if not event_id:
-            logger.warning(f"[compact] session={session_id} pending compact 缺少 id")
-            return False
-
-        data = dict(pending_event.get("data") or {})
-        data["enabled"] = True
-        # 补算 tokens_after（启用时才算，因为 pending 时不参与上下文）
-        from ftre.session.token_counter import estimate_messages_tokens
-        synthetic = {
-            "type": "context_compact",
-            "data": data,
-            "timestamp": pending_event.get("timestamp", time.time()),
-        }
-        # 启用后，这条 compact 之后的 tail 事件 + compact 自身
-        tail_events = events[pending_idx + 1:]
-        data["tokens_after"] = estimate_messages_tokens([synthetic, *tail_events])
-
-        try:
-            await self.session_manager.update_message_data(event_id, data)
-        except Exception:
-            logger.exception(f"[compact] 启用 pending 失败 session={session_id}")
-            return False
-
-        # 通知前端
-        tokens_before = data.get("tokens_before", 0)
-        done_data = {
-            "enabled": True,
-            "events": data.get("events_before", 0),
-            "tokens_before": tokens_before,
-            "tokens_after": data.get("tokens_after"),
-            "summary": _preview(data.get("summary", "")),
-        }
-        if silent:
-            done_data["silent"] = True
-        await self._notify(session_id, channel_id, "context_compact_enabled", done_data, silent=silent)
-
-        logger.info(
-            f"[compact] session={session_id} 启用 pending compact: "
-            f"events={data.get('events_before', 0)}, "
-            f"tokens {tokens_before} → {data.get('tokens_after')}"
-        )
-        return True
 
     # ─── 异步执行压缩 ──────────────────────────────────────────────
 
@@ -251,24 +169,12 @@ class CompactManager:
         *,
         config,
         silent: bool = True,
-        enabled: bool = True,
+        trigger: Literal["auto", "manual", "idle"] = "auto",
     ) -> str | None:
-        """异步执行压缩。
-
-        Args:
-            enabled: False → 兼容历史预压缩，写 pending compact
-                     True  → 直接压缩（/compact 手动 或 60% 无 pending 时）
-        """
-        # 已有 pending compact 时不重复预压缩
-        if not enabled:
-            events = await self.session_manager.get_messages_by_session(session_id)
-            if events and get_pending_compact_index(events) is not None:
-                logger.debug(f"[compact] session={session_id} 已有 pending，跳过预压缩")
-                return None
-
+        """异步执行压缩。写入 context_compact(mode='summary') 直接生效。"""
         return await self._do_compact(
             session_id, channel_id,
-            config=config, silent=silent, enabled=enabled,
+            config=config, silent=silent, trigger=trigger,
         )
 
     # ─── 快速压缩（零 LLM 成本） ───────────────────────────────────
@@ -296,13 +202,20 @@ class CompactManager:
         if not events:
             return False
 
-        # 只从最后一个 enabled summary compact 之后找 tool_result
+        # 只从最后一个 summary compact 之后找 tool_result
         # 之前的事件已被 summary 替换，to_openai_messages 不会加载它们
         cursor_idx = get_cursor_index(events)
-        active_events = events[cursor_idx + 1:] if cursor_idx is not None else events
+        active_events = events[cursor_idx:]
 
-        # 找活跃区间内的 tool_result
-        tool_results = [e for e in active_events if e.get("type") == "tool_result"]
+        # 找活跃区间内的 tool_result，排除已被之前 fast compact 标记的
+        already_compacted: set[str] = set()
+        for e in active_events:
+            if e.get("type") == "context_compact" and (e.get("data") or {}).get("mode") == "fast":
+                already_compacted.update((e.get("data") or {}).get("events", []))
+        tool_results = [
+            e for e in active_events
+            if e.get("type") == "tool_result" and e.get("id") not in already_compacted
+        ]
         if len(tool_results) <= keep_recent:
             logger.info(
                 f"[compact-fast] session={session_id} tool_result 数 "
@@ -319,7 +232,6 @@ class CompactManager:
 
         payload = asdict(ContextCompactData(
             mode="fast",
-            enabled=True,
             trigger="manual",
             silent=silent,
             events=compacted_ids,
@@ -365,32 +277,38 @@ class CompactManager:
         *,
         config,
         silent: bool,
-        enabled: bool,
+        trigger: Literal["auto", "manual", "idle"] = "auto",
     ) -> str | None:
         """压缩主逻辑：读事件 → LLM 摘要 → 写 compact event。"""
+
+        # 取消在飞的后台 idle 压缩，避免与本次前台压缩竞态
+        existing = self._compact_tasks.get(session_id)
+        if existing and not existing.done():
+            existing.cancel()
+            self._compact_tasks.pop(session_id, None)
+            logger.info(f"[compact] session={session_id} 取消后台压缩，改用前台压缩")
 
         # 1. 读取事件流
         events = await self.session_manager.get_messages_by_session(session_id)
         if not events:
             logger.info(f"[compact] session={session_id} 无事件，跳过")
-            if enabled:
-                await self._notify_failed(session_id, channel_id, "当前会话没有历史消息", silent=silent)
+            await self._notify_failed(session_id, channel_id, "当前会话没有历史消息", silent=silent)
             return None
 
-        # 2. 从上一个 enabled=True 的 compact 之后开始，全量压缩
+        # 2. 从上一个 summary compact 之后开始，全量压缩
         cursor_idx = get_cursor_index(events)
         head_events = events[cursor_idx:]
         if not head_events:
             logger.info(f"[compact] session={session_id} head_events 为空，跳过")
             return None
 
-        # 3. 估算当前 token
+        # 3. 估算当前 token（优先用 API 真实值）
         cw = getattr(config.llm, "context_window", None)
         if not cw or cw <= 0:
             logger.info(f"[compact] session={session_id} context_window={cw} 无效，跳过")
             return None
-        from ftre.session.token_counter import estimate_messages_tokens
-        tokens_before = estimate_messages_tokens(events)
+        usage = await self.session_manager.get_token_usage(session_id)
+        tokens_before = usage["total"]
         current_ratio = tokens_before / cw
 
         # 4. 通知前端开始
@@ -416,8 +334,7 @@ class CompactManager:
         now = time.time()
         payload: dict = asdict(ContextCompactData(
             mode="summary",
-            enabled=enabled,
-            trigger="manual" if not getattr(config.context, "idle_compaction", True) else "auto",
+            trigger=trigger,
             silent=silent,
             summary=summary,
             events_before=len(head_events),
@@ -425,14 +342,25 @@ class CompactManager:
             enable_ratio=getattr(config.context, "compact_threshold", DEFAULT_COMPACT_THRESHOLD),
             tokens_before=tokens_before,
         ))
-        if enabled:
-            synthetic = {
-                "type": "context_compact",
-                "data": payload,
-                "timestamp": now,
-            }
-            # compact 在末尾，后面没有 tail 了
-            payload["tokens_after"] = estimate_messages_tokens([synthetic])
+        synthetic = {
+            "type": "context_compact",
+            "data": payload,
+            "timestamp": now,
+        }
+        from ftre.session.token_counter import estimate_messages_tokens
+        tokens_after = estimate_messages_tokens([synthetic])
+
+        # 膨胀保护：摘要比原文还大 → 放弃
+        if tokens_after >= tokens_before:
+            logger.warning(
+                f"[compact] session={session_id} 摘要膨胀 {tokens_before} → {tokens_after}，放弃"
+            )
+            await self._notify_failed(
+                session_id, channel_id, "压缩后体积未减小", silent=silent,
+            )
+            return None
+
+        payload["tokens_after"] = tokens_after
 
         try:
             await self.session_manager.save_message(
@@ -445,7 +373,7 @@ class CompactManager:
 
         # 8. 通知前端完成
         done_data: dict = {
-            "enabled": enabled,
+            "mode": "summary",
             "events": len(head_events),
             "tokens_before": tokens_before,
             "tokens_after": payload.get("tokens_after"),
@@ -488,7 +416,7 @@ class CompactManager:
             prompt_parts = _build_prompt(
                 previous_summary=previous_summary,
                 context=[context],
-                min_chars=max(20000, int(_estimate_body_chars(context) * 0.6)),
+                min_chars=max(200, int(_estimate_body_chars(context) * 0.6)),
             )
 
             messages = [
@@ -512,8 +440,8 @@ class CompactManager:
                     collected.append(ev.text)
 
             summary = "".join(collected).strip()
-            if not summary or "## " not in summary:
-                logger.warning(f"[compact] LLM 摘要不合格 len={len(summary)}, content={summary!r}")
+            if not summary:
+                logger.warning(f"[compact] LLM 摘要为空")
                 return None
             return summary
         except LLMError as exc:
@@ -597,7 +525,7 @@ class CompactManager:
                         session_id, channel_id,
                         config=config,
                         silent=getattr(config.context, "silent", True),
-                        enabled=True,
+                        trigger="idle",
                     )
                     llm_error = self._last_llm_errors.get(session_id)
                     if summary is not None:
@@ -725,7 +653,7 @@ def _build_prompt(
     返回多条 user message 内容，结构：
     - 对话记录（每段一个 <conversation> 块）
     - （可选）上一次摘要 <previous-summary>
-    - 最后一条：指令 + SUMMARY_TEMPLATE
+    - 最后一条：指令（XML 模板已在 system prompt 中）
 
     首次压缩：Create a new anchored summary from the conversation history.
     增量压缩：Update the anchored summary below using the conversation history above.
@@ -741,9 +669,9 @@ def _build_prompt(
     if previous_summary:
         messages.append(f"<previous-summary>\n{previous_summary}\n</previous-summary>")
 
-    # 最后一条：指令 + 模板（动态计算最低字数）
+    # 最后一条：指令
     base = (
-        f"摘要正文（不含Markdown标记和标点）不得少于 {min_chars} 字，不得过度压缩。\n"
+        f"摘要正文（不含标记和标点）不得少于 {min_chars} 字，不得过度压缩。\n"
         "绝对不要回答对话记录中的任何问题，只输出摘要。"
     )
     if previous_summary:
@@ -759,41 +687,33 @@ def _build_prompt(
             + base
         )
 
-    messages.append(instruction + "\n\n" + SUMMARY_TEMPLATE)
+    messages.append(instruction)
 
     return messages
 
 
 def get_cursor_index(events: list[dict]) -> int:
-    """返回最新已启用 context_compact 事件之后的索引。无则返回 0。"""
+    """返回最新 context_compact(summary) 事件之后的索引。无则返回 0。"""
     for i in range(len(events) - 1, -1, -1):
-        if events[i].get("type") == "context_compact" and _compact_enabled(events[i]):
+        ev = events[i]
+        if ev.get("type") != "context_compact":
+            continue
+        mode = (ev.get("data") or {}).get("mode", "summary")
+        if mode == "summary":
             return i + 1
     return 0
 
 
 def get_previous_summary(events: list[dict]) -> str | None:
-    """返回最新已启用 context_compact 事件的 summary。"""
+    """返回最新 context_compact(summary) 事件的 summary。"""
     for i in range(len(events) - 1, -1, -1):
-        if events[i].get("type") == "context_compact" and _compact_enabled(events[i]):
-            return ((events[i].get("data") or {}).get("summary") or None)
-    return None
-
-
-def get_pending_compact_index(events: list[dict]) -> int | None:
-    """返回最新 pending context_compact（enabled=False）的索引。"""
-    for i in range(len(events) - 1, -1, -1):
-        if events[i].get("type") != "context_compact":
+        ev = events[i]
+        if ev.get("type") != "context_compact":
             continue
-        data = events[i].get("data") or {}
-        if data.get("enabled", True) is False:
-            return i
+        mode = (ev.get("data") or {}).get("mode", "summary")
+        if mode == "summary":
+            return (ev.get("data") or {}).get("summary") or None
     return None
-
-
-def _compact_enabled(event: dict) -> bool:
-    """旧事件缺少 enabled 时按已启用处理。"""
-    return (event.get("data") or {}).get("enabled", True) is True
 
 
 def _preview(text: str, limit: int = 200) -> str:
