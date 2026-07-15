@@ -466,7 +466,7 @@ class AgentLoop:
             "workspace": WorkspaceAccessor(
                 session_id=session_id,
                 session_manager=self.session_manager,
-                event_loop=self._event_loop,
+                event_loop=self._event_loop,  # type: ignore[arg-type]  # start() 后必非 None
                 fallback_cwd=workspace,
             ),
             "trace_name": f"session:{session_id}",
