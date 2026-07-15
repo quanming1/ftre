@@ -168,6 +168,12 @@ class AgentLoop:
             self._cmd_compact,
             description="压缩当前会话上下文",
         )
+        # /compress-fast：零 LLM 成本的快速压缩
+        self.command_manager.register(
+            "/compress-fast",
+            self._cmd_compress_fast,
+            description="快速压缩：裁剪旧工具输出，不调 LLM",
+        )
 
     async def _cmd_compact(self, ctx) -> None:
         """/compact 指令：在当前位置直接执行压缩，执行完 pipeline 自动短路。"""
@@ -205,6 +211,23 @@ class AgentLoop:
             await self._publish_session_status_async(
                 session_id, self.get_session_status(session_id)
             )
+
+    async def _cmd_compress_fast(self, ctx) -> None:
+        """/compress-fast 指令：零 LLM 成本，裁剪旧 tool_result 输出为占位符。"""
+        inbound = ctx.meta["inbound"]
+        session_id = inbound.from_session
+        channel_id = inbound.from_channel
+
+        try:
+            config = self._load_current_config()
+            await self.compact_manager.compress_fast(
+                session_id,
+                channel_id,
+                config=config,
+                silent=False,
+            )
+        except Exception:
+            logger.exception(f"[agent-loop] /compress-fast 执行异常 session={session_id}")
 
     def start(self) -> None:
         """启动消费循环"""
