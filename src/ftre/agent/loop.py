@@ -508,23 +508,8 @@ class AgentLoop:
 
                 # turn_start：先入库 + 派发前端，再持久化 + echo 用户输入
                 if isinstance(event, StepEvent) and event.phase == StepPhase.TURN_START:
-                    # 1. 持久化 turn_start
-                    await self.session_manager.save_message(
-                        session_id, event.type.value, event._data_dict(),
-                        event_id=event.event_id,
-                        turn_id=event.turn_id,
-                        timestamp=event.timestamp,
-                    )
-                    # 2. 派发 turn_start 给前端
-                    out = BusMessage(
-                        type="agent_event",
-                        from_channel=inbound.from_channel,
-                        to_channel=inbound.to_channel,
-                        from_session=inbound.from_session,
-                        to_session=inbound.to_session,
-                        data=event.to_dict(),
-                    )
-                    await self.bus.publish_outbound(out)
+                    # 1+2. 持久化 turn_start 并派发给前端
+                    await self.publish_agent_event(session_id, inbound, event)
                     # 3. 持久化用户输入（用 turn_start 的 turn_id）
                     user_event_id = uuid.uuid4().hex[:16]
                     user_metadata = {"hide": False, "agent_id": agent_id}
@@ -563,24 +548,11 @@ class AgentLoop:
                     await self.bus.publish_outbound(echo)
                     continue
 
-                # 持久化：_PERSISTENT_CLASSES + 所有 StepEvent
+                # 持久化 + 推送
                 if isinstance(event, (self._PERSISTENT_CLASSES, StepEvent)):
-                    await self.session_manager.save_message(
-                        session_id, event.type.value, event._data_dict(),
-                        event_id=event.event_id,
-                        turn_id=event.turn_id,
-                        timestamp=event.timestamp,
-                    )
-
-                out = BusMessage(
-                    type="agent_event",
-                    from_channel=inbound.from_channel,
-                    to_channel=inbound.to_channel,
-                    from_session=inbound.from_session,
-                    to_session=inbound.to_session,
-                    data=event.to_dict(),
-                )
-                await self.bus.publish_outbound(out)
+                    await self.publish_agent_event(session_id, inbound, event)
+                else:
+                    await self._dispatch_agent_event(inbound, event)
                 # usage_update 时检查是否需要预压缩。
                 # maybe_schedule_idle_compact 自带去重，确保同一 session 只有一个 compact task 在飞，
                 # 所以即使 usage_update 频繁也不会反复调度。
@@ -610,21 +582,7 @@ class AgentLoop:
             # 从 agent.state 恢复 turn_id（state.start() 在 run() 首行已执行）
             object.__setattr__(fallback, "turn_id", agent.state.turn_id)
             # 持久化 fallback 事件，确保历史回放时 turn 有完整的 turn_end
-            await self.session_manager.save_message(
-                session_id, fallback.type.value, fallback._data_dict(),
-                event_id=fallback.event_id,
-                turn_id=fallback.turn_id,
-                timestamp=fallback.timestamp,
-            )
-            out = BusMessage(
-                type="agent_event",
-                from_channel=inbound.from_channel,
-                to_channel=inbound.to_channel,
-                from_session=inbound.from_session,
-                to_session=inbound.to_session,
-                data=fallback.to_dict(),
-            )
-            await self.bus.publish_outbound(out)
+            await self.publish_agent_event(session_id, inbound, fallback)
         except Exception:
             subagent_status = "error"
             logger.exception(f"[agent-loop] _run 异常 (session={session_id})")
@@ -638,21 +596,7 @@ class AgentLoop:
             # 从 agent.state 恢复 turn_id（state.start() 在 run() 首行已执行）
             object.__setattr__(fallback, "turn_id", agent.state.turn_id)
             # 持久化 fallback 事件，确保历史回放时 turn 有完整的 turn_end
-            await self.session_manager.save_message(
-                session_id, fallback.type.value, fallback._data_dict(),
-                event_id=fallback.event_id,
-                turn_id=fallback.turn_id,
-                timestamp=fallback.timestamp,
-            )
-            out = BusMessage(
-                type="agent_event",
-                from_channel=inbound.from_channel,
-                to_channel=inbound.to_channel,
-                from_session=inbound.from_session,
-                to_session=inbound.to_session,
-                data=fallback.to_dict(),
-            )
-            await self.bus.publish_outbound(out)
+            await self.publish_agent_event(session_id, inbound, fallback)
         finally:
             # 只有当前 agent 仍是注册的那个才清理。
             if self._active_agents.get(session_id) is agent:
@@ -688,6 +632,33 @@ class AgentLoop:
                     logger.debug("[agent-loop] 调度 idle 压缩失败", exc_info=True)
 
     # ─── 工具方法 ──────────────────────────────────────────
+
+    async def publish_agent_event(
+        self, session_id: str, inbound: BusMessage, event
+    ) -> None:
+        """存储 agent event 到 DB 并派发到前端。"""
+        await self.session_manager.save_message(
+            session_id,
+            event.type.value,
+            event._data_dict(),
+            event_id=event.event_id,
+            turn_id=event.turn_id,
+            timestamp=event.timestamp,
+        )
+        await self._dispatch_agent_event(inbound, event)
+
+    async def _dispatch_agent_event(self, inbound: BusMessage, event) -> None:
+        """派发 agent event 到前端（不存储）。"""
+        await self.bus.publish_outbound(
+            BusMessage(
+                type="agent_event",
+                from_channel=inbound.from_channel,
+                to_channel=inbound.to_channel,
+                from_session=inbound.from_session,
+                to_session=inbound.to_session,
+                data=event.to_dict(),
+            )
+        )
 
     async def _publish_session_status_async(self, session_id: str, status: str) -> None:
         """广播 session 运行态变化（异步版）。"""
