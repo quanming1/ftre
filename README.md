@@ -1,41 +1,43 @@
 # FTRE
 
-FTRE 是本地运行的 AI 编程助手，由四个关联项目组成：
+English | [中文](README.zh-CN.md)
 
-| 项目 | 仓库 | 职责 |
+FTRE is a local-first AI coding assistant, consisting of four interconnected projects:
+
+| Project | Repo | Role |
 |---|---|---|
-| ftre-agent-core | [quanming1/ftre-agent-core](https://github.com/quanming1/ftre-agent-core) | ReAct、LLM、Tool 与 tracing 核心（无状态纯算法库） |
-| ftre | [quanming1/ftre](https://github.com/quanming1/ftre) | Gateway 后端：Session、Channel、MCP、插件、HTTP API |
-| ftre-desktop | [quanming1/ftre-desktop](https://github.com/quanming1/ftre-desktop) | Electron + React 桌面客户端 |
-| ftre-docs | [quanming1/ftre-docs](https://github.com/quanming1/ftre-docs) | 文档站（React + Vite） |
+| ftre-agent-core | [quanming1/ftre-agent-core](https://github.com/quanming1/ftre-agent-core) | ReAct, LLM, Tool & tracing core (stateless algorithm library) |
+| ftre | [quanming1/ftre](https://github.com/quanming1/ftre) | Gateway backend: Session, Channel, MCP, plugins, HTTP API |
+| ftre-desktop | [quanming1/ftre-desktop](https://github.com/quanming1/ftre-desktop) | Electron + React desktop client |
+| ftre-docs | [quanming1/ftre-docs](https://github.com/quanming1/ftre-docs) | Documentation site (React + Vite) |
 
 ```
-ftre-agent-core    Agent 核心库（无状态、纯算法）
-      │              ReActAgent / LLMHandler / Tool 体系 / Runner
-      │              被 ftre 后端 import 使用，不独立部署
+ftre-agent-core    Agent core library (stateless, pure algorithm)
+      │              ReActAgent / LLMHandler / Tool system / Runner
+      │              Imported by ftre backend, not deployed standalone
       │
       ▼
-ftre               Gateway 后端（有状态、长驻进程）
-      │              Session 管理 / EventBus / Channel / 插件 / MCP
-      │              内置插件：skill、mcp、context_govern、title_gen
-      │              对 desktop 提供 WebSocket + HTTP API
+ftre               Gateway backend (stateful, long-running process)
+      │              Session management / EventBus / Channel / Plugins / MCP
+      │              Built-in plugins: skill, mcp, context_govern, title_gen
+      │              Provides WebSocket + HTTP API to desktop
       ▼
-ftre-desktop        Desktop 客户端（Electron + React）
-                     GUI 体验：聊天界面、编辑器、Inspector 面板、设置
-                     通过 WebSocket 与后端通信
+ftre-desktop        Desktop client (Electron + React)
+                     GUI: chat interface, editor, Inspector panel, settings
+                     Communicates with backend via WebSocket
       ▼
-ftre-docs          文档站（独立部署，不依赖后端）
+ftre-docs          Documentation site (independent deployment)
 ```
 
 ## Quick Start
 
-### 前置要求
+### Prerequisites
 
 - Python 3.12+
 - Node.js 18+ / pnpm
-- 一个 OpenAI 兼容的 LLM API Key
+- An OpenAI-compatible LLM API key
 
-### 1. Clone 仓库
+### 1. Clone repositories
 
 ```bash
 git clone https://github.com/quanming1/ftre.git
@@ -44,7 +46,7 @@ git clone https://github.com/quanming1/ftre-desktop.git
 git clone https://github.com/quanming1/ftre-docs.git
 ```
 
-将四个仓库放在同级目录：
+Place all four repos in the same parent directory:
 
 ```
 parent/
@@ -54,140 +56,140 @@ parent/
 └── ftre-docs/
 ```
 
-### 2. 安装依赖
+### 2. Install dependencies
 
 ```bash
-# 后端 + agent-core
+# Backend + agent-core
 cd ftre-agent-core
 pip install -e .
 cd ../ftre
 pip install -e .
 
-# 前端
+# Frontend
 cd ../ftre-desktop
 pnpm install
 
-# 文档站
+# Docs site
 cd ../ftre-docs
 pnpm install
 ```
 
-### 3. 配置
+### 3. Configure
 
-复制示例配置并填入你的 API Key：
+Copy the example config and add your API key:
 
 ```bash
 mkdir -p ~/.ftre
 cp ftre/config.example.json ~/.ftre/config.json
-# 编辑 ~/.ftre/config.json，填入 api_key
+# Edit ~/.ftre/config.json and fill in your api_key
 ```
 
-### 4. 启动
+### 4. Run
 
 ```bash
 cd ftre
 python start.py
 ```
 
-`start.py` 依次启动三个服务：
+`start.py` launches three services:
 
-1. **Gateway 后端** → `ws://127.0.0.1:48650/`
-2. **Desktop 前端** → Electron + Vite dev server
-3. **Docs 文档站** → `http://localhost:48652/`
+1. **Gateway backend** → `ws://127.0.0.1:48650/`
+2. **Desktop frontend** → Electron + Vite dev server
+3. **Docs site** → `http://localhost:48652/`
 
-> 如果四个仓库不在同级目录，设置环境变量 `FTRE_DESKTOP_ROOT` 和 `FTRE_DOCS_ROOT` 指向对应路径。
+> If the repos are not in the same parent directory, set `FTRE_DESKTOP_ROOT` and `FTRE_DOCS_ROOT` environment variables to point to the correct paths.
 
-## 项目结构
+## Project Structure
 
 ```
 ftre/
 ├── src/ftre/
-│   ├── agent/          # AgentLoop — 消费 inbound 消息、驱动 Agent 执行
-│   ├── bus/            # EventBus — 进程内消息总线
-│   ├── channel/        # Channel — WebSocket / SubAgent 等通信通道
-│   ├── command/        # 指令系统（/compact、/cancel 等）
-│   ├── config.py       # 从 ~/.ftre/config.json 加载配置
-│   ├── main.py         # 入口：FastAPI Gateway 服务
-│   ├── plugin/         # 内置插件（skill、mcp、context_govern、title_gen）
-│   ├── session/        # SessionManager — SQLite 持久化
-│   ├── tools/          # 8 个内置工具
-│   └── trace_store.py  # Agent Tracing SQLite 导出
+│   ├── agent/          # AgentLoop — consumes inbound messages, drives Agent execution
+│   ├── bus/            # EventBus — in-process message bus
+│   ├── channel/        # Channel — WebSocket / SubAgent communication channels
+│   ├── command/        # Command system (/compact, /cancel, etc.)
+│   ├── config.py       # Loads config from ~/.ftre/config.json
+│   ├── main.py         # Entry point: FastAPI Gateway service
+│   ├── plugin/         # Built-in plugins (skill, mcp, context_govern, title_gen)
+│   ├── session/        # SessionManager — SQLite persistence
+│   ├── tools/          # 8 built-in tools
+│   └── trace_store.py  # Agent Tracing SQLite exporter
 ├── tests/
-├── start.py            # 一键启动脚本
-├── config.example.json # 示例配置
+├── start.py            # One-click launch script
+├── config.example.json # Example configuration
 └── pyproject.toml
 ```
 
-## 核心特性
+## Core Features
 
-### 内置工具
+### Built-in Tools
 
-8 个内置工具（`src/ftre/tools/`）：bash、read、write、edit、set_workspace、cron、task、send_message。
+8 built-in tools (`src/ftre/tools/`): bash, read, write, edit, set_workspace, cron, task, send_message.
 
-- **read/write/edit** 返回 `(result_str, diff_metadata)` 元组，前端 Inspector 面板直接展示 diff 预览和文件快照
-- **bash** 支持 RTK 自动重写（减少 token 消耗）、semble 语义代码检索集成
-- **task** 子 Agent 模式，把任务派发给独立 session 同步执行
-- 工具按 Agent 配置裁剪（`tools.allow` / `tools.deny`）
+- **read/write/edit** return `(result_str, diff_metadata)` tuples; the desktop Inspector panel displays diff previews and file snapshots
+- **bash** supports RTK auto-rewriting (reduces token usage) and semble semantic code search integration
+- **task** sub-agent mode dispatches tasks to independent sessions for synchronous execution
+- Tools are filtered per Agent config (`tools.allow` / `tools.deny`)
 
-### 多 Agent 架构
+### Multi-Agent Architecture
 
-每个 Agent 有独立配置目录 `~/.ftre/agents/<agent_id>/`，支持独立 LLM、工具、MCP、Skill、工作区配置。
+Each Agent has an independent config directory `~/.ftre/agents/<agent_id>/`, supporting independent LLM, tools, MCP, Skills, and workspace configuration.
 
-### MCP 双层配置
+### MCP Dual-Layer Configuration
 
-| 层级 | 配置来源 | 注册位置 |
+| Layer | Config source | Registration target |
 |------|----------|----------|
-| 公共 MCP | `config.json` 的 `mcp` 段 | 全局 `tool_registry`（所有 Agent 共享） |
-| 私有 MCP | `agent.config.json` 的 `mcp` 段 | per-agent `tool_registry` |
+| Public MCP | `config.json` `mcp` section | Global `tool_registry` (shared by all Agents) |
+| Private MCP | `agent.config.json` `mcp` section | Per-agent `tool_registry` |
 
-### Inspector 面板
+### Inspector Panel
 
-Desktop 右侧扩展面板，支持：
-- **文件预览**：Monaco 编辑器只读渲染，内容快照来自 read 工具 metadata
-- **Diff 预览**：edit/write 工具点击打开，side-by-side diff 视图
-- **文件树侧边栏**：工作区目录浏览，git 状态标记（协商缓存轮询），图片预览
-- **Changes 节点**：平铺所有 git 变更文件，显示增删行数和状态标记
+Desktop right-side extension panel with:
+- **File preview**: Monaco editor read-only rendering, content snapshot from read tool metadata
+- **Diff preview**: edit/write tools open side-by-side diff view
+- **File tree sidebar**: workspace directory browsing, git status markers (negotiated cache polling), image preview
+- **Changes node**: flat list of all git-changed files with line counts and status markers
 
-### Hook 系统
+### Hook System
 
-全异步 filter chain，两个挂点：
-- `before_messages_build`：事件流治理 + AGENTS.md 注入
-- `before_agent_run`：MCP/Skill 系统提示词注入 + 私有工具注册
+Fully async filter chain with two hook points:
+- `before_messages_build`: event stream governance + AGENTS.md injection
+- `before_agent_run`: MCP/Skill system prompt injection + private tool registration
 
-### 插件体系
+### Plugin System
 
-内置 4 个插件（随代码发布）：`skill`、`mcp`、`context_govern`、`title_gen`。外部插件目录 `~/.ftre/plugins/`。
+4 built-in plugins (shipped with code): `skill`, `mcp`, `context_govern`, `title_gen`. External plugins directory: `~/.ftre/plugins/`.
 
 ### Agent Tracing
 
-Gateway 为每次 Agent 执行自动记录树状 Trace，Desktop 左侧 **追踪** 面板可查看 Trace 列表、Run 树和完整详情。
+The Gateway automatically records a tree-shaped Trace for each Agent execution. The Desktop left-side **Traces** panel shows Trace list, Run tree, and full details.
 
-只读 API：
-- `GET /api/traces?limit=100`：最近 Trace 摘要
-- `GET /api/traces/{trace_id}`：单个 Trace 的 Run 树
-- `GET /api/traces/{trace_id}/runs/{run_id}`：单个 Run 的完整 payload
+Read-only API:
+- `GET /api/traces?limit=100`: recent Trace summaries
+- `GET /api/traces/{trace_id}`: single Trace's Run tree
+- `GET /api/traces/{trace_id}/runs/{run_id}`: single Run's full payload
 
-> Trace 包含完整提示词和工具输入输出。共享或归档 JSONL 文件前应检查敏感信息。
+> Traces contain full prompts and tool inputs/outputs. Review for sensitive information before sharing or archiving JSONL files.
 
-## 配置
+## Configuration
 
-全局配置：`~/.ftre/config.json`（参考 `config.example.json`）
+Global config: `~/.ftre/config.json` (see `config.example.json`)
 
-Agent 配置：`~/.ftre/agents/<agent_id>/agent.config.json`
+Agent config: `~/.ftre/agents/<agent_id>/agent.config.json`
 
-详细文档：[ftre-docs](https://github.com/quanming1/ftre-docs)
+Full documentation: [ftre-docs](https://github.com/quanming1/ftre-docs)
 
-## 技术栈
+## Tech Stack
 
-- **后端**：Python 3.12 + asyncio + FastAPI
-- **前端**：TypeScript + React + Electron + Vite
-- **编辑器**：Monaco Editor
-- **LLM**：OpenAI 兼容 API（通过 ftre-agent-core 的 LLMHandler）
-- **存储**：SQLite
+- **Backend**: Python 3.12 + asyncio + FastAPI
+- **Frontend**: TypeScript + React + Electron + Vite
+- **Editor**: Monaco Editor
+- **LLM**: OpenAI-compatible API (via ftre-agent-core's LLMHandler)
+- **Storage**: SQLite
 
-## 贡献
+## Contributing
 
-请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+Please read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
