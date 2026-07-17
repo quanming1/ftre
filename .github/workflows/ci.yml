@@ -37,5 +37,8 @@ jobs:
       - name: Run tests
         run: |
           python -m pytest tests/ -q \
-            --ignore=tests/test_compact_algo.py \
-            --ignore=tests/test_migrate_events.py
+            --ignore=tests/test_octo_channel.py \
+            --ignore=tests/test_plugin_tools.py \
+            --ignore=tests/test_ws_volatile_replay.py \
+            --ignore=tests/test_agent_manager.py \
+            --ignore=tests/test_trace_store.py

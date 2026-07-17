@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from ftre_agent_core.agent.event import UserMessageEvent
 from ftre.tools.read import create_read_tool
 from ftre.tools._workspace import WorkspaceAccessor
-from ftre.session.manager import SessionManager
+from ftre.session.converter import to_openai
 
 
 class FakeWorkspace(WorkspaceAccessor):
@@ -46,7 +46,7 @@ def test_read_tool_image_to_openai_message(tmp_path):
         },
     }]
 
-    msgs = SessionManager.to_openai_messages(
+    msgs = to_openai(
         events,
         config={"llm": {"vision": True}},
     )
@@ -85,7 +85,7 @@ def test_read_tool_image_omitted_without_vision(tmp_path):
         },
     }]
 
-    msgs = SessionManager.to_openai_messages(
+    msgs = to_openai(
         events,
         config={"llm": {"vision": False}},
     )
