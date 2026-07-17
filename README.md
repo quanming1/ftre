@@ -14,9 +14,6 @@ ftre-agent-core    Agent 核心库（无状态、纯算法）
       │              ReActAgent / LLMHandler / Tool 体系 / Runner
       │              被 ftre 后端 import 使用，不独立部署
       │
-      ├── ftre-octo-plugin  Octo IM 外部插件
-      │                     WuKongIM 桥接 / Octo Channel
-      │
       ▼
 ftre               Gateway 后端（有状态、长驻进程）
       │              Session 管理 / EventBus / Channel / 插件 / MCP
@@ -30,10 +27,66 @@ ftre-desktop        Desktop 客户端（Electron + React）
 ftre-docs          文档站（独立部署，不依赖后端）
 ```
 
-## 启动
+## Quick Start
 
-```powershell
-py -3.12 E:\ftre\start.py
+### 前置要求
+
+- Python 3.12+
+- Node.js 18+ / pnpm
+- 一个 OpenAI 兼容的 LLM API Key
+
+### 1. Clone 仓库
+
+```bash
+git clone https://github.com/quanming1/ftre.git
+git clone https://github.com/quanming1/ftre-agent-core.git
+git clone https://github.com/quanming1/ftre-desktop.git
+git clone https://github.com/quanming1/ftre-docs.git
+```
+
+将四个仓库放在同级目录：
+
+```
+parent/
+├── ftre/
+├── ftre-agent-core/
+├── ftre-desktop/
+└── ftre-docs/
+```
+
+### 2. 安装依赖
+
+```bash
+# 后端 + agent-core
+cd ftre-agent-core
+pip install -e .
+cd ../ftre
+pip install -e .
+
+# 前端
+cd ../ftre-desktop
+pnpm install
+
+# 文档站
+cd ../ftre-docs
+pnpm install
+```
+
+### 3. 配置
+
+复制示例配置并填入你的 API Key：
+
+```bash
+mkdir -p ~/.ftre
+cp ftre/config.example.json ~/.ftre/config.json
+# 编辑 ~/.ftre/config.json，填入 api_key
+```
+
+### 4. 启动
+
+```bash
+cd ftre
+python start.py
 ```
 
 `start.py` 依次启动三个服务：
@@ -41,6 +94,29 @@ py -3.12 E:\ftre\start.py
 1. **Gateway 后端** → `ws://127.0.0.1:48650/`
 2. **Desktop 前端** → Electron + Vite dev server
 3. **Docs 文档站** → `http://localhost:48652/`
+
+> 如果四个仓库不在同级目录，设置环境变量 `FTRE_DESKTOP_ROOT` 和 `FTRE_DOCS_ROOT` 指向对应路径。
+
+## 项目结构
+
+```
+ftre/
+├── src/ftre/
+│   ├── agent/          # AgentLoop — 消费 inbound 消息、驱动 Agent 执行
+│   ├── bus/            # EventBus — 进程内消息总线
+│   ├── channel/        # Channel — WebSocket / SubAgent 等通信通道
+│   ├── command/        # 指令系统（/compact、/cancel 等）
+│   ├── config.py       # 从 ~/.ftre/config.json 加载配置
+│   ├── main.py         # 入口：FastAPI Gateway 服务
+│   ├── plugin/         # 内置插件（skill、mcp、context_govern、title_gen）
+│   ├── session/        # SessionManager — SQLite 持久化
+│   ├── tools/          # 8 个内置工具
+│   └── trace_store.py  # Agent Tracing SQLite 导出
+├── tests/
+├── start.py            # 一键启动脚本
+├── config.example.json # 示例配置
+└── pyproject.toml
+```
 
 ## 核心特性
 
@@ -82,40 +158,37 @@ Desktop 右侧扩展面板，支持：
 
 内置 4 个插件（随代码发布）：`skill`、`mcp`、`context_govern`、`title_gen`。外部插件目录 `~/.ftre/plugins/`。
 
-## 配置
+### Agent Tracing
 
-全局配置：`~/.ftre/config.json`
-
-Agent 配置：`~/.ftre/agents/<agent_id>/agent.config.json`
-
-文档：[ftre-docs](https://github.com/quanming1/ftre-docs)
-
-## 技术栈
-
-- **后端**：Python 3.12 + asyncio
-- **前端**：TypeScript + React + Electron + Vite
-- **编辑器**：Monaco Editor
-- **LLM**：OpenAI 兼容 API（通过 ftre-agent-core 的 LLMHandler）
-
-## Agent Tracing
-
-Gateway 为每次 Agent 执行自动记录树状 Trace：
-
-```
-agent
-├── llm
-├── tool
-└── llm
-```
-
-Trace 文件：`~/.ftre/traces/agent-traces.jsonl`
-
-Desktop 左侧 **追踪** 面板可查看 Trace 列表、Run 树和完整详情。
+Gateway 为每次 Agent 执行自动记录树状 Trace，Desktop 左侧 **追踪** 面板可查看 Trace 列表、Run 树和完整详情。
 
 只读 API：
-
 - `GET /api/traces?limit=100`：最近 Trace 摘要
 - `GET /api/traces/{trace_id}`：单个 Trace 的 Run 树
 - `GET /api/traces/{trace_id}/runs/{run_id}`：单个 Run 的完整 payload
 
 > Trace 包含完整提示词和工具输入输出。共享或归档 JSONL 文件前应检查敏感信息。
+
+## 配置
+
+全局配置：`~/.ftre/config.json`（参考 `config.example.json`）
+
+Agent 配置：`~/.ftre/agents/<agent_id>/agent.config.json`
+
+详细文档：[ftre-docs](https://github.com/quanming1/ftre-docs)
+
+## 技术栈
+
+- **后端**：Python 3.12 + asyncio + FastAPI
+- **前端**：TypeScript + React + Electron + Vite
+- **编辑器**：Monaco Editor
+- **LLM**：OpenAI 兼容 API（通过 ftre-agent-core 的 LLMHandler）
+- **存储**：SQLite
+
+## 贡献
+
+请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## License
+
+[MIT](LICENSE)

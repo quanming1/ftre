@@ -2,10 +2,10 @@
 name = "ftre"
 version = "0.1.0"
 description = "ftre - AI 编程助手"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 dependencies = [
-    "ftre-agent-core",
+    "ftre-agent-core>=0.1.0",
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.20.0",
     "aiosqlite>=0.19.0",

@@ -12,6 +12,7 @@ tmp_*.py
 fetch_*.py
 debug_*.py
 .playwright-mcp/
+.playwright-cli/
 
 # 截图/导出文件
 *.png
