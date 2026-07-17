@@ -453,6 +453,9 @@ class AgentLoop:
         # Step 6: 归一化用户输入存储格式
         stored_content = normalize_stored_user_content(content)
 
+        # Step 6.5: 生成 turn_id（ftre 是 Turn 的发起方，由 ftre 生成标识）
+        turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+
         # Step 7: 构建运行时上下文（工具共享数据）
         runtime_context = {
             "session_id": session_id,
@@ -476,6 +479,7 @@ class AgentLoop:
                 "channel_id": inbound.from_channel,
                 "workspace": workspace,
             },
+            "turn_id": turn_id,
         }
 
         # Step 7.5: before_agent_run hook（插件注入对话上下文 / 系统身份）
@@ -497,59 +501,57 @@ class AgentLoop:
         final_content = ""
 
         try:
+            # ── 构造 TURN_START 事件 → 持久化 DB + 推送前端 ──
+            turn_start = StepEvent(phase=StepPhase.TURN_START, start_trigger="user")
+            object.__setattr__(turn_start, "turn_id", turn_id)
+            await self.publish_agent_event(session_id, inbound, turn_start)
+
+            # ── 持久化用户输入（在 agent.run() 之前，不依赖 agent 事件）──
+            user_event_id = uuid.uuid4().hex[:16]
+            user_metadata = {"hide": False, "agent_id": agent_id}
+            # RewritePrompt 的 prompt_override 存入 metadata，converter 重建消息时可读
+            prompt_override = (inbound.data.get("metadata") or {}).get("prompt_override")
+            if prompt_override:
+                user_metadata["prompt_override"] = prompt_override
+            user_data = {
+                "content": stored_content,
+                "metadata": user_metadata,
+            }
+            if attachments:
+                user_data["attachments"] = attachments
+            await self.session_manager.save_message(
+                session_id, "user_message", user_data,
+                event_id=user_event_id,
+                turn_id=turn_id,
+                timestamp=turn_start.timestamp,
+            )
+
+            # ── echo 用户输入给前端 ──
+            echo = BusMessage(
+                type="agent_event",
+                from_channel=inbound.from_channel,
+                to_channel=inbound.to_channel,
+                from_session=inbound.from_session,
+                to_session=inbound.to_session,
+                data={
+                    "type": "user_message",
+                    "event_id": user_event_id,
+                    "timestamp": turn_start.timestamp,
+                    "turn_id": turn_id,
+                    "data": {**inbound.data, "event_id": user_event_id},
+                },
+                metadata=inbound.metadata,
+            )
+            await self.bus.publish_outbound(echo)
+
+            # ── 驱动 Agent 执行 ──
             async for event in agent.run(messages, runtime_context=runtime_context):
                 # task 工具只使用这里记录的最后一条完整 assistant 回复作为返回内容。
                 if isinstance(event, AssistantMessageCompleteEvent):
                     final_content = event.content or ""
 
-                # 检查 cancel：Task.cancel() 会在 await 处抛 CancelledError，
-                # 但 async for 的 yield 不一定被 cancel 打断（取决于 generator 内部实现），
-                # 所以在这里也检查 CancellationToken 作为补充。
-
-                # turn_start：先入库 + 派发前端，再持久化 + echo 用户输入
-                if isinstance(event, StepEvent) and event.phase == StepPhase.TURN_START:
-                    # 1+2. 持久化 turn_start 并派发给前端
-                    await self.publish_agent_event(session_id, inbound, event)
-                    # 3. 持久化用户输入（用 turn_start 的 turn_id）
-                    user_event_id = uuid.uuid4().hex[:16]
-                    user_metadata = {"hide": False, "agent_id": agent_id}
-                    # RewritePrompt 的 prompt_override 存入 metadata，converter 重建消息时可读
-                    prompt_override = (inbound.data.get("metadata") or {}).get("prompt_override")
-                    if prompt_override:
-                        user_metadata["prompt_override"] = prompt_override
-                    user_data = {
-                        "content": stored_content,
-                        "metadata": user_metadata,
-                    }
-                    if attachments:
-                        user_data["attachments"] = attachments
-                    await self.session_manager.save_message(
-                        session_id, "user_message", user_data,
-                        event_id=user_event_id,
-                        turn_id=event.turn_id,
-                        timestamp=event.timestamp,
-                    )
-                    # 4. echo 用户输入给前端（用 inbound 原始格式 + frame_id 去重）
-                    echo = BusMessage(
-                        type="agent_event",
-                        from_channel=inbound.from_channel,
-                        to_channel=inbound.to_channel,
-                        from_session=inbound.from_session,
-                        to_session=inbound.to_session,
-                        data={
-                            "type": "user_message",
-                            "event_id": user_event_id,
-                            "timestamp": event.timestamp,
-                            "turn_id": event.turn_id,
-                            "data": {**inbound.data, "event_id": user_event_id},
-                        },
-                        metadata=inbound.metadata,
-                    )
-                    await self.bus.publish_outbound(echo)
-                    continue
-
-                # 持久化 + 推送
-                if isinstance(event, (self._PERSISTENT_CLASSES, StepEvent)):
+                # 持久化 + 推送（Step 事件不再从 agent-core 来）
+                if isinstance(event, self._PERSISTENT_CLASSES):
                     await self.publish_agent_event(session_id, inbound, event)
                 else:
                     await self._dispatch_agent_event(inbound, event)
@@ -569,6 +571,20 @@ class AgentLoop:
                     except Exception:
                         logger.debug("[agent-loop] 调度 usage 压缩失败", exc_info=True)
 
+            # ── 从 agent.state 构造 TURN_END ──
+            _is_error = agent.state.done_reason == DoneReason.ERROR
+            turn_end = StepEvent(
+                phase=StepPhase.TURN_END,
+                success=(agent.state.done_reason == DoneReason.COMPLETED),
+                reason=agent.state.done_reason or DoneReason.ERROR,
+                iterations=agent.state.iteration,
+                token_usage=dict(agent.state.token_usage),
+                error_message=agent.state.error if _is_error else None,
+                error_code=agent.state.error_code if _is_error else None,
+            )
+            object.__setattr__(turn_end, "turn_id", turn_id)
+            await self.publish_agent_event(session_id, inbound, turn_end)
+
         except asyncio.CancelledError:
             subagent_status = "cancelled"
             # Task.cancel() 导致的 CancelledError：Agent 被 cancel 中断
@@ -579,8 +595,7 @@ class AgentLoop:
                 success=False,
                 reason=DoneReason.CANCELLED,
             )
-            # 从 agent.state 恢复 turn_id（state.start() 在 run() 首行已执行）
-            object.__setattr__(fallback, "turn_id", agent.state.turn_id)
+            object.__setattr__(fallback, "turn_id", turn_id)
             # 持久化 fallback 事件，确保历史回放时 turn 有完整的 turn_end
             await self.publish_agent_event(session_id, inbound, fallback)
         except Exception:
@@ -593,8 +608,7 @@ class AgentLoop:
                 error_message="Agent 执行异常",
                 error_code="unknown",
             )
-            # 从 agent.state 恢复 turn_id（state.start() 在 run() 首行已执行）
-            object.__setattr__(fallback, "turn_id", agent.state.turn_id)
+            object.__setattr__(fallback, "turn_id", turn_id)
             # 持久化 fallback 事件，确保历史回放时 turn 有完整的 turn_end
             await self.publish_agent_event(session_id, inbound, fallback)
         finally:
