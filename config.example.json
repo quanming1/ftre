@@ -1,0 +1,79 @@
+{
+  "_comment": "复制此文件到 ~/.ftre/config.json 并填入你的 API Key",
+  "servers": {
+    "gateway": {
+      "host": "127.0.0.1",
+      "port": 48650
+    },
+    "frontend": {
+      "port": 48651
+    },
+    "docs": {
+      "port": 48652
+    }
+  },
+  "default_workspace": "",
+  "providers": {
+    "openai": {
+      "api_key": "",
+      "api_base": "https://api.openai.com/v1",
+      "api_protocol": "openai",
+      "models": [
+        {
+          "id": "gpt-4o",
+          "name": "GPT-4o",
+          "context_window": 128000,
+          "max_output": 16384,
+          "vision": true
+        }
+      ]
+    },
+    "anthropic": {
+      "api_key": "",
+      "api_base": "https://api.anthropic.com/v1",
+      "api_protocol": "openai",
+      "models": [
+        {
+          "id": "claude-sonnet-4-20250514",
+          "name": "Claude Sonnet 4",
+          "context_window": 200000,
+          "max_output": 16384,
+          "vision": true
+        }
+      ]
+    },
+    "deepseek": {
+      "api_key": "",
+      "api_base": "https://api.deepseek.com/v1",
+      "api_protocol": "openai",
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "name": "DeepSeek Chat",
+          "context_window": 64000,
+          "max_output": 8192,
+          "vision": false
+        }
+      ]
+    }
+  },
+  "agents": {
+    "context": {
+      "precompact_threshold": 0.5,
+      "compact_threshold": 0.6,
+      "consolidation_ratio": 0.5,
+      "safety_buffer": 1024,
+      "idle_compaction": true,
+      "silent": true
+    },
+    "title_generation": {
+      "provider": "",
+      "model": ""
+    },
+    "compact_generation": {
+      "provider": "",
+      "model": ""
+    }
+  },
+  "mcp": {}
+}

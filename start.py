@@ -12,8 +12,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DESKTOP_ROOT = Path(r"E:\binn\ftre-desktop")
-DOCS_ROOT = Path(r"E:\ftre-docs")
+DESKTOP_ROOT = Path(os.environ.get("FTRE_DESKTOP_ROOT", str(ROOT.parent / "ftre-desktop")))
+DOCS_ROOT = Path(os.environ.get("FTRE_DOCS_ROOT", str(ROOT.parent / "ftre-docs")))
 
 # 端口的单一事实源是 ~/.ftre/config.json 的 servers 段；读不到时回退到下面的默认值。
 CONFIG_PATH = Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "config.json"
