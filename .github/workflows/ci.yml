@@ -16,17 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout ftre-agent-core
+        uses: actions/checkout@v4
+        with:
+          repository: quanming1/ftre-agent-core
+          path: ftre-agent-core
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install agent-core
-        run: |
-          pip install git+https://github.com/quanming1/ftre-agent-core.git
-
       - name: Install dependencies
         run: |
+          pip install -e ./ftre-agent-core
           pip install -e .
           pip install pytest pytest-asyncio
 
