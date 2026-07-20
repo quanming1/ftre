@@ -1,12 +1,30 @@
 """
 edit 工具 - 修改已有文件，支持精确字符串替换与按行号替换两种模式
 """
+import threading
+
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
 from .read import _resolve
 from ._io import read_text, write_text_preserving, _NEWLINE_LABEL
 from ._workspace import WorkspaceAccessor
 from ._diff import build_diff_metadata
+
+
+# per-file 锁：确保同一文件的多个 edit 串行执行（读-改-写原子），
+# 避免并行 edit 基于同一快照导致后写覆盖先写。
+_file_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _get_file_lock(path_str: str) -> threading.Lock:
+    """获取（或创建）文件级锁，保证同一文件的 edit 串行。"""
+    with _locks_guard:
+        lock = _file_locks.get(path_str)
+        if lock is None:
+            lock = threading.Lock()
+            _file_locks[path_str] = lock
+        return lock
 
 
 def _line_numbers_of_matches(text: str, needle: str, max_show: int = 5) -> list[int]:
@@ -48,16 +66,38 @@ def _trimmed_match_hint(text: str, needle: str) -> str | None:
     return None
 
 
-def _format_result(p, old_lines: int, new_lines: int, n: int, tf) -> str:
+def _format_result(
+    p,
+    old_lines: int,
+    new_lines: int,
+    n: int,
+    tf,
+    new_content: str = "",
+    start_line: int = 0,
+) -> str:
+    """格式化 edit 结果，包含修改位置行号和修改后内容预览。"""
     newline = _NEWLINE_LABEL.get(tf.newline, repr(tf.newline))
     encoding = tf.encoding + ("+BOM" if tf.had_bom else "")
-    return (
+    result = (
         "<FTRE_SYSTEM_FACT>\n"
         f"[file] {p}\n"
         f"[meta] encoding={encoding} newline={newline} size={n}bytes\n"
         f"已修改：{old_lines} 行 → {new_lines} 行\n"
-        "</FTRE_SYSTEM_FACT>"
     )
+    if start_line > 0:
+        result += f"修改位置：第 {start_line}-{start_line + new_lines - 1} 行\n"
+        # 修改后内容预览（前 3 行），让调用方快速确认改动落地
+        if new_content:
+            all_lines = new_content.splitlines()
+            preview_start = start_line - 1
+            preview_end = min(preview_start + 3, len(all_lines))
+            preview = all_lines[preview_start:preview_end]
+            if preview:
+                result += "修改后预览：\n"
+                for i, line in enumerate(preview):
+                    result += f"  {preview_start + i + 1}| {line}\n"
+    result += "</FTRE_SYSTEM_FACT>"
+    return result
 
 
 def _edit_by_string(p, content: str, old_str: str, new_norm: str, tf) -> tuple[str, dict]:
@@ -82,9 +122,15 @@ def _edit_by_string(p, content: str, old_str: str, new_norm: str, tf) -> tuple[s
             f"请在 old_str 中加入更多上下文（前后行）以唯一定位。"
         ), {}
 
+    # 计算替换起始行号（用于结果输出）
+    replace_start = content.index(old_norm)
+    start_line = content.count("\n", 0, replace_start) + 1
+
     new_content = content.replace(old_norm, new_norm, 1)
     n = write_text_preserving(p, new_content, tf)
-    result = _format_result(p, old_norm.count("\n") + 1, new_norm.count("\n") + 1, n, tf)
+    old_lines = old_norm.count("\n") + 1
+    new_lines = new_norm.count("\n") + 1
+    result = _format_result(p, old_lines, new_lines, n, tf, new_content, start_line)
     diff_meta = build_diff_metadata(str(p), content, new_content)
     return result, diff_meta
 
@@ -115,7 +161,9 @@ def _edit_by_line(p, content: str, new_norm: str, start_line: int, end_line: int
         new_content += "\n"
 
     n = write_text_preserving(p, new_content, tf)
-    result = _format_result(p, end - start_idx, len(replacement), n, tf)
+    old_count = end - start_idx
+    new_count = len(replacement)
+    result = _format_result(p, old_count, new_count, n, tf, new_content, start_line)
     diff_meta = build_diff_metadata(str(p), content, new_content)
     return result, diff_meta
 
@@ -127,6 +175,10 @@ def create_edit_tool() -> Tool:
     - 字符串模式（默认）：old_str 在文件中严格唯一匹配后替换，0 次或 >1 次报错并给定位提示。
     - 行号模式：提供 start_line（可选 end_line）按行替换，无需 old_str。
     写回保留原 encoding 与换行风格；AI 传入的换行/编码会被转换为与目标文件一致。
+
+    并发安全：同一文件的多个 edit 通过 per-file 锁串行执行（读-改-写原子），
+    避免并行调用基于同一快照导致后写覆盖先写。
+    结果输出包含修改位置行号和修改后内容预览，便于调用方快速确认改动落地。
     """
 
     def edit(
@@ -149,18 +201,22 @@ def create_edit_tool() -> Tool:
             if not p.is_file():
                 return f"[error] 不是普通文件: {p}"
 
-            tf = read_text(p)
-            content = tf.text
-            # 把 AI 传入的换行统一成内部的 \n；编码与最终换行风格由 write_text_preserving
-            # 按原文件还原，因此 AI 用什么换行/编码输入都会被转换成与目标文件一致。
-            new_norm = new_str.replace("\r\n", "\n").replace("\r", "\n")
+            # per-file 锁：确保同一文件的多个 edit 串行执行（读-改-写原子），
+            # 避免并行 edit 基于同一快照导致后写覆盖先写。
+            lock = _get_file_lock(str(p))
+            with lock:
+                tf = read_text(p)
+                content = tf.text
+                # 把 AI 传入的换行统一成内部的 \n；编码与最终换行风格由 write_text_preserving
+                # 按原文件还原，因此 AI 用什么换行/编码输入都会被转换成与目标文件一致。
+                new_norm = new_str.replace("\r\n", "\n").replace("\r", "\n")
 
-            # 行号模式：给了 start_line 就按行替换，不依赖 old_str 精确匹配。
-            if start_line > 0:
-                return _edit_by_line(p, content, new_norm, start_line, end_line, tf)
+                # 行号模式：给了 start_line 就按行替换，不依赖 old_str 精确匹配。
+                if start_line > 0:
+                    return _edit_by_line(p, content, new_norm, start_line, end_line, tf)
 
-            # 字符串模式：old_str 必须唯一匹配。
-            return _edit_by_string(p, content, old_str, new_norm, tf)
+                # 字符串模式：old_str 必须唯一匹配。
+                return _edit_by_string(p, content, old_str, new_norm, tf)
         except Exception as e:
             return f"[error] {type(e).__name__}: {e}"
 
@@ -178,6 +234,7 @@ def create_edit_tool() -> Tool:
             "- 行号与 read 工具一致，可先 read 看行号再按号编辑\n"
             "通用：\n"
             "- 写回时保留原编码与换行风格（CRLF/LF），new_str 的换行/编码会自动转换为与文件一致\n"
+            "- 同一文件的多个 edit 串行执行（per-file 锁），结果含修改位置行号和内容预览\n"
             "- 新建文件请用 write 工具"
         ),
         parameters=[
