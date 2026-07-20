@@ -53,6 +53,7 @@ class CommandManager:
         description: str = "",
         args_hint: str = "",
         system: bool = False,
+        persist_input: bool = True,
         source: str = "builtin",
         sub_commands: list[CommandDef] | None = None,
     ) -> "CommandManager":
@@ -62,6 +63,9 @@ class CommandManager:
         适合需要立即响应的指令（如 /cancel）。
         默认 system=False → 普通指令，在 _step_command 的 lock 内执行。
 
+        persist_input=False → 不持久化用户输入（/cancel 等纯控制指令用），
+        _dispatch 在入库前回查 match_any() 跳过持久化。
+
         按 command 长度降序排列，长的优先匹配。
         """
         cmd_def = CommandDef(
@@ -69,6 +73,7 @@ class CommandManager:
             description=description,
             args_hint=args_hint,
             system=system,
+            persist_input=persist_input,
             source=source,
             sub_commands=sub_commands or [],
         )
@@ -125,6 +130,20 @@ class CommandManager:
         text = self._extract_from_data(data)
         if text is None:
             return None
+        matched = self._match_entry(self._entries, text)
+        return matched[0] if matched else None
+
+    def match_any(self, data: Any) -> CommandDef | None:
+        """检查是否命中任何指令（系统级 + 普通级），不执行 handler。
+
+        供 _dispatch 在持久化用户输入前判断 persist_input。
+        """
+        text = self._extract_from_data(data)
+        if text is None:
+            return None
+        matched = self._match_entry(self._system_entries, text)
+        if matched:
+            return matched[0]
         matched = self._match_entry(self._entries, text)
         return matched[0] if matched else None
 

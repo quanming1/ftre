@@ -54,6 +54,8 @@ class PipelineData:
     """Pipeline 各阶段共享的状态对象。"""
     inbound: BusMessage
     need_compact: bool = False
+    turn_id: str = ""
+    command_name: str | None = None
 
 
 class AgentLoop:
@@ -231,39 +233,124 @@ class AgentLoop:
         """单条消息的派发入口。
 
         处理顺序：
-        1. 系统级指令（如 /cancel）→ 在锁外执行，不受阻塞
-        2. 普通消息 → 获取 session lock → 串行执行 pipeline
+        1. 生成 turn_id + 发 PIPELINE_START
+        2. 系统级指令（如 /cancel）→ 在锁外执行，不受阻塞
+        3. 普通消息 → 获取 session lock → 串行执行 pipeline
+        4. finally: 发 PIPELINE_END（始终成对）
 
         系统级指令在锁外执行，保证用户点击停止后立即响应。
         CancelledError 会在 LLM stream 的下一个 await 处立即抛出。
         """
-        # ─── 系统级指令：锁外执行 ───
-        if await self.command_manager.try_dispatch_system(data):
-            return
+        # ── 生成 turn_id（ftre 是 Turn 的发起方）──
+        data.turn_id = f"turn_{uuid.uuid4().hex[:12]}"
 
-        # ─── 普通消息：获取 per-session lock → 跑 pipeline ───
-        inbound = data.inbound
-        session_id = inbound.data.get("session_id", "") or inbound.from_session
+        # ── PIPELINE_START ──
+        pipeline_start = StepEvent(phase=StepPhase.PIPELINE_START)
+        object.__setattr__(pipeline_start, "turn_id", data.turn_id)
+        await self.publish_agent_event(
+            data.inbound.data.get("session_id", "") or data.inbound.from_session,
+            data.inbound,
+            pipeline_start,
+        )
 
-        if session_id:
-            # 注册 session → task 映射（cancel 时用）
-            current_task = asyncio.current_task()
-            self._session_tasks[session_id] = current_task
+        try:
+            inbound = data.inbound
+            session_id = inbound.data.get("session_id", "") or inbound.from_session
+            content = inbound.data.get("content", "")
+            attachments = inbound.data.get("attachments") or []
+            agent_id = (inbound.metadata or {}).get("agent_id", "") or "default"
 
-            lock = self._session_locks.setdefault(session_id, asyncio.Lock())
-            try:
-                async with lock:
-                    await self._pipeline.run(data)
-            except asyncio.CancelledError:
-                # cancel 导致的 CancelledError，正常退出
-                logger.info(f"[agent-loop] session={session_id} 被 cancel 中断")
-            finally:
-                # 清理 session → task 映射
-                if self._session_tasks.get(session_id) is current_task:
-                    self._session_tasks.pop(session_id, None)
-        else:
-            # 无 session_id 的消息直接跑 pipeline（不需要锁）
-            await self._pipeline.run(data)
+            # ── 指令匹配（不执行 handler），决定是否持久化用户输入 ──
+            cmd_def = (
+                self.command_manager.match_any(data)
+                if self.command_manager
+                else None
+            )
+            should_persist = (cmd_def is None) or cmd_def.persist_input
+
+            if should_persist and session_id and content:
+                stored_content = normalize_stored_user_content(content)
+                user_event_id = uuid.uuid4().hex[:16]
+                user_metadata = {"hide": False, "agent_id": agent_id}
+                user_data: dict = {
+                    "content": stored_content,
+                    "metadata": user_metadata,
+                }
+                if attachments:
+                    user_data["attachments"] = attachments
+                await self.session_manager.save_message(
+                    session_id, "user_message", user_data,
+                    event_id=user_event_id,
+                    turn_id=data.turn_id,
+                    timestamp=pipeline_start.timestamp,
+                )
+
+                # echo 用户输入给前端
+                echo = BusMessage(
+                    type="agent_event",
+                    from_channel=inbound.from_channel,
+                    to_channel=inbound.to_channel,
+                    from_session=inbound.from_session,
+                    to_session=inbound.to_session,
+                    data={
+                        "type": "user_message",
+                        "event_id": user_event_id,
+                        "timestamp": pipeline_start.timestamp,
+                        "turn_id": data.turn_id,
+                        "data": {**inbound.data, "event_id": user_event_id},
+                    },
+                    metadata=inbound.metadata,
+                )
+                await self.bus.publish_outbound(echo)
+
+            # ── 命中指令时发 COMMAND_MATCHED（系统级 + 普通级统一在 _dispatch 处理）──
+            if cmd_def is not None:
+                data.command_name = cmd_def.command
+                cmd_matched = StepEvent(
+                    phase=StepPhase.COMMAND_MATCHED,
+                    command_name=data.command_name,
+                )
+                object.__setattr__(cmd_matched, "turn_id", data.turn_id)
+                await self.publish_agent_event(session_id, inbound, cmd_matched)
+
+            # ─── 系统级指令：锁外执行 ───
+            if await self.command_manager.try_dispatch_system(data):
+                return
+
+            # ─── 普通消息：获取 per-session lock → 跑 pipeline ───
+            # inbound 和 session_id 已在上方用户输入持久化时提取
+
+            if session_id:
+                # 注册 session → task 映射（cancel 时用）
+                current_task = asyncio.current_task()
+                self._session_tasks[session_id] = current_task
+
+                lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+                try:
+                    async with lock:
+                        await self._pipeline.run(data)
+                except asyncio.CancelledError:
+                    # cancel 导致的 CancelledError，正常退出
+                    logger.info(f"[agent-loop] session={session_id} 被 cancel 中断")
+                finally:
+                    # 清理 session → task 映射
+                    if self._session_tasks.get(session_id) is current_task:
+                        self._session_tasks.pop(session_id, None)
+            else:
+                # 无 session_id 的消息直接跑 pipeline（不需要锁）
+                await self._pipeline.run(data)
+        finally:
+            # ── PIPELINE_END ──（始终成对）
+            pipeline_end = StepEvent(
+                phase=StepPhase.PIPELINE_END,
+                command_name=data.command_name,
+            )
+            object.__setattr__(pipeline_end, "turn_id", data.turn_id)
+            await self.publish_agent_event(
+                data.inbound.data.get("session_id", "") or data.inbound.from_session,
+                data.inbound,
+                pipeline_end,
+            )
 
     # ─── pipeline 各阶段 ────────────────────────────────────
 
@@ -271,23 +358,21 @@ class AgentLoop:
         """普通指令预处理：匹配普通指令（锁内）。
 
         系统级指令已在 _dispatch 锁外处理，这里只处理普通指令（如 /compact）。
-        流程：先判断是否命中 → 执行 handler → 按 CommandResult 分发。
+        COMMAND_MATCHED 事件和 data.command_name 已在 _dispatch 中统一设置。
         返回 True 继续 pipeline（未匹配 / RewritePrompt / Passthrough），返回 False 短路。
         """
         if not self.command_manager:
             return True
 
-        # 1. 先判断是否命中（不执行 handler）
         cmd_def = self.command_manager.match(data)
         if cmd_def is None:
             return True
 
-        # 2. 执行 handler，得到 CommandResult
+        # data.command_name 和 COMMAND_MATCHED 已在 _dispatch 中处理
         result = await self.command_manager.try_dispatch(data)
         if result is None:
             return True  # 不应该发生（match 已命中），安全默认
 
-        # 3. 根据返回值决定下一步
         inbound = data.inbound
         session_id = inbound.from_session or inbound.data.get("session_id", "")
         match result:
@@ -300,11 +385,9 @@ class AgentLoop:
                 inbound_data["metadata"]["prompt_override"] = prompt_content
                 return True
             case SendMessage(content=msg, level=level):
-                await self._persist_command_input(data)
                 await self._send_command_message(session_id, inbound.from_channel, msg, level)
                 return False
             case Handled():
-                await self._persist_command_input(data)
                 return False
             case Passthrough():
                 return True
@@ -339,8 +422,7 @@ class AgentLoop:
 
     async def _step_run(self, data: PipelineData) -> bool:
         """执行阶段：在主事件循环直接 await Agent 运行。"""
-        inbound = data.inbound
-        await self._run_async(inbound, data.need_compact)
+        await self._run_async(data)
         return False
 
     # ─── Agent 执行 ─────────────────────────────────────────
@@ -352,13 +434,15 @@ class AgentLoop:
         UserMessageEvent,
     )
 
-    async def _run_async(self, inbound: BusMessage, need_compact: bool = False) -> None:
+    async def _run_async(self, data: PipelineData) -> None:
         """异步执行 Agent，事件逐条投递到 Bus。
 
         主循环化后跑在主事件循环里，不再需要 executor 线程。
         DB / Bus 操作直接 await，不再 run_coroutine_threadsafe。
         """
         # Step 1: 入参校验
+        inbound = data.inbound
+        need_compact = data.need_compact
         content = inbound.data.get("content", "")
         attachments = inbound.data.get("attachments") or []
         session_id = inbound.data.get("session_id", "")
@@ -450,11 +534,8 @@ class AgentLoop:
         self._active_agents[session_id] = agent
         await self._publish_session_status_async(session_id, "running")
 
-        # Step 6: 归一化用户输入存储格式
-        stored_content = normalize_stored_user_content(content)
-
-        # Step 6.5: 生成 turn_id（ftre 是 Turn 的发起方，由 ftre 生成标识）
-        turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        # Step 6.5: turn_id 已在 _dispatch 中生成
+        turn_id = data.turn_id
 
         # Step 7: 构建运行时上下文（工具共享数据）
         runtime_context = {
@@ -505,44 +586,6 @@ class AgentLoop:
             turn_start = StepEvent(phase=StepPhase.TURN_START, start_trigger="user")
             object.__setattr__(turn_start, "turn_id", turn_id)
             await self.publish_agent_event(session_id, inbound, turn_start)
-
-            # ── 持久化用户输入（在 agent.run() 之前，不依赖 agent 事件）──
-            user_event_id = uuid.uuid4().hex[:16]
-            user_metadata = {"hide": False, "agent_id": agent_id}
-            # RewritePrompt 的 prompt_override 存入 metadata，converter 重建消息时可读
-            prompt_override = (inbound.data.get("metadata") or {}).get("prompt_override")
-            if prompt_override:
-                user_metadata["prompt_override"] = prompt_override
-            user_data = {
-                "content": stored_content,
-                "metadata": user_metadata,
-            }
-            if attachments:
-                user_data["attachments"] = attachments
-            await self.session_manager.save_message(
-                session_id, "user_message", user_data,
-                event_id=user_event_id,
-                turn_id=turn_id,
-                timestamp=turn_start.timestamp,
-            )
-
-            # ── echo 用户输入给前端 ──
-            echo = BusMessage(
-                type="agent_event",
-                from_channel=inbound.from_channel,
-                to_channel=inbound.to_channel,
-                from_session=inbound.from_session,
-                to_session=inbound.to_session,
-                data={
-                    "type": "user_message",
-                    "event_id": user_event_id,
-                    "timestamp": turn_start.timestamp,
-                    "turn_id": turn_id,
-                    "data": {**inbound.data, "event_id": user_event_id},
-                },
-                metadata=inbound.metadata,
-            )
-            await self.bus.publish_outbound(echo)
 
             # ── 驱动 Agent 执行 ──
             async for event in agent.run(messages, runtime_context=runtime_context):
@@ -706,26 +749,6 @@ class AgentLoop:
         )
         await self.bus.publish_outbound(evt)
 
-    async def _persist_command_input(self, data: PipelineData) -> None:
-        """持久化指令原始输入（仅短路指令用，SubmitPrompt 不需要——_run_async 会持久化）。"""
-        inbound = data.inbound
-        session_id = inbound.from_session or inbound.data.get("session_id", "")
-        content = inbound.data.get("content", "")
-        if session_id and content:
-            try:
-                await self.session_manager.save_message(
-                    session_id,
-                    "user_message",
-                    {
-                        "content": normalize_stored_user_content(content),
-                        "metadata": {"hide": False},
-                    },
-                )
-            except Exception:
-                logger.exception(
-                    f"[agent-loop] 指令消息持久化失败 session={session_id}"
-                )
-
     def _load_current_config(self) -> AgentConfig:
         """读取当前生效的配置"""
         if self._injected_config is not None:
@@ -777,7 +800,18 @@ class AgentLoop:
                 events,
                 config={"llm": {"vision": hook_config.llm.vision}},
             )
-            history.append({"role": "user", "content": user_content})
+            # 用户消息已在 _dispatch 中提前持久化到 DB，to_openai 已包含它。
+            # 不再 append（会导致 LLM 收到两份重复消息）。
+            # 如果有 prompt_override（指令重写），替换最后一条 user 消息的内容。
+            if user_content:
+                replaced = False
+                for i in range(len(history) - 1, -1, -1):
+                    if history[i].get("role") == "user":
+                        history[i] = {**history[i], "content": user_content}
+                        replaced = True
+                        break
+                if not replaced:
+                    history.append({"role": "user", "content": user_content})
             return history, hook_config
 
         return [{"role": "user", "content": user_content}], hook_config

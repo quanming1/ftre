@@ -88,6 +88,7 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
         _on_cancel,
         description="取消当前会话执行",
         system=True,
+        persist_input=False,
     )
     mgr.register(
         "/compact",
