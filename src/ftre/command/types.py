@@ -56,6 +56,7 @@ class CommandDef:
     description: str = ""               # "切换模型预设"
     args_hint: str = ""                 # "[preset]"；空串 = 无参数
     system: bool = False                # 系统级指令：锁外执行，可立即响应
+    persist_input: bool = True          # 是否持久化用户输入（/cancel=False 不入库不回显）
     sub_commands: list["CommandDef"] = field(default_factory=list)
     source: str = "builtin"             # builtin / file / skill
     handler: "Handler | None" = None    # 文件/Skill 指令直接挂载
