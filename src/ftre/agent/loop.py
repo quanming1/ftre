@@ -182,3 +182,7 @@ class AgentLoop:
     def _load_current_config(self) -> AgentConfig:
         """读取当前生效的配置（委托给 TurnExecutor）。"""
         return self._executor._load_current_config()
+
+    async def _publish_session_status_async(self, session_id: str, status: str) -> None:
+        """广播 session 运行态变化（委托给 TurnExecutor，builtin command handler 用）。"""
+        await self._executor._publish_session_status_async(session_id, status)
