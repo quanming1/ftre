@@ -1,4 +1,4 @@
-﻿"""
+"""
 SessionManager - 会话与消息持久化（SQLite）
 
 两张表：
