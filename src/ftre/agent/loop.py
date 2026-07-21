@@ -1,4 +1,4 @@
-﻿"""
+"""
 AgentLoop - 全局单例，消费所有 session 的 inbound 消息
 
 职责：
