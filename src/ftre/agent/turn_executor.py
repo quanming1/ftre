@@ -754,6 +754,7 @@ class TurnExecutor:
                 channel_id=channel_id,
                 inbound_data=inbound_data or {},
                 workspace=workspace,
+                turn_id=turn.turn_id,
                 agent_dir=agent_dir,
                 config=hook_config,
                 events=events,

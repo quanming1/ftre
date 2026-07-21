@@ -71,6 +71,7 @@ class MessagesBuildContext:
     channel_id: str
     inbound_data: dict
     workspace: str
+    turn_id: str = ""
     agent_dir: str = ""
     event_loop: Any = None
 

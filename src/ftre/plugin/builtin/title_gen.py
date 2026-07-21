@@ -2,7 +2,7 @@
 title_gen — 首条消息自动生成会话标题
 
 通过 before_messages_build hook 判断是否首条消息：
-- events 为空（DB 里还没有任何事件）
+- 当前 Turn 之前没有可见的 user_message
 - session 没有 title
 
 满足条件时异步起线程调 LLM 生成标题并落库。
@@ -48,11 +48,12 @@ class TitleGenPlugin(Plugin):
         """before_messages_build hook：首条消息时异步生成标题"""
         session_id = ctx.session_id
 
-        # 判断是否首条：events 为空 = DB 里还没有任何事件
-        if ctx.events:
+        # 当前 user_message 已在 COMMAND 状态提前写入 DB，events 不再为空。
+        # 必须按 turn_id 排除本轮事件，只判断此前是否已有可见 user_message。
+        if self._has_prior_user_message(ctx.events, ctx.turn_id):
             logger.debug(
                 f"[title_gen] 跳过：非首条消息 (session={session_id}, "
-                f"已有 {len(ctx.events)} 条事件)"
+                f"已有历史 user_message)"
             )
             return ctx
 
@@ -139,6 +140,21 @@ class TitleGenPlugin(Plugin):
             name=f"title-gen-{session_id}",
             daemon=True,
         ).start()
+
+    @staticmethod
+    def _has_prior_user_message(events, current_turn_id: str) -> bool:
+        """判断事件流中是否已有当前 Turn 之前的可见用户消息。"""
+        for event in events:
+            if getattr(event, "type", "") != "user_message":
+                continue
+            if getattr(event, "turn_id", "") == current_turn_id:
+                continue
+            data = getattr(event, "data", {}) or {}
+            metadata = data.get("metadata", {}) if isinstance(data, dict) else {}
+            if isinstance(metadata, dict) and metadata.get("hide") is True:
+                continue
+            return True
+        return False
 
     def _generate_title(self, user_text: str, config) -> str:
         """一次性 LLM 调用生成标题"""
