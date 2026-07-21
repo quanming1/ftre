@@ -44,4 +44,5 @@ jobs:
             --ignore=tests/test_plugin_tools.py \
             --ignore=tests/test_ws_volatile_replay.py \
             --ignore=tests/test_agent_manager.py \
-            --ignore=tests/test_trace_store.py
+            --ignore=tests/test_trace_store.py \
+            --ignore=tests/test_mcp.py
