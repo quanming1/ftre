@@ -3,59 +3,33 @@ AgentLoop - 全局单例，消费所有 session 的 inbound 消息
 
 职责：
 - 从 Bus 全局 inbound 队列消费消息
-- 收到 user_message 时，加载历史 → 驱动 ReActAgent → 将事件逐条发布到 outbound
-- 系统级指令（如 /cancel）在锁外立即执行
-
-并发模型（v3 — 主循环化）：
-- _consume 不 await pipeline，而是 create_task(_dispatch(msg)) 立即返回
-- _dispatch 对不同 session 并发执行，对同一 session 用 asyncio.Lock 串行
+- 对不同 session 并发执行，对同一 session 用 asyncio.Lock 串行
 - 系统级指令绕过 session lock，在锁外直接执行
 - Agent 执行全在主事件循环，Task.cancel() 在 LLM stream 的 await 处立即生效
+
+Turn 执行逻辑（状态机驱动）已拆到 TurnExecutor，
+AgentLoop 只管消费循环 + 并发控制 + 生命周期。
 """
 
 import asyncio
-import copy
 import logging
-import os
-import uuid
-from dataclasses import dataclass
 from concurrent.futures import Future
 
 from ftre_agent_core import Tracer
 from ftre_agent_core.agent import ReActAgent
-from ftre_agent_core.agent.event import (
-    AssistantMessageCompleteEvent,
-    StepEvent,
-    StepPhase,
-    DoneReason,
-    ToolResultEvent,
-    UserMessageEvent,
-)
 from ftre_agent_core.hooks import FtreCoreHookManager
 from ftre_agent_core.tool import ToolRegistry
 
-from ftre.bus import GLOBAL_CHANNEL, GLOBAL_SESSION, BusMessage, EventBus
+from ftre.bus import BusMessage, EventBus
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
-from ftre.config import AgentConfig, load_config
+from ftre.config import AgentConfig
 from ftre.session import SessionManager
-from ftre.session.multimodal import build_user_content, normalize_stored_user_content
-from ftre.tools._workspace import WorkspaceAccessor
 from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
-from ftre.utils import Pipeline
 
 from .compact_manager import CompactManager
-from ftre.command.types import Handled, Passthrough, RewritePrompt, SendMessage
+from .turn_executor import TurnExecutor
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class PipelineData:
-    """Pipeline 各阶段共享的状态对象。"""
-    inbound: BusMessage
-    need_compact: bool = False
-    turn_id: str = ""
-    command_name: str | None = None
 
 
 class AgentLoop:
@@ -64,7 +38,7 @@ class AgentLoop:
 
     并发模型：
     - _consume：只负责从 inbound 队列取消息，create_task 派发后立即取下一条
-    - _dispatch：per-session asyncio.Lock 保证同一 session 串行，不同 session 并发
+    - TurnExecutor.execute：状态机驱动，per-session asyncio.Lock 保证同一 session 串行
     - 系统级指令（如 /cancel）：绕过 session lock，在锁外直接执行
     - 所有 Agent 执行在主事件循环，Task.cancel() 可在 LLM stream 的 await 处立即生效
 
@@ -101,33 +75,15 @@ class AgentLoop:
         self.tracer = Tracer([SQLiteTraceExporter(TRACE_DB_PATH)])
 
         # ─── 并发控制 ──────────────────────────────────────────
-        # per-session 协程锁：保证同一 session 的消息串行处理，
-        # 不同 session 的消息可以并发执行。
         self._session_locks: dict[str, asyncio.Lock] = {}
-
-        # 当前正在执行的 Agent（session_id → ReActAgent）
-        # 主循环化后所有访问都在主循环协程内，无需 threading.Lock
         self._active_agents: dict[str, ReActAgent] = {}
-
-        # subagent session_id → task 工具等待的一次性完成结果
         self._subagent_done_futures: dict[str, Future[dict]] = {}
-
-        # session_id → 该 session 当前正在执行的 dispatch task
-        # cancel 时通过 task.cancel() 立即中断
         self._session_tasks: dict[str, asyncio.Task] = {}
-
-        # 并发派发任务集合：_consume 创建的 dispatch task 都注册到这里，
-        # stop() 时可以统一 cancel，防止任务飞丢。
         self._dispatch_tasks: set[asyncio.Task] = set()
-
-        # 后台 idle compact 状态标记：手动 /compact 执行中的 session
         self._compacting_sessions: set[str] = set()
 
-        # ─── pipeline ─────────────────────────────────────────
-        self._pipeline = Pipeline("consume")
-        self._pipeline.use(self._step_command, name="command")
-        self._pipeline.use(self._step_compact, name="compact")
-        self._pipeline.use(self._step_run, name="run")
+        # ─── Turn 执行器 ──────────────────────────────────────
+        self._executor = TurnExecutor(self)
 
         self.compact_manager = CompactManager(
             session_manager=self.session_manager,
@@ -184,21 +140,17 @@ class AgentLoop:
 
     async def stop(self) -> None:
         """优雅关闭：取消消费循环 + 中断所有 Agent。"""
-        # 1. 取消消费循环
         if self._task:
             self._task.cancel()
 
-        # 2. 取消所有 dispatch task（等锁的也会被唤醒退出）
         for t in list(self._dispatch_tasks):
             t.cancel()
 
-        # 3. 取消所有正在运行的 Agent
         for agent in self._active_agents.values():
             agent.cancel_nowait()
         self._active_agents.clear()
         self._session_tasks.clear()
 
-        # 4. 取消所有后台 idle 压缩 task
         self.compact_manager.cancel_all_compact_tasks()
         for sid, future in self._subagent_done_futures.items():
             if not future.done():
@@ -215,13 +167,11 @@ class AgentLoop:
     # ─── 消费循环 ────────────────────────────────────────────
 
     async def _consume(self) -> None:
-        """消费循环：从 inbound 队列取消息，并发派发到 _dispatch。"""
+        """消费循环：从 inbound 队列取消息，并发派发到 TurnExecutor.execute。"""
         try:
             async for msg in self.bus.subscribe_inbound():
                 try:
-                    data = PipelineData(inbound=msg)
-                    task = asyncio.create_task(self._dispatch(data))
-                    # 注册到 dispatch_tasks 集合，stop() 时可统一 cancel
+                    task = asyncio.create_task(self._executor.execute(msg))
                     self._dispatch_tasks.add(task)
                     task.add_done_callback(self._dispatch_tasks.discard)
                 except Exception:
@@ -229,589 +179,6 @@ class AgentLoop:
         except asyncio.CancelledError:
             pass
 
-    async def _dispatch(self, data: PipelineData) -> None:
-        """单条消息的派发入口。
-
-        处理顺序：
-        1. 生成 turn_id + 发 PIPELINE_START
-        2. 系统级指令（如 /cancel）→ 在锁外执行，不受阻塞
-        3. 普通消息 → 获取 session lock → 串行执行 pipeline
-        4. finally: 发 PIPELINE_END（始终成对）
-
-        系统级指令在锁外执行，保证用户点击停止后立即响应。
-        CancelledError 会在 LLM stream 的下一个 await 处立即抛出。
-        """
-        # ── 生成 turn_id（ftre 是 Turn 的发起方）──
-        data.turn_id = f"turn_{uuid.uuid4().hex[:12]}"
-
-        # ── PIPELINE_START ──
-        pipeline_start = StepEvent(phase=StepPhase.PIPELINE_START)
-        object.__setattr__(pipeline_start, "turn_id", data.turn_id)
-        await self.publish_agent_event(
-            data.inbound.data.get("session_id", "") or data.inbound.from_session,
-            data.inbound,
-            pipeline_start,
-        )
-
-        try:
-            inbound = data.inbound
-            session_id = inbound.data.get("session_id", "") or inbound.from_session
-            content = inbound.data.get("content", "")
-            attachments = inbound.data.get("attachments") or []
-            agent_id = (inbound.metadata or {}).get("agent_id", "") or "default"
-
-            # ── 指令匹配（不执行 handler），决定是否持久化用户输入 ──
-            cmd_def = (
-                self.command_manager.match_any(data)
-                if self.command_manager
-                else None
-            )
-            should_persist = (cmd_def is None) or cmd_def.persist_input
-
-            if should_persist and session_id and content:
-                stored_content = normalize_stored_user_content(content)
-                user_event_id = uuid.uuid4().hex[:16]
-                user_metadata = {"hide": False, "agent_id": agent_id}
-                user_data: dict = {
-                    "content": stored_content,
-                    "metadata": user_metadata,
-                }
-                if attachments:
-                    user_data["attachments"] = attachments
-                await self.session_manager.save_message(
-                    session_id, "user_message", user_data,
-                    event_id=user_event_id,
-                    turn_id=data.turn_id,
-                    timestamp=pipeline_start.timestamp,
-                )
-
-                # echo 用户输入给前端
-                echo = BusMessage(
-                    type="agent_event",
-                    from_channel=inbound.from_channel,
-                    to_channel=inbound.to_channel,
-                    from_session=inbound.from_session,
-                    to_session=inbound.to_session,
-                    data={
-                        "type": "user_message",
-                        "event_id": user_event_id,
-                        "timestamp": pipeline_start.timestamp,
-                        "turn_id": data.turn_id,
-                        "data": {**inbound.data, "event_id": user_event_id},
-                    },
-                    metadata=inbound.metadata,
-                )
-                await self.bus.publish_outbound(echo)
-
-            # ── 命中指令时发 COMMAND_MATCHED（系统级 + 普通级统一在 _dispatch 处理）──
-            if cmd_def is not None:
-                data.command_name = cmd_def.command
-                cmd_matched = StepEvent(
-                    phase=StepPhase.COMMAND_MATCHED,
-                    command_name=data.command_name,
-                )
-                object.__setattr__(cmd_matched, "turn_id", data.turn_id)
-                await self.publish_agent_event(session_id, inbound, cmd_matched)
-
-            # ─── 系统级指令：锁外执行 ───
-            if await self.command_manager.try_dispatch_system(data):
-                return
-
-            # ─── 普通消息：获取 per-session lock → 跑 pipeline ───
-            # inbound 和 session_id 已在上方用户输入持久化时提取
-
-            if session_id:
-                # 注册 session → task 映射（cancel 时用）
-                current_task = asyncio.current_task()
-                self._session_tasks[session_id] = current_task
-
-                lock = self._session_locks.setdefault(session_id, asyncio.Lock())
-                try:
-                    async with lock:
-                        await self._pipeline.run(data)
-                except asyncio.CancelledError:
-                    # cancel 导致的 CancelledError，正常退出
-                    logger.info(f"[agent-loop] session={session_id} 被 cancel 中断")
-                finally:
-                    # 清理 session → task 映射
-                    if self._session_tasks.get(session_id) is current_task:
-                        self._session_tasks.pop(session_id, None)
-            else:
-                # 无 session_id 的消息直接跑 pipeline（不需要锁）
-                await self._pipeline.run(data)
-        finally:
-            # ── PIPELINE_END ──（始终成对）
-            pipeline_end = StepEvent(
-                phase=StepPhase.PIPELINE_END,
-                command_name=data.command_name,
-            )
-            object.__setattr__(pipeline_end, "turn_id", data.turn_id)
-            await self.publish_agent_event(
-                data.inbound.data.get("session_id", "") or data.inbound.from_session,
-                data.inbound,
-                pipeline_end,
-            )
-
-    # ─── pipeline 各阶段 ────────────────────────────────────
-
-    async def _step_command(self, data: PipelineData) -> bool:
-        """普通指令预处理：匹配普通指令（锁内）。
-
-        系统级指令已在 _dispatch 锁外处理，这里只处理普通指令（如 /compact）。
-        COMMAND_MATCHED 事件和 data.command_name 已在 _dispatch 中统一设置。
-        返回 True 继续 pipeline（未匹配 / RewritePrompt / Passthrough），返回 False 短路。
-        """
-        if not self.command_manager:
-            return True
-
-        cmd_def = self.command_manager.match(data)
-        if cmd_def is None:
-            return True
-
-        # data.command_name 和 COMMAND_MATCHED 已在 _dispatch 中处理
-        result = await self.command_manager.try_dispatch(data)
-        if result is None:
-            return True  # 不应该发生（match 已命中），安全默认
-
-        inbound = data.inbound
-        session_id = inbound.from_session or inbound.data.get("session_id", "")
-        match result:
-            case RewritePrompt(content=prompt_content):
-                # 原始输入保留在 inbound.data["content"]（入库 + echo）
-                # 替换后的 prompt 写入 inbound.data metadata.prompt_override（发给 LLM，不入库正文）
-                inbound_data = data.inbound.data
-                if not isinstance(inbound_data.get("metadata"), dict):
-                    inbound_data["metadata"] = {}
-                inbound_data["metadata"]["prompt_override"] = prompt_content
-                return True
-            case SendMessage(content=msg, level=level):
-                await self._send_command_message(session_id, inbound.from_channel, msg, level)
-                return False
-            case Handled():
-                return False
-            case Passthrough():
-                return True
-            case _:
-                return True
-
-    async def _step_compact(self, data: PipelineData) -> bool:
-        """压缩阶段：只判断是否需要自动压缩，把结论写入 data.need_compact。"""
-        inbound = data.inbound
-        if inbound.type != "user_message":
-            return True
-        session_id = inbound.data.get("session_id", "") or inbound.from_session
-        if not session_id:
-            return True
-        channel_id = inbound.from_channel
-
-        try:
-            config = self._load_current_config()
-            need = await self.compact_manager.should_compact(
-                session_id,
-                channel_id,
-                config,
-                threshold=getattr(config.context, "compact_threshold", 0.7),
-            )
-            if need:
-                data.need_compact = True
-                logger.info(f"[agent-loop] 需要关键路径压缩 session={session_id}")
-        except Exception:
-            logger.exception(f"[agent-loop] should_compact 异常 session={session_id}")
-
-        return True
-
-    async def _step_run(self, data: PipelineData) -> bool:
-        """执行阶段：在主事件循环直接 await Agent 运行。"""
-        await self._run_async(data)
-        return False
-
-    # ─── Agent 执行 ─────────────────────────────────────────
-
-    # 需要持久化的事件类型（dataclass 类型，用 isinstance 检查）
-    _PERSISTENT_CLASSES: tuple[type, ...] = (
-        AssistantMessageCompleteEvent,
-        ToolResultEvent,
-        UserMessageEvent,
-    )
-
-    async def _run_async(self, data: PipelineData) -> None:
-        """异步执行 Agent，事件逐条投递到 Bus。
-
-        主循环化后跑在主事件循环里，不再需要 executor 线程。
-        DB / Bus 操作直接 await，不再 run_coroutine_threadsafe。
-        """
-        # Step 1: 入参校验
-        inbound = data.inbound
-        need_compact = data.need_compact
-        content = inbound.data.get("content", "")
-        attachments = inbound.data.get("attachments") or []
-        session_id = inbound.data.get("session_id", "")
-
-        if not content and not attachments:
-            return
-        if not session_id:
-            logger.warning("[agent-loop] 收到无 session_id 的消息，忽略")
-            return
-
-        # Step 1.5: 解析 agent_id，加载 per-agent 配置
-        agent_id = (inbound.metadata or {}).get("agent_id", "") or "default"
-        agent_profile = None
-        if self.agent_manager is not None:
-            agent_profile = self.agent_manager.load(agent_id)
-
-        # Step 2: 鉴权
-        session = await self.session_manager.get_session(session_id)
-        if session is None:
-            logger.warning(
-                f"[agent-loop] session 不存在，拒绝执行: session={session_id}"
-            )
-            return
-        if session["channel_id"] != inbound.from_channel:
-            logger.warning(
-                f"[agent-loop] session 与 channel 不匹配: "
-                f"session={session_id} (channel={session['channel_id']}), 消息来自 {inbound.from_channel}"
-            )
-            return
-
-        # Step 2.5: 并发防御 — 已由 per-session asyncio.Lock 保证同一 session 串行，
-        # 但保留防御性日志。
-        if session_id in self._active_agents:
-            existing = self._active_agents[session_id]
-            logger.error(
-                f"[agent-loop] ⚠️ session lock 未能防止并发: "
-                f"session={session_id}, existing_agent={existing!r}。"
-                f"这不应该发生，请检查 _dispatch 的 session lock 逻辑。"
-            )
-            existing.cancel_nowait()
-
-        # Step 2.8: 关键路径压缩
-        config = self._load_current_config()
-        # 如果有 per-agent 配置，覆盖 llm（workspace 不覆盖——agent workspace 是 agent 的"家目录"，不是对话的 cwd）
-        if agent_profile is not None:
-            config = copy.deepcopy(config)
-            config.llm = agent_profile.llm
-        if need_compact:
-            try:
-                silent = getattr(config.context, "silent", True)
-                await self.compact_manager.compact(
-                    session_id,
-                    inbound.from_channel,
-                    config=config,
-                    silent=silent,
-                    trigger="auto",
-                )
-            except Exception:
-                logger.exception(f"[agent-loop] 关键路径压缩异常 session={session_id}")
-
-        # Step 4: 加载历史消息 + hook
-        # prompt_override（来自 RewritePrompt，存在 inbound.data metadata）发给 LLM，持久化用原始 content
-        workspace = session.get("workspace", "") or config.workspace or os.getcwd()
-        prompt_override = (inbound.data.get("metadata") or {}).get("prompt_override")
-        llm_content = prompt_override if prompt_override else content
-        messages, hook_config = await self._build_messages(
-            session_id,
-            llm_content,
-            attachments,
-            config,
-            inbound_data=inbound.data,
-            channel_id=inbound.from_channel,
-            workspace=workspace,
-            agent_dir=(agent_profile.agent_dir if agent_profile else ""),
-        )
-
-        # Step 5: 创建 Agent + 注册到 _active_agents
-        assert self.agent_manager is not None, "agent_manager must be provided"
-        agent = self.agent_manager.create_agent(
-            profile=agent_profile,
-            config=hook_config,
-            channel_manager=self.channel_manager,
-            tool_registry=self.tool_registry,
-            tracer=self.tracer,
-            channel_id=inbound.from_channel,
-            session_id=session_id,
-            hook_manager=self.core_hook_manager,
-        )
-        self._active_agents[session_id] = agent
-        await self._publish_session_status_async(session_id, "running")
-
-        # Step 6.5: turn_id 已在 _dispatch 中生成
-        turn_id = data.turn_id
-
-        # Step 7: 构建运行时上下文（工具共享数据）
-        runtime_context = {
-            "session_id": session_id,
-            "channel_id": inbound.from_channel,
-            "event_loop": self._event_loop,
-            "session_manager": self.session_manager,
-            "bus": self.bus,
-            "agent_loop": self,
-            "llm_config": hook_config.llm,
-            "agent_profile": agent_profile,
-            "workspace": WorkspaceAccessor(
-                session_id=session_id,
-                session_manager=self.session_manager,
-                event_loop=self._event_loop,  # type: ignore[arg-type]  # start() 后必非 None
-                fallback_cwd=workspace,
-            ),
-            "trace_name": f"session:{session_id}",
-            "trace_tags": [inbound.from_channel or "unknown"],
-            "trace_metadata": {
-                "session_id": session_id,
-                "channel_id": inbound.from_channel,
-                "workspace": workspace,
-            },
-            "turn_id": turn_id,
-        }
-
-        # Step 7.5: before_agent_run hook（插件注入对话上下文 / 系统身份）
-        if self.hook_manager is not None:
-            from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext
-
-            ctx = AgentRunContext(
-                session_id=session_id,
-                channel_id=inbound.from_channel,
-                messages=messages,
-                config=hook_config,
-                agent_profile=agent_profile,
-                agent_tool_registry=agent.tool_registry,
-            )
-            ctx = await self.hook_manager.trigger(BEFORE_AGENT_RUN, ctx)
-            messages = ctx.messages
-
-        subagent_status = "completed"
-        final_content = ""
-
-        try:
-            # ── 构造 TURN_START 事件 → 持久化 DB + 推送前端 ──
-            turn_start = StepEvent(phase=StepPhase.TURN_START, start_trigger="user")
-            object.__setattr__(turn_start, "turn_id", turn_id)
-            await self.publish_agent_event(session_id, inbound, turn_start)
-
-            # ── 驱动 Agent 执行 ──
-            async for event in agent.run(messages, runtime_context=runtime_context):
-                # task 工具只使用这里记录的最后一条完整 assistant 回复作为返回内容。
-                if isinstance(event, AssistantMessageCompleteEvent):
-                    final_content = event.content or ""
-
-                # 持久化 + 推送（Step 事件不再从 agent-core 来）
-                if isinstance(event, self._PERSISTENT_CLASSES):
-                    await self.publish_agent_event(session_id, inbound, event)
-                else:
-                    await self._dispatch_agent_event(inbound, event)
-                # usage_update 时检查是否需要预压缩。
-                # maybe_schedule_idle_compact 自带去重，确保同一 session 只有一个 compact task 在飞，
-                # 所以即使 usage_update 频繁也不会反复调度。
-                if (
-                    isinstance(event, AssistantMessageCompleteEvent)
-                    and event.metadata.get("usage")
-                    and inbound.from_channel != SUBAGENT_CHANNEL_ID
-                ):
-                    try:
-                        _cfg = self._load_current_config()
-                        await self.compact_manager.maybe_schedule_idle_compact(
-                            session_id, inbound.from_channel, _cfg
-                        )
-                    except Exception:
-                        logger.debug("[agent-loop] 调度 usage 压缩失败", exc_info=True)
-
-            # ── 从 agent.state 构造 TURN_END ──
-            _is_error = agent.state.done_reason == DoneReason.ERROR
-            turn_end = StepEvent(
-                phase=StepPhase.TURN_END,
-                success=(agent.state.done_reason == DoneReason.COMPLETED),
-                reason=agent.state.done_reason or DoneReason.ERROR,
-                iterations=agent.state.iteration,
-                token_usage=dict(agent.state.token_usage),
-                error_message=agent.state.error if _is_error else None,
-                error_code=agent.state.error_code if _is_error else None,
-            )
-            object.__setattr__(turn_end, "turn_id", turn_id)
-            await self.publish_agent_event(session_id, inbound, turn_end)
-
-        except asyncio.CancelledError:
-            subagent_status = "cancelled"
-            # Task.cancel() 导致的 CancelledError：Agent 被 cancel 中断
-            logger.info(f"[agent-loop] Agent 被 cancel 中断 session={session_id}")
-            # 发送 step turn_end 事件让前端知道已停止
-            fallback = StepEvent(
-                phase=StepPhase.TURN_END,
-                success=False,
-                reason=DoneReason.CANCELLED,
-            )
-            object.__setattr__(fallback, "turn_id", turn_id)
-            # 持久化 fallback 事件，确保历史回放时 turn 有完整的 turn_end
-            await self.publish_agent_event(session_id, inbound, fallback)
-        except Exception:
-            subagent_status = "error"
-            logger.exception(f"[agent-loop] _run 异常 (session={session_id})")
-            fallback = StepEvent(
-                phase=StepPhase.TURN_END,
-                success=False,
-                reason=DoneReason.ERROR,
-                error_message="Agent 执行异常",
-                error_code="unknown",
-            )
-            object.__setattr__(fallback, "turn_id", turn_id)
-            # 持久化 fallback 事件，确保历史回放时 turn 有完整的 turn_end
-            await self.publish_agent_event(session_id, inbound, fallback)
-        finally:
-            # 只有当前 agent 仍是注册的那个才清理。
-            if self._active_agents.get(session_id) is agent:
-                self._active_agents.pop(session_id, None)
-                should_emit_idle = True
-            else:
-                should_emit_idle = False
-
-            if inbound.from_channel == SUBAGENT_CHANNEL_ID:
-                future = self._subagent_done_futures.pop(session_id, None)
-                if future is not None and not future.done():
-                    # finally 覆盖正常结束、异常和 cancel，是父 task 唤醒的唯一出口。
-                    future.set_result(
-                        {
-                            "session_id": session_id,
-                            "channel_id": inbound.from_channel,
-                            "status": subagent_status,
-                            "final_content": final_content,
-                        }
-                    )
-
-            if should_emit_idle:
-                await self._publish_session_status_async(session_id, "idle")
-
-            # 步骤 5（无感）：本轮结束后调度后台空闲压缩。
-            if inbound.from_channel != SUBAGENT_CHANNEL_ID:
-                try:
-                    _cfg = self._load_current_config()
-                    await self.compact_manager.maybe_schedule_idle_compact(
-                        session_id, inbound.from_channel, _cfg
-                    )
-                except Exception:
-                    logger.debug("[agent-loop] 调度 idle 压缩失败", exc_info=True)
-
-    # ─── 工具方法 ──────────────────────────────────────────
-
-    async def publish_agent_event(
-        self, session_id: str, inbound: BusMessage, event
-    ) -> None:
-        """存储 agent event 到 DB 并派发到前端。"""
-        await self.session_manager.save_message(
-            session_id,
-            event.type.value,
-            event._data_dict(),
-            event_id=event.event_id,
-            turn_id=event.turn_id,
-            timestamp=event.timestamp,
-        )
-        await self._dispatch_agent_event(inbound, event)
-
-    async def _dispatch_agent_event(self, inbound: BusMessage, event) -> None:
-        """派发 agent event 到前端（不存储）。"""
-        await self.bus.publish_outbound(
-            BusMessage(
-                type="agent_event",
-                from_channel=inbound.from_channel,
-                to_channel=inbound.to_channel,
-                from_session=inbound.from_session,
-                to_session=inbound.to_session,
-                data=event.to_dict(),
-            )
-        )
-
-    async def _publish_session_status_async(self, session_id: str, status: str) -> None:
-        """广播 session 运行态变化（异步版）。"""
-        evt = BusMessage(
-            type="global_event",
-            from_channel=GLOBAL_CHANNEL,
-            to_channel=GLOBAL_CHANNEL,
-            from_session=GLOBAL_SESSION,
-            to_session=GLOBAL_SESSION,
-            data={
-                "type": "session_status",
-                "data": {"session_id": session_id, "status": status},
-            },
-        )
-        await self.bus.publish_outbound(evt)
-
-    async def _send_command_message(
-        self, session_id: str, channel_id: str, content: str, level: str = "info"
-    ) -> None:
-        """指令 handler 返回 SendMessage 时，推一条 info/error 消息给前端。"""
-        evt = BusMessage(
-            type="session_event",
-            from_channel=channel_id,
-            to_channel=channel_id,
-            from_session=session_id,
-            to_session=session_id,
-            data={
-                "type": "command_message",
-                "data": {"content": content, "level": level},
-            },
-        )
-        await self.bus.publish_outbound(evt)
-
     def _load_current_config(self) -> AgentConfig:
-        """读取当前生效的配置"""
-        if self._injected_config is not None:
-            return self._injected_config
-        return load_config()
-
-    async def _build_messages(
-        self,
-        session_id: str,
-        content: str,
-        attachments: list[dict],
-        config: AgentConfig,
-        *,
-        inbound_data: dict | None = None,
-        channel_id: str = "",
-        workspace: str = "",
-        agent_dir: str = "",
-    ) -> tuple[list[dict], AgentConfig]:
-        """构建 LLM 输入消息，触发 before_messages_build hook。"""
-        events = await self.session_manager.get_messages_by_session(session_id)
-
-        # 触发 before_messages_build hook（插件做孤立事件清理、相邻性修复、裁剪、标题生成等）
-        hook_config = copy.deepcopy(config)
-        if self.hook_manager is not None:
-            from ftre.plugin import BEFORE_MESSAGES_BUILD, MessagesBuildContext
-
-            ctx = MessagesBuildContext(
-                session_id=session_id,
-                channel_id=channel_id,
-                inbound_data=inbound_data or {},
-                workspace=workspace,
-                agent_dir=agent_dir,
-                config=hook_config,
-                events=events,
-            )
-            ctx = await self.hook_manager.trigger(BEFORE_MESSAGES_BUILD, ctx)
-            hook_config = ctx.config
-            events = ctx.events
-
-        user_content = build_user_content(
-            content,
-            attachments,
-            include_images=hook_config.llm.vision,
-        )
-
-        if events:
-            from ftre.session.converter import to_openai
-            history = to_openai(
-                events,
-                config={"llm": {"vision": hook_config.llm.vision}},
-            )
-            # 用户消息已在 _dispatch 中提前持久化到 DB，to_openai 已包含它。
-            # 不再 append（会导致 LLM 收到两份重复消息）。
-            # 如果有 prompt_override（指令重写），替换最后一条 user 消息的内容。
-            if user_content:
-                replaced = False
-                for i in range(len(history) - 1, -1, -1):
-                    if history[i].get("role") == "user":
-                        history[i] = {**history[i], "content": user_content}
-                        replaced = True
-                        break
-                if not replaced:
-                    history.append({"role": "user", "content": user_content})
-            return history, hook_config
-
-        return [{"role": "user", "content": user_content}], hook_config
+        """读取当前生效的配置（委托给 TurnExecutor）。"""
+        return self._executor._load_current_config()
