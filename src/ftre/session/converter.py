@@ -98,10 +98,9 @@ def to_openai(
             # 全空 → 跳过
             if not content and not tool_calls and not thinking:
                 continue
-            # 有 thinking 但无 text → content="" （部分 provider 拒绝 null）
-            if not content and thinking:
-                content = ""
-            msg: dict = {"role": "assistant", "content": content}
+            msg: dict = {"role": "assistant"}
+            if content:
+                msg["content"] = content
             if tool_calls:
                 msg["tool_calls"] = tool_calls
             if thinking:
