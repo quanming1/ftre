@@ -17,7 +17,7 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 """
 import asyncio
 import time
-from concurrent.futures import Future, TimeoutError as FutureTimeoutError
+from concurrent.futures import Future
 
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
@@ -26,7 +26,6 @@ from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 # 轮询参数
 _POLL_INTERVAL = 0.5         # 每 500ms 查一次状态
 _STARTUP_TIMEOUT = 30        # 等 agent 启动（is_session_running 变 True）的上限
-_TIMEOUT_SECONDS = 600       # 启动后到 agent 结束的上限（10 分钟）
 
 
 _SUBAGENT_PREAMBLE = """\
@@ -163,14 +162,10 @@ def create_task_tool(channel_manager) -> Tool:
         # 阶段 B：等待 AgentLoop._run finally 设置完成结果，不依赖 done 事件。
         # done_payload 是 task 的唯一结果来源，final_content 不再回查 DB。
         try:
-            done_payload = done_future.result(timeout=_TIMEOUT_SECONDS)
-        except FutureTimeoutError:
+            done_payload = done_future.result()
+        except Exception as e:
             agent_loop.unregister_subagent_done_future(sid, done_future)
-            return (
-                f"<FTRE_SYSTEM_FACT>[session={sid}, status=timeout]</FTRE_SYSTEM_FACT>\n"
-                f"任务超时（{_TIMEOUT_SECONDS}s）未完成。"
-                f"可下次调用 task 时传入 session_id={sid} 接着上次执行"
-            )
+            return f"[error] 等待 subagent 完成时出错: {type(e).__name__}: {e}"
 
         # agent 已结束，使用 AgentLoop 回传的最后一条 message_complete。
         status = done_payload.get("status") or "completed"
@@ -199,7 +194,7 @@ def create_task_tool(channel_manager) -> Tool:
             "- subagent 内的 bash/read/write 等工具开箱即用，无需再 cd 或 set_workspace\n"
             "\n"
             "其它说明：\n"
-            "- 阻塞调用：会等到目标 session 一轮跑完才返回（最长 10 分钟超时）\n"
+            "- 阻塞调用：会等到目标 session 一轮跑完才返回（无超时限制）\n"
             "- 适合拆解大任务交给独立 agent，避免污染当前会话上下文\n"
             "\n"
             "【关键】上下文必须自包含，prompt 要写详细：\n"

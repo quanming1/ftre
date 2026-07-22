@@ -345,7 +345,7 @@ def _semble_hints() -> str:
     )
 
 
-def create_bash_tool(default_timeout: int = 60, max_timeout: int = 600) -> Tool:
+def create_bash_tool(default_timeout: int = 60, max_timeout: int = 3600) -> Tool:
     """创建 bash 工具
 
     cwd 由当前会话的 workspace 字段承载（sessions 表）。纯 cd 命令会持久切换
