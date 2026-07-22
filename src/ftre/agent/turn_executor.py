@@ -176,6 +176,12 @@ class TurnExecutor:
                         TurnStatus.ERROR,
                     ):
                         turn.status = await self._advance(turn)
+            except Exception:
+                logger.exception(
+                    f"[turn-executor] 状态机异常 session={turn.session_id} "
+                    f"status={turn.status}"
+                )
+                turn.status = TurnStatus.ERROR
             finally:
                 if turn.agent is not None:
                     await self._finalize(turn)
@@ -183,7 +189,10 @@ class TurnExecutor:
                     loop._session_tasks.pop(turn.session_id, None)
         finally:
             await self._emit_step(
-                turn, StepPhase.PIPELINE_END, command_name=turn.command_name
+                turn, StepPhase.PIPELINE_END,
+                success=turn.status == TurnStatus.COMPLETED,
+                reason="error" if turn.status == TurnStatus.ERROR else "",
+                command_name=turn.command_name,
             )
 
     async def _advance(self, turn: Turn) -> TurnStatus:
@@ -418,6 +427,7 @@ class TurnExecutor:
             channel_id=inbound.from_channel,
             workspace=workspace,
             agent_dir=(agent_profile.agent_dir if agent_profile else ""),
+            turn_id=turn.turn_id,
         )
 
         # ── 创建 Agent 并注册到 _active_agents（/cancel 时通过它取消）──
@@ -730,6 +740,7 @@ class TurnExecutor:
         channel_id: str = "",
         workspace: str = "",
         agent_dir: str = "",
+        turn_id: str,
     ) -> tuple[list[dict], AgentConfig]:
         """构建发给 LLM 的消息列表，触发 before_messages_build hook。
 
@@ -754,7 +765,7 @@ class TurnExecutor:
                 channel_id=channel_id,
                 inbound_data=inbound_data or {},
                 workspace=workspace,
-                turn_id=turn.turn_id,
+                turn_id=turn_id,
                 agent_dir=agent_dir,
                 config=hook_config,
                 events=events,
