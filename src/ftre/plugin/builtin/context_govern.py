@@ -218,10 +218,6 @@ class ContextGovernPlugin(Plugin):
                         out.append(events[result_idx])
                         used_results.add(tid)
                         moved += 1
-                        logger.info(
-                            f"[context_govern] 修复 tool_result 顺序: id={tid} "
-                            f"从位置 {result_idx} 提到 amc(位置 {i}) 之后"
-                        )
 
             elif t == "tool_result":
                 tid = (ev.get("data") or {}).get("id", "")
