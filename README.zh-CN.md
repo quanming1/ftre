@@ -86,18 +86,15 @@ cp ftre/config.example.json ~/.ftre/config.json
 
 ### 4. 启动
 
+两个终端：
+
 ```bash
-cd ftre
-python start.py
+# 终端 1 — 后端
+ftre gateway
+
+# 终端 2 — 客户端（ftre-desktop 仓库）
+cd ftre-desktop && pnpm dev
 ```
-
-`start.py` 依次启动三个服务：
-
-1. **Gateway 后端** → `ws://127.0.0.1:48650/`
-2. **Desktop 前端** → Electron + Vite dev server
-3. **Docs 文档站** → `http://localhost:48652/`
-
-> 如果四个仓库不在同级目录，设置环境变量 `FTRE_DESKTOP_ROOT` 和 `FTRE_DOCS_ROOT` 指向对应路径。
 
 ## 项目结构
 
@@ -115,7 +112,6 @@ ftre/
 │   ├── tools/          # 8 个内置工具
 │   └── trace_store.py  # Agent Tracing SQLite 导出
 ├── tests/
-├── start.py            # 一键启动脚本
 ├── config.example.json # 示例配置
 └── pyproject.toml
 ```
