@@ -138,7 +138,10 @@ class McpConnection:
             result = await session.list_tools()
             return result.tools
         except Exception as e:
-            logger.warning(f"[mcp] list_tools 失败: {self.name} — {e}")
+            logger.warning(
+                f"[mcp] list_tools 失败: {self.name} — {type(e).__name__}: {e}",
+                exc_info=True,
+            )
             return []
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
