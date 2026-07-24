@@ -86,18 +86,15 @@ cp ftre/config.example.json ~/.ftre/config.json
 
 ### 4. Run
 
+Two terminals:
+
 ```bash
-cd ftre
-python start.py
+# Terminal 1 — Backend
+ftre gateway
+
+# Terminal 2 — Desktop client (ftre-desktop repo)
+cd ftre-desktop && pnpm dev
 ```
-
-`start.py` launches three services:
-
-1. **Gateway backend** → `ws://127.0.0.1:48650/`
-2. **Desktop frontend** → Electron + Vite dev server
-3. **Docs site** → `http://localhost:48652/`
-
-> If the repos are not in the same parent directory, set `FTRE_DESKTOP_ROOT` and `FTRE_DOCS_ROOT` environment variables to point to the correct paths.
 
 ## Project Structure
 
@@ -115,7 +112,6 @@ ftre/
 │   ├── tools/          # 8 built-in tools
 │   └── trace_store.py  # Agent Tracing SQLite exporter
 ├── tests/
-├── start.py            # One-click launch script
 ├── config.example.json # Example configuration
 └── pyproject.toml
 ```
