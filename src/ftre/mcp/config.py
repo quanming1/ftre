@@ -67,12 +67,14 @@ class McpServerConfig:
 
         server_type = raw.get("type", "")
         if server_type not in ("local", "remote"):
+            # 兼容简写：用户没写 type 但写了 command，就推断为 local
             if "command" in raw:
                 server_type = "local"
             else:
                 logger.warning(f"[mcp-config] 跳过 {name}：未知 type={server_type!r}，且无 command")
                 return None
 
+        # 同时支持 disabled: true 和 enabled: false 两种写法
         disabled = raw.get("disabled", False) or raw.get("enabled", True) is False
         if disabled:
             logger.info(f"[mcp-config] 跳过已禁用: {name}")
@@ -102,7 +104,8 @@ class McpServerConfig:
                 headers=raw.get("headers") or {},
                 timeout=int(raw.get("timeout", 30_000)),
             )
-        return None
+        # 走到这里说明 server_type 既不是 local 也不是 remote，
+        # 但前面 L69-74 的守卫已确保 type 只会是这两个值之一，所以不会到达。
 
 
 def parse_mcp_config(raw: dict[str, Any]) -> list[McpServerConfig]:

@@ -19,7 +19,6 @@ MCP tool schema → ftre ToolParameter 映射：
 """
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
@@ -35,7 +34,9 @@ from .manager import McpManager
 
 logger = logging.getLogger(__name__)
 
-# MCP schema type → ftre ToolParameter type
+# MCP schema type → ftre ToolParameter type 的映射表。
+# integer 归入 number（ftre 参数体系没有独立的整数类型）；
+# array / object 不在此表中，会在 _convert_parameters 里降级为 string。
 _TYPE_MAP = {
     "string": "string",
     "number": "number",
@@ -43,7 +44,9 @@ _TYPE_MAP = {
     "boolean": "boolean",
 }
 
-# 工具名前缀：MCP 工具统一以 mcp__ 开头，便于与内置工具区分
+# 工具名前缀：所有 MCP 工具统一以 mcp__ 开头。
+# 这样在 ToolRegistry 里能一眼区分 MCP 工具和内置工具（bash/read/write 等），
+# 热重载时也方便批量清理旧工具（按前缀过滤）。
 MCP_TOOL_PREFIX = "mcp__"
 
 
@@ -271,7 +274,11 @@ async def build_mcp_tools_for_servers(
 
 
 async def build_mcp_tools(manager: McpManager) -> list[Tool]:
-    """从所有已连接的 MCP 服务器发现并转换工具
+    """从所有已连接的 MCP 服务器发现并转换工具。
+
+    build_mcp_tools_for_servers 的便捷封装——自动取所有已连接的服务器名集合。
+    全局工具注册（_register_tools）使用此函数；per-agent 私有工具注册
+    使用 build_mcp_tools_for_servers 传入指定服务器集合。
 
     Returns:
         ftre Tool 实例列表，可直接注册到 ToolRegistry

@@ -86,13 +86,14 @@ class McpConnection:
                     async with ClientSession(*streams) as session:
                         await self._serve_session(session, ready)
             elif self.config.type == "remote":
+                # remote 类型：通过 streamable HTTP 连接 MCP 服务器
                 async with streamablehttp_client(
                     self.config.url, headers=self.config.headers or None
                 ) as (read_stream, write_stream, _):
                     async with ClientSession(read_stream, write_stream) as session:
                         await self._serve_session(session, ready)
-            elif not ready.done():
-                ready.set_result(False)
+            # config.type 只可能是 "local" 或 "remote"（由 config.py 的 from_raw 守卫），
+            # 不会走到其他分支，因此这里不需要额外的 else 兜底。
         except Exception as e:
             if not ready.done():
                 ready.set_exception(e)
@@ -205,7 +206,13 @@ class McpManager:
         self._watcher_task = asyncio.create_task(self._watch_config())
 
     async def _watch_config(self) -> None:
-        """后台协程：轮询 config.json mtime，检测 mcp 段变化后热重连。"""
+        """后台协程：轮询 config.json mtime，检测 mcp 段变化后热重连。
+
+        采用两步检测降低开销：
+        1. 先比 mtime——文件没动就跳过，几乎零成本
+        2. mtime 变了再比 mcp 段的 JSON 内容——避免 config.json 其他段落
+           的改动触发不必要的 MCP 重连
+        """
         from ftre.config import CONFIG_PATH
         last_mtime: float = 0.0
         last_mcp_json: str = ""
@@ -244,14 +251,18 @@ class McpManager:
                 logger.warning(f"[mcp] config watcher 异常: {e}")
 
     async def reload(self, configs: list[McpServerConfig]) -> None:
-        """热重载：对比新旧配置，断开新增/变更/删除的服务器，保留未变的连接。"""
+        """热重载：对比新旧配置，断开新增/变更/删除的服务器，保留未变的连接。
+
+        只重连发生变化的连接，未变的服务器保持不动，避免不必要的断连。
+        """
         new_names = {cfg.name for cfg in configs}
         old_map = {name: conn.config for name, conn in self._connections.items()}
-        to_remove = set(self._connections) - new_names
-
+        # 第一步：找出需要断开的连接
+        to_remove = set(self._connections) - new_names   # 新配置里不再存在的
         for cfg in configs:
             old_cfg = old_map.get(cfg.name)
             if old_cfg and old_cfg != cfg:
+                # 配置内容变了（command/url/headers 等），标记重连
                 to_remove.add(cfg.name)
                 logger.info(f"[mcp] 配置变更，重连: {cfg.name}")
 
@@ -260,6 +271,7 @@ class McpManager:
             return_exceptions=True,
         )
 
+        # 第二步：连接新增和之前未连上的服务器
         to_connect = [
             cfg for cfg in configs
             if cfg.name not in self._connections or not self._connections[cfg.name].is_connected
@@ -277,11 +289,16 @@ class McpManager:
             logger.info(f"[mcp] 热重载: {success}/{len(to_connect)} 连接成功")
 
     async def _apply_config(self, raw_mcp: dict, source: str) -> None:
+        """将原始配置字典应用到连接池——解析→重连→注册工具三步走。
+
+        被 start_and_register（启动）和 reload_and_register（热重载）共用，
+        调用方负责加 _reload_lock，这里只管执行。
+        """
         configs = parse_mcp_config(raw_mcp)
         if not configs:
             logger.info("[mcp] 无 MCP 服务器配置")
-        await self.reload(configs)
-        await self._register_tools()
+        await self.reload(configs)        # diff 新旧配置，只重连变更/新增的服务器
+        await self._register_tools()       # 先删旧工具再注册新工具
         logger.info(
             f"[mcp] 配置应用完成（来源: {source}），"
             f"连接 {len(self.get_connected_servers())} 个服务器"
@@ -305,26 +322,6 @@ class McpManager:
                 pass  # 已注册则跳过
         logger.info(f"[mcp] 注册 {len(mcp_tools)} 个 MCP 工具")
 
-    async def list_all_tools(self) -> list[tuple[str, McpToolDef]]:
-        """返回所有已连接服务器的工具列表。"""
-        all_tools: list[tuple[str, McpToolDef]] = []
-        connected = [
-            (name, conn)
-            for name, conn in self._connections.items()
-            if conn.is_connected
-        ]
-        results = await asyncio.gather(
-            *(conn.list_tools() for _, conn in connected),
-            return_exceptions=True,
-        )
-        for (name, _), tools in zip(connected, results):
-            if isinstance(tools, Exception):
-                logger.warning(f"[mcp] list_tools 失败: {name} — {tools}")
-                continue
-            for tool in tools:
-                all_tools.append((name, tool))
-        return all_tools
-
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
         """调用指定服务器的工具"""
         conn = self._connections.get(server_name)
@@ -343,21 +340,8 @@ class McpManager:
             for name, conn in self._connections.items()
         }
 
-    def build_system_hint(self) -> str:
-        """生成 MCP 工具的系统提示词片段，注入到 Agent 系统提示词中。"""
-        servers = self.get_connected_servers()
-        if not servers:
-            return ""
-        lines = [
-            "",
-            "## MCP 工具",
-            "你可以通过 MCP (Model Context Protocol) 调用外部工具。MCP 工具名格式为 `mcp__{服务器名}__{工具名}`。",
-            f"当前已连接的 MCP 服务器：{', '.join(servers)}",
-            "调用 MCP 工具时，参数会自动传递给对应的 MCP 服务器处理。",
-        ]
-        return "\n".join(lines)
-
     async def _remove_connection(self, name: str) -> None:
+        """从连接池移除并断开指定服务器。"""
         conn = self._connections.pop(name, None)
         if conn:
             logger.info(f"[mcp] 移除服务器: {name}")
@@ -428,16 +412,3 @@ class McpManager:
             for tool in tools:
                 all_tools.append((name, tool))
         return all_tools
-
-    def build_system_hint_for_servers(self, server_names: list[str]) -> str:
-        """为指定服务器列表生成系统提示词片段。"""
-        if not server_names:
-            return ""
-        lines = [
-            "",
-            "## MCP 工具",
-            "你可以通过 MCP (Model Context Protocol) 调用外部工具。MCP 工具名格式为 `mcp__{服务器名}__{工具名}`。",
-            f"当前已连接的 MCP 服务器：{', '.join(server_names)}",
-            "调用 MCP 工具时，参数会自动传递给对应的 MCP 服务器处理。",
-        ]
-        return "\n".join(lines)
