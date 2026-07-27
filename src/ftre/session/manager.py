@@ -3,9 +3,9 @@ SessionManager - 会话与消息持久化（SQLite）
 
 两张表：
 - sessions: 会话元信息（id, channel_id, title, created_at, updated_at）
-- messages: 事件流（id, session_id, type, data, timestamp, turn_id）
-  - id = event_id（AgentEvent 顶层字段）
-  - type/timestamp/turn_id 是事件公共字段，独立列
+- messages: 事件流（id, session_id, type, data, timestamp, reply_id）
+  - id = 事件 id（EventBase.id）
+  - type/timestamp/reply_id 是事件公共字段，独立列
   - data 只存事件特有字段（content / result / phase ...）
 """
 import json
@@ -17,12 +17,6 @@ from typing import Any, TypedDict
 
 import aiosqlite
 
-from ftre_agent_core.agent.event import (
-    AgentEvent,
-    AssistantMessageCompleteEvent,
-    ToolResultEvent,
-    UserMessageEvent,
-)
 from ftre.config import CONFIG_PATH
 
 
@@ -41,10 +35,10 @@ class MessageModel(TypedDict):
     """事件/消息记录"""
     id: str              # 事件唯一标识（= event_id）
     session_id: str      # 所属会话 ID
-    type: str            # 事件类型（user_message / assistant_message_complete / tool_result / step / ...）
-    data: dict[str, Any] # 事件特有字段（不含 event_id / turn_id）
+    type: str            # 事件类型（user_message / TEXT_BLOCK_START / REPLY_END / TOOL_RESULT_END / ...）
+    data: dict[str, Any] # 事件特有字段（不含 id / reply_id）
     timestamp: float     # 事件时间戳
-    turn_id: str         # 所属 Turn 的标识
+    reply_id: str        # 所属 Reply 的标识
 
 class ExternalSessionModel(TypedDict):
     channel_id: str
@@ -92,7 +86,7 @@ class SessionManager:
                 type        TEXT NOT NULL,
                 data        TEXT NOT NULL DEFAULT '{}',
                 timestamp   REAL NOT NULL,
-                turn_id     TEXT NOT NULL DEFAULT ''
+                reply_id    TEXT NOT NULL DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -132,11 +126,9 @@ class SessionManager:
             "SET channel_id = substr(id, 1, instr(id, '::') - 1) "
             "WHERE channel_id = '' AND instr(id, '::') > 0"
         )
-        # 老库迁移：messages 表新增 turn_id 列
-        await self._migrate_add_column(
-            "messages", "turn_id", "TEXT NOT NULL DEFAULT ''"
-        )
-        # 回填：从 data JSON 中提取 event_id / turn_id 到独立列，并从 data 中移除
+        # 老库迁移：messages 表 turn_id 列 → reply_id
+        await self._migrate_rename_column("messages", "turn_id", "reply_id")
+        # 回填：从 data JSON 中提取 id / reply_id 到独立列，并从 data 中移除
         await self._migrate_messages_extract_fields()
         await self._db.commit()
 
@@ -152,40 +144,78 @@ class SessionManager:
         await self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
         logger.warning(f"[session] 迁移：{table}.{column} 已添加")
 
-    async def _migrate_messages_extract_fields(self) -> None:
-        """将 data JSON 中的 event_id / turn_id 提取到独立列，并从 data 中移除。
+    async def _migrate_rename_column(
+        self, table: str, old_col: str, new_col: str
+    ) -> None:
+        """如果 table 上有 old_col 但没有 new_col，则重命名；都有的话不动。"""
+        cursor = await self._db.execute(f"PRAGMA table_info({table})")
+        rows = await cursor.fetchall()
+        existing = {r["name"] for r in rows}
+        if new_col in existing:
+            return  # 新列已存在，无需迁移
+        if old_col not in existing:
+            return  # 旧列也不存在（新库），无需迁移
+        await self._db.execute(
+            f"ALTER TABLE {table} RENAME COLUMN {old_col} TO {new_col}"
+        )
+        logger.warning(f"[session] 迁移：{table}.{old_col} → {new_col}")
 
-        新 schema 中 id 列直接用 event_id，turn_id 是独立列，
+    async def _migrate_messages_extract_fields(self) -> None:
+        """将 data JSON 中的 id / reply_id 提取到独立列，并从 data 中移除。
+
+        新 schema 中 id 列直接用事件 id，reply_id 是独立列，
         data 只保留事件特有字段。
         """
-        # 1. 回填 turn_id 列（从 data JSON 中提取）
+        # 1. 回填 reply_id 列（从 data JSON 中提取 reply_id 或 turn_id 兼容旧数据）
         await self._db.execute(
             """
             UPDATE messages
-            SET turn_id = json_extract(data, '$.turn_id')
+            SET reply_id = COALESCE(
+                json_extract(data, '$.reply_id'),
+                json_extract(data, '$.turn_id'),
+                ''
+            )
             WHERE json_valid(data)
-              AND json_extract(data, '$.turn_id') IS NOT NULL
-              AND turn_id = ''
+              AND reply_id = ''
+              AND COALESCE(
+                  json_extract(data, '$.reply_id'),
+                  json_extract(data, '$.turn_id')
+              ) IS NOT NULL
             """
         )
-        # 2. 回填 id 列（从 data JSON 中的 event_id 提取，仅当 id 为自动生成的旧值）
+        # 2. 回填 id 列（从 data JSON 中的 id 或 event_id 提取）
         await self._db.execute(
             """
             UPDATE messages
-            SET id = json_extract(data, '$.event_id')
+            SET id = COALESCE(
+                json_extract(data, '$.id'),
+                json_extract(data, '$.event_id'),
+                id
+            )
             WHERE json_valid(data)
-              AND json_extract(data, '$.event_id') IS NOT NULL
-              AND json_extract(data, '$.event_id') != ''
-              AND json_extract(data, '$.event_id') != id
+              AND COALESCE(
+                  json_extract(data, '$.id'),
+                  json_extract(data, '$.event_id')
+              ) IS NOT NULL
+              AND COALESCE(
+                  json_extract(data, '$.id'),
+                  json_extract(data, '$.event_id')
+              ) != ''
+              AND COALESCE(
+                  json_extract(data, '$.id'),
+                  json_extract(data, '$.event_id')
+              ) != id
             """
         )
-        # 3. 从 data 中移除 event_id 和 turn_id（纯化 data）
+        # 3. 从 data 中移除 id、reply_id、event_id、turn_id（纯化 data）
         await self._db.execute(
             """
             UPDATE messages
-            SET data = json_remove(data, '$.event_id', '$.turn_id')
+            SET data = json_remove(data, '$.id', '$.reply_id', '$.event_id', '$.turn_id')
             WHERE json_valid(data)
-              AND (json_extract(data, '$.event_id') IS NOT NULL
+              AND (json_extract(data, '$.id') IS NOT NULL
+                   OR json_extract(data, '$.reply_id') IS NOT NULL
+                   OR json_extract(data, '$.event_id') IS NOT NULL
                    OR json_extract(data, '$.turn_id') IS NOT NULL)
             """
         )
@@ -502,7 +532,7 @@ class SessionManager:
         data: dict[str, Any],
         *,
         event_id: str | None = None,
-        turn_id: str = "",
+        reply_id: str = "",
         timestamp: float | None = None,
     ) -> str:
         """
@@ -511,7 +541,7 @@ class SessionManager:
         返回 event_id（即消息行主键）。
 
         event_id 传入则用作行主键；不传则自动生成。
-        turn_id 默认空串（不在 turn 内的事件）。
+        reply_id 默认空串（不在 reply 内的事件）。
         timestamp 可选：传入则消息行用该值（用于把 context_compact 等"游标"事件
         插到历史中间——按 ASC 排序时排在某个边界事件之前）。session.updated_at
         始终用真实当前时间，不会因游标回插而错乱会话列表排序。
@@ -520,8 +550,8 @@ class SessionManager:
         now = time.time()
         ts = now if timestamp is None else float(timestamp)
         await self._db.execute(
-            "INSERT INTO messages (id, session_id, type, data, timestamp, turn_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (eid, session_id, type, json.dumps(data or {}, ensure_ascii=False), ts, turn_id),
+            "INSERT INTO messages (id, session_id, type, data, timestamp, reply_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (eid, session_id, type, json.dumps(data or {}, ensure_ascii=False), ts, reply_id),
         )
         await self._db.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?",
@@ -561,7 +591,7 @@ class SessionManager:
                 type=r["type"],
                 data=json.loads(r["data"]),
                 timestamp=r["timestamp"],
-                turn_id=r["turn_id"],
+                reply_id=r["reply_id"],
             )
             for r in rows
         ]
@@ -642,7 +672,7 @@ class SessionManager:
                 type=r["type"],
                 data=json.loads(r["data"]),
                 timestamp=r["timestamp"],
-                turn_id=r["turn_id"],
+                reply_id=r["reply_id"],
             )
             for r in rows
         ]
@@ -690,7 +720,22 @@ class SessionManager:
 
 
 def _find_anchor(events: list[MessageModel]) -> tuple[int, dict | None, str]:
-    """倒序找最晚的带 usage 的 assistant_message_complete。"""
+    """倒序找最晚的带 usage 的 MODEL_CALL_END 事件。"""
+    for i in range(len(events) - 1, -1, -1):
+        ev = events[i]
+        if ev["type"] != "MODEL_CALL_END":
+            continue
+        data = ev.get("data") or {}
+        input_tokens = data.get("input_tokens", 0)
+        output_tokens = data.get("output_tokens", 0)
+        if input_tokens or output_tokens:
+            usage = {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            }
+            return i, usage, "MODEL_CALL_END"
+    # 兼容旧数据：assistant_message_complete 的 metadata.usage
     for i in range(len(events) - 1, -1, -1):
         ev = events[i]
         if ev["type"] != "assistant_message_complete":

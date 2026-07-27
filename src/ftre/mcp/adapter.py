@@ -22,9 +22,10 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import uuid
 from typing import Any
 
-from ftre_agent_core.agent.event import UserMessageEvent, user_message_event
+from ftre_agent_core.event import HintBlockEvent, EventBase
 from ftre_agent_core.tool import Tool, ToolParameter
 from mcp import Tool as McpToolDef
 
@@ -134,12 +135,12 @@ def create_mcp_tool(
     parameters = _convert_parameters(mcp_tool)
     description = mcp_tool.description or f"MCP tool: {mcp_tool.name}"
 
-    async def _execute(**kwargs) -> str | UserMessageEvent:
+    async def _execute(**kwargs) -> str | HintBlockEvent:
         """执行单个 MCP 工具调用。
 
         返回策略：
         - 纯文本结果：直接拼成字符串返回，保持和普通工具一致
-        - 包含图片结果：把图片落盘后返回 UserMessageEvent，让下游走视觉消息链路
+        - 包含图片结果：把图片落盘后返回 HintBlockEvent，让下游走视觉消息链路
         - 文本 + 图片同时出现时：图片优先，文本放到 metadata 里，避免信息丢失
         """
         try:
@@ -150,7 +151,7 @@ def create_mcp_tool(
                 return ""
 
             text_parts: list[str] = []
-            image_event: UserMessageEvent | None = None
+            image_event: HintBlockEvent | None = None
 
             for item in content_list:
                 item_type = getattr(item, "type", "")
@@ -176,12 +177,13 @@ def create_mcp_tool(
                             mime_type,
                             original_name=f"{server_name}_{mcp_tool.name}.png",
                         )
-                        image_event = user_message_event(
-                            content=[{
-                                "type": "image_file",
-                                "path": stored_path,
-                                "mime_type": mime_type,
-                            }],
+                        b64 = base64.b64encode(image_bytes).decode("ascii")
+                        data_url = f"data:{mime_type};base64,{b64}"
+                        image_event = HintBlockEvent(
+                            reply_id="",
+                            block_id=uuid.uuid4().hex[:16],
+                            source="tool",
+                            hint=f"![image]({data_url})",
                             metadata={
                                 # 这条消息是工具返回的中间视觉结果，不需要直接展示给用户。
                                 "hide": True,

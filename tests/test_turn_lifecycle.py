@@ -16,7 +16,7 @@ from ftre.agent.loop import AgentLoop
 from ftre.agent.turn_executor import TurnExecutor, Turn, TurnStatus
 from ftre.bus import BusMessage
 from ftre.config import AgentConfig, ContextConfig, LLMConfig
-from ftre_agent_core.agent.event import DoneReason, StepEvent, StepPhase
+from ftre_agent_core.event import ReplyFinishedReason
 from ftre_agent_core.agent.runner import RunState, RunStatus
 from ftre.command.types import CommandDef, Handled
 
@@ -26,18 +26,18 @@ from ftre.command.types import CommandDef, Handled
 class FakeAgent:
     """最小 mock agent，可配置 run 行为和 state。"""
 
-    def __init__(self, *, done_reason=DoneReason.COMPLETED, run_raises=None):
+    def __init__(self, *, done_reason=ReplyFinishedReason.COMPLETED, run_raises=None):
         self._run_raises = run_raises
         self._captured_runtime_context = None
         self.tool_registry = Mock()
 
         self.state = RunState()
         self.state.done_reason = done_reason
-        self.state.status = RunStatus.COMPLETED if done_reason == DoneReason.COMPLETED else RunStatus.ERROR
+        self.state.status = RunStatus.COMPLETED if done_reason == ReplyFinishedReason.COMPLETED else RunStatus.ERROR
         self.state.iteration = 1
         self.state.token_usage = {"prompt_tokens": 10, "completion_tokens": 5, "cached_tokens": 0, "llm_calls": 1}
-        self.state.error = "test error" if done_reason == DoneReason.ERROR else None
-        self.state.error_code = "test_code" if done_reason == DoneReason.ERROR else None
+        self.state.error = "test error" if done_reason == ReplyFinishedReason.ERROR else None
+        self.state.error_code = "test_code" if done_reason == ReplyFinishedReason.ERROR else None
         self.state.turn_id = "agent_core_turn_id"
 
     async def run(self, messages, runtime_context=None):
@@ -126,12 +126,12 @@ def _save_types(executor: TurnExecutor) -> list[str]:
 
 
 def _save_phases(executor: TurnExecutor) -> list[str]:
-    """提取 save_message 调用中 step 事件的 phase 列表。"""
+    """提取 save_message 调用中 CustomEvent 事件的 name（phase）列表。"""
     save_calls = executor._loop.session_manager.save_message.call_args_list
     return [
-        c.args[2].get("phase", "")
+        c.args[2].get("name", "").lower()
         for c in save_calls
-        if c.args[1] == "step" and len(c.args) > 2
+        if c.args[1] == "CUSTOM" and len(c.args) > 2
     ]
 
 
@@ -147,10 +147,10 @@ async def test_turn_id_generated_before_run():
     await executor.execute(inbound)
 
     assert agent._captured_runtime_context is not None
-    passed_turn_id = agent._captured_runtime_context.get("turn_id")
-    assert passed_turn_id is not None
-    assert passed_turn_id.startswith("turn_")
-    assert passed_turn_id != "agent_core_turn_id"
+    passed_reply_id = agent._captured_runtime_context.get("reply_id")
+    assert passed_reply_id is not None
+    assert passed_reply_id.startswith("turn_")
+    assert passed_reply_id != "agent_core_turn_id"
 
 
 # ── 用户输入在 agent.run() 之前持久化（DB 顺序正确）────────────────────────
@@ -171,11 +171,11 @@ async def test_user_input_persisted_before_run():
     assert "user_message" in types
 
     # DB 顺序：PIPELINE_START → user_message → TURN_START → TURN_END → PIPELINE_END
-    assert types[0] == "step"           # PIPELINE_START
+    assert types[0] == "CUSTOM"           # PIPELINE_START
     assert types[1] == "user_message"   # user_message
-    assert types[2] == "step"           # TURN_START
-    assert types[3] == "step"           # TURN_END
-    assert types[4] == "step"           # PIPELINE_END
+    assert types[2] == "CUSTOM"           # TURN_START
+    assert types[3] == "CUSTOM"           # TURN_END
+    assert types[4] == "CUSTOM"           # PIPELINE_END
 
 
 # ── TURN_END 从 agent.state 构造（正常完成路径）────────────────────────────
@@ -183,7 +183,7 @@ async def test_user_input_persisted_before_run():
 @pytest.mark.asyncio
 async def test_turn_end_from_state():
     """正常完成后，TURN_END 从 agent.state 构造，reason=COMPLETED。"""
-    agent = FakeAgent(done_reason=DoneReason.COMPLETED)
+    agent = FakeAgent(done_reason=ReplyFinishedReason.COMPLETED)
     executor = _make_executor(agent)
     inbound = _make_inbound()
 
@@ -193,12 +193,13 @@ async def test_turn_end_from_state():
     # 找到 TURN_END 的 save_message 调用
     turn_end_calls = [
         c for c in save_calls
-        if c.args[1] == "step" and c.args[2].get("phase") == "turn_end"
+        if c.args[1] == "CUSTOM" and c.args[2].get("name", "").lower() == "turn_end"
     ]
     assert len(turn_end_calls) == 1
     turn_end_data = turn_end_calls[0].args[2]
-    assert turn_end_data.get("reason") == "completed"
-    assert turn_end_data.get("success") is True
+    turn_end_value = turn_end_data.get("value", {})
+    assert turn_end_value.get("reason") == "completed"
+    assert turn_end_value.get("success") is True
 
 
 # ── cancel fallback 用 ftre 的 turn_id ─────────────────────────────────────
@@ -215,12 +216,12 @@ async def test_cancel_uses_ftre_turn_id():
     save_calls = executor._loop.session_manager.save_message.call_args_list
     turn_end_calls = [
         c for c in save_calls
-        if c.args[1] == "step" and c.args[2].get("phase") == "turn_end"
+        if c.args[1] == "CUSTOM" and c.args[2].get("name", "").lower() == "turn_end"
     ]
     assert len(turn_end_calls) == 1
-    fallback_turn_id = turn_end_calls[0].kwargs.get("turn_id", "")
-    assert fallback_turn_id.startswith("turn_")
-    assert fallback_turn_id != "agent_core_turn_id"
+    fallback_reply_id = turn_end_calls[0].kwargs.get("reply_id", "")
+    assert fallback_reply_id.startswith("turn_")
+    assert fallback_reply_id != "agent_core_turn_id"
 
 
 # ── error fallback 用 ftre 的 turn_id ──────────────────────────────────────
@@ -237,12 +238,12 @@ async def test_error_uses_ftre_turn_id():
     save_calls = executor._loop.session_manager.save_message.call_args_list
     turn_end_calls = [
         c for c in save_calls
-        if c.args[1] == "step" and c.args[2].get("phase") == "turn_end"
+        if c.args[1] == "CUSTOM" and c.args[2].get("name", "").lower() == "turn_end"
     ]
     assert len(turn_end_calls) == 1
-    fallback_turn_id = turn_end_calls[0].kwargs.get("turn_id", "")
-    assert fallback_turn_id.startswith("turn_")
-    assert fallback_turn_id != "agent_core_turn_id"
+    fallback_reply_id = turn_end_calls[0].kwargs.get("reply_id", "")
+    assert fallback_reply_id.startswith("turn_")
+    assert fallback_reply_id != "agent_core_turn_id"
 
 
 # ── persist_input=False 的指令（/cancel）不存储用户消息 ────────────────────
@@ -299,6 +300,6 @@ async def test_compact_persists_and_emits_command_matched():
     # 所以 COMMAND_MATCHED 在 user_message 之前
     cmd_idx = phases.index("command_matched")
     user_idx = types.index("user_message")
-    step_indices = [i for i, t in enumerate(types) if t == "step"]
-    cmd_step_pos = step_indices[cmd_idx]
+    custom_indices = [i for i, t in enumerate(types) if t == "CUSTOM"]
+    cmd_step_pos = custom_indices[cmd_idx]
     assert cmd_step_pos < user_idx

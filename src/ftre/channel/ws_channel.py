@@ -47,22 +47,33 @@ MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024  # 3 MB
 MAX_ATTACHMENTS_PER_MESSAGE = 8
 
 # 这些事件只代表"正在流式输出的增量"，不会直接落到 session DB。
-# 这些事件只代表“正在流式输出的增量”，不会直接落到 session DB。
 # 如果客户端在它们产生时还没 attach，刷新后只读 DB 会看不到这些片段，
 # 所以在 WS channel 内短暂缓存，等客户端 attach 后补发。
 VOLATILE_EVENT_TYPES = frozenset({
-    "assistant_message",
+    "TEXT_BLOCK_DELTA",
+    "THINKING_BLOCK_DELTA",
+    "TOOL_CALL_DELTA",
+    "TOOL_RESULT_TEXT_DELTA",
+    "TOOL_RESULT_DATA_DELTA",
+    "DATA_BLOCK_DELTA",
     "context_compact_start",
 })
 # 对应的稳定事件到达后，说明这类流式增量已经被最终事件覆盖/持久化，
 # 可以从 volatile buffer 删除，避免客户端 attach 后看到旧草稿。
 VOLATILE_CLEAR_BY_TYPE = {
-    "assistant_message_complete": {"assistant_message"},
+    "REPLY_END": {
+        "TEXT_BLOCK_DELTA",
+        "THINKING_BLOCK_DELTA",
+        "TOOL_CALL_DELTA",
+        "TOOL_RESULT_TEXT_DELTA",
+        "TOOL_RESULT_DATA_DELTA",
+        "DATA_BLOCK_DELTA",
+    },
     "context_compact_done": {"context_compact_start"},
     "context_compact_failed": {"context_compact_start"},
 }
 # 一轮执行结束、失败或进入重试后，旧的临时流式片段都不应该再 replay。
-VOLATILE_CLEAR_ALL_TYPES = frozenset({"step", "retry"})
+VOLATILE_CLEAR_ALL_TYPES = frozenset({"RETRY", "EXCEED_MAX_ITERS", "CUSTOM"})
 
 
 def _match_volatile_clear(
@@ -79,8 +90,8 @@ class _VolatileReplayBuffer:
     """缓存未入库的流式事件，供客户端 attach 时补发。
 
     这个类只处理 WS 层的临时恢复，不替代数据库历史：
-    - DB 负责稳定消息（*_complete、tool_result 等）。
-    - 这里负责还没稳定落库的流式片段（assistant_message）。
+    - DB 负责稳定消息（REPLY_END, TOOL_RESULT_END 等）。
+    - 这里负责还没稳定落库的流式片段（各种 *_DELTA）。
     - attach 时 replay 当前 session 的临时片段，随后客户端继续接收 live 流。
     """
 

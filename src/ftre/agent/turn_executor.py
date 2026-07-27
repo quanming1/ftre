@@ -22,14 +22,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from ftre_agent_core.agent import ReActAgent
-from ftre_agent_core.agent.event import (
-    AssistantMessageCompleteEvent,
-    StepEvent,
-    StepPhase,
-    DoneReason,
-    ToolResultEvent,
-    UserMessageEvent,
+from ftre_agent_core.event import (
+    EventBase,
+    ReplyEndEvent,
+    ReplyFinishedReason,
+    CustomEvent,
+    ToolResultEndEvent,
 )
+from datetime import datetime
 
 from ftre.bus import BusMessage, GLOBAL_CHANNEL, GLOBAL_SESSION
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
@@ -75,10 +75,10 @@ class Turn:
     Turn 是贯穿整个处理流程的状态容器：
     - execute() 入口设置 turn_id / command / command_name
     - 各状态函数读取上游写入的字段、写入自己的产出给下游
-    - 事件从状态转移中产生，统一带上 turn.turn_id
+    - 事件从状态转移中产生，reply_id 关联到 turn.turn_id
     """
     # ── 身份（execute 入口创建时设置，不可变）──
-    turn_id: str                 # 本 Turn 唯一标识，所有事件都盖这个戳
+    turn_id: str                 # 本 Turn 唯一标识，作为 reply_id 关联事件
     inbound: BusMessage          # 触发本 Turn 的用户消息
     session_id: str              # 所属会话
 
@@ -100,7 +100,7 @@ class Turn:
     subagent_status: str = "completed"       # subagent 完成态：completed/cancelled/error
 
     # ── 事件序列（供回放/调试）──
-    events: list = field(default_factory=list)  # 本 Turn 产生的所有 StepEvent
+    events: list = field(default_factory=list)  # 本 Turn 产生的所有 CustomEvent
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -114,12 +114,16 @@ class TurnExecutor:
     TurnExecutor 负责消息进来后的全部处理逻辑。
     """
 
-    # 需要持久化的事件类型
-    _PERSISTENT_CLASSES: tuple[type, ...] = (
-        AssistantMessageCompleteEvent,
-        ToolResultEvent,
-        UserMessageEvent,
-    )
+    # 流式增量事件类型：只推前端不入库（不会直接落到 session DB）。
+    # 这些是"正在流式输出"的中间片段，完整内容由对应的 *_START/*_END 事件覆盖。
+    _VOLATILE_EVENT_TYPES: frozenset[str] = frozenset({
+        "TEXT_BLOCK_DELTA",
+        "THINKING_BLOCK_DELTA",
+        "TOOL_CALL_DELTA",
+        "TOOL_RESULT_TEXT_DELTA",
+        "TOOL_RESULT_DATA_DELTA",
+        "DATA_BLOCK_DELTA",
+    })
 
     def __init__(self, loop: "AgentLoop") -> None:
         self._loop = loop
@@ -143,7 +147,7 @@ class TurnExecutor:
             inbound=inbound,
             session_id=self._session_id_of(inbound),
         )
-        await self._emit_step(turn, StepPhase.PIPELINE_START)
+        await self._emit_step(turn, "PIPELINE_START")
 
         try:
             # ── 系统级指令（/cancel）：锁外立即执行，短路 ──
@@ -158,7 +162,7 @@ class TurnExecutor:
                 turn.command = cmd_def
                 turn.command_name = cmd_def.command
                 await self._emit_step(
-                    turn, StepPhase.COMMAND_MATCHED, command_name=cmd_def.command
+                    turn, "COMMAND_MATCHED", command_name=cmd_def.command
                 )
                 await loop.command_manager.try_dispatch_system(turn)
                 return  # 短路：PIPELINE_END 在 finally 发
@@ -189,7 +193,7 @@ class TurnExecutor:
                     loop._session_tasks.pop(turn.session_id, None)
         finally:
             await self._emit_step(
-                turn, StepPhase.PIPELINE_END,
+                turn, "PIPELINE_END",
                 success=turn.status == TurnStatus.COMPLETED,
                 reason="error" if turn.status == TurnStatus.ERROR else "",
                 command_name=turn.command_name,
@@ -243,7 +247,7 @@ class TurnExecutor:
             turn.command = cmd_def
             turn.command_name = cmd_def.command
             await self._emit_step(
-                turn, StepPhase.COMMAND_MATCHED, command_name=cmd_def.command
+                turn, "COMMAND_MATCHED", command_name=cmd_def.command
             )
 
         # ── 2. 存用户消息（persist_input 决定存不存）──
@@ -259,7 +263,7 @@ class TurnExecutor:
             await loop.session_manager.save_message(
                 session_id, "user_message", user_data,
                 event_id=user_event_id,
-                turn_id=turn.turn_id,
+                reply_id=turn.turn_id,
             )
             # echo 回前端：让用户立即看到自己发的消息
             echo = BusMessage(
@@ -270,9 +274,9 @@ class TurnExecutor:
                 to_session=inbound.to_session,
                 data={
                     "type": "user_message",
-                    "event_id": user_event_id,
-                    "turn_id": turn.turn_id,
-                    "data": {**inbound.data, "event_id": user_event_id},
+                    "id": user_event_id,
+                    "reply_id": turn.turn_id,
+                    "data": {**inbound.data, "id": user_event_id},
                 },
                 metadata=inbound.metadata,
             )
@@ -427,7 +431,7 @@ class TurnExecutor:
             channel_id=inbound.from_channel,
             workspace=workspace,
             agent_dir=(agent_profile.agent_dir if agent_profile else ""),
-            turn_id=turn.turn_id,
+            reply_id=turn.turn_id,
         )
 
         # ── 创建 Agent 并注册到 _active_agents（/cancel 时通过它取消）──
@@ -470,7 +474,7 @@ class TurnExecutor:
                 "channel_id": inbound.from_channel,
                 "workspace": workspace,
             },
-            "turn_id": turn.turn_id,
+            "reply_id": turn.turn_id,
         }
 
         # ── before_agent_run hook：插件可注入对话上下文/系统身份 ──
@@ -509,27 +513,29 @@ class TurnExecutor:
 
         try:
             # TURN_START：Agent 执行开始，客户端据此显示流式区域
-            await self._emit_step(turn, StepPhase.TURN_START, start_trigger="user")
+            await self._emit_step(turn, "TURN_START", start_trigger="user")
 
             # ── 遍历 Agent 产出的事件流 ──
             async for event in agent.run(
                 turn.messages, runtime_context=turn.runtime_context
             ):
-                # 记录最后一条完整回复（task 工具作为返回值用）
-                if isinstance(event, AssistantMessageCompleteEvent):
-                    turn.final_content = event.content or ""
+                # 记录最后一条完整回复文本（task 工具作为返回值用）
+                # ReplyEndEvent 标志一次 LLM 回复结束，从 state.reply_msg 取文本
+                if isinstance(event, ReplyEndEvent):
+                    reply_msg = getattr(agent.state, "reply_msg", None) if hasattr(agent, "state") else None
+                    if reply_msg is not None and hasattr(reply_msg, "get_text_content"):
+                        turn.final_content = reply_msg.get_text_content() or ""
 
-                # 持久化类事件（assistant/tool_result/user_message）：入库 + 推前端
-                # 其它事件（如流式片段）：只推前端不入库
-                if isinstance(event, self._PERSISTENT_CLASSES):
-                    await self.publish_agent_event(turn.session_id, turn.inbound, event)
-                else:
+                # 流式增量事件：只推前端不入库
+                # 其它事件（完整事件）：入库 + 推前端
+                if getattr(event, "type", "") in self._VOLATILE_EVENT_TYPES:
                     await self._dispatch_agent_event(turn.inbound, event)
+                else:
+                    await self.publish_agent_event(turn.session_id, turn.inbound, event)
 
                 # 每次完整回复后检查是否要调度后台 idle 压缩（自带去重）
                 if (
-                    isinstance(event, AssistantMessageCompleteEvent)
-                    and event.metadata.get("usage")
+                    isinstance(event, ReplyEndEvent)
                     and turn.inbound.from_channel != SUBAGENT_CHANNEL_ID
                 ):
                     try:
@@ -543,12 +549,12 @@ class TurnExecutor:
                         )
 
             # ── 正常结束：TURN_END 的字段从 agent.state 读 ──
-            _is_error = agent.state.done_reason == DoneReason.ERROR
+            _is_error = agent.state.done_reason == ReplyFinishedReason.ERROR
             await self._emit_step(
                 turn,
-                StepPhase.TURN_END,
-                success=(agent.state.done_reason == DoneReason.COMPLETED),
-                reason=agent.state.done_reason or DoneReason.ERROR,
+                "TURN_END",
+                success=(agent.state.done_reason == ReplyFinishedReason.COMPLETED),
+                reason=str(agent.state.done_reason or ReplyFinishedReason.ERROR),
                 iterations=agent.state.iteration,
                 token_usage=dict(agent.state.token_usage),
                 error_message=agent.state.error if _is_error else None,
@@ -562,7 +568,7 @@ class TurnExecutor:
             logger.info(f"[turn-executor] Agent 被 cancel 中断 session={turn.session_id}")
             # 仍发 TURN_END，让客户端知道已停止、历史回放有完整边界
             await self._emit_step(
-                turn, StepPhase.TURN_END, success=False, reason=DoneReason.CANCELLED
+                turn, "TURN_END", success=False, reason=str(ReplyFinishedReason.INTERRUPTED)
             )
             return TurnStatus.CANCELLED
         except Exception:
@@ -573,9 +579,9 @@ class TurnExecutor:
             )
             await self._emit_step(
                 turn,
-                StepPhase.TURN_END,
+                "TURN_END",
                 success=False,
-                reason=DoneReason.ERROR,
+                reason=str(ReplyFinishedReason.ERROR),
                 error_message="Agent 执行异常",
                 error_code="unknown",
             )
@@ -630,15 +636,18 @@ class TurnExecutor:
 
     # ─── 事件发布 ──────────────────────────────────────────
 
-    async def _emit_step(self, turn: Turn, phase: StepPhase, **kwargs) -> None:
-        """构造 StepEvent 并发布（入库 + 推前端）。
+    async def _emit_step(self, turn: Turn, phase: str, **kwargs) -> None:
+        """构造 CustomEvent 并发布（入库 + 推前端）。
 
         所有 Turn 边界事件（PIPELINE_START/END、COMMAND_MATCHED、
-        TURN_START/END）都走这里，统一盖上 turn.turn_id。
+        TURN_START/END）都走这里，用 CustomEvent 携带 phase 信息。
+        reply_id 关联到 turn.turn_id（通过 metadata 传递，CustomEvent 无 reply_id 字段）。
         """
-        event = StepEvent(phase=phase, **kwargs)
-        # StepEvent 是 frozen-ish，用 object.__setattr__ 盖 turn_id
-        object.__setattr__(event, "turn_id", turn.turn_id)
+        event = CustomEvent(
+            name=phase,
+            value=kwargs,
+            metadata={"reply_id": turn.turn_id},
+        )
         await self.publish_agent_event(turn.session_id, turn.inbound, event)
         turn.events.append(event)  # 记入 Turn 的事件序列（供回放/调试）
 
@@ -648,13 +657,14 @@ class TurnExecutor:
         """存储 agent event 到 DB + 派发到前端（两件事一起做）。"""
         loop = self._loop
         # 1. 入库（历史回放用）
+        reply_id = getattr(event, "reply_id", "") or (event.metadata or {}).get("reply_id", "")
         await loop.session_manager.save_message(
             session_id,
-            event.type.value,
-            event._data_dict(),
-            event_id=event.event_id,
-            turn_id=event.turn_id,
-            timestamp=event.timestamp,
+            event.type,
+            event.model_dump(mode="json"),
+            event_id=event.id,
+            reply_id=reply_id,
+            timestamp=datetime.fromisoformat(event.created_at).timestamp(),
         )
         # 2. 推前端（实时显示）
         await self._dispatch_agent_event(inbound, event)
@@ -669,7 +679,7 @@ class TurnExecutor:
                 to_channel=inbound.to_channel,
                 from_session=inbound.from_session,
                 to_session=inbound.to_session,
-                data=event.to_dict(),
+                data=event.model_dump(mode="json"),
             )
         )
 
@@ -740,7 +750,7 @@ class TurnExecutor:
         channel_id: str = "",
         workspace: str = "",
         agent_dir: str = "",
-        turn_id: str,
+        reply_id: str,
     ) -> tuple[list[dict], AgentConfig]:
         """构建发给 LLM 的消息列表，触发 before_messages_build hook。
 
@@ -765,7 +775,7 @@ class TurnExecutor:
                 channel_id=channel_id,
                 inbound_data=inbound_data or {},
                 workspace=workspace,
-                turn_id=turn_id,
+                reply_id=reply_id,
                 agent_dir=agent_dir,
                 config=hook_config,
                 events=events,

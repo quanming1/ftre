@@ -5,11 +5,10 @@ context_govern — 上下文治理插件
 1. tool 事件配对治理：孤立清理 + 悬挂丢弃 + 不相邻修复（tool_result 提到 toolCall 后紧邻位置）
 2. 去重 toolCall block + tool_result 事件（同一 id 只保留第一个）
 
-新协议下 tool_call 不再是独立事件，而是嵌在 assistant_message_complete 的
-content[] 中（type="toolCall"）。tool_result 是独立事件。
-由于 DB 按 timestamp 排序，tool_result 的 timestamp 可能比 toolCall 之间插入的
-user_message 更大，导致读取历史时顺序非法。不相邻修复确保 to_openai_messages
-产出的消息序列满足 OpenAI 协议。
+新协议（AgentScope 对齐）下，事件类型为大写字符串（TEXT_BLOCK_START, TOOL_CALL_END,
+TOOL_RESULT_END, ...），converter 按 reply_id 分组用 Msg.append_event 重建消息，
+append_event 内部处理配对。此插件对新事件类型不做处理（直接透传），仅对旧协议
+事件（assistant_message_complete / tool_result）生效。
 """
 import logging
 import os

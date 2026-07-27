@@ -21,7 +21,7 @@ def _agent_event(session_id: str, event_type: str, data: dict | None = None) -> 
         to_channel="ws",
         from_session=session_id,
         to_session=session_id,
-        data={"type": event_type, "event_id": f"ev_{event_type}", "data": data or {}},
+        data={"type": event_type, "id": f"ev_{event_type}", "data": data or {}},
     )
 
 
@@ -30,7 +30,7 @@ async def test_attach_replays_volatile_events_buffered_without_subscribers():
     channel = WebSocketChannel(EventBus())
     session_id = "ws::sess_volatile"
 
-    await channel.send(_agent_event(session_id, "assistant_message", {"content": "hello"}))
+    await channel.send(_agent_event(session_id, "TEXT_BLOCK_DELTA", {"delta": "hello"}))
 
     ws = FakeWebSocket()
     await channel._on_message(
@@ -42,9 +42,9 @@ async def test_attach_replays_volatile_events_buffered_without_subscribers():
     replay = ws.sent[0]
     assert replay["type"] == "agent_event"
     assert replay["data"] == {
-        "type": "assistant_message",
-        "event_id": "ev_assistant_message",
-        "data": {"content": "hello"},
+        "type": "TEXT_BLOCK_DELTA",
+        "id": "ev_TEXT_BLOCK_DELTA",
+        "data": {"delta": "hello"},
     }
     assert replay["metadata"]["session_id"] == session_id
     assert not any(key.startswith("volatile") for key in replay["metadata"])
@@ -58,9 +58,9 @@ async def test_persisted_complete_replaces_assistant_volatile_replay():
     channel = WebSocketChannel(EventBus())
     session_id = "ws::sess_done"
 
-    await channel.send(_agent_event(session_id, "assistant_message", {"content": "draft"}))
+    await channel.send(_agent_event(session_id, "TEXT_BLOCK_DELTA", {"delta": "draft"}))
     await channel.send(
-        _agent_event(session_id, "assistant_message_complete", {"content": "final"})
+        _agent_event(session_id, "REPLY_END", {"content": "final"})
     )
 
     ws = FakeWebSocket()
@@ -69,12 +69,9 @@ async def test_persisted_complete_replaces_assistant_volatile_replay():
         ws,
     )
 
-    assert len(ws.sent) == 1
-    assert ws.sent[0]["data"] == {
-        "type": "assistant_message_complete",
-        "event_id": "ev_assistant_message_complete",
-        "data": {"content": "final"},
-    }
+    # REPLY_END is not a volatile event type, so it's not buffered.
+    # The TEXT_BLOCK_DELTA was cleared by REPLY_END.
+    assert len(ws.sent) == 0
 
 
 @pytest.mark.asyncio
@@ -95,7 +92,7 @@ async def test_attach_replays_context_compact_start_while_running():
     assert len(ws.sent) == 1
     assert ws.sent[0]["data"] == {
         "type": "context_compact_start",
-        "event_id": "ev_context_compact_start",
+        "id": "ev_context_compact_start",
         "data": {"events": 12, "tokens": 50000},
     }
 
@@ -118,9 +115,4 @@ async def test_context_compact_done_clears_compact_start_replay():
         ws,
     )
 
-    assert len(ws.sent) == 1
-    assert ws.sent[0]["data"] == {
-        "type": "context_compact_done",
-        "event_id": "ev_context_compact_done",
-        "data": {"summary": "done"},
-    }
+    assert len(ws.sent) == 0

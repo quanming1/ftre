@@ -49,8 +49,8 @@ class TitleGenPlugin(Plugin):
         session_id = ctx.session_id
 
         # 当前 user_message 已在 COMMAND 状态提前写入 DB，events 不再为空。
-        # 必须按 turn_id 排除本轮事件，只判断此前是否已有可见 user_message。
-        if self._has_prior_user_message(ctx.events, ctx.turn_id):
+        # 必须按 reply_id 排除本轮事件，只判断此前是否已有可见 user_message。
+        if self._has_prior_user_message(ctx.events, ctx.reply_id):
             logger.debug(
                 f"[title_gen] 跳过：非首条消息 (session={session_id}, "
                 f"已有历史 user_message)"
@@ -142,12 +142,12 @@ class TitleGenPlugin(Plugin):
         ).start()
 
     @staticmethod
-    def _has_prior_user_message(events, current_turn_id: str) -> bool:
-        """判断事件流中是否已有当前 Turn 之前的可见用户消息。"""
+    def _has_prior_user_message(events, current_reply_id: str) -> bool:
+        """判断事件流中是否已有当前 Reply 之前的可见用户消息。"""
         for event in events:
             if getattr(event, "type", "") != "user_message":
                 continue
-            if getattr(event, "turn_id", "") == current_turn_id:
+            if getattr(event, "reply_id", "") == current_reply_id:
                 continue
             data = getattr(event, "data", {}) or {}
             metadata = data.get("metadata", {}) if isinstance(data, dict) else {}

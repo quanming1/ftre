@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ftre_agent_core.agent.event import UserMessageEvent
+from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Tool
 
 from ftre.agent.loop import AgentLoop
@@ -82,13 +82,10 @@ def test_read_tool_reads_relative_image_path(tmp_path):
         llm_config=SimpleNamespace(vision=True),
     )
 
-    assert isinstance(result, UserMessageEvent)
+    assert isinstance(result, HintBlockEvent)
     assert result.metadata["hide"] is True
     assert result.metadata["path"] == str(image.resolve())
-    assert result.content[0]["type"] == "image_file"
-    assert "path" in result.content[0]
-    assert os.path.exists(result.content[0]["path"])
-    assert result.content[0]["mime_type"] == "image/png"
+    assert "data:image" in result.hint
 
 
 def test_read_tool_rejects_image_without_vision(tmp_path):

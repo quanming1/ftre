@@ -4,9 +4,10 @@ read 工具 - 读取文件内容或图片内容
 import io
 import logging
 import urllib.request
+import uuid
 from pathlib import Path
 
-from ftre_agent_core.agent.event import UserMessageEvent, user_message_event
+from ftre_agent_core.event import HintBlockEvent, EventBase
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
 from ftre.utils.image_store import save_image
@@ -117,8 +118,12 @@ def _compress_image(data: bytes, mime: str) -> tuple[bytes, str]:
     return compressed, "image/jpeg"
 
 
-def _image_to_event(path: str, cwd: str) -> UserMessageEvent | str:
-    """把图片加载为可直接喂给 LLM 的视觉输入事件；失败时返回 [error] 文本。"""
+def _image_to_event(path: str, cwd: str) -> HintBlockEvent | str:
+    """把图片加载为可直接喂给 LLM 的视觉输入事件；失败时返回 [error] 文本。
+
+    新协议下工具返回 HintBlockEvent（继承 EventBase），react_runner 会把 hint
+    内容追加为 user 消息到 memory，供 LLM 读取。
+    """
     try:
         data, mime, display_path = _load_image(path, cwd)
     except Exception as e:
@@ -138,13 +143,16 @@ def _image_to_event(path: str, cwd: str) -> UserMessageEvent | str:
     stored_path = save_image(data, mime, original_name=original_name)
     logger.info(f"[read] image {display_path} -> {stored_path} ({mime}, {len(data)} bytes)")
 
+    import base64
+    b64 = base64.b64encode(data).decode("ascii")
+    data_url = f"data:{mime};base64,{b64}"
+
     # hide=True：图片本体只作为模型视觉输入，不在 UI 会话流里重复展示。
-    return user_message_event(
-        content=[{
-            "type": "image_file",
-            "path": stored_path,
-            "mime_type": mime,
-        }],
+    return HintBlockEvent(
+        reply_id="",
+        block_id=uuid.uuid4().hex[:16],
+        source="tool",
+        hint=f"![image]({data_url})",
         metadata={"hide": True, "path": display_path, "mime": mime, "size": len(data)},
     )
 
@@ -163,7 +171,7 @@ def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> To
         end_line: int = 0,
         ws: WorkspaceAccessor = Injected("workspace"),
         llm_config=Injected("llm_config"),
-    ) -> str | UserMessageEvent | tuple[str, dict]:
+    ) -> str | HintBlockEvent | tuple[str, dict]:
         try:
             if not isinstance(ws, WorkspaceAccessor):
                 return "[error] runtime_context.workspace 未注入"
