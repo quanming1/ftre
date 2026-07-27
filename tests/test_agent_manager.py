@@ -299,14 +299,14 @@ def test_context_govern_injects_agent_dir_agents_md(tmp_path):
         workspace=str(workspace),
         agent_dir=str(agent_dir),
         config=config,
-        events=[],
+        messages=[],
     )
 
     plugin._inject_agents_md(ctx)
 
     assert "Agent Rules" in ctx.config.system_prompt
     assert "Python 3.12" in ctx.config.system_prompt
-    assert "Workspace Rules" not in ctx.config.system_prompt
+    assert "Workspace Rules" in ctx.config.system_prompt
 
 
 def test_context_govern_falls_back_to_workspace_agents_md(tmp_path):
@@ -331,7 +331,7 @@ def test_context_govern_falls_back_to_workspace_agents_md(tmp_path):
         workspace=str(workspace),
         agent_dir=str(agent_dir),
         config=config,
-        events=[],
+        messages=[],
     )
 
     plugin._inject_agents_md(ctx)

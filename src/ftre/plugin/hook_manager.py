@@ -64,7 +64,7 @@ class MessagesBuildContext:
 
     可改字段（hook 修改后会被采纳）：
     - config：AgentConfig 的深拷贝，改 llm / system_prompt / max_iterations 等
-    - events：从 DB 加载的事件流（list[dict]），hook 可裁剪/注入/重排
+    - messages：从 DB 加载的 Msg 快照（list[dict]），hook 可裁剪/注入/重排
     """
     # 只读
     session_id: str
@@ -77,7 +77,7 @@ class MessagesBuildContext:
 
     # 可改
     config: "AgentConfig" = None
-    events: list = field(default_factory=list)
+    messages: list = field(default_factory=list)
 
 
 @dataclass

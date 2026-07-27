@@ -46,9 +46,9 @@ MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024  # 3 MB
 
 MAX_ATTACHMENTS_PER_MESSAGE = 8
 
-# 这些事件只代表"正在流式输出的增量"，不会直接落到 session DB。
-# 如果客户端在它们产生时还没 attach，刷新后只读 DB 会看不到这些片段，
-# 所以在 WS channel 内短暂缓存，等客户端 attach 后补发。
+# 这些事件只代表正在流式输出的增量，不写入 session DB。
+# 如果客户端在历史读取后、attach 前错过了仍在生成的片段，
+# 就从 WS channel 的短期缓冲补发。
 VOLATILE_EVENT_TYPES = frozenset({
     "TEXT_BLOCK_DELTA",
     "THINKING_BLOCK_DELTA",
@@ -58,8 +58,8 @@ VOLATILE_EVENT_TYPES = frozenset({
     "DATA_BLOCK_DELTA",
     "context_compact_start",
 })
-# 对应的稳定事件到达后，说明这类流式增量已经被最终事件覆盖/持久化，
-# 可以从 volatile buffer 删除，避免客户端 attach 后看到旧草稿。
+# REPLY_END 到达时，聚合后的 Msg 已持久化；对应增量可从 volatile
+# buffer 删除，避免客户端 attach 后看到旧草稿。
 VOLATILE_CLEAR_BY_TYPE = {
     "REPLY_END": {
         "TEXT_BLOCK_DELTA",
@@ -90,9 +90,9 @@ class _VolatileReplayBuffer:
     """缓存未入库的流式事件，供客户端 attach 时补发。
 
     这个类只处理 WS 层的临时恢复，不替代数据库历史：
-    - DB 负责稳定消息（REPLY_END, TOOL_RESULT_END 等）。
-    - 这里负责还没稳定落库的流式片段（各种 *_DELTA）。
-    - attach 时 replay 当前 session 的临时片段，随后客户端继续接收 live 流。
+    - DB 只持久化聚合完成的 Msg。
+    - 这里短暂保留尚未聚合完成的流式 Event。
+    - REPLY_END 到达后，Msg 已落库，对应的增量草稿立即清除。
     """
 
     def __init__(self) -> None:
@@ -113,15 +113,14 @@ class _VolatileReplayBuffer:
             await self._clear(session_id)
             return metadata
 
-        # 持久化事件（assistant_message_complete / tool_result 等）已入库，
-        # 客户端 HTTP 可拉取，不需要进 volatile buffer。
-        # 只需清除它覆盖的流式草稿。
+        # START/END 等非 delta 事件不进入 volatile buffer，只负责清除它覆盖的
+        # 流式草稿；REPLY_END 时聚合后的 Msg 已持久化到 DB。
         clear_types = VOLATILE_CLEAR_BY_TYPE.get(ev_type)
         if clear_types:
             await self._clear(session_id, event_types=clear_types)
             return metadata
 
-        # 其他事件要么已经会入库，要么不是流式片段，不进入 volatile buffer。
+        # 其他事件不是需要断线短暂回放的流式片段，不进入 volatile buffer。
         if ev_type not in VOLATILE_EVENT_TYPES:
             return metadata
 
@@ -480,8 +479,8 @@ class WebSocketChannel(Channel):
 
         if frame_type == "attach":
             self._attach(session_id, ws)
-            # 客户端流程是先 HTTP 读 DB 历史，再 WS attach。
-            # DB 里没有流式增量，所以 attach 后立即补发 volatile buffer。
+            # 客户端流程是先 HTTP 读 Msg 历史，再 WS attach；若此时 reply 仍在
+            # 生成，则补发 attach 前积累的流式增量。
             await self._volatile_replay.replay(session_id, ws)
             return
 

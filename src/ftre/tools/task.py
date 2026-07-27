@@ -11,7 +11,7 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 - 在 AgentLoop 注册一个 session_id → Future[dict] 的一次性完成通知。
 - AgentLoop._run 在 finally 里必定 set_result，所以无论 done 是否被发出（异常
   / 被 cancel）都能正确感知 agent 已结束。
-- Future payload 中携带 status 和最后一条 message_complete 内容。
+- Future payload 中携带 status 和最后一条完整 assistant Msg 内容。
 
 防递归：subagent channel 的调用方禁止再调 task。
 """
@@ -167,7 +167,7 @@ def create_task_tool(channel_manager) -> Tool:
             agent_loop.unregister_subagent_done_future(sid, done_future)
             return f"[error] 等待 subagent 完成时出错: {type(e).__name__}: {e}"
 
-        # agent 已结束，使用 AgentLoop 回传的最后一条 message_complete。
+        # agent 已结束，使用 AgentLoop 回传的最后一条完整 assistant Msg。
         status = done_payload.get("status") or "completed"
         final_content = done_payload.get("final_content") or ""
         head_full = f"<FTRE_SYSTEM_FACT>[session={sid}, status={status}]</FTRE_SYSTEM_FACT>"

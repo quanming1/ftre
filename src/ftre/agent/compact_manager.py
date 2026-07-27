@@ -5,14 +5,10 @@ CompactManager — 上下文压缩处理器
 - 50% 水位（precompact_threshold）：每轮 LLM 回复结束后后台异步压缩
 - 70% 水位（compact_threshold）：用户发消息时阻塞式压缩
 - /compact 手动：立即压缩
-- /compress-fast：零 LLM 成本裁剪旧 tool_result
+- /compress-fast：零 LLM 成本裁剪旧 ToolResultBlock 输出
 
-每次压缩：从上一个 context_compact(summary) 到现在，全量 LLM 摘要，
-compact event 放末尾（timestamp=触发时间）。写入即生效，无 pending。
-
-to_openai_messages 遍历 context_compact 事件：
-- mode=fast → 不清空，靠 compacted_ids 标记 tool_result 为占位符
-- mode=summary → 清空之前所有 messages + 注入 summary
+每次压缩：从上一个摘要 Msg 到现在，全量 LLM 摘要。摘要本身也是 Msg，
+由 metadata.context_compact 标记；快速压缩直接更新旧 Msg 中的工具结果块。
 
 并发安全：
 - compact() 总是在 AgentLoop._dispatch 的 per-session asyncio.Lock 内调用，
@@ -23,13 +19,13 @@ to_openai_messages 遍历 context_compact 事件：
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Literal
 
 from ftre_agent_core.llm import LLMError, LLMHandler, TextDelta
+from ftre_agent_core.message import Msg, SystemMsg, TextBlock, ToolResultBlock
 
 from ftre.bus import BusMessage
 
@@ -38,17 +34,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_PRECOMPACT_THRESHOLD = 0.5
 DEFAULT_COMPACT_THRESHOLD = 0.7
 
-# compress-fast 默认保留最近 N 条 tool_result 完整
+# compress-fast 默认保留最近 N 个工具结果完整
 DEFAULT_FAST_KEEP_RECENT = 3
 
 
 @dataclass
 class ContextCompactData:
-    """context_compact 事件的 data 字段。
+    """摘要 Msg 的 metadata.context_compact 字段。
 
     两种模式：
       summary: 调 LLM 生成摘要，替换之前的消息
-      fast:    零 LLM 成本，裁剪旧 tool_result 输出为占位符
+      fast:    零 LLM 成本，直接裁剪旧 ToolResultBlock 输出
     """
 
     # ── 公共字段 ──
@@ -56,12 +52,8 @@ class ContextCompactData:
     trigger: Literal["auto", "manual", "idle"] = "auto"
     silent: bool = True
 
-    # ── fast 模式：被裁剪的 event id 列表 ──
-    events: list[str] = field(default_factory=list)
-
     # ── summary 模式 ──
-    summary: str = ""
-    events_before: int = 0
+    messages_before: int = 0
     trigger_ratio: float = 0.0
     enable_ratio: float = 0.0
     tokens_before: int = 0
@@ -171,7 +163,7 @@ class CompactManager:
         silent: bool = True,
         trigger: Literal["auto", "manual", "idle"] = "auto",
     ) -> str | None:
-        """异步执行压缩。写入 context_compact(mode='summary') 直接生效。"""
+        """异步执行压缩。写入摘要 Msg 后直接生效。"""
         return await self._do_compact(
             session_id, channel_id,
             config=config, silent=silent, trigger=trigger,
@@ -188,75 +180,65 @@ class CompactManager:
         silent: bool = False,
         keep_recent: int = DEFAULT_FAST_KEEP_RECENT,
     ) -> bool:
-        """快速压缩：不调 LLM，直接裁剪旧 tool_result 输出为占位符。
+        """快速压缩：不调 LLM，直接裁剪旧 ToolResultBlock 输出。
 
-        策略：保留最近 keep_recent 条 tool_result 完整，其余的 event id
-        记录在 context_compact(mode=fast).events 中。to_openai_messages
-        遇到这些 id 的 tool_result 时替换为 "[工具输出已压缩]"。
+        策略：保留最近 keep_recent 个工具结果完整，其余结果原位替换成
+        ``[工具输出已压缩]``，不会写入任何流式事件或兼容标记。
 
         Returns:
             True: 执行了裁剪
-            False: 没有 tool_result 可裁剪
+            False: 没有工具结果可裁剪
         """
-        events = await self.session_manager.get_messages_by_session(session_id)
-        if not events:
+        records = await self.session_manager.get_messages_by_session(session_id)
+        if not records:
             return False
 
-        # 只从最后一个 summary compact 之后找 tool_result
-        # 之前的事件已被 summary 替换，to_openai_messages 不会加载它们
-        cursor_idx = get_cursor_index(events)
-        active_events = events[cursor_idx:]
+        cursor_idx = get_cursor_index(records)
+        active_records = records[cursor_idx:]
+        messages = [Msg.model_validate(record) for record in active_records]
+        tool_results: list[tuple[Msg, ToolResultBlock]] = []
+        for message in messages:
+            for block in message.content:
+                if (
+                    isinstance(block, ToolResultBlock)
+                    and _tool_result_text(block) != "[工具输出已压缩]"
+                ):
+                    tool_results.append((message, block))
 
-        # 找活跃区间内的 tool_result，排除已被之前 fast compact 标记的
-        already_compacted: set[str] = set()
-        for e in active_events:
-            if e.get("type") == "context_compact" and (e.get("data") or {}).get("mode") == "fast":
-                already_compacted.update((e.get("data") or {}).get("events", []))
-        tool_results = [
-            e for e in active_events
-            if e.get("type") == "tool_result" and e.get("id") not in already_compacted
-        ]
         if len(tool_results) <= keep_recent:
             logger.info(
-                f"[compact-fast] session={session_id} tool_result 数 "
+                f"[compact-fast] session={session_id} 工具结果数 "
                 f"{len(tool_results)} <= keep_recent={keep_recent}，跳过"
             )
             return False
 
-        to_compact = tool_results[:-keep_recent] if keep_recent > 0 else tool_results
-        compacted_ids = [e.get("id", "") for e in to_compact if e.get("id")]
+        to_compact = (
+            tool_results[:-keep_recent]
+            if keep_recent > 0
+            else tool_results
+        )
 
         # 估算压缩前后 token（只算活跃区间）
         from ftre.session.token_counter import estimate_messages_tokens
-        tokens_before = estimate_messages_tokens(active_events)
-
-        payload = asdict(ContextCompactData(
-            mode="fast",
-            trigger="manual",
-            silent=silent,
-            events=compacted_ids,
-        ))
-
-        # tokens_after = tokens_before 减去被裁剪的 tool_result 估算差值
-        compacted_events = to_compact
-        compacted_tokens = estimate_messages_tokens(compacted_events)
-        tokens_after = max(0, tokens_before - compacted_tokens)
-        payload["tokens_before"] = tokens_before
-        payload["tokens_after"] = tokens_after
+        tokens_before = estimate_messages_tokens(active_records)
+        changed_messages: dict[str, Msg] = {}
+        for message, block in to_compact:
+            block.output = [TextBlock(text="[工具输出已压缩]")]
+            changed_messages[message.id] = message
+        tokens_after = estimate_messages_tokens(messages)
 
         try:
-            await self.session_manager.save_message(
-                session_id, "context_compact", payload,
-                timestamp=time.time(),
-            )
+            for message in changed_messages.values():
+                await self.session_manager.update_message(message)
         except Exception:
-            logger.exception(f"[compact-fast] 写入 DB 失败 session={session_id}")
+            logger.exception(f"[compact-fast] 更新 Msg 失败 session={session_id}")
             return False
 
         # 通知前端
         done_data = {
             "mode": "fast",
-            "events": len(compacted_ids),
+            "messages": len(changed_messages),
+            "tool_results": len(to_compact),
             "tokens_before": tokens_before,
             "tokens_after": tokens_after,
         }
@@ -265,7 +247,7 @@ class CompactManager:
         await self._notify(session_id, channel_id, "context_compact_done", done_data, silent=silent)
 
         logger.info(
-            f"[compact-fast] session={session_id} 裁剪 {len(compacted_ids)} 条 tool_result, "
+            f"[compact-fast] session={session_id} 裁剪 {len(to_compact)} 个工具结果, "
             f"tokens {tokens_before} → {tokens_after}"
         )
         return True
@@ -279,7 +261,7 @@ class CompactManager:
         silent: bool,
         trigger: Literal["auto", "manual", "idle"] = "auto",
     ) -> str | None:
-        """压缩主逻辑：读事件 → LLM 摘要 → 写 compact event。"""
+        """压缩主逻辑：读 Msg → LLM 摘要 → 写摘要 Msg。"""
 
         # 取消在飞的后台 idle 压缩，避免与本次前台压缩竞态
         existing = self._compact_tasks.get(session_id)
@@ -288,18 +270,18 @@ class CompactManager:
             self._compact_tasks.pop(session_id, None)
             logger.info(f"[compact] session={session_id} 取消后台压缩，改用前台压缩")
 
-        # 1. 读取事件流
-        events = await self.session_manager.get_messages_by_session(session_id)
-        if not events:
-            logger.info(f"[compact] session={session_id} 无事件，跳过")
+        # 1. 读取 Msg
+        messages = await self.session_manager.get_messages_by_session(session_id)
+        if not messages:
+            logger.info(f"[compact] session={session_id} 无消息，跳过")
             await self._notify_failed(session_id, channel_id, "当前会话没有历史消息", silent=silent)
             return None
 
         # 2. 从上一个 summary compact 之后开始，全量压缩
-        cursor_idx = get_cursor_index(events)
-        head_events = events[cursor_idx:]
-        if not head_events:
-            logger.info(f"[compact] session={session_id} head_events 为空，跳过")
+        cursor_idx = get_cursor_index(messages)
+        head_messages = messages[cursor_idx:]
+        if not head_messages:
+            logger.info(f"[compact] session={session_id} head_messages 为空，跳过")
             return None
 
         # 3. 估算当前 token（优先用 API 真实值）
@@ -313,16 +295,16 @@ class CompactManager:
 
         # 4. 通知前端开始
         await self._notify(session_id, channel_id, "context_compact_start", {
-            "events": len(head_events),
+            "messages": len(head_messages),
             "tokens": tokens_before,
         }, silent=silent)
 
         # 5. 取之前摘要（如果有）
-        previous_summary = get_previous_summary(events)
+        previous_summary = get_previous_summary(messages)
 
         # 6. LLM 直调摘要
         summary = await self._run_compact_llm(
-            head_events, config=config, previous_summary=previous_summary,
+            head_messages, config=config, previous_summary=previous_summary,
             session_id=session_id,
         )
         if not summary:
@@ -330,25 +312,24 @@ class CompactManager:
             await self._notify_failed(session_id, channel_id, "LLM 摘要未产出合格结果", silent=silent)
             return None
 
-        # 7. 写入 compact event（timestamp=当前时间，放末尾）
+        # 7. 写入摘要 Msg（timestamp=当前时间，放末尾）
         now = time.time()
         payload: dict = asdict(ContextCompactData(
             mode="summary",
             trigger=trigger,
             silent=silent,
-            summary=summary,
-            events_before=len(head_events),
+            messages_before=len(head_messages),
             trigger_ratio=current_ratio,
             enable_ratio=getattr(config.context, "compact_threshold", DEFAULT_COMPACT_THRESHOLD),
             tokens_before=tokens_before,
         ))
-        synthetic = {
-            "type": "context_compact",
-            "data": payload,
-            "timestamp": now,
-        }
+        summary_message = SystemMsg(
+            name="context_compact",
+            content=summary,
+            metadata={"context_compact": payload},
+        )
         from ftre.session.token_counter import estimate_messages_tokens
-        tokens_after = estimate_messages_tokens([synthetic])
+        tokens_after = estimate_messages_tokens([summary_message])
 
         # 膨胀保护：摘要比原文还大 → 放弃
         if tokens_after >= tokens_before:
@@ -361,11 +342,11 @@ class CompactManager:
             return None
 
         payload["tokens_after"] = tokens_after
+        summary_message.metadata["context_compact"] = payload
 
         try:
             await self.session_manager.save_message(
-                session_id, "context_compact", payload,
-                timestamp=now,
+                session_id, summary_message, timestamp=now,
             )
         except Exception:
             logger.exception(f"[compact] 写入 DB 失败 session={session_id}")
@@ -374,7 +355,7 @@ class CompactManager:
         # 8. 通知前端完成
         done_data: dict = {
             "mode": "summary",
-            "events": len(head_events),
+            "messages": len(head_messages),
             "tokens_before": tokens_before,
             "tokens_after": payload.get("tokens_after"),
             "summary": _preview(summary),
@@ -385,7 +366,7 @@ class CompactManager:
 
         logger.info(
             f"[compact] session={session_id} 压缩完成 "
-            f"events={len(head_events)}，摘要 {len(summary)} 字符"
+            f"messages={len(head_messages)}，摘要 {len(summary)} 字符"
         )
         return summary
 
@@ -393,7 +374,7 @@ class CompactManager:
 
     async def _run_compact_llm(
         self,
-        head_events: list[dict],
+        head_messages: list[dict],
         *,
         config,
         previous_summary: str | None = None,
@@ -402,15 +383,15 @@ class CompactManager:
         """调用 LLM 生成摘要（异步）。
 
         采用 OpenCode 的 serialize → select → buildPrompt 模式：
-        1. 序列化 head 事件为纯文本（截断 tool 输出至 2000 字符）
+        1. 序列化 Msg 为纯文本（截断 tool 输出至 2000 字符）
         2. buildPrompt() 返回多条 user message：对话记录 + 指令/模板
         3. 多条 user message 依次发给 LLM
         """
         self._last_llm_errors[session_id] = None
         try:
-            context = _serialize_events(head_events)
+            context = _serialize_messages(head_messages)
             if not context.strip():
-                logger.debug("[compact] 事件文本为空，跳过 LLM 调用")
+                logger.debug("[compact] 消息文本为空，跳过 LLM 调用")
                 return None
 
             prompt_parts = _build_prompt(
@@ -518,7 +499,7 @@ class CompactManager:
                 logger.debug(f"[compact] session={session_id} 已有后台压缩在飞，跳过")
                 return
 
-            # 后台隐形压缩：直接启用 compact event，让下一轮上下文立刻使用摘要。
+            # 后台隐形压缩：写入摘要 Msg，让下一轮上下文立刻使用摘要。
             async def _do_bg_compact():
                 try:
                     summary = await self.compact(
@@ -562,65 +543,72 @@ class CompactManager:
 # ─── 模块级纯函数（可单测） ───────────────────────────────────────────
 
 
-def _serialize_events(
+def _serialize_messages(
     chunk: list[dict],
     *,
     tool_output_max_chars: int = 2000,
 ) -> str:
-    """把消息列表序列化为 LLM 可读的纯文本（源自 OpenCode serialize 模式）。
+    """把 Msg 历史序列化为 LLM 可读的纯文本。"""
+    from ftre.session.converter import to_openai
 
-    规则（对齐 OpenCode）：
-    - 用户消息：[User]: 内容
-    - AI 回复：[Assistant]: 内容（从 content[] 的 text 块提取）
-    - AI 思考：[Assistant reasoning]: 内容（从 content[] 的 thinking 块提取）
-    - 工具调用：[Assistant tool call]: name(args)（从 content[] 的 toolCall 块提取）
-    - 工具结果：[Tool result]: 输出（截断至 tool_output_max_chars）
-    - 工具错误：[Tool error]: 错误信息
-    - 多条消息之间用 \\n\\n 分隔
-    """
-    TOOL_OUTPUT_MAX_CHARS = tool_output_max_chars
+    def content_text(content, *, include_thinking: bool = False) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return str(content or "")
+        text_parts: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type")
+            if part_type == "text":
+                text_parts.append(str(part.get("text", "")))
+            elif include_thinking and part_type == "thinking":
+                text_parts.append(str(part.get("thinking", "")))
+        return "\n".join(part for part in text_parts if part)
+
+    tool_states: dict[str, str] = {}
+    for record in chunk:
+        message = Msg.model_validate(record)
+        for block in message.content:
+            if isinstance(block, ToolResultBlock):
+                tool_states[block.id] = str(block.state)
+
     parts: list[str] = []
+    for message in to_openai(chunk, config={"llm": {"vision": False}}):
+        role = message.get("role")
+        if role == "user":
+            text = content_text(message.get("content"), include_thinking=True)
+            if text:
+                parts.append(f"[User]: {text}")
+            continue
 
-    for ev in chunk:
-        t = ev.get("type", "")
-        d = ev.get("data") or {}
-
-        if t == "assistant_message_complete":
-            blocks = d.get("content", [])
-            for b in blocks:
-                bt = b.get("type", "")
-                if bt == "thinking" and b.get("thinking"):
-                    parts.append(f"[Assistant reasoning]: {b['thinking']}")
-                elif bt == "text" and b.get("text"):
-                    parts.append(f"[Assistant]: {b['text']}")
-                elif bt == "toolCall":
-                    args_str = json.dumps(b.get("arguments", {}), ensure_ascii=False)
-                    parts.append(f"[Assistant tool call]: {b.get('name', '?')}({args_str})")
-
-        elif t == "tool_result":
-            result = d.get("result", "")
-            if len(result) > TOOL_OUTPUT_MAX_CHARS:
-                result = result[:TOOL_OUTPUT_MAX_CHARS] + "\n[truncated]"
-            if d.get("error"):
-                parts.append(f"[Tool error]: {result}")
-            else:
-                parts.append(f"[Tool result]: {result}")
-
-        elif t == "user_message":
-            content = d.get("content", "")
-            if isinstance(content, list):
-                content = "\n".join(
-                    str(p.get("text") or p.get("data") or "")
-                    for p in content
-                    if isinstance(p, dict) and p.get("type") == "text"
+        if role == "assistant":
+            reasoning = str(message.get("reasoning_content") or "")
+            if reasoning:
+                parts.append(f"[Assistant reasoning]: {reasoning}")
+            text = content_text(message.get("content"))
+            if text:
+                parts.append(f"[Assistant]: {text}")
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") or {}
+                parts.append(
+                    f"[Assistant tool call]: "
+                    f"{function.get('name', '?')}({function.get('arguments', '{}')})"
                 )
-            attachments = d.get("attachments") or []
-            att_lines = [
-                f"[附件 {a.get('mime_type', a.get('mime', '未知'))}: {a.get('name', a.get('uri', ''))}]"
-                for a in attachments if isinstance(a, dict)
-            ]
-            lines = [f"[User]: {content}"] + att_lines
-            parts.append("\n".join(lines))
+            continue
+
+        if role == "tool":
+            tool_call_id = str(message.get("tool_call_id", ""))
+            result = content_text(message.get("content"), include_thinking=True)
+            if len(result) > tool_output_max_chars:
+                result = result[:tool_output_max_chars] + "\n[truncated]"
+            label = (
+                "Tool error"
+                if tool_states.get(tool_call_id) in {"error", "interrupted", "denied"}
+                else "Tool result"
+            )
+            parts.append(f"[{label}]: {result}")
 
     return "\n\n".join(parts)
 
@@ -637,7 +625,11 @@ def _estimate_body_chars(context_text: str) -> int:
     # 去掉 Markdown 标记（##、**、- 、| 等）
     no_md = re.sub(r'[#*\-|>\[\]`]', '', no_tools)
     # 去掉标点和空白
-    body = re.sub(r'[，。！？；：""''（）【】《》…—\s,.!?;:\'\"()\[\]{}]', '', no_md)
+    body = re.sub(
+        r"""[，。！？；：“”‘’（）【】《》…—\s,.!?;:'"()\[\]{}]""",
+        "",
+        no_md,
+    )
     body = body.strip()
     return int(len(body))
 
@@ -692,28 +684,36 @@ def _build_prompt(
     return messages
 
 
-def get_cursor_index(events: list[dict]) -> int:
-    """返回最新 context_compact(summary) 事件之后的索引。无则返回 0。"""
-    for i in range(len(events) - 1, -1, -1):
-        ev = events[i]
-        if ev.get("type") != "context_compact":
-            continue
-        mode = (ev.get("data") or {}).get("mode", "summary")
-        if mode == "summary":
+def get_cursor_index(messages: list[dict]) -> int:
+    """返回最新摘要 Msg 之后的索引。无则返回 0。"""
+    for i in range(len(messages) - 1, -1, -1):
+        compact = (messages[i].get("metadata") or {}).get("context_compact")
+        if isinstance(compact, dict) and compact.get("mode") == "summary":
             return i + 1
     return 0
 
 
-def get_previous_summary(events: list[dict]) -> str | None:
-    """返回最新 context_compact(summary) 事件的 summary。"""
-    for i in range(len(events) - 1, -1, -1):
-        ev = events[i]
-        if ev.get("type") != "context_compact":
-            continue
-        mode = (ev.get("data") or {}).get("mode", "summary")
-        if mode == "summary":
-            return (ev.get("data") or {}).get("summary") or None
+def get_previous_summary(messages: list[dict]) -> str | None:
+    """返回最新摘要 Msg 的正文。"""
+    for i in range(len(messages) - 1, -1, -1):
+        record = messages[i]
+        compact = (record.get("metadata") or {}).get("context_compact")
+        if isinstance(compact, dict) and compact.get("mode") == "summary":
+            return Msg.model_validate(record).get_text_content() or None
     return None
+
+
+def _tool_result_text(block: ToolResultBlock) -> str:
+    if isinstance(block.output, str):
+        return block.output
+    return "".join(
+        item.text
+        if isinstance(item, TextBlock)
+        else str(item.get("text", ""))
+        for item in block.output
+        if isinstance(item, TextBlock)
+        or (isinstance(item, dict) and item.get("type") == "text")
+    )
 
 
 def _preview(text: str, limit: int = 200) -> str:

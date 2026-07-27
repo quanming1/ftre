@@ -1,469 +1,138 @@
-﻿"""
-compact_manager 模块级算法工具的单测。
-
-只测纯函数，不依赖 db / channel / bus。
-"""
-from __future__ import annotations
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-from ftre.utils.image_store import save_image
-
 from ftre.agent.compact_manager import (
+    CompactManager,
+    _build_prompt,
+    _estimate_body_chars,
+    _serialize_messages,
     get_cursor_index,
     get_previous_summary,
-    _serialize_events,
-    _build_prompt,
+)
+from ftre.session.converter import to_openai
+from ftre_agent_core.message import (
+    AssistantMsg,
+    SystemMsg,
+    TextBlock,
+    ToolCallBlock,
+    ToolResultBlock,
+    UserMsg,
 )
 
 
-def _make_test_image() -> str:
-    """创建一个真实的 temp 图片文件，返回路径。"""
-    raw = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-    return save_image(raw, "image/png", "compact_test.png")
+def _record(message, timestamp=1.0):
+    return {
+        **message.model_dump(mode="json"),
+        "session_id": "ws::session",
+        "timestamp": timestamp,
+    }
 
 
-# ─── get_cursor_index / get_previous_summary ──────────────────────────
-
-
-def test_cursor_no_compact():
-    events = [
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "hi"}},
-        {"type": "assistant_message_complete", "data": {"content": [{"type": "text", "text": "yes"}], "metadata": {}}},
+def test_summary_cursor_and_previous_summary_use_msg_metadata():
+    messages = [
+        _record(UserMsg(name="user", content="before"), 1),
+        _record(
+            SystemMsg(
+                name="context_compact",
+                content="summary v1",
+                metadata={"context_compact": {"mode": "summary"}},
+            ),
+            2,
+        ),
+        _record(UserMsg(name="user", content="after"), 3),
     ]
-    assert get_cursor_index(events) == 0
-    assert get_previous_summary(events) is None
+    assert get_cursor_index(messages) == 2
+    assert get_previous_summary(messages) == "summary v1"
 
 
-def test_cursor_with_one_compact():
-    events = [
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "a"}},
-        {"type": "context_compact", "data": {"summary": "## summary v1"}},
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "b"}},
+def test_converter_resets_context_at_summary_msg():
+    messages = [
+        _record(UserMsg(name="user", content="discarded"), 1),
+        _record(
+            SystemMsg(
+                name="context_compact",
+                content="kept summary",
+                metadata={"context_compact": {"mode": "summary"}},
+            ),
+            2,
+        ),
+        _record(UserMsg(name="user", content="new request"), 3),
     ]
-    assert get_cursor_index(events) == 2
-    assert get_previous_summary(events) == "## summary v1"
-
-
-def test_cursor_with_multiple_compacts_takes_latest():
-    events = [
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "a"}},
-        {"type": "context_compact", "data": {"summary": "v1"}},
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "b"}},
-        {"type": "context_compact", "data": {"summary": "v2"}},
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "c"}},
+    assert to_openai(messages) == [
+        {"role": "user", "content": "[历史上下文摘要]\nkept summary"},
+        {"role": "user", "content": [{"type": "text", "text": "new request"}], "name": "user"},
     ]
-    assert get_cursor_index(events) == 4
-    assert get_previous_summary(events) == "v2"
 
 
-# ─── _serialize_events ────────────────────────────────────────────
-
-
-
-def test_serialize_empty():
-    assert _serialize_events([]) == ""
-
-
-def test_serialize_preserves_user_full_text():
-    chunk = [
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "请按文档第 3 节实现压缩算法，注意游标只进不退"}},
-        {"type": "assistant_message_complete", "data": {"content": [{"type": "text", "text": "好的"}], "metadata": {}}},
-    ]
-    out = _serialize_events(chunk)
-    assert "请按文档第 3 节实现压缩算法，注意游标只进不退" in out
-    assert "[User]:" in out
-    assert "[Assistant]:" in out
-
-
-def test_serialize_truncates_long_tool_result():
-    big = "x" * 3000
-    chunk = [
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "go"}},
-        {"type": "tool_result", "data": {"id": "c1", "result": big}},
-    ]
-    out = _serialize_events(chunk)
-    assert "x" * 1500 in out
-    assert "[truncated]" in out
-    assert "x" * 2500 not in out
-
-
-def test_serialize_handles_multimodal_user_content():
-    chunk = [
-        {
-            "type": "user_message",
-            "data": {"metadata": {"hide": False}, "content": [{"type": "text", "data": "看下这张图"}]},
-        },
-    ]
-    out = _serialize_events(chunk)
-    assert "看下这张图" in out
-
-
-def test_serialize_formats_tool_call():
-    chunk = [
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "go"}},
-        {"type": "assistant_message_complete", "data": {
-            "content": [{"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"command": "ls"}}],
-            "metadata": {},
-        }},
-        {"type": "tool_result", "data": {"id": "c1", "result": "file1\nfile2"}},
-    ]
-    out = _serialize_events(chunk)
-    assert "[Assistant tool call]: bash(" in out
-    assert "[Tool result]:" in out
-
-
-def test_serialize_reasoning():
-    chunk = [
-        {"type": "assistant_message_complete", "data": {
-            "content": [{"type": "thinking", "thinking": "我在想这个问题..."}],
-            "metadata": {},
-        }},
-    ]
-    out = _serialize_events(chunk)
-    assert "[Assistant reasoning]: 我在想这个问题..." in out
-
-
-# ─── L1 prune 修剪测试 ────────────────────────────────────────────
-
-
-def _events_with_long_tool(*, big_chars: int = 5000):
-    """构造：3 轮，每轮含一个 assistant(toolCall) + tool_result（result 很长）。"""
-    big = "x" * big_chars
-    out = []
-    for i in range(3):
-        out.append({"type": "user_message", "data": {"metadata": {"hide": False}, "content": f"q{i}"}})
-        out.append({
-            "type": "assistant_message_complete",
-            "data": {
-                "content": [{"type": "toolCall", "id": f"c{i}", "name": "bash", "arguments": {}}],
-                "metadata": {"kind": "block"},
-            },
-        })
-        out.append({
-            "type": "tool_result",
-            "data": {"id": f"c{i}", "result": big, "error": None},
-        })
-        out.append({"type": "assistant_message_complete", "data": {
-            "content": [{"type": "text", "text": "done"}],
-            "metadata": {"kind": "final"},
-        }})
-    return out
-
-
-def test_to_openai_simple_conversation():
-    from ftre.session.converter import to_openai
-    events = [
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "hello"}},
-        {"type": "assistant_message_complete", "data": {
-            "content": [{"type": "text", "text": "Hi there!"}],
-            "metadata": {"kind": "final"},
-        }},
-    ]
-    msgs = to_openai(events)
-    assert len(msgs) == 2
-    assert msgs[0] == {"role": "user", "content": "hello"}
-    assert msgs[1]["role"] == "assistant"
-    assert msgs[1]["content"] == "Hi there!"
-
-
-def test_to_openai_tool_call_round():
-    from ftre.session.converter import to_openai
-    events = [
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "read file"}},
-        {"type": "assistant_message_complete", "data": {
-            "content": [
-                {"type": "text", "text": "I'll read it"},
-                {"type": "toolCall", "id": "c1", "name": "read", "arguments": {"path": "a.py"}},
-            ],
-            "metadata": {"kind": "block", "stopReason": "toolUse"},
-        }},
-        {"type": "tool_result", "data": {"id": "c1", "result": "file A content", "error": None}},
-        {"type": "assistant_message_complete", "data": {
-            "content": [{"type": "text", "text": "The file says A"}],
-            "metadata": {"kind": "final"},
-        }},
-    ]
-    msgs = to_openai(events)
-    assert len(msgs) == 4
-    assert msgs[0]["role"] == "user"
-    assert msgs[1]["role"] == "assistant"
-    assert msgs[1]["content"] == "I'll read it"
-    assert msgs[2]["tool_call_id"] == "c1"
-    assert msgs[2]["content"] == "file A content"
-    assert msgs[3]["role"] == "assistant"
-    assert msgs[3]["content"] == "The file says A"
-
-
-def test_to_openai_with_reasoning():
-    from ftre.session.converter import to_openai
-    events = [
-        {"type": "assistant_message_complete", "data": {
-            "content": [
-                {"type": "thinking", "thinking": "Let me analyze..."},
-                {"type": "text", "text": "Here's my answer"},
-            ],
-            "metadata": {"kind": "final"},
-        }},
-    ]
-    msgs = to_openai(events)
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "assistant"
-    assert msgs[0]["content"] == "Here's my answer"
-    assert msgs[0]["reasoning_content"] == "Let me analyze..."
-
-
-def test_to_openai_external_message():
-    from ftre.session.converter import to_openai
-    events = [
-        {"type": "external_message", "data": {
-            "content": "Hello from another agent",
-            "from_channel": "ws",
-            "from_session": "sess_abc",
-        }},
-    ]
-    msgs = to_openai(events)
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "assistant"
-    assert "Hello from another agent" in msgs[0]["content"]
-    assert "ws::sess_abc" in msgs[0]["content"]
-
-
-def test_to_openai_downgrades_images_without_vision():
-    from ftre.session.converter import to_openai
-
-    events = [{
-        "type": "user_message",
-        "data": {"metadata": {"hide": False},
-            "content": "看图",
-            "attachments": [{
-                "type": "image",
-                "mime_type": "image/png",
-                "path": _make_test_image(),
-            }],
-        },
-    }]
-
-    msgs = to_openai(
-        events,
-        config={"llm": {"vision": False}},
+def test_serialize_messages_includes_tool_call_and_result():
+    assistant = AssistantMsg(
+        name="assistant",
+        content=[
+            ToolCallBlock(id="call-1", name="read", arguments={"path": "a.txt"}),
+            ToolResultBlock(
+                id="call-1",
+                name="read",
+                output=[TextBlock(text="file contents")],
+                state="success",
+            ),
+        ],
     )
-
-    assert isinstance(msgs[0]["content"], str)
-    assert "image_url" not in str(msgs[0]["content"])
-    assert "当前模型不支持视觉输入" in msgs[0]["content"]
-
-
-def test_to_openai_keeps_images_when_vision_enabled():
-    from ftre.session.converter import to_openai
-
-    events = [{
-        "type": "user_message",
-        "data": {"metadata": {"hide": False},
-            "content": "看图",
-            "attachments": [{
-                "type": "image",
-                "mime_type": "image/png",
-                "path": _make_test_image(),
-            }],
-        },
-    }]
-
-    msgs = to_openai(
-        events,
-        config={"llm": {"vision": True}},
-    )
-
-    assert msgs[0]["content"][0] == {"type": "text", "text": "看图"}
-    assert msgs[0]["content"][1]["type"] == "image_url"
-    assert msgs[0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
-
-
-def test_to_openai_omits_user_message_images_without_vision():
-    from ftre.session.converter import to_openai
-
-    events = [{
-        "type": "user_message",
-        "data": {
-            "content": [{
-                "type": "image_url",
-                "image_url": {"url": "data:image/png;base64,abc"},
-            }],
-            "metadata": {"hide": True},
-        },
-    }]
-
-    msgs = to_openai(
-        events,
-        config={"llm": {"vision": False}},
-    )
-
-    assert msgs == [{
-        "role": "user",
-        "content": "[图片附件已省略：当前模型不支持视觉输入]",
-    }]
-
-
-def test_to_openai_keeps_user_message_images_with_vision():
-    from ftre.session.converter import to_openai
-
-    content = [{
-        "type": "image_url",
-        "image_url": {"url": "data:image/png;base64,abc"},
-    }]
-    events = [{
-        "type": "user_message",
-        "data": {
-            "content": content,
-            "metadata": {"hide": True},
-        },
-    }]
-
-    msgs = to_openai(
-        events,
-        config={"llm": {"vision": True}},
-    )
-
-    assert msgs == [{"role": "user", "content": content}]
-
-
-def test_to_openai_uses_enabled_compact():
-    """enabled compact 事件启用 summary + tail 视图。"""
-    from ftre.session.converter import to_openai
-    events = [
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "old"}},
-        {"type": "assistant_message_complete", "data": {"content": [{"type": "text", "text": "old answer"}], "metadata": {}}},
-        {"type": "context_compact", "data": {"summary": "## enabled", "enabled": True}},
-        {"type": "user_message", "data": {"metadata": {"hide": False}, "content": "new"}},
-    ]
-    msgs = to_openai(events)
-    joined = "\n".join(str(m.get("content", "")) for m in msgs)
-    assert "## enabled" in joined
-    assert "new" in joined
-    assert "old answer" not in joined
+    output = _serialize_messages([_record(assistant)])
+    assert "[Assistant tool call]: read(" in output
+    assert "[Tool result]: file contents" in output
 
 
 @pytest.mark.asyncio
-async def test_run_compact_llm_collects_stream(monkeypatch):
-    """Regression: stream chunks must be collected before summary validation."""
-    import types
-
-    from ftre_agent_core.llm import TextDelta, StepFinish
-    import ftre.agent.compact_manager as compact_module
-
-    class FakeLLMHandler:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        async def stream(self, messages):
-            assert messages
-            yield TextDelta(text="## 目标\n")
-            yield TextDelta(text=("- 做某事" * 60))
-            yield StepFinish(finish_reason="stop")
-
-    handler = object.__new__(compact_module.CompactManager)
-    handler.session_manager = None
-    handler.channel_manager = None
-    handler.bus = None
-    handler._threshold = 0.6
-    handler._last_llm_errors = {}
-    config = types.SimpleNamespace(
-        llm=types.SimpleNamespace(
-            model="fake-model",
-            api_key="fake-key",
-            api_base="https://example.test",
-            api_type="openai",
-        )
+async def test_fast_compact_updates_tool_result_blocks_without_marker_message():
+    assistant = AssistantMsg(
+        name="assistant",
+        content=[
+            ToolCallBlock(id=f"call-{index}", name="read", arguments={})
+            for index in range(4)
+        ]
+        + [
+            ToolResultBlock(
+                id=f"call-{index}",
+                name="read",
+                output=f"large output {index}",
+                state="success",
+            )
+            for index in range(4)
+        ],
     )
-    events = [{"type": "user_message", "data": {"metadata": {"hide": False}, "content": "hello"}}]
+    session_manager = AsyncMock()
+    session_manager.get_messages_by_session.return_value = [_record(assistant)]
+    bus = AsyncMock()
+    manager = CompactManager(session_manager=session_manager, bus=bus)
 
-    monkeypatch.setattr(compact_module, "LLMHandler", FakeLLMHandler)
-
-    summary = await handler._run_compact_llm(events, config=config)
-
-    assert summary.startswith("## 目标")
-
-
-@pytest.mark.asyncio
-async def test_run_compact_llm_records_llm_error(monkeypatch):
-    """Regression: compact callers need the LLM error code to suppress idle retry storms."""
-    import types
-
-    from ftre_agent_core.llm import LLMError
-    import ftre.agent.compact_manager as compact_module
-
-    class FakeLLMHandler:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        async def stream(self, messages):
-            raise LLMError("Insufficient Balance", "bad_request")
-            yield
-
-    handler = object.__new__(compact_module.CompactManager)
-    handler.session_manager = None
-    handler.channel_manager = None
-    handler.bus = None
-    handler._threshold = 0.6
-    handler._last_llm_errors = {}
-    config = types.SimpleNamespace(
-        llm=types.SimpleNamespace(
-            model="fake-model",
-            api_key="fake-key",
-            api_base="https://example.test",
-            api_type="openai",
-        )
-    )
-    events = [{"type": "user_message", "data": {"metadata": {"hide": False}, "content": "hello"}}]
-
-    monkeypatch.setattr(compact_module, "LLMHandler", FakeLLMHandler)
-
-    summary = await handler._run_compact_llm(events, config=config, session_id="test")
-
-    assert summary is None
-    assert handler._last_llm_errors.get("test") is not None
-    assert handler._last_llm_errors["test"].code == "bad_request"
-
-
-@pytest.mark.asyncio
-async def test_idle_compact_unretryable_llm_error_enters_cooldown():
-    import types
-
-    from ftre.agent.compact_manager import CompactManager
-    from ftre_agent_core.llm import LLMError
-
-    handler = object.__new__(CompactManager)
-    handler._compact_tasks = {}
-    handler._compact_retry_after = {}
-    handler._last_llm_errors = {}
-
-    compact_calls = 0
-
-    async def fake_should_compact(session_id, channel_id, config, *, threshold):
-        return True
-
-    async def fake_compact(session_id, channel_id, *, config, silent, trigger, **kwargs):
-        nonlocal compact_calls
-        compact_calls += 1
-        handler._last_llm_errors[session_id] = LLMError("Insufficient Balance", "bad_request")
-        return None
-
-    handler.should_compact = fake_should_compact
-    handler.compact = fake_compact
-
-    config = types.SimpleNamespace(
-        context=types.SimpleNamespace(
-            idle_compaction=True,
-            precompact_threshold=0.5,
-            silent=True,
-        )
+    changed = await manager.compress_fast(
+        "ws::session",
+        "ws",
+        config=SimpleNamespace(),
+        keep_recent=1,
     )
 
-    await handler.maybe_schedule_idle_compact("ws::s1", "ws", config)
-    task = handler._compact_tasks["ws::s1"]
-    await task
+    assert changed is True
+    session_manager.save_message.assert_not_called()
+    session_manager.update_message.assert_awaited_once()
+    updated = session_manager.update_message.await_args.args[0]
+    results = [
+        block for block in updated.content if isinstance(block, ToolResultBlock)
+    ]
+    assert [result.output[0].text for result in results[:3]] == [
+        "[工具输出已压缩]",
+        "[工具输出已压缩]",
+        "[工具输出已压缩]",
+    ]
+    assert results[-1].output == "large output 3"
 
-    await handler.maybe_schedule_idle_compact("ws::s1", "ws", config)
 
-    assert compact_calls == 1
-    assert handler._compact_retry_after["ws::s1"] > 0
+def test_build_prompt_and_body_estimate():
+    text = "[User]: 请修复数据库\n\n[Assistant]: 已完成分析"
+    assert _estimate_body_chars(text) > 0
+    prompt = _build_prompt(previous_summary="old", context=[text], min_chars=200)
+    assert "<conversation>" in prompt[0]
+    assert "<previous-summary>" in prompt[1]
+    assert "更新锚定摘要" in prompt[-1]

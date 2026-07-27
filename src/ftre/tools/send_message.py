@@ -4,7 +4,7 @@ send_message 工具 - 向另一个 session 发送一条消息
 两种模式（kind 参数）：
 
 - notify（默认）：仅通知，不触发对方 agent
-  目标 session 收到一条 external_message 事件，持久化到历史 + 实时推送给前端，
+  目标 session 收到一条 external_message 实时通知，并持久化为 assistant Msg，
   目标自己的运行不受影响。适合"通知/抄送/把结果同步给别人"。
 
 - invoke：唤起，触发对方 agent 执行
@@ -19,6 +19,7 @@ send_message 工具 - 向另一个 session 发送一条消息
 
 import asyncio
 
+from ftre_agent_core.message import AssistantMsg
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
 from ftre.bus import BusMessage
@@ -128,7 +129,7 @@ def create_send_message_tool(channel_manager) -> Tool:
 
 
 # ============================================================
-# notify 路径：external_message 事件（持久化 + outbound）
+# notify 路径：assistant Msg 持久化 + external_message 实时通知
 # 维持原有行为：直接 save_message + publish_outbound，
 # 后续若要重构为 Channel.receive 统一入口再单独动这块。
 # ============================================================
@@ -158,9 +159,18 @@ def _do_notify(
         to_session=target_session_id,
         data={"type": "external_message", "data": event_data},
     )
+    persisted_message = AssistantMsg(
+        name="external",
+        content=content,
+        metadata={
+            "external": True,
+            "from_session": caller_session,
+            "from_channel": caller_channel,
+        },
+    )
     # 1) 持久化到目标 session 历史，前端切换/刷新可见
     asyncio.run_coroutine_threadsafe(
-        session_manager.save_message(target_session_id, "external_message", event_data),
+        session_manager.save_message(target_session_id, persisted_message),
         event_loop,
     ).result(timeout=10)
     # 2) outbound 推送给前端（连接活跃时实时显示）

@@ -109,13 +109,12 @@ ftre-docs          文档站（React + Vite）
 
 HTTP API 通过 `?scope=global|private&agent_id=xxx` 区分操作目标。
 
-### context_govern 事件流治理
+### context_govern 消息治理
 
-新协议下 toolCall 嵌在 `assistant_message_complete` 的 `content[]` 中（不再独立事件），tool_result 是独立事件。治理三步：
-
-1. **孤立刻重**：`_drop_orphan_tool_events` — 丢弃无匹配 toolCall 的 tool_result，从 content[] 移除无匹配 tool_result 的 toolCall block
-2. **去重**：`_dedup_tool_events` — 同一 call id 只保留第一个 toolCall block 和第一条 tool_result
-3. **悬挂丢弃**：`_drop_dangling_tool_results` — 裁剪后 toolCall 已被裁掉但 tool_result 残留的，丢弃
+`messages` 表只存聚合完成的 `Msg` 快照；流式 `AgentStreamEvent` 仅用于
+WebSocket 实时传输和 trace，不入库。`ToolCallBlock` 与
+`ToolResultBlock` 直接保存在 assistant Msg 的 `content[]` 中，不做数据库
+事件重放或旧协议兼容。
 
 AGENTS.md 注入两份（叠加）：`agent_dir/AGENTS.md`（Agent 行为规则）+ `workspace/AGENTS.md`（项目约定）。
 
@@ -166,7 +165,7 @@ cd E:\binn\ftre-desktop && pnpm dev
 | `task` | 派发子任务到 subagent session 同步执行（防递归） |
 | `send_message` | 跨 session 消息（notify 通知 / invoke 唤起） |
 
-`ToolHandler.run_one()` 支持 `str` / `AgentEvent` / `tuple[str, dict]` 三种返回值，`react_runner` 在 `tool_result_event()` 中透传 `metadata=result.metadata`。
+`ToolHandler.run_one()` 支持 `str` / `EventBase` / `tuple[str, dict]` 三种返回值，`react_runner` 在 `ToolResultEndEvent` 中透传 `metadata=result.metadata`。
 
 ### Inspector 面板
 

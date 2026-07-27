@@ -2,7 +2,7 @@
 title_gen — 首条消息自动生成会话标题
 
 通过 before_messages_build hook 判断是否首条消息：
-- 当前 Turn 之前没有可见的 user_message
+- messages 中只有本轮这一条可见 user Msg
 - session 没有 title
 
 满足条件时异步起线程调 LLM 生成标题并落库。
@@ -48,9 +48,8 @@ class TitleGenPlugin(Plugin):
         """before_messages_build hook：首条消息时异步生成标题"""
         session_id = ctx.session_id
 
-        # 当前 user_message 已在 COMMAND 状态提前写入 DB，events 不再为空。
-        # 必须按 reply_id 排除本轮事件，只判断此前是否已有可见 user_message。
-        if self._has_prior_user_message(ctx.events, ctx.reply_id):
+        # 当前 user Msg 已在 COMMAND 状态提前写入 DB。
+        if self._has_prior_user_message(ctx.messages):
             logger.debug(
                 f"[title_gen] 跳过：非首条消息 (session={session_id}, "
                 f"已有历史 user_message)"
@@ -142,18 +141,18 @@ class TitleGenPlugin(Plugin):
         ).start()
 
     @staticmethod
-    def _has_prior_user_message(events, current_reply_id: str) -> bool:
-        """判断事件流中是否已有当前 Reply 之前的可见用户消息。"""
-        for event in events:
-            if getattr(event, "type", "") != "user_message":
+    def _has_prior_user_message(messages) -> bool:
+        """当前消息已入库；可见 user Msg 超过一条即不是首轮。"""
+        visible_count = 0
+        for message in messages:
+            if message.get("role") != "user":
                 continue
-            if getattr(event, "reply_id", "") == current_reply_id:
-                continue
-            data = getattr(event, "data", {}) or {}
-            metadata = data.get("metadata", {}) if isinstance(data, dict) else {}
+            metadata = message.get("metadata") or {}
             if isinstance(metadata, dict) and metadata.get("hide") is True:
                 continue
-            return True
+            visible_count += 1
+            if visible_count > 1:
+                return True
         return False
 
     def _generate_title(self, user_text: str, config) -> str:

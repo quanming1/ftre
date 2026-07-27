@@ -206,9 +206,9 @@ async def get_messages(
     """获取指定 session 的消息（按时间正序）。
 
     不带参数时返回全部消息。
-    带 limit_turns=N 时返回最近 N 轮对话的所有事件
-    （一轮 = 一个可见 user_message 到下一个之间的所有事件）。
-    before_ts 为游标，只返回 timestamp < before_ts 的事件（用于加载更早）。
+    带 limit_turns=N 时返回最近 N 轮对话的所有 Msg
+    （一轮 = 一条可见 user Msg 到下一条之间的所有消息）。
+    before_ts 为游标，只返回 timestamp < before_ts 的 Msg（用于加载更早）。
     """
     status = _agent_loop.get_session_status(session_id) if _agent_loop else "idle"
     session = await _session_manager.get_session(session_id)
@@ -229,7 +229,7 @@ async def get_token_usage(session_id: str):
 
     返回字段：
     - anchor: 最近一次 LLM 实算的 usage（含 timestamp 和 source），无则 null
-    - pending_estimated: 锚点之后会进下次 prompt 但尚未实算的事件的字符级粗估
+    - pending_estimated: 锚点之后会进下次 prompt 但尚未实算的 Msg 字符级粗估
     - total: anchor.total_tokens + pending_estimated（无锚点时即全量估算）
     """
     return await _session_manager.get_token_usage(session_id)

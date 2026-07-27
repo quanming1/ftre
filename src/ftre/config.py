@@ -129,7 +129,7 @@ class AgentConfig:
 
 
 # ─── 配置缓存 ──────────────────────────────────────────────────────
-# load_config() 被高频调用（每条消息派发、usage_update、compact 调度都会触发），
+# load_config() 被高频调用（每条消息派发、usage 聚合、compact 调度都会触发），
 # 每次都读文件+打日志会刷屏。用 _last_config 缓存 + mtime 检测变更：
 # - 首次加载 / 文件变更 → INFO 日志
 # - 重复加载同一文件 → DEBUG 日志（不再刷屏）

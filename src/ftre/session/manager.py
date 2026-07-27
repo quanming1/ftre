@@ -1,21 +1,23 @@
 """
 SessionManager - 会话与消息持久化（SQLite）
 
-两张表：
+三张表：
 - sessions: 会话元信息（id, channel_id, title, created_at, updated_at）
-- messages: 事件流（id, session_id, type, data, timestamp, reply_id）
-  - id = 事件 id（EventBase.id）
-  - type/timestamp/reply_id 是事件公共字段，独立列
-  - data 只存事件特有字段（content / result / phase ...）
+- messages: 聚合消息快照（Msg），一行就是一条 user/assistant/system 消息
+- external_sessions: 外部平台会话映射
+
+流式 AgentStreamEvent 只用于实时传输和 trace，不写入 messages。
 """
 import json
 import time
 import uuid
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
 import aiosqlite
+from ftre_agent_core.message import Msg
 
 from ftre.config import CONFIG_PATH
 
@@ -32,13 +34,20 @@ class SessionModel(TypedDict):
 
 
 class MessageModel(TypedDict):
-    """事件/消息记录"""
-    id: str              # 事件唯一标识（= event_id）
+    """持久化的 Msg 快照。"""
+    id: str              # Msg.id
     session_id: str      # 所属会话 ID
-    type: str            # 事件类型（user_message / TEXT_BLOCK_START / REPLY_END / TOOL_RESULT_END / ...）
-    data: dict[str, Any] # 事件特有字段（不含 id / reply_id）
-    timestamp: float     # 事件时间戳
-    reply_id: str        # 所属 Reply 的标识
+    name: str
+    role: str
+    content: list[dict[str, Any]]
+    metadata: dict[str, Any]
+    created_at: str
+    usage: dict[str, int] | None
+    finished_at: str | None
+    finished_reason: str | None
+    structured_output: dict[str, Any] | None
+    error: dict[str, Any] | None
+    timestamp: float     # 排序/分页游标
 
 class ExternalSessionModel(TypedDict):
     channel_id: str
@@ -81,12 +90,19 @@ class SessionManager:
             );
 
             CREATE TABLE IF NOT EXISTS messages (
-                id          TEXT PRIMARY KEY,
-                session_id  TEXT NOT NULL,
-                type        TEXT NOT NULL,
-                data        TEXT NOT NULL DEFAULT '{}',
-                timestamp   REAL NOT NULL,
-                reply_id    TEXT NOT NULL DEFAULT ''
+                id                TEXT PRIMARY KEY,
+                session_id        TEXT NOT NULL,
+                name              TEXT NOT NULL,
+                role              TEXT NOT NULL,
+                content           TEXT NOT NULL DEFAULT '[]',
+                metadata          TEXT NOT NULL DEFAULT '{}',
+                created_at        TEXT NOT NULL,
+                usage             TEXT,
+                finished_at       TEXT,
+                finished_reason   TEXT,
+                structured_output TEXT,
+                error             TEXT,
+                timestamp         REAL NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -105,120 +121,12 @@ class SessionManager:
             CREATE INDEX IF NOT EXISTS idx_external_sessions_session
                 ON external_sessions(session_id);
         """)
-        # 老库迁移：sessions 表存量没有这些列时补上
-        await self._migrate_add_column(
-            "sessions", "channel_id", "TEXT NOT NULL DEFAULT ''"
-        )
-        await self._migrate_add_column(
-            "sessions", "workspace", "TEXT NOT NULL DEFAULT ''"
-        )
-        await self._migrate_add_column(
-            "sessions", "metadata", "TEXT NOT NULL DEFAULT '{}'"
-        )
         # 索引：channel_id + updated_at（按 channel 过滤会话列表用）
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_sessions_channel "
             "ON sessions(channel_id, updated_at DESC)"
         )
-        # 老数据回填：channel_id 为空时尝试从 id 前缀（'<ch>::sess_xxx'）解析
-        await self._db.execute(
-            "UPDATE sessions "
-            "SET channel_id = substr(id, 1, instr(id, '::') - 1) "
-            "WHERE channel_id = '' AND instr(id, '::') > 0"
-        )
-        # 老库迁移：messages 表 turn_id 列 → reply_id
-        await self._migrate_rename_column("messages", "turn_id", "reply_id")
-        # 回填：从 data JSON 中提取 id / reply_id 到独立列，并从 data 中移除
-        await self._migrate_messages_extract_fields()
         await self._db.commit()
-
-    async def _migrate_add_column(
-        self, table: str, column: str, decl: str
-    ) -> None:
-        """如果 table 上没有 column，则 ALTER TABLE 加上"""
-        cursor = await self._db.execute(f"PRAGMA table_info({table})")
-        rows = await cursor.fetchall()
-        existing = {r["name"] for r in rows}
-        if column in existing:
-            return
-        await self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-        logger.warning(f"[session] 迁移：{table}.{column} 已添加")
-
-    async def _migrate_rename_column(
-        self, table: str, old_col: str, new_col: str
-    ) -> None:
-        """如果 table 上有 old_col 但没有 new_col，则重命名；都有的话不动。"""
-        cursor = await self._db.execute(f"PRAGMA table_info({table})")
-        rows = await cursor.fetchall()
-        existing = {r["name"] for r in rows}
-        if new_col in existing:
-            return  # 新列已存在，无需迁移
-        if old_col not in existing:
-            return  # 旧列也不存在（新库），无需迁移
-        await self._db.execute(
-            f"ALTER TABLE {table} RENAME COLUMN {old_col} TO {new_col}"
-        )
-        logger.warning(f"[session] 迁移：{table}.{old_col} → {new_col}")
-
-    async def _migrate_messages_extract_fields(self) -> None:
-        """将 data JSON 中的 id / reply_id 提取到独立列，并从 data 中移除。
-
-        新 schema 中 id 列直接用事件 id，reply_id 是独立列，
-        data 只保留事件特有字段。
-        """
-        # 1. 回填 reply_id 列（从 data JSON 中提取 reply_id 或 turn_id 兼容旧数据）
-        await self._db.execute(
-            """
-            UPDATE messages
-            SET reply_id = COALESCE(
-                json_extract(data, '$.reply_id'),
-                json_extract(data, '$.turn_id'),
-                ''
-            )
-            WHERE json_valid(data)
-              AND reply_id = ''
-              AND COALESCE(
-                  json_extract(data, '$.reply_id'),
-                  json_extract(data, '$.turn_id')
-              ) IS NOT NULL
-            """
-        )
-        # 2. 回填 id 列（从 data JSON 中的 id 或 event_id 提取）
-        await self._db.execute(
-            """
-            UPDATE messages
-            SET id = COALESCE(
-                json_extract(data, '$.id'),
-                json_extract(data, '$.event_id'),
-                id
-            )
-            WHERE json_valid(data)
-              AND COALESCE(
-                  json_extract(data, '$.id'),
-                  json_extract(data, '$.event_id')
-              ) IS NOT NULL
-              AND COALESCE(
-                  json_extract(data, '$.id'),
-                  json_extract(data, '$.event_id')
-              ) != ''
-              AND COALESCE(
-                  json_extract(data, '$.id'),
-                  json_extract(data, '$.event_id')
-              ) != id
-            """
-        )
-        # 3. 从 data 中移除 id、reply_id、event_id、turn_id（纯化 data）
-        await self._db.execute(
-            """
-            UPDATE messages
-            SET data = json_remove(data, '$.id', '$.reply_id', '$.event_id', '$.turn_id')
-            WHERE json_valid(data)
-              AND (json_extract(data, '$.id') IS NOT NULL
-                   OR json_extract(data, '$.reply_id') IS NOT NULL
-                   OR json_extract(data, '$.event_id') IS NOT NULL
-                   OR json_extract(data, '$.turn_id') IS NOT NULL)
-            """
-        )
 
     async def close(self) -> None:
         """关闭数据库连接"""
@@ -522,50 +430,84 @@ class SessionManager:
         ]
 
     # ============================================================
-    # Message（事件流）
+    # Message（Msg 快照）
     # ============================================================
 
     async def save_message(
         self,
         session_id: str,
-        type: str,
-        data: dict[str, Any],
+        message: Msg | dict[str, Any],
         *,
-        event_id: str | None = None,
-        reply_id: str = "",
         timestamp: float | None = None,
     ) -> str:
-        """
-        保存一条消息/事件到指定 session。
-        同时更新 session 的 updated_at。
-        返回 event_id（即消息行主键）。
-
-        event_id 传入则用作行主键；不传则自动生成。
-        reply_id 默认空串（不在 reply 内的事件）。
-        timestamp 可选：传入则消息行用该值（用于把 context_compact 等"游标"事件
-        插到历史中间——按 ASC 排序时排在某个边界事件之前）。session.updated_at
-        始终用真实当前时间，不会因游标回插而错乱会话列表排序。
-        """
-        eid = event_id or uuid.uuid4().hex[:16]
+        """保存一条完整 Msg；流式 Event 不属于这个存储边界。"""
+        msg = message if isinstance(message, Msg) else Msg.model_validate(message)
+        payload = msg.model_dump(mode="json")
         now = time.time()
-        ts = now if timestamp is None else float(timestamp)
+        if timestamp is None:
+            try:
+                ts = datetime.fromisoformat(msg.created_at).timestamp()
+            except (TypeError, ValueError):
+                ts = now
+        else:
+            ts = float(timestamp)
         await self._db.execute(
-            "INSERT INTO messages (id, session_id, type, data, timestamp, reply_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (eid, session_id, type, json.dumps(data or {}, ensure_ascii=False), ts, reply_id),
+            """
+            INSERT INTO messages (
+                id, session_id, name, role, content, metadata, created_at,
+                usage, finished_at, finished_reason, structured_output, error,
+                timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                msg.id,
+                session_id,
+                msg.name,
+                msg.role,
+                json.dumps(payload["content"], ensure_ascii=False),
+                json.dumps(payload["metadata"], ensure_ascii=False),
+                msg.created_at,
+                _json_or_none(payload.get("usage")),
+                msg.finished_at,
+                payload.get("finished_reason"),
+                _json_or_none(payload.get("structured_output")),
+                _json_or_none(payload.get("error")),
+                ts,
+            ),
         )
         await self._db.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?",
             (now, session_id),
         )
         await self._db.commit()
-        return eid
+        return msg.id
 
-    async def update_message_data(self, message_id: str, data: dict[str, Any]) -> None:
-        """更新一条事件的 data，不改变 timestamp。"""
+    async def update_message(self, message: Msg | dict[str, Any]) -> None:
+        """更新已持久化 Msg 的可变快照字段，不改变排序时间。"""
+        msg = message if isinstance(message, Msg) else Msg.model_validate(message)
+        payload = msg.model_dump(mode="json")
         now = time.time()
         await self._db.execute(
-            "UPDATE messages SET data = ? WHERE id = ?",
-            (json.dumps(data, ensure_ascii=False), message_id),
+            """
+            UPDATE messages
+            SET name = ?, role = ?, content = ?, metadata = ?, created_at = ?,
+                usage = ?, finished_at = ?, finished_reason = ?,
+                structured_output = ?, error = ?
+            WHERE id = ?
+            """,
+            (
+                msg.name,
+                msg.role,
+                json.dumps(payload["content"], ensure_ascii=False),
+                json.dumps(payload["metadata"], ensure_ascii=False),
+                msg.created_at,
+                _json_or_none(payload.get("usage")),
+                msg.finished_at,
+                payload.get("finished_reason"),
+                _json_or_none(payload.get("structured_output")),
+                _json_or_none(payload.get("error")),
+                msg.id,
+            ),
         )
         await self._db.execute(
             """
@@ -573,7 +515,7 @@ class SessionManager:
             SET updated_at = ?
             WHERE id = (SELECT session_id FROM messages WHERE id = ?)
             """,
-            (now, message_id),
+            (now, msg.id),
         )
         await self._db.commit()
 
@@ -584,25 +526,14 @@ class SessionManager:
             (session_id,),
         )
         rows = await cursor.fetchall()
-        return [
-            MessageModel(
-                id=r["id"],
-                session_id=r["session_id"],
-                type=r["type"],
-                data=json.loads(r["data"]),
-                timestamp=r["timestamp"],
-                reply_id=r["reply_id"],
-            )
-            for r in rows
-        ]
+        return [_row_to_message_model(r) for r in rows]
 
     async def get_recent_messages_by_turns(
         self, session_id: str, limit_turns: int = 5, before_ts: float | None = None
     ) -> tuple[list[MessageModel], bool]:
         """获取指定 session 最近 N 轮对话的所有消息。
 
-        一轮 = 一个 type='user_message' 且 metadata.hide != true 的事件，
-        到下一个可见 user_message（或末尾）之间的所有事件。
+        一轮 = 一条可见 user Msg，到下一条可见 user Msg（或末尾）之间的消息。
 
         Args:
             limit_turns: 返回最近 N 轮
@@ -616,16 +547,16 @@ class SessionManager:
         if before_ts is not None:
             params.append(before_ts)
 
-        # 1. 找到最近 limit_turns 个可见 user_message 中最早的那个的 timestamp
+        # 1. 找到最近 limit_turns 个可见 user Msg 中最早的那个的 timestamp
         cursor = await self._db.execute(
             f"""
             SELECT timestamp FROM messages
             WHERE session_id = ?
               {ts_filter}
-              AND type = 'user_message'
+              AND role = 'user'
               AND (
-                json_extract(data, '$.metadata.hide') IS NULL
-                OR json_extract(data, '$.metadata.hide') IS NOT 1
+                json_extract(metadata, '$.hide') IS NULL
+                OR json_extract(metadata, '$.hide') IS NOT 1
               )
             ORDER BY timestamp DESC
             LIMIT ?
@@ -652,7 +583,7 @@ class SessionManager:
         )
         total_in_range = (await cursor.fetchone())["cnt"]
 
-        # 3. 从 earliest_turn_ts 到 before_ts（如有）的所有事件
+        # 3. 从 earliest_turn_ts 到 before_ts（如有）的所有 Msg
         end_filter = "AND timestamp < ?" if before_ts is not None else ""
         end_params = [session_id, earliest_turn_ts] + ([before_ts] if before_ts is not None else [])
         cursor = await self._db.execute(
@@ -665,22 +596,12 @@ class SessionManager:
             end_params,
         )
         rows = await cursor.fetchall()
-        messages = [
-            MessageModel(
-                id=r["id"],
-                session_id=r["session_id"],
-                type=r["type"],
-                data=json.loads(r["data"]),
-                timestamp=r["timestamp"],
-                reply_id=r["reply_id"],
-            )
-            for r in rows
-        ]
+        messages = [_row_to_message_model(r) for r in rows]
         has_more = len(messages) < total_in_range
         return messages, has_more
 
     # ============================================================
-    # Token 用量（最近一次 LLM 实算 + 之后未计入事件的字符级粗估）
+    # Token 用量（最近一次 LLM 实算 + 之后未计入消息的字符级粗估）
     # ============================================================
 
     async def get_token_usage(self, session_id: str) -> dict:
@@ -688,11 +609,10 @@ class SessionManager:
         计算指定 session 当前 token 用量。
 
         策略：
-        - 找事件流中最晚的"携带 usage 的事件"作为 anchor
-          （usage_update，或 done.data.usage 非空）
-        - anchor 之后还没被 LLM 计入但会进下次 prompt 的事件用字符级粗估
+        - 找 Msg 历史中最晚的"携带 usage 的 assistant Msg"作为 anchor
+        - anchor 之后还没被 LLM 计入但会进下次 prompt 的 Msg 用字符级粗估
         - total = anchor.total_tokens + pending_estimated
-        - 没有 anchor 时（全新 session）退化为对全量回放事件估算
+        - 没有 anchor 时（全新 session）退化为对全量 Msg 估算
 
         Returns:
             {
@@ -702,47 +622,67 @@ class SessionManager:
                 "completion_tokens": int,
                 "total_tokens": int,
                 "at": float,
-                "source": "usage_update" | "done"
+                "source": "msg"
               } | None,
               "pending_estimated": int,
               "total": int
             }
         """
-        events = await self.get_messages_by_session(session_id)
-        return _compute_token_usage(session_id, events)
+        messages = await self.get_messages_by_session(session_id)
+        return _compute_token_usage(session_id, messages)
 
     # ============================================================
     # 历史恢复
     # ============================================================
 
-    # to_openai_messages / _serialize_arguments / _safe_name / format_assistant_message
-    # 已迁移到 converter.py，调用方直接 from ftre.session.converter import to_openai
+    # Msg → provider 消息的转换统一位于 converter.py。
 
 
-def _find_anchor(events: list[MessageModel]) -> tuple[int, dict | None, str]:
-    """倒序找最晚的带 usage 的 MODEL_CALL_END 事件。"""
-    for i in range(len(events) - 1, -1, -1):
-        ev = events[i]
-        if ev["type"] != "MODEL_CALL_END":
-            continue
-        data = ev.get("data") or {}
-        input_tokens = data.get("input_tokens", 0)
-        output_tokens = data.get("output_tokens", 0)
+def _json_or_none(value: Any) -> str | None:
+    return None if value is None else json.dumps(value, ensure_ascii=False)
+
+
+def _load_json(value: str | None, default: Any) -> Any:
+    if value is None:
+        return default
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def _row_to_message_model(row) -> MessageModel:
+    return MessageModel(
+        id=row["id"],
+        session_id=row["session_id"],
+        name=row["name"],
+        role=row["role"],
+        content=_load_json(row["content"], []),
+        metadata=_load_json(row["metadata"], {}),
+        created_at=row["created_at"],
+        usage=_load_json(row["usage"], None),
+        finished_at=row["finished_at"],
+        finished_reason=row["finished_reason"],
+        structured_output=_load_json(row["structured_output"], None),
+        error=_load_json(row["error"], None),
+        timestamp=row["timestamp"],
+    )
+
+
+def _find_anchor(messages: list[MessageModel]) -> tuple[int, dict | None, str]:
+    """倒序找最晚的带 usage 的 Msg。"""
+    for i in range(len(messages) - 1, -1, -1):
+        message = messages[i]
+        usage_data = message.get("usage") or {}
+        input_tokens = usage_data.get("input_tokens", 0)
+        output_tokens = usage_data.get("output_tokens", 0)
         if input_tokens or output_tokens:
             usage = {
                 "prompt_tokens": input_tokens,
                 "completion_tokens": output_tokens,
                 "total_tokens": input_tokens + output_tokens,
             }
-            return i, usage, "MODEL_CALL_END"
-    # 兼容旧数据：assistant_message_complete 的 metadata.usage
-    for i in range(len(events) - 1, -1, -1):
-        ev = events[i]
-        if ev["type"] != "assistant_message_complete":
-            continue
-        usage = (ev.get("data") or {}).get("metadata", {}).get("usage")
-        if usage:
-            return i, usage, "assistant_message_complete"
+            return i, usage, "msg"
     return -1, None, ""
 
 
@@ -760,19 +700,19 @@ def _build_anchor_payload(usage: dict, timestamp: float, source: str) -> dict:
     }
 
 
-def _compute_token_usage(session_id: str, events: list[MessageModel]) -> dict:
+def _compute_token_usage(session_id: str, messages: list[MessageModel]) -> dict:
     """
-    根据事件流计算 token 用量。抽出来便于单测，不依赖 db。
+    根据 Msg 快照计算 token 用量。抽出来便于单测，不依赖 db。
 
     见 SessionManager.get_token_usage 文档。
     """
     from .token_counter import estimate_messages_tokens
 
-    anchor_index, anchor_usage, anchor_source = _find_anchor(events)
+    anchor_index, anchor_usage, anchor_source = _find_anchor(messages)
 
-    # 锚点之后的事件用字符级粗估（无锚点时即全量估算）
-    pending_events = events[anchor_index + 1:] if anchor_index >= 0 else events
-    pending_estimated = estimate_messages_tokens(pending_events)
+    # 锚点之后的消息用字符级粗估（无锚点时即全量估算）
+    pending_messages = messages[anchor_index + 1:] if anchor_index >= 0 else messages
+    pending_estimated = estimate_messages_tokens(pending_messages)
 
     if anchor_usage is None:
         return {
@@ -783,7 +723,7 @@ def _compute_token_usage(session_id: str, events: list[MessageModel]) -> dict:
         }
 
     anchor = _build_anchor_payload(
-        anchor_usage, events[anchor_index]["timestamp"], anchor_source
+        anchor_usage, messages[anchor_index]["timestamp"], anchor_source
     )
     return {
         "session_id": session_id,
