@@ -186,7 +186,7 @@ async def test_save_and_get_messages_round_trip(manager):
     assert isinstance(first["timestamp"], float)
     # timestamp 由 created_at 派生
     assert second["timestamp"] > first["timestamp"]
-    assert second["usage"] == {"input_tokens": 10, "output_tokens": 5}
+    assert second["usage"] == {"input_tokens": 10, "output_tokens": 5, "total_tokens": 0, "cached_tokens": 0, "reasoning_tokens": 0}
     # dict 输入也要支持
     await manager.save_message(sid, _user("再来一条").model_dump(mode="json"))
     assert len(await manager.get_messages_by_session(sid)) == 3

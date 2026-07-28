@@ -50,30 +50,50 @@ MAX_ATTACHMENTS_PER_MESSAGE = 8
 # 如果客户端在历史读取后、attach 前错过了仍在生成的片段，
 # 就从 WS channel 的短期缓冲补发。
 VOLATILE_EVENT_TYPES = frozenset({
+    # block START：创建 block 容器，delta 依赖它
+    "TEXT_BLOCK_START",
     "TEXT_BLOCK_DELTA",
+    "THINKING_BLOCK_START",
     "THINKING_BLOCK_DELTA",
+    "DATA_BLOCK_START",
+    "DATA_BLOCK_DELTA",
+    "TOOL_CALL_START",
     "TOOL_CALL_DELTA",
+    "TOOL_RESULT_START",
     "TOOL_RESULT_TEXT_DELTA",
     "TOOL_RESULT_DATA_DELTA",
-    "DATA_BLOCK_DELTA",
+    # compact 进度
     "context_compact_start",
 })
 # REPLY_END 到达时，聚合后的 Msg 已持久化；对应增量可从 volatile
 # buffer 删除，避免客户端 attach 后看到旧草稿。
 VOLATILE_CLEAR_BY_TYPE = {
     "REPLY_END": {
+        "TEXT_BLOCK_START",
         "TEXT_BLOCK_DELTA",
+        "THINKING_BLOCK_START",
         "THINKING_BLOCK_DELTA",
+        "DATA_BLOCK_START",
+        "DATA_BLOCK_DELTA",
+        "TOOL_CALL_START",
         "TOOL_CALL_DELTA",
+        "TOOL_RESULT_START",
         "TOOL_RESULT_TEXT_DELTA",
         "TOOL_RESULT_DATA_DELTA",
-        "DATA_BLOCK_DELTA",
     },
     "context_compact_done": {"context_compact_start"},
     "context_compact_failed": {"context_compact_start"},
 }
 # 一轮执行结束、失败或进入重试后，旧的临时流式片段都不应该再 replay。
-VOLATILE_CLEAR_ALL_TYPES = frozenset({"RETRY", "EXCEED_MAX_ITERS", "CUSTOM"})
+# 注意：retry 的 type 是小写 "retry"（见 core RetryEvent）；
+# CUSTOM 不放这里——太宽泛会把 context_compact_start 也清掉。
+# 需要清空的 CUSTOM 事件按 name 精确匹配，见下方 _CUSTOM_CLEAR_ALL_NAMES。
+VOLATILE_CLEAR_ALL_TYPES = frozenset({"retry", "EXCEED_MAX_ITERS"})
+
+# 某些 CUSTOM 事件（type=CUSTOM, name=xxx）也代表一轮结束，需要清空全部 volatile。
+_CUSTOM_CLEAR_ALL_NAMES = frozenset({
+    "PIPELINE_END",
+})
 
 
 def _match_volatile_clear(
@@ -112,6 +132,13 @@ class _VolatileReplayBuffer:
         if ev_type in VOLATILE_CLEAR_ALL_TYPES:
             await self._clear(session_id)
             return metadata
+
+        # CUSTOM 事件按 name 精确匹配：PIPELINE_END 等代表一轮结束，清空全部 volatile。
+        if ev_type == "CUSTOM":
+            ev_name = msg.data.get("name", "") if isinstance(msg.data, dict) else ""
+            if ev_name in _CUSTOM_CLEAR_ALL_NAMES:
+                await self._clear(session_id)
+                return metadata
 
         # START/END 等非 delta 事件不进入 volatile buffer，只负责清除它覆盖的
         # 流式草稿；REPLY_END 时聚合后的 Msg 已持久化到 DB。

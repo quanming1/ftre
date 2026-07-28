@@ -3,14 +3,14 @@
 磁盘结构：
 
     ~/.ftre/sessions/
-    └── <base64(session_id)>/      # 目录名为 session_id 的标准 base64 编码
+    └── <session_id>/              # 目录名即 session_id（如 ws_sess_ed930104a1d2）
         └── state.json
 
-session_id 可含任意字符（如 ws::sess_xxx），目录名统一用 base64 编码
-保证文件系统安全，兼容旧数据。
+session_id 规范：只允许 [A-Za-z0-9_-]，由 manager 生成时保证。
+本模块在路径解析时再次校验，拒绝含 /、\\、:、.. 等危险字符的 ID。
 
 职责：
-- 安全路径解析（base64 编码 + resolve 越界检查）；
+- 安全路径解析（session_id 直接作目录名，校验后无需编码）；
 - 启动扫描 + Pydantic 加载（损坏文件隔离为 .corrupt-<ts>，不静默当空 Session）；
 - 临时文件 + fsync + os.replace 原子写（Windows 重试）；
 - per-session asyncio.Lock 与全局锁；
@@ -22,10 +22,10 @@ write() 成功后再由调用方替换 states 中的引用。
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -36,17 +36,18 @@ logger = logging.getLogger(__name__)
 
 STATE_FILE_NAME = "state.json"
 
-def _encode_dir_name(session_id: str) -> str:
-    """将 session_id 编码为文件系统安全的目录名（标准 base64，兼容旧数据）。"""
-    return base64.b64encode(session_id.encode()).decode()
+# session_id 允许的字符集：字母、数字、下划线、连字符
+_SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
-def _decode_dir_name(dir_name: str) -> str | None:
-    """尝试将目录名解码回 session_id；非 base64 目录返回 None。"""
-    try:
-        return base64.b64decode(dir_name).decode()
-    except Exception:
-        return None
+def validate_session_id(session_id: str) -> None:
+    """校验 session_id 可安全用作目录名，否则抛 ValueError。"""
+    if not session_id:
+        raise ValueError("session_id 不能为空")
+    if not _SAFE_SESSION_ID_RE.match(session_id):
+        raise ValueError(
+            f"session_id 含非法字符（只允许 [A-Za-z0-9_-]）: {session_id!r}"
+        )
 
 
 class CorruptStateError(Exception):
@@ -79,11 +80,9 @@ class JsonStateStore:
     # ─── 路径 ────────────────────────────────────────────────
 
     def session_dir(self, session_id: str) -> Path:
-        """Session 目录（base64 编码作目录名），解析结果必须仍位于 root 内。"""
-        if not session_id:
-            raise ValueError("session_id 不能为空")
-        dir_name = _encode_dir_name(session_id)
-        path = (self._root / dir_name).resolve()
+        """Session 目录（session_id 直接作目录名），校验后解析结果必须仍位于 root 内。"""
+        validate_session_id(session_id)
+        path = (self._root / session_id).resolve()
         root = self._root.resolve()
         if path.parent != root:
             raise ValueError(f"session 路径越界: {session_id!r}")
@@ -172,9 +171,7 @@ class JsonStateStore:
                 return session_id
         except Exception:
             pass
-        # fallback: 尝试解码 base64 目录名
-        decoded = _decode_dir_name(session_dir.name)
-        return decoded or session_dir.name
+        return session_dir.name
 
     # ─── 原子读写 ────────────────────────────────────────────
 

@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 from ftre_agent_core.message import UserMsg
 
-from ftre.session.json_store import JsonStateStore, _encode_dir_name
+from ftre.session.json_store import JsonStateStore, validate_session_id
 from ftre.session.state import AgentStateFile
 
 
@@ -45,24 +45,25 @@ async def store(tmp_path):
 # ─── 路径校验 ──────────────────────────────────────────────────
 
 
-def test_session_dir_uses_base64_encoding(store):
+def test_valid_session_id_used_directly_as_dir_name(store):
     path = store.session_dir("ws_sess_abc123")
-    assert path.name == _encode_dir_name("ws_sess_abc123")
+    assert path.name == "ws_sess_abc123"
     assert path.parent == store.root.resolve()
 
 
-def test_session_id_with_special_chars_encoded_safely(store):
-    # 含特殊字符的 session_id 通过 base64 编码后安全落盘
-    for sid in ["ws::sess_x", "octo::sess_abc", "a/b", "a\\b"]:
-        path = store.session_dir(sid)
-        assert path.parent == store.root.resolve()
-        # 目录名不含危险字符
-        assert "/" not in path.name and "\\" not in path.name and ":" not in path.name
+def test_session_id_with_dangerous_chars_rejected(store):
+    for bad_id in ["../evil", "a/b", "a\\b", "a:b", "..", "", "a b", "a.b/c"]:
+        with pytest.raises(ValueError):
+            store.session_dir(bad_id)
 
 
-def test_empty_session_id_rejected(store):
+def test_validate_session_id_function():
+    validate_session_id("ws_sess_ed930104a1d2")  # 合法
+    validate_session_id("octo_sess_abc-123_XYZ")  # 合法
     with pytest.raises(ValueError):
-        store.session_dir("")
+        validate_session_id("ws::sess_x")
+    with pytest.raises(ValueError):
+        validate_session_id("")
 
 
 # ─── 写入 / 恢复 ───────────────────────────────────────────────
@@ -73,11 +74,11 @@ async def test_write_and_reload_recovers_state(store):
     state = _state("ws_sess_1", "第一条", "第二条")
     await store.write(state)
 
-    # 文件可读（人类可读 JSON），目录名为 base64 编码
+    # 文件可读（人类可读 JSON），目录名即 session_id
     raw = json.loads(store.state_path("ws_sess_1").read_text(encoding="utf-8"))
     assert set(raw) == {"schema_version", "session", "messages", "summary", "metadata"}
     assert raw["messages"][0]["content"][0]["text"] == "第一条"
-    assert store.state_path("ws_sess_1").exists()
+    assert (store.root / "ws_sess_1" / "state.json").exists()
 
     # 模拟进程重启
     store2 = JsonStateStore(store.root)
