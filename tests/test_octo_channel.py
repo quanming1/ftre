@@ -169,26 +169,52 @@ class TestOctoChannel:
         """send() should extract text from BusMessage and call send_message with correct channel_type"""
         from _channel import OctoChannel
 
-        ch = OctoChannel(channel_config, mock_bus)
-        ch.api.send_message = AsyncMock(return_value={"message_id": "msg_1"})
+        config = {
+            **channel_config,
+            "bots": [{
+                "bot_token": "bf_test",
+                "agent_id": "default",
+                "bot_name": "Test Bot",
+            }],
+        }
+        ch = OctoChannel(config, mock_bus)
+        session_id = "octo_2_ch_group_1_bf_test"
+        ch._session_bots[session_id] = "bf_test"
+        api = ch._bots["bf_test"]["api"]
+        api.send_message = AsyncMock(return_value={"message_id": "msg_1"})
 
         # session_id 格式: octo_{channel_type}_{channel_id}
-        msg = BusMessage(
+        delta = BusMessage(
             type="agent_event",
             from_channel="octo",
-            from_session="octo_2_ch_group_1",
+            from_session=session_id,
             to_channel="octo",
-            to_session="octo_2_ch_group_1",
+            to_session=session_id,
             data={
-                "type": "assistant_message_complete",
-                "data": {"content": "Hello, I am ftre bot"},
+                "type": "TEXT_BLOCK_DELTA",
+                "reply_id": "reply-1",
+                "block_id": "text-1",
+                "delta": "Hello, I am ftre bot",
+            },
+        )
+        end = BusMessage(
+            type="agent_event",
+            from_channel="octo",
+            from_session=session_id,
+            to_channel="octo",
+            to_session=session_id,
+            data={
+                "type": "REPLY_END",
+                "reply_id": "reply-1",
+                "finished_reason": "completed",
             },
         )
 
-        await ch.send(msg)
+        await ch.send(delta)
+        await ch.send(end)
 
-        ch.api.send_message.assert_called_once()
-        call_kwargs = ch.api.send_message.call_args[1]
+        api.send_message.assert_called_once()
+        call_kwargs = api.send_message.call_args[1]
         assert "Hello, I am ftre bot" in call_kwargs["content"]
         assert call_kwargs["channel_type"] == 2
         assert call_kwargs["channel_id"] == "ch_group_1"
@@ -323,25 +349,50 @@ class TestOctoChannel:
         from _channel import OctoChannel
 
         session_manager = FakeExternalSessionManager()
-        ch = OctoChannel(channel_config, mock_bus, session_manager=session_manager)
-        ch.api.send_message = AsyncMock(return_value={"message_id": "msg_1"})
+        config = {
+            **channel_config,
+            "bots": [{
+                "bot_token": "bf_test",
+                "agent_id": "default",
+                "bot_name": "Test Bot",
+            }],
+        }
+        ch = OctoChannel(config, mock_bus, session_manager=session_manager)
+        ch._session_bots["octo::sess_mapped"] = "bf_test"
+        api = ch._bots["bf_test"]["api"]
+        api.send_message = AsyncMock(return_value={"message_id": "msg_1"})
 
-        msg = BusMessage(
+        delta = BusMessage(
             type="agent_event",
             from_channel="octo",
             from_session="octo::sess_mapped",
             to_channel="octo",
             to_session="octo::sess_mapped",
             data={
-                "type": "assistant_message_complete",
-                "data": {"content": "Hello from mapped session"},
+                "type": "TEXT_BLOCK_DELTA",
+                "reply_id": "reply-mapped",
+                "block_id": "text-mapped",
+                "delta": "Hello from mapped session",
+            },
+        )
+        end = BusMessage(
+            type="agent_event",
+            from_channel="octo",
+            from_session="octo::sess_mapped",
+            to_channel="octo",
+            to_session="octo::sess_mapped",
+            data={
+                "type": "REPLY_END",
+                "reply_id": "reply-mapped",
+                "finished_reason": "completed",
             },
         )
 
-        await ch.send(msg)
+        await ch.send(delta)
+        await ch.send(end)
 
-        ch.api.send_message.assert_called_once()
-        call_kwargs = ch.api.send_message.call_args[1]
+        api.send_message.assert_called_once()
+        call_kwargs = api.send_message.call_args[1]
         assert call_kwargs["channel_type"] == 2
         assert call_kwargs["channel_id"] == "ch_group_1"
         assert call_kwargs["content"] == "Hello from mapped session"
@@ -451,14 +502,20 @@ class TestOctoChannelIntegration:
         bus.publish_outbound = AsyncMock()
 
         config = {
-            "bot_token": "bf_test",
             "api_url": "https://api.example.com",
             "require_mention": False,
+            "bots": [{
+                "bot_token": "bf_test",
+                "agent_id": "default",
+                "bot_name": "Test Bot",
+            }],
         }
         ch = OctoChannel(config, bus)
-        ch.api.send_message = AsyncMock(return_value={"message_id": "reply_1"})
-        ch.api.get_channel_messages = AsyncMock(return_value=[])
-        ch.api.get_group_members = AsyncMock(return_value=[])
+        api = ch._bots["bf_test"]["api"]
+        api.send_message = AsyncMock(return_value={"message_id": "reply_1"})
+        api.get_channel_messages = AsyncMock(return_value=[])
+        api.get_group_members = AsyncMock(return_value=[])
+        api.get_group_md = AsyncMock(return_value={})
 
         # Step 1: 模拟 WS 收到群聊消息（扁平 WuKongIM 格式）
         ws_msg = {
@@ -468,6 +525,7 @@ class TestOctoChannelIntegration:
             "channel_id": "ch_group_1",
             "channel_type": 2,
             "timestamp": 1719700000,
+            "bot_id": "bf_test",
             "payload": {"type": 1, "content": "Hello, check the weather"},
         }
         await ch._handle_message(ws_msg)
@@ -477,28 +535,45 @@ class TestOctoChannelIntegration:
         inbound_msg = bus.publish_inbound.call_args[0][0]
         assert inbound_msg.type == "user_message"
         assert "Hello, check the weather" in inbound_msg.data["content"]
-        assert inbound_msg.from_session == "octo_2_ch_group_1"
+        assert inbound_msg.from_session == "octo_2_ch_group_1_bf_test"
 
         # Step 2: 模拟 AgentLoop 处理后的 outbound
-        outbound_msg = BusMessage(
+        outbound_delta = BusMessage(
             type="agent_event",
             from_channel="octo",
             from_session=inbound_msg.from_session,
             to_channel="octo",
             to_session=inbound_msg.from_session,
             data={
-                "type": "assistant_message_complete",
-                "data": {"content": "Today sunny, 25C"},
+                "type": "TEXT_BLOCK_DELTA",
+                "reply_id": "reply-weather",
+                "block_id": "text-weather",
+                "delta": "Today sunny, 25C",
             },
         )
-        await ch.send(outbound_msg)
+        outbound_end = BusMessage(
+            type="agent_event",
+            from_channel="octo",
+            from_session=inbound_msg.from_session,
+            to_channel="octo",
+            to_session=inbound_msg.from_session,
+            data={
+                "type": "REPLY_END",
+                "reply_id": "reply-weather",
+                "finished_reason": "completed",
+            },
+        )
+        await ch.send(outbound_delta)
+        await ch.send(outbound_end)
+        await asyncio.sleep(0)
 
         # 验证 send_message 被调用，参数正确
-        ch.api.send_message.assert_called_once()
-        call_kwargs = ch.api.send_message.call_args[1]
+        api.send_message.assert_called_once()
+        call_kwargs = api.send_message.call_args[1]
         assert "Today sunny" in call_kwargs["content"]
         assert call_kwargs["channel_type"] == 2
         assert call_kwargs["channel_id"] == "ch_group_1"
+        await ch.stop()
 
 
 class TestOctoMentionGate:

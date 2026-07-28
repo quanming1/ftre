@@ -30,7 +30,7 @@ async def test_get_or_create_external_session_reuses_mapping(tmp_path):
         )
 
         assert first == second
-        assert first.startswith("octo::sess_")
+        assert first.startswith("octo_sess_")
 
         session = await manager.get_session(first)
         assert session is not None

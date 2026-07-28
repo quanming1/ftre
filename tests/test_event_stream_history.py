@@ -1,8 +1,9 @@
-import sqlite3
+import json
 
 import pytest
 
 from ftre.session.converter import to_openai
+
 from ftre.session.manager import SessionManager
 from ftre_agent_core.message import (
     AssistantMsg,
@@ -50,7 +51,7 @@ def test_persisted_msg_converts_without_event_replay():
 
 
 @pytest.mark.asyncio
-async def test_messages_table_stores_msg_columns_only(tmp_path):
+async def test_state_json_stores_msg_without_event_fields(tmp_path):
     db_path = tmp_path / "sessions.db"
     manager = SessionManager(str(db_path))
     await manager.init()
@@ -61,16 +62,25 @@ async def test_messages_table_stores_msg_columns_only(tmp_path):
     )
     await manager.close()
 
-    connection = sqlite3.connect(db_path)
-    columns = {
-        row[1] for row in connection.execute("PRAGMA table_info(messages)")
-    }
-    rows = connection.execute("SELECT role, content FROM messages").fetchall()
-    connection.close()
+    state_path = tmp_path / "sessions" / session_id / "state.json"
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
 
-    assert "type" not in columns
-    assert "data" not in columns
-    assert "reply_id" not in columns
-    assert len(rows) == 1
-    assert rows[0][0] == "assistant"
-    assert '"hello"' in rows[0][1]
+    # 根结构只有五个字段
+    assert set(payload) == {
+        "schema_version",
+        "session",
+        "messages",
+        "summary",
+        "metadata",
+    }
+    assert payload["schema_version"] == 1
+    # messages[] 是完整 Msg 快照，不含流式 Event 字段
+    assert len(payload["messages"]) == 1
+    stored = payload["messages"][0]
+    assert stored["role"] == "assistant"
+    assert '"hello"' in json.dumps(stored["content"], ensure_ascii=False)
+    assert "type" not in stored
+    assert "data" not in stored
+    assert "reply_id" not in stored
+    # 不再创建 SQLite 库
+    assert not db_path.exists()
