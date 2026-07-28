@@ -34,7 +34,7 @@ def _as_msg(record: MessageModel | Msg | dict[str, Any]) -> Msg:
             "content",
             "metadata",
             "created_at",
-            "usage",
+            "token",
             "finished_at",
             "finished_reason",
             "structured_output",

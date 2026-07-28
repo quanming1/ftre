@@ -1,4 +1,9 @@
+"""reply_snapshot attach 协议测试（替代旧 volatile replay 测试）。
+
+设计文档：docs/running-reply-snapshot-resume-design.md §5.4
+"""
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -9,110 +14,51 @@ from ftre.channel.ws_channel import WebSocketChannel
 class FakeWebSocket:
     def __init__(self):
         self.sent: list[dict] = []
+        self.application_state = 1  # WebSocketState.CONNECTED
 
     async def send_text(self, text: str) -> None:
         self.sent.append(json.loads(text))
 
 
-def _agent_event(session_id: str, event_type: str, data: dict | None = None) -> BusMessage:
-    return BusMessage(
-        type="agent_event",
-        from_channel="agent",
-        to_channel="ws",
-        from_session=session_id,
-        to_session=session_id,
-        data={"type": event_type, "id": f"ev_{event_type}", "data": data or {}},
-    )
-
-
 @pytest.mark.asyncio
-async def test_attach_replays_volatile_events_buffered_without_subscribers():
+async def test_attach_no_active_replies_sends_nothing():
+    """没有进行中 Reply 时，attach 不发送 reply_snapshot。"""
     channel = WebSocketChannel(EventBus())
-    session_id = "ws::sess_volatile"
-
-    await channel.send(_agent_event(session_id, "TEXT_BLOCK_DELTA", {"delta": "hello"}))
+    channel._reply_projection = AsyncMock()
+    channel._reply_projection.snapshot = AsyncMock(return_value=[])
 
     ws = FakeWebSocket()
     await channel._on_message(
-        json.dumps({"type": "attach", "data": {"session_id": session_id}}),
-        ws,
-    )
-
-    assert len(ws.sent) == 1
-    replay = ws.sent[0]
-    assert replay["type"] == "agent_event"
-    assert replay["data"] == {
-        "type": "TEXT_BLOCK_DELTA",
-        "id": "ev_TEXT_BLOCK_DELTA",
-        "data": {"delta": "hello"},
-    }
-    assert replay["metadata"]["session_id"] == session_id
-    assert not any(key.startswith("volatile") for key in replay["metadata"])
-    assert "volatile" not in replay["metadata"]
-    assert "volatile_epoch" not in replay["metadata"]
-    assert "replay" not in replay["metadata"]
-
-
-@pytest.mark.asyncio
-async def test_persisted_complete_replaces_assistant_volatile_replay():
-    channel = WebSocketChannel(EventBus())
-    session_id = "ws::sess_done"
-
-    await channel.send(_agent_event(session_id, "TEXT_BLOCK_DELTA", {"delta": "draft"}))
-    await channel.send(
-        _agent_event(session_id, "REPLY_END", {"content": "final"})
-    )
-
-    ws = FakeWebSocket()
-    await channel._on_message(
-        json.dumps({"type": "attach", "data": {"session_id": session_id}}),
-        ws,
-    )
-
-    # REPLY_END is not a volatile event type, so it's not buffered.
-    # The TEXT_BLOCK_DELTA was cleared by REPLY_END.
-    assert len(ws.sent) == 0
-
-
-@pytest.mark.asyncio
-async def test_attach_replays_context_compact_start_while_running():
-    channel = WebSocketChannel(EventBus())
-    session_id = "ws::sess_compacting"
-
-    await channel.send(
-        _agent_event(session_id, "context_compact_start", {"events": 12, "tokens": 50000})
-    )
-
-    ws = FakeWebSocket()
-    await channel._on_message(
-        json.dumps({"type": "attach", "data": {"session_id": session_id}}),
-        ws,
-    )
-
-    assert len(ws.sent) == 1
-    assert ws.sent[0]["data"] == {
-        "type": "context_compact_start",
-        "id": "ev_context_compact_start",
-        "data": {"events": 12, "tokens": 50000},
-    }
-
-
-@pytest.mark.asyncio
-async def test_context_compact_done_clears_compact_start_replay():
-    channel = WebSocketChannel(EventBus())
-    session_id = "ws::sess_compact_done"
-
-    await channel.send(
-        _agent_event(session_id, "context_compact_start", {"events": 12, "tokens": 50000})
-    )
-    await channel.send(
-        _agent_event(session_id, "context_compact_done", {"summary": "done"})
-    )
-
-    ws = FakeWebSocket()
-    await channel._on_message(
-        json.dumps({"type": "attach", "data": {"session_id": session_id}}),
+        json.dumps({"type": "attach", "data": {"session_id": "ws_sess_test"}}),
         ws,
     )
 
     assert len(ws.sent) == 0
+
+
+@pytest.mark.asyncio
+async def test_attach_with_active_reply_sends_snapshot():
+    """有进行中 Reply 时，attach 发送 reply_snapshot 帧。"""
+    channel = WebSocketChannel(EventBus())
+    channel._reply_projection = AsyncMock()
+    channel._reply_projection.snapshot = AsyncMock(return_value=[
+        {
+            "reply_id": "reply_abc",
+            "revision": 5,
+            "message": {"id": "reply_abc", "role": "assistant", "content": []},
+        }
+    ])
+
+    ws = FakeWebSocket()
+    await channel._on_message(
+        json.dumps({"type": "attach", "data": {"session_id": "ws_sess_test"}}),
+        ws,
+    )
+
+    assert len(ws.sent) == 1
+    frame = ws.sent[0]
+    assert frame["type"] == "reply_snapshot"
+    assert frame["data"]["session_id"] == "ws_sess_test"
+    assert len(frame["data"]["replies"]) == 1
+    assert frame["data"]["replies"][0]["reply_id"] == "reply_abc"
+    assert frame["data"]["replies"][0]["revision"] == 5

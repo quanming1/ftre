@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from ftre.agent.reply_projection import ReplyProjection
 from ftre.agent.loop import AgentLoop
 from ftre.agent.turn_executor import TurnExecutor
 from ftre.bus import BusMessage
@@ -32,8 +33,7 @@ class FakeAgent:
         self.state.token_usage = {
             "prompt_tokens": 10,
             "completion_tokens": 5,
-            "cached_tokens": 0,
-            "llm_calls": 1,
+            "total_tokens": 15,
         }
         self.state.error = None
         self.state.error_code = None
@@ -101,6 +101,8 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop.command_manager.try_dispatch = AsyncMock(return_value=None)
     loop.tracer = Mock()
 
+    loop.reply_projection = ReplyProjection(loop.session_manager)
+
     executor = TurnExecutor(loop)
     executor._build_messages = AsyncMock(
         return_value=([{"role": "user", "content": "hi"}], config)
@@ -123,9 +125,17 @@ def _inbound():
 
 
 def _saved_messages(executor):
+    """所有通过 save_message 持久化的消息。"""
     return [
         call.args[1]
         for call in executor._loop.session_manager.save_message.call_args_list
+    ]
+
+def _updated_messages(executor):
+    """所有通过 update_message 更新的消息。"""
+    return [
+        call.args[0]
+        for call in executor._loop.session_manager.update_message.call_args_list
     ]
 
 
@@ -149,9 +159,15 @@ async def test_delta_is_live_only_and_reply_persists_as_one_msg():
     await executor.execute(_inbound())
 
     saved = _saved_messages(executor)
+    # user msg + assistant msg (REPLY_START 时 save)
     assert [message.role for message in saved] == ["user", "assistant"]
-    assert saved[1].get_text_content() == "hello"
-    assert saved[1].finished_reason == ReplyFinishedReason.COMPLETED
+
+    # 最终状态通过 update_message 写入
+    updated = _updated_messages(executor)
+    assert len(updated) >= 1
+    assistant_final = updated[-1]
+    assert assistant_final.get_text_content() == "hello"
+    assert assistant_final.finished_reason == ReplyFinishedReason.COMPLETED
 
     outbound = [
         call.args[0].data
@@ -159,7 +175,6 @@ async def test_delta_is_live_only_and_reply_persists_as_one_msg():
         if call.args and getattr(call.args[0], "type", "") == "agent_event"
     ]
     assert any(frame.get("type") == "TEXT_BLOCK_DELTA" for frame in outbound)
-    assert all(isinstance(message, Msg) for message in saved)
 
 
 @pytest.mark.asyncio
@@ -168,7 +183,13 @@ async def test_partial_reply_is_saved_as_error_msg():
     await executor.execute(_inbound())
 
     saved = _saved_messages(executor)
+    # user msg + assistant msg (REPLY_START 时 save)
     assert [message.role for message in saved] == ["user", "assistant"]
-    assert saved[1].get_text_content() == "hello"
-    assert saved[1].finished_reason == ReplyFinishedReason.ERROR
-    assert saved[1].error == {"message": "Agent 执行异常", "code": "unknown"}
+
+    # 异常终态通过 update_message 写入
+    updated = _updated_messages(executor)
+    assert len(updated) >= 1
+    assistant_final = updated[-1]
+    assert assistant_final.get_text_content() == "hello"
+    assert assistant_final.finished_reason == ReplyFinishedReason.ERROR
+    assert assistant_final.error == {"message": "Agent 执行异常", "code": "unknown"}

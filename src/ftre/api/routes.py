@@ -228,9 +228,9 @@ async def get_token_usage(session_id: str):
     获取该 session 的 token 用量。
 
     返回字段：
-    - anchor: 最近一次 LLM 实算的 usage（含 timestamp 和 source），无则 null
+    - last_call_usage: 最后一次 LLM 实算的 usage，无则 null
     - pending_estimated: 锚点之后会进下次 prompt 但尚未实算的 Msg 字符级粗估
-    - total: anchor.total_tokens + pending_estimated（无锚点时即全量估算）
+    - total: last_call_usage.total_tokens + pending_estimated（无锚点时即全量估算）
     """
     return await _session_manager.get_token_usage(session_id)
 

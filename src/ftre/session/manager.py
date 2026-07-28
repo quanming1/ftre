@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from ftre_agent_core.message import Msg
+from ftre_agent_core.types import ReplyFinishedReason
 
 from ftre.config import CONFIG_PATH
 from ftre.session.json_store import CorruptStateError, JsonStateStore
@@ -50,7 +51,7 @@ class MessageModel(TypedDict):
     content: list[dict[str, Any]]
     metadata: dict[str, Any]
     created_at: str
-    usage: dict[str, int] | None
+    token: dict[str, Any] | None
     finished_at: str | None
     finished_reason: str | None
     structured_output: dict[str, Any] | None
@@ -119,10 +120,42 @@ class SessionManager:
         self._external_sessions: dict[tuple[str, str], str] = {}
 
     async def init(self) -> None:
-        """启动：删除遗留 sessions.db（不迁移），加载全部 JSON 状态并建索引。"""
+        """启动：删除遗留 sessions.db（不迁移），加载全部 JSON 状态并建索引。
+
+        加载后修复遗留的 open reply（Gateway 重启前未完成的 Reply）。
+        """
         await self._discard_legacy_db()
         await self._store.load_all()
         self._rebuild_indexes()
+        await self._fix_open_replies()
+
+    async def _fix_open_replies(self) -> None:
+        """将所有 finished_at is null 的 assistant Msg 标记为 interrupted。
+
+        Gateway 重启后 LLM 调用无法恢复，进行中 Reply 必须标记终态
+        使 state.json 自洽，客户端不会看到永远 streaming 的消息。
+        """
+        now = _now_iso()
+        fixed = 0
+        for session_id, state in list(self._states.items()):
+            dirty = False
+            for msg in state.messages:
+                if msg.role == "assistant" and msg.finished_at is None:
+                    msg.finished_at = now
+                    msg.finished_reason = ReplyFinishedReason.INTERRUPTED
+                    msg.error = {
+                        "code": "gateway_restarted",
+                        "message": "Gateway restarted before this reply completed.",
+                    }
+                    fixed += 1
+                    dirty = True
+            if dirty:
+                await self._commit(state)
+        if fixed:
+            logger.warning(
+                "[session-store] 修复 %d 条遗留 open reply (标记为 interrupted)",
+                fixed,
+            )
 
     async def _discard_legacy_db(self) -> None:
         """直接删除遗留 SQLite 文件（含 wal/shm/journal），不做数据迁移。"""
@@ -231,7 +264,7 @@ class SessionManager:
             content=payload["content"],
             metadata=payload["metadata"],
             created_at=msg.created_at,
-            usage=payload.get("usage"),
+            token=payload.get("token"),
             finished_at=msg.finished_at,
             finished_reason=payload.get("finished_reason"),
             structured_output=payload.get("structured_output"),
@@ -657,10 +690,10 @@ class SessionManager:
         认为上下文没有缩小。
 
         策略：
-        - 找上下文中最晚的"携带 usage 的 assistant Msg"作为 anchor
-        - anchor 之后还没被 LLM 计入但会进下次 prompt 的 Msg 用字符级粗估
-        - total = anchor.total_tokens + pending_estimated
-        - 没有 anchor 时（全新 session）退化为对全量上下文估算
+        - 找上下文中最晚的"携带 token.last_call_usage 的 assistant Msg"作为锚点
+        - 锚点之后还没被 LLM 计入但会进下次 prompt 的 Msg 用字符级粗估
+        - total = last_call_usage.total_tokens + pending_estimated
+        - 没有锚点时（全新 session）退化为对全量上下文估算
         """
         messages = await self.get_context_messages(session_id)
         return _compute_token_usage(session_id, messages)
@@ -672,65 +705,56 @@ class SessionManager:
     # Msg → provider 消息的转换统一位于 converter.py。
 
 
-def _find_anchor(messages: list[MessageModel]) -> tuple[int, dict | None, str]:
-    """倒序找最晚的带 usage 的 Msg。"""
+def _find_last_call_usage(messages: list[MessageModel]) -> tuple[int, dict | None]:
+    """倒序找最晚的带 token.last_call_usage 的 assistant Msg。"""
     for i in range(len(messages) - 1, -1, -1):
         message = messages[i]
-        usage_data = message.get("usage") or {}
-        input_tokens = usage_data.get("input_tokens", 0)
-        output_tokens = usage_data.get("output_tokens", 0)
-        if input_tokens or output_tokens:
-            usage = {
-                "prompt_tokens": input_tokens,
-                "completion_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
-            }
-            return i, usage, "msg"
-    return -1, None, ""
-
-
-def _build_anchor_payload(usage: dict, timestamp: float, source: str) -> dict:
-    """把 LLM 上报的 usage dict 整理成对外 payload，补全 total_tokens"""
-    prompt = int(usage.get("prompt_tokens") or 0)
-    completion = int(usage.get("completion_tokens") or 0)
-    total = int(usage.get("total_tokens") or (prompt + completion))
-    return {
-        "prompt_tokens": prompt,
-        "completion_tokens": completion,
-        "total_tokens": total,
-        "at": timestamp,
-        "source": source,
-    }
+        if message.get("role") != "assistant":
+            continue
+        token = message.get("token")
+        if not token:
+            continue
+        last_call = token.get("last_call_usage")
+        if (
+            isinstance(last_call, dict)
+            and {"prompt_tokens", "completion_tokens", "total_tokens"}.issubset(last_call)
+        ):
+            return i, last_call
+    return -1, None
 
 
 def _compute_token_usage(session_id: str, messages: list[MessageModel]) -> dict:
     """
     根据 Msg 快照计算 token 用量。抽出来便于单测，不依赖存储。
 
-    见 SessionManager.get_token_usage 文档。
+    - 找上下文中最晚的"携带 token.last_call_usage 的 assistant Msg"作为锚点
+    - 锚点之后还没被 LLM 计入但会进下次 prompt 的 Msg 用字符级粗估
+    - total = last_call_usage.total_tokens + pending_estimated
+    - 没有锚点时（全新 session）退化为对全量上下文估算
     """
     from .token_counter import estimate_messages_tokens
 
-    anchor_index, anchor_usage, anchor_source = _find_anchor(messages)
+    anchor_index, last_call_usage = _find_last_call_usage(messages)
 
     # 锚点之后的消息用字符级粗估（无锚点时即全量估算）
     pending_messages = messages[anchor_index + 1:] if anchor_index >= 0 else messages
     pending_estimated = estimate_messages_tokens(pending_messages)
 
-    if anchor_usage is None:
+    if last_call_usage is None:
         return {
             "session_id": session_id,
-            "anchor": None,
+            "last_call_usage": None,
             "pending_estimated": pending_estimated,
             "total": pending_estimated,
         }
 
-    anchor = _build_anchor_payload(
-        anchor_usage, messages[anchor_index]["timestamp"], anchor_source
-    )
     return {
         "session_id": session_id,
-        "anchor": anchor,
+        "last_call_usage": {
+            "prompt_tokens": int(last_call_usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(last_call_usage.get("completion_tokens") or 0),
+            "total_tokens": int(last_call_usage.get("total_tokens") or 0),
+        },
         "pending_estimated": pending_estimated,
-        "total": anchor["total_tokens"] + pending_estimated,
+        "total": int(last_call_usage.get("total_tokens") or 0) + pending_estimated,
     }

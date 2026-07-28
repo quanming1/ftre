@@ -6,7 +6,7 @@
 - Session CRUD / 列表排序与过滤 / count / workspaces
 - Msg 保存、更新、按序读取
 - 最近 N 轮分页语义（可见 user Msg、before_ts、has_more）
-- token 用量 anchor 策略
+- token 用量 last_call_usage 策略
 - metadata CRUD
 - external session 映射语义
 """
@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 import pytest_asyncio
-from ftre_agent_core.message import AssistantMsg, Msg, SystemMsg, UserMsg
+from ftre_agent_core.message import AssistantMsg, Msg, SystemMsg, UserMsg, MsgToken, TokenUsage
 
 from ftre.session.manager import SessionManager
 
@@ -34,10 +34,10 @@ def _user(text: str, *, hide: bool = False, created_at: str | None = None) -> Ms
     return UserMsg(metadata={"hide": hide, "agent_id": "default"}, **kwargs)
 
 
-def _assistant(text: str, *, usage: dict | None = None, created_at: str | None = None) -> Msg:
+def _assistant(text: str, *, token: dict | None = None, created_at: str | None = None) -> Msg:
     kwargs: dict = {"name": "default", "content": text}
-    if usage:
-        kwargs["usage"] = usage
+    if token:
+        kwargs["token"] = MsgToken.model_validate(token)
     if created_at:
         kwargs["created_at"] = created_at
     return AssistantMsg(**kwargs)
@@ -169,7 +169,10 @@ async def test_save_and_get_messages_round_trip(manager):
     user = _user("问题", created_at="2026-07-27T20:00:00+08:00")
     assistant = _assistant(
         "回答",
-        usage={"input_tokens": 10, "output_tokens": 5},
+        token={
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "last_call_usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        },
         created_at="2026-07-27T20:00:01+08:00",
     )
     returned = await manager.save_message(sid, user)
@@ -186,7 +189,10 @@ async def test_save_and_get_messages_round_trip(manager):
     assert isinstance(first["timestamp"], float)
     # timestamp 由 created_at 派生
     assert second["timestamp"] > first["timestamp"]
-    assert second["usage"] == {"input_tokens": 10, "output_tokens": 5, "total_tokens": 0, "cached_tokens": 0, "reasoning_tokens": 0}
+    assert second["token"] == {
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        "last_call_usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
     # dict 输入也要支持
     await manager.save_message(sid, _user("再来一条").model_dump(mode="json"))
     assert len(await manager.get_messages_by_session(sid)) == 3
@@ -322,30 +328,36 @@ async def test_recent_messages_no_visible_user(manager):
 
 
 @pytest.mark.asyncio
-async def test_token_usage_anchor_strategy(manager):
+async def test_token_usage_last_call_anchor_strategy(manager):
+    """三次调用只取最后一次作为锚点。"""
     sid = await manager.create_session("ws")
     await manager.save_message(sid, _user("u1"))
+    # 一个 Reply 内三次调用：累计 37600，最后一次 15300
     await manager.save_message(
-        sid, _assistant("a1", usage={"input_tokens": 100, "output_tokens": 20})
+        sid,
+        _assistant("a1", token={
+            "usage": {"prompt_tokens": 37000, "completion_tokens": 600, "total_tokens": 37600},
+            "last_call_usage": {"prompt_tokens": 15000, "completion_tokens": 300, "total_tokens": 15300},
+        })
     )
     await manager.save_message(sid, _user("u2 pending"))
 
     usage = await manager.get_token_usage(sid)
     assert usage["session_id"] == sid
-    assert usage["anchor"]["prompt_tokens"] == 100
-    assert usage["anchor"]["completion_tokens"] == 20
-    assert usage["anchor"]["total_tokens"] == 120
-    assert usage["anchor"]["source"] == "msg"
+    # 锚点用 last_call_usage（15300），不是累计 usage（37600）
+    assert usage["last_call_usage"]["prompt_tokens"] == 15000
+    assert usage["last_call_usage"]["completion_tokens"] == 300
+    assert usage["last_call_usage"]["total_tokens"] == 15300
     assert usage["pending_estimated"] > 0
-    assert usage["total"] == 120 + usage["pending_estimated"]
+    assert usage["total"] == 15300 + usage["pending_estimated"]
 
 
 @pytest.mark.asyncio
 async def test_token_usage_no_anchor_estimates_all(manager):
     sid = await manager.create_session("ws")
-    await manager.save_message(sid, _user("没有 usage 的消息"))
+    await manager.save_message(sid, _user("没有 token 的消息"))
     usage = await manager.get_token_usage(sid)
-    assert usage["anchor"] is None
+    assert usage["last_call_usage"] is None
     assert usage["total"] == usage["pending_estimated"] > 0
 
 

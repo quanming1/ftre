@@ -26,6 +26,7 @@ from ftre.config import AgentConfig
 from ftre.session import SessionManager
 from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
 
+from .reply_projection import ReplyProjection
 from .compact_manager import CompactManager
 from .turn_executor import TurnExecutor
 
@@ -84,6 +85,9 @@ class AgentLoop:
 
         # ─── Turn 执行器 ──────────────────────────────────────
         self._executor = TurnExecutor(self)
+
+        # ─── 进行中 Reply 快照注册表 ──────────────────────────
+        self.reply_projection = ReplyProjection(session_manager)
 
         self.compact_manager = CompactManager(
             session_manager=self.session_manager,

@@ -24,13 +24,13 @@ from enum import Enum
 from ftre_agent_core.agent import ReActAgent
 from ftre_agent_core.event import (
     EventBase,
+    ReplyStartEvent,
     ReplyEndEvent,
     ReplyFinishedReason,
     CustomEvent,
     ToolResultEndEvent,
 )
-from ftre_agent_core.message import AssistantMsg, Msg, UserMsg, from_openai_message
-from datetime import datetime
+from ftre_agent_core.message import Msg, UserMsg, from_openai_message
 
 from ftre.bus import BusMessage, GLOBAL_CHANNEL, GLOBAL_SESSION
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
@@ -102,7 +102,6 @@ class Turn:
 
     # ── 事件序列（供回放/调试）──
     events: list = field(default_factory=list)  # 本 Turn 产生的所有 CustomEvent
-    reply_messages: dict[str, Msg] = field(default_factory=dict)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -648,12 +647,21 @@ class TurnExecutor:
     async def publish_agent_event(
         self, turn: Turn, event
     ) -> Msg | None:
-        """实时派发 Event，并在 Reply 完成时持久化聚合 Msg。"""
-        completed_message: Msg | None = None
+        """实时派发 Event，并在 Reply 生命周期内管理 Msg 持久化。
+
+        - REPLY_START: 创建 AssistantMsg + save_message + 注册 ActiveReplyRegistry
+        - 其他 Event: append_event + checkpoint（节流/立即）
+        - REPLY_END: append_event + update_message + 注销 registry
+        """
+        completed_message = await self._loop.reply_projection.apply(
+            turn.session_id, event
+        )
+        """Legacy Turn-owned aggregation removed; ReplyProjection owns it.
         reply_id = getattr(event, "reply_id", "") or ""
         if reply_id:
             message = turn.reply_messages.get(reply_id)
-            if message is None:
+            is_new = message is None
+            if is_new:
                 message = AssistantMsg(
                     name=getattr(event, "name", "") or "assistant",
                     content=[],
@@ -661,14 +669,26 @@ class TurnExecutor:
                     created_at=event.created_at,
                 )
                 turn.reply_messages[reply_id] = message
+
             message.append_event(event)
-            if isinstance(event, ReplyEndEvent):
-                await self._loop.session_manager.save_message(
-                    turn.session_id, message
-                )
+            event_type = getattr(event, "type", "")
+            registry = self._loop.active_replies
+
+            if isinstance(event, ReplyStartEvent):
+                # REPLY_START: 立即持久化并注册
+                await registry.begin(turn.session_id, reply_id, message)
+            elif isinstance(event, ReplyEndEvent):
+                # REPLY_END: 强制最终写入并注销
+                await registry.finish(turn.session_id, reply_id, message)
                 completed_message = message
                 turn.reply_messages.pop(reply_id, None)
+            else:
+                # 中间事件：节流 checkpoint
+                await registry.apply_event(
+                    turn.session_id, reply_id, message, event_type
+                )
 
+        """
         await self._dispatch_agent_event(turn.inbound, event)
         return completed_message
 
@@ -679,18 +699,23 @@ class TurnExecutor:
         *,
         error: dict | None = None,
     ) -> None:
-        """异常中断时保存已经聚合出的部分 Msg，避免丢失可见正文。"""
+        """异常中断时更新已持久化的 open Msg，写入终态。"""
+        for message in await self._loop.reply_projection.finish_open(
+            turn.session_id, reason, error=error
+        ):
+            turn.final_content = message.get_text_content() or turn.final_content
+        """Legacy Turn-owned open-reply cleanup removed.
         for reply_id, message in list(turn.reply_messages.items()):
-            if not message.content:
-                continue
             message.finished_at = datetime.now().isoformat()
             message.finished_reason = reason
             message.error = error
-            await self._loop.session_manager.save_message(
-                turn.session_id, message
+            # Msg 在 REPLY_START 时已 save_message，这里只需 update
+            await self._loop.active_replies.finish(
+                turn.session_id, reply_id, message
             )
             turn.final_content = message.get_text_content() or turn.final_content
         turn.reply_messages.clear()
+        """
 
     async def _dispatch_agent_event(self, inbound: BusMessage, event) -> None:
         """把 AgentStreamEvent 实时派发给前端。"""

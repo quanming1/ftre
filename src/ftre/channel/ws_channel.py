@@ -16,7 +16,6 @@ import binascii
 import json
 import logging
 import asyncio
-from collections import deque
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -45,186 +44,6 @@ ALLOWED_IMAGE_MIME = frozenset({
 MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024  # 3 MB
 
 MAX_ATTACHMENTS_PER_MESSAGE = 8
-
-# 这些事件只代表正在流式输出的增量，不写入 session DB。
-# 如果客户端在历史读取后、attach 前错过了仍在生成的片段，
-# 就从 WS channel 的短期缓冲补发。
-VOLATILE_EVENT_TYPES = frozenset({
-    # block START：创建 block 容器，delta 依赖它
-    "TEXT_BLOCK_START",
-    "TEXT_BLOCK_DELTA",
-    "THINKING_BLOCK_START",
-    "THINKING_BLOCK_DELTA",
-    "DATA_BLOCK_START",
-    "DATA_BLOCK_DELTA",
-    "TOOL_CALL_START",
-    "TOOL_CALL_DELTA",
-    "TOOL_RESULT_START",
-    "TOOL_RESULT_TEXT_DELTA",
-    "TOOL_RESULT_DATA_DELTA",
-    # compact 进度
-    "context_compact_start",
-})
-# REPLY_END 到达时，聚合后的 Msg 已持久化；对应增量可从 volatile
-# buffer 删除，避免客户端 attach 后看到旧草稿。
-VOLATILE_CLEAR_BY_TYPE = {
-    "REPLY_END": {
-        "TEXT_BLOCK_START",
-        "TEXT_BLOCK_DELTA",
-        "THINKING_BLOCK_START",
-        "THINKING_BLOCK_DELTA",
-        "DATA_BLOCK_START",
-        "DATA_BLOCK_DELTA",
-        "TOOL_CALL_START",
-        "TOOL_CALL_DELTA",
-        "TOOL_RESULT_START",
-        "TOOL_RESULT_TEXT_DELTA",
-        "TOOL_RESULT_DATA_DELTA",
-    },
-    "context_compact_done": {"context_compact_start"},
-    "context_compact_failed": {"context_compact_start"},
-}
-# 一轮执行结束、失败或进入重试后，旧的临时流式片段都不应该再 replay。
-# 注意：retry 的 type 是小写 "retry"（见 core RetryEvent）；
-# CUSTOM 不放这里——太宽泛会把 context_compact_start 也清掉。
-# 需要清空的 CUSTOM 事件按 name 精确匹配，见下方 _CUSTOM_CLEAR_ALL_NAMES。
-VOLATILE_CLEAR_ALL_TYPES = frozenset({"retry", "EXCEED_MAX_ITERS"})
-
-# 某些 CUSTOM 事件（type=CUSTOM, name=xxx）也代表一轮结束，需要清空全部 volatile。
-_CUSTOM_CLEAR_ALL_NAMES = frozenset({
-    "PIPELINE_END",
-})
-
-
-def _match_volatile_clear(
-    item: dict,
-    event_types: set[str] | frozenset[str],
-) -> bool:
-    """返回 True 表示这条 volatile 帧应该被清理。"""
-    item_data = item.get("data") or {}
-    item_ev_type = item_data.get("type", "")
-    return item_ev_type in event_types
-
-
-class _VolatileReplayBuffer:
-    """缓存未入库的流式事件，供客户端 attach 时补发。
-
-    这个类只处理 WS 层的临时恢复，不替代数据库历史：
-    - DB 只持久化聚合完成的 Msg。
-    - 这里短暂保留尚未聚合完成的流式 Event。
-    - REPLY_END 到达后，Msg 已落库，对应的增量草稿立即清除。
-    """
-
-    def __init__(self) -> None:
-        # session_id -> 最近的 volatile 下行帧。deque 自带 maxlen，防止无限增长。
-        self._buffers: dict[str, deque[dict[str, Any]]] = {}
-        # send() 和 attach replay 都在事件循环里运行；加锁保证 buffer 快照一致。
-        self._lock = asyncio.Lock()
-
-    async def track(self, msg: BusMessage, metadata: dict[str, Any]) -> dict[str, Any]:
-        """检查一条 agent_event 是否需要缓存，并返回下发时要携带的 metadata。"""
-        ev_type = msg.data.get("type") if isinstance(msg.data, dict) else None
-        if not isinstance(ev_type, str):
-            return metadata
-
-        session_id = msg.to_session
-        # done/error/retry 表示这一轮临时流结束，整个 session 的 volatile 草稿都清掉。
-        if ev_type in VOLATILE_CLEAR_ALL_TYPES:
-            await self._clear(session_id)
-            return metadata
-
-        # CUSTOM 事件按 name 精确匹配：PIPELINE_END 等代表一轮结束，清空全部 volatile。
-        if ev_type == "CUSTOM":
-            ev_name = msg.data.get("name", "") if isinstance(msg.data, dict) else ""
-            if ev_name in _CUSTOM_CLEAR_ALL_NAMES:
-                await self._clear(session_id)
-                return metadata
-
-        # START/END 等非 delta 事件不进入 volatile buffer，只负责清除它覆盖的
-        # 流式草稿；REPLY_END 时聚合后的 Msg 已持久化到 DB。
-        clear_types = VOLATILE_CLEAR_BY_TYPE.get(ev_type)
-        if clear_types:
-            await self._clear(session_id, event_types=clear_types)
-            return metadata
-
-        # 其他事件不是需要断线短暂回放的流式片段，不进入 volatile buffer。
-        if ev_type not in VOLATILE_EVENT_TYPES:
-            return metadata
-
-        return await self._append(session_id, msg, metadata)
-
-    async def _append(
-        self,
-        session_id: str,
-        msg: BusMessage,
-        metadata: dict[str, Any],
-    ) -> dict[str, Any]:
-        """把一帧加入 replay buffer，并返回 live 下发时携带的 metadata。"""
-        async with self._lock:
-            # buffer 里存的是最终要发给客户端的帧形态。
-            # replay 时直接原样发送，不需要重新理解 BusMessage。
-            event_metadata = {
-                **metadata,
-                "channel_id": msg.to_channel,
-                "session_id": session_id,
-            }
-            self._buffers.setdefault(
-                session_id,
-                deque(),
-            ).append({
-                "frame_id": msg.id,
-                "type": msg.type,
-                "data": msg.data,
-                "metadata": event_metadata,
-            })
-
-        return metadata
-
-    async def replay(self, session_id: str, ws: WebSocket) -> None:
-        """把某个 session 当前还没稳定落库的流式片段补发给刚 attach 的 ws。"""
-        for item in await self._snapshot(session_id):
-            payload = {
-                **item,
-                "metadata": {
-                    **(item.get("metadata") or {}),
-                },
-            }
-            try:
-                await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
-            except Exception as e:
-                logger.debug(f"[ws-channel] replay failed: {e}")
-                break
-
-    async def _clear(
-        self,
-        session_id: str,
-        *,
-        event_types: set[str] | frozenset[str] | None = None,
-    ) -> None:
-        async with self._lock:
-            if event_types is None:
-                self._buffers.pop(session_id, None)
-                return
-
-            buf = self._buffers.get(session_id)
-            if not buf:
-                return
-
-            kept = deque(
-                (
-                    item for item in buf
-                    if not _match_volatile_clear(item, event_types)
-                ),
-            )
-            if kept:
-                self._buffers[session_id] = kept
-            else:
-                self._buffers.pop(session_id, None)
-
-    async def _snapshot(self, session_id: str) -> list[dict[str, Any]]:
-        # replay 期间不持锁发送网络数据，先复制快照，避免阻塞 send() 写入。
-        async with self._lock:
-            return [dict(item) for item in self._buffers.get(session_id, ())]
 
 
 def _validate_attachments(attachments) -> tuple[bool, str]:
@@ -319,7 +138,10 @@ class WebSocketChannel(Channel):
         self._connections: dict[str, set[WebSocket]] = {}
         # 反向索引：ws → 它 attach 过的所有 session_id（断开时清理用）
         self._ws_sessions: dict[WebSocket, set[str]] = {}
-        self._volatile_replay = _VolatileReplayBuffer()
+        # per-session 输出锁：保证 attach snapshot 与实时 Event 的 FIFO 顺序
+        self._session_output_locks: dict[str, asyncio.Lock] = {}
+        # ReplyProjection（由 main.py 注入），attach 时读取 reply_snapshot。
+        self._reply_projection = None
         self._server = None
         self._server_task: asyncio.Task | None = None
 
@@ -334,6 +156,10 @@ class WebSocketChannel(Channel):
         if plugin_manager:
             for router in plugin_manager.routers:
                 self.app.include_router(router, prefix="/api")
+
+    def set_reply_projection(self, projection) -> None:
+        """注入 ReplyProjection（由 main.py 在 AgentLoop 创建后调用）。"""
+        self._reply_projection = projection
 
     async def start(self) -> None:
         """启动 WebSocket 服务"""
@@ -357,18 +183,22 @@ class WebSocketChannel(Channel):
                 pass
         logger.info("[ws-channel] stopped")
 
+    def _output_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self._session_output_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_output_locks[session_id] = lock
+        return lock
+
     async def send(self, msg: BusMessage) -> None:
         """Bus outbound → 推送给 ws 连接。
 
         - 普通消息：按 to_session 推给所有 attach 该 session 的 ws。
         - 全局广播（to_session == GLOBAL_SESSION）：扇出给所有活跃 ws，
           无视 attach 关系（用于 session 状态等全局控制信号）。
+        - 非全局消息持 per-session 输出锁，保证 attach snapshot 与 Event 的 FIFO 顺序。
         """
         metadata = dict(msg.metadata or {})
-        if msg.type == "agent_event" and msg.to_session != GLOBAL_SESSION:
-            # 先 track 再找订阅者：即使当前没有 ws attach，也要缓存未入库的流式片段，
-            # 这样客户端稍后 attach 时还能 replay 补齐。
-            metadata = await self._volatile_replay.track(msg, metadata)
 
         if msg.to_session == GLOBAL_SESSION:
             targets = list(self._ws_sessions.keys())
@@ -393,11 +223,18 @@ class WebSocketChannel(Channel):
         }
         text = json.dumps(payload, ensure_ascii=False, default=str)
 
-        # 拷贝一份再迭代，避免发送过程中其它路径改动 set
+        # 非全局消息持 session 输出锁：与 attach snapshot 互斥
+        lock = self._output_lock(msg.to_session) if msg.to_session != GLOBAL_SESSION else None
+        if lock:
+            async with lock:
+                await self._send_to_targets(targets, text)
+        else:
+            await self._send_to_targets(targets, text)
+
+    async def _send_to_targets(self, targets: list[WebSocket], text: str) -> None:
+        """向目标 ws 列表发送文本帧，清理断开的连接。"""
         dead: list[WebSocket] = []
         for ws in targets:
-            # 跳过已经断开的 ws，避免 send_text 触发 application_state=DISCONNECTED
-            # 进而干扰 _ws_endpoint 的 receive_text() 循环。
             if ws.application_state != WebSocketState.CONNECTED:
                 dead.append(ws)
                 continue
@@ -407,9 +244,6 @@ class WebSocketChannel(Channel):
                 logger.debug(f"[ws-channel] send 失败，准备关闭: {e}")
                 dead.append(ws)
 
-        # 只对仍然处于 CONNECTED 状态的坏连接调用 close()。
-        # 如果 application_state 已经是 DISCONNECTED（send_text 时 OSError 导致），
-        # close() 会抛 RuntimeError，不需要再调用。
         for ws in dead:
             if ws.application_state != WebSocketState.DISCONNECTED:
                 try:
@@ -505,10 +339,12 @@ class WebSocketChannel(Channel):
         session_id = data.get("session_id", "")
 
         if frame_type == "attach":
-            self._attach(session_id, ws)
-            # 客户端流程是先 HTTP 读 Msg 历史，再 WS attach；若此时 reply 仍在
-            # 生成，则补发 attach 前积累的流式增量。
-            await self._volatile_replay.replay(session_id, ws)
+            # 持 session 输出锁：先发 snapshot，再注册订阅，
+            # 保证 snapshot 先于后续实时 Event 到达同一 ws。
+            lock = self._output_lock(session_id)
+            async with lock:
+                await self._send_reply_snapshot(session_id, ws)
+                self._attach(session_id, ws)
             return
 
         if frame_type == "detach":
@@ -567,6 +403,26 @@ class WebSocketChannel(Channel):
             metadata = {**metadata, "frame_id": frame_id}
 
         await self.receive(session_id, data, metadata, kind="user_message")
+
+    async def _send_reply_snapshot(self, session_id: str, ws: WebSocket) -> None:
+        """attach 时发送当前进行中 Reply 的完整 Msg 快照。"""
+        if self._reply_projection is None:
+            return
+        replies = await self._reply_projection.snapshot(session_id)
+        if not replies:
+            return
+        payload = {
+            "frame_id": f"sync_{session_id}",
+            "type": "reply_snapshot",
+            "data": {
+                "session_id": session_id,
+                "replies": replies,
+            },
+        }
+        try:
+            await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
+        except Exception as e:
+            logger.debug(f"[ws-channel] reply_snapshot 发送失败: {e}")
 
     async def _reject(self, ws: WebSocket, frame_id: str, session_id: str, reason: str) -> None:
         """向客户端回写一帧拒绝消息（不入 Bus）"""

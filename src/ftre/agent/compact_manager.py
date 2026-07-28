@@ -138,8 +138,8 @@ class CompactManager:
     ) -> bool:
         """水位是否超过 threshold？只读 DB，不调 LLM。
 
-        优先用 API 报告的真实 token（get_token_usage 的 anchor + pending 策略），
-        全新 session 无 anchor 时退化为字符估算。
+        优先用 API 报告的真实 token（last_call_usage + pending 策略），
+        全新 session 无 last_call_usage 时退化为字符估算。
         """
         threshold = threshold if threshold is not None else getattr(
             config.context, "compact_threshold", self._threshold

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ReplyProjection 流程</title>
+  <style>
+    :root { --ink:#e6edf7; --muted:#93a4bd; --line:#2b3a51; --panel:#121b2a; --bg:#09101c; --cyan:#39d7ff; --green:#45dc9a; --amber:#ffbd59; --purple:#b790ff; --red:#ff7e88; }
+    * { box-sizing:border-box; } body { margin:0; min-height:100vh; color:var(--ink); background:radial-gradient(circle at 20% 0,#183359 0,transparent 30%), var(--bg); font-family:"Microsoft YaHei",system-ui,sans-serif; }
+    main { max-width:1240px; margin:auto; padding:46px 28px 70px; } h1 { margin:0; font-size:34px; letter-spacing:-.5px; } .lead { color:var(--muted); margin:12px 0 34px; font-size:16px; }
+    .principle { border:1px solid #315270; background:#102238; border-radius:14px; padding:17px 21px; color:#c8e8fb; margin-bottom:26px; } .principle b { color:var(--cyan); }
+    .flow { display:grid; grid-template-columns:1fr 72px 1.25fr 72px 1fr; align-items:stretch; gap:0; } .card { position:relative; border:1px solid var(--line); background:linear-gradient(145deg,#162237,#0f1725); border-radius:16px; padding:20px; min-height:272px; box-shadow:0 15px 30px #0003; }
+    .card h2 { margin:0 0 5px; font-size:17px; } .card p { color:var(--muted); font-size:13px; line-height:1.6; margin:0 0 18px; } .tag { display:inline-block; border-radius:20px; padding:4px 9px; font-size:11px; font-weight:700; margin-bottom:12px; } .source .tag { background:#173651; color:var(--cyan); } .projection .tag { background:#29204a; color:#cbb7ff; } .output .tag { background:#153827; color:var(--green); }
+    .rows { display:grid; gap:8px; } .row { background:#0a1321; border:1px solid #263852; padding:9px 10px; border-radius:9px; font-family:ui-monospace,Consolas,monospace; color:#cbd8ea; font-size:12px; } .row.event { border-left:3px solid var(--cyan); } .row.message { border-left:3px solid var(--purple); } .row.storage { border-left:3px solid var(--green); }
+    .arrow { display:flex; align-items:center; justify-content:center; color:var(--cyan); font-size:30px; position:relative; } .arrow small { position:absolute; color:var(--muted); text-align:center; font-size:11px; width:100px; top:calc(50% + 28px); }
+    .core { margin-top:28px; border:1px solid #624f9c; background:linear-gradient(120deg,#171331,#101a2a); border-radius:18px; padding:23px; } .core-head { display:flex; align-items:center; justify-content:space-between; gap:16px; } .core h2 { margin:0; font-size:20px; } .core p { margin:8px 0 0; color:var(--muted); font-size:13px; } button { cursor:pointer; color:#d8f6ff; background:#173856; border:1px solid #3581a6; border-radius:9px; padding:9px 13px; font:inherit; }
+    .inside { margin-top:20px; display:grid; grid-template-columns:1fr 1.3fr 1fr; gap:12px; } .phase { border-radius:12px; padding:15px; border:1px solid #394b69; background:#0b1423; transition:.25s; } .phase.active { border-color:var(--amber); background:#302414; box-shadow:0 0 0 1px #ffbd5955,0 0 24px #ffbd5922; } .phase h3 { margin:0 0 7px; font-size:14px; } .phase p { font-size:12px; margin:0; } .phase b { color:var(--amber); }
+    .rule { margin-top:26px; display:grid; grid-template-columns:repeat(3,1fr); gap:14px; } .rule > div { background:#0c1625; border:1px solid #263750; border-radius:12px; padding:15px; } .rule h3 { font-size:14px; margin:0 0 8px; } .rule p { margin:0; color:var(--muted); font-size:12px; line-height:1.6; } .rule b { color:var(--green); }
+    .example { margin-top:27px; border-left:3px solid var(--amber); padding:5px 0 5px 17px; } .example h2 { margin:0 0 12px; font-size:18px; } .timeline { display:flex; align-items:stretch; gap:10px; overflow:auto; padding-bottom:4px; } .tick { min-width:192px; border:1px solid #314360; background:#0c1524; border-radius:11px; padding:13px; } .tick strong { color:var(--amber); font-size:12px; } .tick div { margin-top:8px; color:#cbd8ea; font:12px ui-monospace,Consolas,monospace; line-height:1.65; }
+    footer { color:#6f829d; margin-top:35px; font-size:12px; } @media(max-width:850px){ .flow,.inside,.rule{grid-template-columns:1fr;} .arrow{height:52px; transform:rotate(90deg)} .arrow small{transform:rotate(-90deg); top:8px;} }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ReplyProjection：Event 与 Msg 的边界</h1>
+    <p class="lead">它不是 Event 数据库，也不是 WebSocket 队列；它是 Gateway 中把实时事件规约为可恢复消息快照的唯一领域层。</p>
+    <div class="principle"><b>事实来源：</b>Event 是实时过程；Msg snapshot 是会话语义与恢复事实。WS Channel 只负责传输。</div>
+
+    <section class="flow">
+      <article class="card source"><span class="tag">CORE / PRODUCER</span><h2>AgentScope / Agent Core</h2><p>只负责推理并产生流式事件；不关心 WebSocket、session attach 和落盘时机。</p><div class="rows"><div class="row event">TEXT_BLOCK_DELTA("你")</div><div class="row event">TOOL_CALL_END(...)</div><div class="row event">TOOL_RESULT_END(...)</div><div class="row event">REPLY_END</div></div></article>
+      <div class="arrow">→<small>Event<br>实时输入</small></div>
+      <article class="card projection"><span class="tag">GATEWAY / OWNER</span><h2>ReplyProjection</h2><p>按 <code>reply_id</code> 维护运行中 ReplyState；唯一负责 Event → Msg 的聚合、版本和 checkpoint。</p><div class="rows"><div class="row message">apply(event) → Msg.content[]</div><div class="row message">revision += 1</div><div class="row message">checkpoint() → state.json</div><div class="row message">snapshot(session_id)</div></div></article>
+      <div class="arrow">→<small>实时 Event<br>或 attach snapshot</small></div>
+      <article class="card output"><span class="tag">TRANSPORT / STORAGE</span><h2>WS 与 Session State</h2><p>WS 不保存会话事件历史。在线时转发 Event；attach 时读取 Projection 的完整快照。</p><div class="rows"><div class="row storage">WebSocket：实时推送</div><div class="row storage">state.json：完整 Msg</div><div class="row storage">客户端：按 reply_id 合并</div></div></article>
+    </section>
+
+    <section class="core">
+      <div class="core-head"><div><h2>ReplyProjection 内部流程</h2><p>点击播放，可看到某个 Event 被处理时的三个动作。</p></div><button id="play">▶ 播放示例事件</button></div>
+      <div class="inside">
+        <div class="phase" id="p1"><h3>1. 接收 Event</h3><p><b>输入：</b><code>TEXT_BLOCK_DELTA("好")</code></p></div>
+        <div class="phase" id="p2"><h3>2. 立即聚合内存 Msg</h3><p><b>ReplyState.message.text：</b><br>“你” → “你好”<br><b>revision：</b>1 → 2</p></div>
+        <div class="phase" id="p3"><h3>3. 分发与 checkpoint</h3><p>向在线 WS 推送 delta。若命中边界（如 TextBlockEnd），写入完整 Msg snapshot。</p></div>
+      </div>
+    </section>
+
+    <section class="rule">
+      <div><h3>不等客户端 ACK</h3><p>客户端断线不能阻塞内存清理。只要完整快照已成功写入，旧实时 Event 就不再是恢复所需数据。</p></div>
+      <div><h3>attach 不重放 Event</h3><p><b>新 attach：</b>先拿当前 <code>reply_snapshot</code>，然后只接收之后的新 Event。</p></div>
+      <div><h3>一个 Msg，一个写入者</h3><p>运行中 Msg 只能由 ReplyProjection 聚合与写入，避免 Agent、WS、SessionManager 各自维护一份。</p></div>
+    </section>
+
+    <section class="example"><h2>示例：文本回复持续生成</h2><div class="timeline"><div class="tick"><strong>Event 1</strong><div>DELTA("你")<br>Msg: “你”<br>revision: 1</div></div><div class="tick"><strong>Event 2</strong><div>DELTA("好")<br>Msg: “你好”<br>revision: 2</div></div><div class="tick"><strong>Event 3</strong><div>TEXT_BLOCK_END<br>Msg: “你好”<br>checkpoint → state.json</div></div><div class="tick"><strong>用户此时 attach</strong><div>不补 DELTA 1/2<br>直接给 snapshot：<br>Msg: “你好”</div></div></div></section>
+    <footer>ReplyState = reply_id + session_id + message + revision + status + dirty/checkpoint metadata</footer>
+  </main>
+  <script>
+    const ids = ['p1','p2','p3']; let busy = false;
+    document.getElementById('play').addEventListener('click', async () => {
+      if (busy) return; busy = true;
+      for (const id of ids) { document.getElementById(id).classList.add('active'); await new Promise(r => setTimeout(r, 850)); }
+      await new Promise(r => setTimeout(r, 550)); ids.forEach(id => document.getElementById(id).classList.remove('active')); busy = false;
+    });
+  </script>
+</body>
+</html>
