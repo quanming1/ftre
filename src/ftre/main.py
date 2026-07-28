@@ -184,7 +184,7 @@ from ftre.tools.cron import CronScheduler
 #
 # 组件依赖关系：
 #
-#   SessionManager (SQLite)
+#   SessionManager (Agent State JSON，~/.ftre/sessions/<sid>/state.json)
 #       │
 #   EventBus ←── ChannelManager ←── WebSocketChannel（客户端连这个）
 #       │                  ←── SubagentChannel（task 工具派发的子任务走这个）
@@ -212,8 +212,8 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
     """
     event_loop = asyncio.get_running_loop()
 
-    # ── Session 管理器（SQLite 存储）─────────────────────────
-    # 每个 session 对应一个聊天会话，消息历史存在 SQLite 里
+    # ── Session 管理器（Agent State JSON 存储）────────────────
+    # 每个 session 一份 state.json；遗留 sessions.db 启动时直接删除（不迁移）
     session_manager = SessionManager()
     await session_manager.init()
 

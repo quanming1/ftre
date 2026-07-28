@@ -90,7 +90,7 @@ async def read_trace_run(trace_id: str, run_id: str):
 
 @router.post("/sessions")
 async def create_session(channel_id: str, title: str = "", workspace: str = ""):
-    """创建新 session，返回带 channel 前缀的 session_id（如 'ws::sess_xxx'）。
+    """创建新 session，返回 session_id（如 'ws_sess_ed930104a1d2'）。
 
     workspace 可选；不传时由 agent_loop 在首次执行时回退到 config.workspace。
     """
