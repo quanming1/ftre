@@ -777,16 +777,17 @@ class TurnExecutor:
     ) -> tuple[list[dict], AgentConfig]:
         """构建发给 LLM 的消息列表，触发 before_messages_build hook。
 
-        关键点：用户消息已在 _command 状态提前存到 DB，这里从 DB 读历史
-        （get_messages_by_session）时已经包含它。所以【不能再 append】当前
-        用户输入，否则 LLM 会收到两份重复消息。
+        关键点：用户消息已在 _command 状态提前存到存储层，这里读
+        get_context_messages()（summary + tail，已含本轮用户消息）。
+        所以【不能再 append】当前用户输入，否则 LLM 会收到两份重复消息。
+        完整 transcript 只服务 Desktop 历史展示，不进入 LLM 上下文。
 
         prompt_override（RewritePrompt 指令改写）通过覆盖最后一条 user 消息
-        的 content 实现——DB 存原始，发给 LLM 用改写后的。
+        的 content 实现——存储层存原始，发给 LLM 用改写后的。
         """
         loop = self._loop
-        # 从 DB 读全部历史（已含本轮用户消息，因为 _command 先存了）
-        messages = await loop.session_manager.get_messages_by_session(session_id)
+        # 读模型上下文（summary + tail，已含本轮用户消息，因为 _command 先存了）
+        messages = await loop.session_manager.get_context_messages(session_id)
 
         # 触发 before_messages_build hook（插件可裁剪 Msg、生成标题、注入提示词）
         hook_config = copy.deepcopy(config)

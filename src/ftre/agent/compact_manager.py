@@ -7,8 +7,9 @@ CompactManager — 上下文压缩处理器
 - /compact 手动：立即压缩
 - /compress-fast：零 LLM 成本裁剪旧 ToolResultBlock 输出
 
-每次压缩：从上一个摘要 Msg 到现在，全量 LLM 摘要。摘要本身也是 Msg，
-由 metadata.context_compact 标记；快速压缩直接更新旧 Msg 中的工具结果块。
+每次压缩：从上一个滚动摘要到现在，全量 LLM 摘要。摘要保存在
+state.summary（SystemMsg + through_message_id 游标），不进入 transcript；
+原始 Msg 永不删除。快速压缩直接更新旧 Msg 中的工具结果块。
 
 并发安全：
 - compact() 总是在 AgentLoop._dispatch 的 per-session asyncio.Lock 内调用，
@@ -193,7 +194,14 @@ class CompactManager:
         if not records:
             return False
 
-        cursor_idx = get_cursor_index(records)
+        # 活跃区间 = 当前摘要游标之后的 tail（无摘要则全量）
+        cursor_idx = 0
+        summary = await self.session_manager.get_summary(session_id)
+        if summary is not None:
+            for index, record in enumerate(records):
+                if record["id"] == summary.through_message_id:
+                    cursor_idx = index + 1
+                    break
         active_records = records[cursor_idx:]
         messages = [Msg.model_validate(record) for record in active_records]
         tool_results: list[tuple[Msg, ToolResultBlock]] = []
@@ -270,19 +278,27 @@ class CompactManager:
             self._compact_tasks.pop(session_id, None)
             logger.info(f"[compact] session={session_id} 取消后台压缩，改用前台压缩")
 
-        # 1. 读取 Msg
-        messages = await self.session_manager.get_messages_by_session(session_id)
-        if not messages:
+        # 1. 读取模型上下文（当前 summary + tail），不是完整 transcript
+        context_records = await self.session_manager.get_context_messages(session_id)
+        if not context_records:
             logger.info(f"[compact] session={session_id} 无消息，跳过")
             await self._notify_failed(session_id, channel_id, "当前会话没有历史消息", silent=silent)
             return None
 
-        # 2. 从上一个 summary compact 之后开始，全量压缩
-        cursor_idx = get_cursor_index(messages)
-        head_messages = messages[cursor_idx:]
+        # 2. 分离 leading summary 与 tail；tail 是本次要压缩的真实 Msg
+        previous_summary: str | None = None
+        head_messages = context_records
+        first = context_records[0]
+        first_compact = (first.get("metadata") or {}).get("context_compact")
+        if isinstance(first_compact, dict) and first_compact.get("mode") == "summary":
+            previous_summary = Msg.model_validate(first).get_text_content() or None
+            head_messages = context_records[1:]
         if not head_messages:
-            logger.info(f"[compact] session={session_id} head_messages 为空，跳过")
+            logger.info(f"[compact] session={session_id} 摘要游标后无新消息，跳过")
             return None
+        # 本次压缩覆盖到的最后一条真实 Msg（compact 期间新增的消息
+        # 不在其中，会自然留在新摘要游标之后）
+        through_message_id = head_messages[-1]["id"]
 
         # 3. 估算当前 token（优先用 API 真实值）
         cw = getattr(config.llm, "context_window", None)
@@ -299,10 +315,7 @@ class CompactManager:
             "tokens": tokens_before,
         }, silent=silent)
 
-        # 5. 取之前摘要（如果有）
-        previous_summary = get_previous_summary(messages)
-
-        # 6. LLM 直调摘要
+        # 5. LLM 直调摘要（previous_summary 参与滚动摘要）
         summary = await self._run_compact_llm(
             head_messages, config=config, previous_summary=previous_summary,
             session_id=session_id,
@@ -312,8 +325,7 @@ class CompactManager:
             await self._notify_failed(session_id, channel_id, "LLM 摘要未产出合格结果", silent=silent)
             return None
 
-        # 7. 写入摘要 Msg（timestamp=当前时间，放末尾）
-        now = time.time()
+        # 7. 更新滚动摘要（state.summary），不追加进 transcript
         payload: dict = asdict(ContextCompactData(
             mode="summary",
             trigger=trigger,
@@ -345,11 +357,14 @@ class CompactManager:
         summary_message.metadata["context_compact"] = payload
 
         try:
-            await self.session_manager.save_message(
-                session_id, summary_message, timestamp=now,
+            await self.session_manager.save_summary(
+                session_id, summary_message, through_message_id=through_message_id,
             )
         except Exception:
-            logger.exception(f"[compact] 写入 DB 失败 session={session_id}")
+            logger.exception(f"[compact] 写入摘要失败 session={session_id}")
+            await self._notify_failed(
+                session_id, channel_id, "摘要写入失败", silent=silent,
+            )
             return None
 
         # 8. 通知前端完成
