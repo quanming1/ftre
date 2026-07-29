@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -185,26 +186,48 @@ class JsonStateStore:
         payload = state.model_dump_json(indent=2)
         await asyncio.to_thread(self._atomic_replace, path, payload)
 
-    _REPLACE_RETRIES = 5
-    _REPLACE_DELAY = 0.05  # 50ms
+    # Windows 的杀毒、索引器或编辑器可能短暂持有目标文件。总等待约 5 秒。
+    _REPLACE_RETRIES = 7
+    _REPLACE_DELAY = 0.1
 
     @classmethod
     def _atomic_replace(cls, path: Path, payload: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        # 固定的 state.json.tmp 会让两个 Gateway 进程互相覆盖/移动临时文件。
+        # 每次写入拥有独立临时文件，失败时也不会污染其他写入者。
+        tmp = path.with_name(
+            f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
+        )
         with tmp.open("w", encoding="utf-8", newline="\n") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        # Windows 上目标文件可能被杀毒/索引器短暂锁定，重试几次
+        # Windows 上目标文件可能被杀毒/索引器/编辑器短暂锁定，退避重试。
         for attempt in range(cls._REPLACE_RETRIES):
             try:
                 os.replace(tmp, path)
                 return
-            except PermissionError:
+            except OSError as exc:
+                # WinError 5=Access denied；32=sharing violation。其他 I/O 错误
+                # （例如磁盘满）不可通过重试恢复，直接向调用方报告。
+                if not cls._is_transient_replace_error(exc):
+                    raise
                 if attempt == cls._REPLACE_RETRIES - 1:
                     raise
-                time.sleep(cls._REPLACE_DELAY * (attempt + 1))
+                delay = min(cls._REPLACE_DELAY * (2**attempt), 2.0)
+                logger.warning(
+                    "state.json 被占用，%.1fs 后重试 replace: target=%s attempt=%s/%s",
+                    delay,
+                    path,
+                    attempt + 1,
+                    cls._REPLACE_RETRIES,
+                )
+                time.sleep(delay)
+
+    @staticmethod
+    def _is_transient_replace_error(exc: OSError) -> bool:
+        """仅将 Windows 的拒绝访问/共享冲突视为可重试错误。"""
+        return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
 
     async def delete(self, session_id: str) -> bool:
         """删除精确目标 state.json 及其目录；目标不存在返回 False。"""

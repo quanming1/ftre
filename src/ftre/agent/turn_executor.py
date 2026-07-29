@@ -29,8 +29,9 @@ from ftre_agent_core.event import (
     ReplyFinishedReason,
     CustomEvent,
     ToolResultEndEvent,
+    UserMessageEvent,
 )
-from ftre_agent_core.message import Msg, UserMsg, from_openai_message
+from ftre_agent_core.message import Msg, from_openai_message
 
 from ftre.bus import BusMessage, GLOBAL_CHANNEL, GLOBAL_SESSION
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
@@ -92,6 +93,7 @@ class Turn:
 
     # ── 压缩决策（_compact 写入，_build 读取）──
     need_compact: bool = False   # True 表示 _build 里要先做关键路径压缩
+    user_message_id: str = ""    # 本轮已持久化 UserMsg；关键路径压缩从它开始保留 tail
 
     # ── Agent 执行上下文（_build 写入，_run 读取）──
     agent: "ReActAgent | None" = None        # 创建的 Agent 实例，None 表示未进入执行
@@ -132,10 +134,27 @@ class TurnExecutor:
         指令匹配、用户消息存储、普通指令执行都在 COMMAND 状态里做。
         """
         loop = self._loop
+        session_id = self._session_id_of(inbound)
+
+        # 压缩期间不接受新用户输入。必须在 PIPELINE_START、UserMessageEvent
+        # 和 UserMsg 入库之前丢弃，避免客户端/磁盘出现没有后续回复的半条消息。
+        if (
+            inbound.type == "user_message"
+            and session_id
+            and loop.compact_manager.is_compacting(session_id)
+        ):
+            frame_id = (inbound.metadata or {}).get("frame_id", "")
+            logger.warning(
+                "[compact] session=%s 正在压缩，丢弃新消息 frame_id=%s",
+                session_id,
+                frame_id or "-",
+            )
+            return
+
         turn = Turn(
             turn_id=f"turn_{uuid.uuid4().hex[:12]}",
             inbound=inbound,
-            session_id=self._session_id_of(inbound),
+            session_id=session_id,
         )
         await self._emit_step(turn, "PIPELINE_START")
 
@@ -251,30 +270,22 @@ class TurnExecutor:
                 attachments,
                 include_images=True,
             )
-            user_message = UserMsg(
-                name=agent_id,
+            user_event = UserMessageEvent(
+                reply_id=turn.turn_id,
                 content=from_openai_message(
                     {"role": "user", "content": persisted_content}
                 ),
-                metadata=user_metadata,
+                message_metadata=user_metadata,
+                data={**inbound.data},
             )
-            await loop.session_manager.save_message(session_id, user_message)
-            # echo 回前端：让用户立即看到自己发的消息
-            echo = BusMessage(
-                type="agent_event",
-                from_channel=inbound.from_channel,
-                to_channel=inbound.to_channel,
-                from_session=inbound.from_session,
-                to_session=inbound.to_session,
-                data={
-                    "type": "user_message",
-                    "id": user_message.id,
-                    "reply_id": turn.turn_id,
-                    "data": {**inbound.data, "id": user_message.id},
-                },
+            user_event.data["id"] = user_event.id
+            result = await loop.emit_session_event(
+                session_id,
+                inbound.from_channel,
+                user_event,
                 metadata=inbound.metadata,
             )
-            await loop.bus.publish_outbound(echo)
+            turn.user_message_id = result.persisted_messages[0].id
 
         # ── 3. 未命中指令 → 普通消息，继续状态机 ──
         if cmd_def is None:
@@ -397,19 +408,23 @@ class TurnExecutor:
             config = copy.deepcopy(config)
             config.llm = agent_profile.llm
         if turn.need_compact:
+            # 用户消息已经进入关键路径并正在等待摘要完成，先切换为压缩状态。
+            loop._compacting_sessions.add(session_id)
+            await self._publish_session_status_async(session_id, "compacting")
             try:
-                silent = getattr(config.context, "silent", True)
                 await loop.compact_manager.compact(
                     session_id,
                     inbound.from_channel,
                     config=config,
-                    silent=silent,
                     trigger="auto",
+                    preserve_from_message_id=turn.user_message_id,
                 )
             except Exception:
                 logger.exception(
                     f"[turn-executor] 关键路径压缩异常 session={session_id}"
                 )
+            finally:
+                loop._compacting_sessions.discard(session_id)
 
         # ── 构建发给 LLM 的消息 ──
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
@@ -652,45 +667,15 @@ class TurnExecutor:
         - REPLY_START: 创建 AssistantMsg + save_message + 注册 ActiveReplyRegistry
         - 其他 Event: append_event + checkpoint（节流/立即）
         - REPLY_END: append_event + update_message + 注销 registry
+        - CustomEvent(context_compact_done): 投影为 user/compact Msg 并落盘
         """
-        completed_message = await self._loop.reply_projection.apply(
-            turn.session_id, event
+        result = await self._loop.emit_session_event(
+            turn.session_id,
+            turn.inbound.from_channel,
+            event,
+            metadata=turn.inbound.metadata,
         )
-        """Legacy Turn-owned aggregation removed; ReplyProjection owns it.
-        reply_id = getattr(event, "reply_id", "") or ""
-        if reply_id:
-            message = turn.reply_messages.get(reply_id)
-            is_new = message is None
-            if is_new:
-                message = AssistantMsg(
-                    name=getattr(event, "name", "") or "assistant",
-                    content=[],
-                    id=reply_id,
-                    created_at=event.created_at,
-                )
-                turn.reply_messages[reply_id] = message
-
-            message.append_event(event)
-            event_type = getattr(event, "type", "")
-            registry = self._loop.active_replies
-
-            if isinstance(event, ReplyStartEvent):
-                # REPLY_START: 立即持久化并注册
-                await registry.begin(turn.session_id, reply_id, message)
-            elif isinstance(event, ReplyEndEvent):
-                # REPLY_END: 强制最终写入并注销
-                await registry.finish(turn.session_id, reply_id, message)
-                completed_message = message
-                turn.reply_messages.pop(reply_id, None)
-            else:
-                # 中间事件：节流 checkpoint
-                await registry.apply_event(
-                    turn.session_id, reply_id, message, event_type
-                )
-
-        """
-        await self._dispatch_agent_event(turn.inbound, event)
-        return completed_message
+        return result.completed_message
 
     async def _persist_open_replies(
         self,
@@ -700,36 +685,10 @@ class TurnExecutor:
         error: dict | None = None,
     ) -> None:
         """异常中断时更新已持久化的 open Msg，写入终态。"""
-        for message in await self._loop.reply_projection.finish_open(
+        for message in await self._loop.session_projection.finish_open(
             turn.session_id, reason, error=error
         ):
             turn.final_content = message.get_text_content() or turn.final_content
-        """Legacy Turn-owned open-reply cleanup removed.
-        for reply_id, message in list(turn.reply_messages.items()):
-            message.finished_at = datetime.now().isoformat()
-            message.finished_reason = reason
-            message.error = error
-            # Msg 在 REPLY_START 时已 save_message，这里只需 update
-            await self._loop.active_replies.finish(
-                turn.session_id, reply_id, message
-            )
-            turn.final_content = message.get_text_content() or turn.final_content
-        turn.reply_messages.clear()
-        """
-
-    async def _dispatch_agent_event(self, inbound: BusMessage, event) -> None:
-        """把 AgentStreamEvent 实时派发给前端。"""
-        loop = self._loop
-        await loop.bus.publish_outbound(
-            BusMessage(
-                type="agent_event",
-                from_channel=inbound.from_channel,
-                to_channel=inbound.to_channel,
-                from_session=inbound.from_session,
-                to_session=inbound.to_session,
-                data=event.model_dump(mode="json"),
-            )
-        )
 
     async def _publish_session_status_async(
         self, session_id: str, status: str
@@ -850,8 +809,12 @@ class TurnExecutor:
             )
             # 用户消息已在 _command 中提前持久化到 DB，to_openai 已包含它。
             # 不再 append（会导致 LLM 收到两份重复消息）。
-            # 如果有 prompt_override（指令重写），替换最后一条 user 消息的内容。
-            if user_content:
+            # 只有 RewritePrompt 确实提供 override 时才替换。普通消息已经由
+            # Projection 原样落盘；无条件替换会在异常边界下误伤 compact 摘要。
+            prompt_override = (
+                ((inbound_data or {}).get("metadata") or {}).get("prompt_override")
+            )
+            if prompt_override is not None:
                 replaced = False
                 # 从尾部找最后一条 user 消息，覆盖其 content
                 for i in range(len(history) - 1, -1, -1):

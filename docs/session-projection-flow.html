@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ReplyProjection 流程</title>
+  <title>SessionProjection 流程</title>
   <style>
     :root { --ink:#e6edf7; --muted:#93a4bd; --line:#2b3a51; --panel:#121b2a; --bg:#09101c; --cyan:#39d7ff; --green:#45dc9a; --amber:#ffbd59; --purple:#b790ff; --red:#ff7e88; }
     * { box-sizing:border-box; } body { margin:0; min-height:100vh; color:var(--ink); background:radial-gradient(circle at 20% 0,#183359 0,transparent 30%), var(--bg); font-family:"Microsoft YaHei",system-ui,sans-serif; }
@@ -22,20 +22,20 @@
 </head>
 <body>
   <main>
-    <h1>ReplyProjection：Event 与 Msg 的边界</h1>
+    <h1>SessionProjection：Event 与 Msg 的边界</h1>
     <p class="lead">它不是 Event 数据库，也不是 WebSocket 队列；它是 Gateway 中把实时事件规约为可恢复消息快照的唯一领域层。</p>
     <div class="principle"><b>事实来源：</b>Event 是实时过程；Msg snapshot 是会话语义与恢复事实。WS Channel 只负责传输。</div>
 
     <section class="flow">
       <article class="card source"><span class="tag">CORE / PRODUCER</span><h2>AgentScope / Agent Core</h2><p>只负责推理并产生流式事件；不关心 WebSocket、session attach 和落盘时机。</p><div class="rows"><div class="row event">TEXT_BLOCK_DELTA("你")</div><div class="row event">TOOL_CALL_END(...)</div><div class="row event">TOOL_RESULT_END(...)</div><div class="row event">REPLY_END</div></div></article>
       <div class="arrow">→<small>Event<br>实时输入</small></div>
-      <article class="card projection"><span class="tag">GATEWAY / OWNER</span><h2>ReplyProjection</h2><p>按 <code>reply_id</code> 维护运行中 ReplyState；唯一负责 Event → Msg 的聚合、版本和 checkpoint。</p><div class="rows"><div class="row message">apply(event) → Msg.content[]</div><div class="row message">revision += 1</div><div class="row message">checkpoint() → state.json</div><div class="row message">snapshot(session_id)</div></div></article>
+      <article class="card projection"><span class="tag">GATEWAY / OWNER</span><h2>SessionProjection</h2><p>统一处理 UserMessage、运行中 Reply 与 session CustomEvent；唯一负责 Event → Msg、版本和 checkpoint。</p><div class="rows"><div class="row message">apply(event) → Msg / active state</div><div class="row message">revision += 1</div><div class="row message">checkpoint() → state.json</div><div class="row message">snapshot(session_id)</div></div></article>
       <div class="arrow">→<small>实时 Event<br>或 attach snapshot</small></div>
       <article class="card output"><span class="tag">TRANSPORT / STORAGE</span><h2>WS 与 Session State</h2><p>WS 不保存会话事件历史。在线时转发 Event；attach 时读取 Projection 的完整快照。</p><div class="rows"><div class="row storage">WebSocket：实时推送</div><div class="row storage">state.json：完整 Msg</div><div class="row storage">客户端：按 reply_id 合并</div></div></article>
     </section>
 
     <section class="core">
-      <div class="core-head"><div><h2>ReplyProjection 内部流程</h2><p>点击播放，可看到某个 Event 被处理时的三个动作。</p></div><button id="play">▶ 播放示例事件</button></div>
+      <div class="core-head"><div><h2>SessionProjection 内部流程</h2><p>点击播放，可看到某个 Event 被处理时的三个动作。</p></div><button id="play">▶ 播放示例事件</button></div>
       <div class="inside">
         <div class="phase" id="p1"><h3>1. 接收 Event</h3><p><b>输入：</b><code>TEXT_BLOCK_DELTA("好")</code></p></div>
         <div class="phase" id="p2"><h3>2. 立即聚合内存 Msg</h3><p><b>ReplyState.message.text：</b><br>“你” → “你好”<br><b>revision：</b>1 → 2</p></div>
@@ -46,7 +46,7 @@
     <section class="rule">
       <div><h3>不等客户端 ACK</h3><p>客户端断线不能阻塞内存清理。只要完整快照已成功写入，旧实时 Event 就不再是恢复所需数据。</p></div>
       <div><h3>attach 不重放 Event</h3><p><b>新 attach：</b>先拿当前 <code>reply_snapshot</code>，然后只接收之后的新 Event。</p></div>
-      <div><h3>一个 Msg，一个写入者</h3><p>运行中 Msg 只能由 ReplyProjection 聚合与写入，避免 Agent、WS、SessionManager 各自维护一份。</p></div>
+      <div><h3>一个 Msg，一个写入者</h3><p>会话 Msg 只能由 SessionProjection 投影与写入，避免 Turn、WS、SessionManager 各自维护一份。</p></div>
     </section>
 
     <section class="example"><h2>示例：文本回复持续生成</h2><div class="timeline"><div class="tick"><strong>Event 1</strong><div>DELTA("你")<br>Msg: “你”<br>revision: 1</div></div><div class="tick"><strong>Event 2</strong><div>DELTA("好")<br>Msg: “你好”<br>revision: 2</div></div><div class="tick"><strong>Event 3</strong><div>TEXT_BLOCK_END<br>Msg: “你好”<br>checkpoint → state.json</div></div><div class="tick"><strong>用户此时 attach</strong><div>不补 DELTA 1/2<br>直接给 snapshot：<br>Msg: “你好”</div></div></div></section>

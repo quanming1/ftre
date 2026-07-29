@@ -12,6 +12,7 @@ from ftre_agent_core.message import (
     DataBlock,
     HintBlock,
     Msg,
+    MsgName,
     TextBlock,
     ToolResultBlock,
     to_openai_message,
@@ -113,8 +114,6 @@ def _regular_message(msg: Msg, *, include_images: bool) -> dict[str, Any] | None
         blocks.append(TextBlock(text=IMAGE_OMITTED_NOTICE))
 
     provider_message = to_openai_message(blocks, role=msg.role)
-    if msg.name and msg.role != "tool":
-        provider_message["name"] = _safe_name(msg.name)
     if (
         provider_message.get("content")
         or provider_message.get("tool_calls")
@@ -133,7 +132,6 @@ def _assistant_messages(msg: Msg, *, include_images: bool) -> list[dict[str, Any
         if not pending:
             return
         provider_message = to_openai_message(list(pending), role="assistant")
-        provider_message["name"] = _safe_name(msg.name)
         if (
             provider_message.get("content")
             or provider_message.get("tool_calls")
@@ -162,16 +160,20 @@ def to_openai(
     *,
     config: dict | None = None,
 ) -> list[dict[str, Any]]:
-    """Convert persisted Msg snapshots to OpenAI Chat Completions messages."""
+    """Convert persisted Msg snapshots to OpenAI Chat Completions messages.
+
+    上下文裁剪（只保留最后一条 compact Msg 及其后的消息）已由
+    ``SessionManager.get_context_messages()`` 完成，本函数只负责把每条
+    Msg 转成 provider 消息，不再做二次 clear。
+    """
     llm_config = (config or {}).get("llm") or {}
     include_images = bool(llm_config.get("vision", False))
     messages: list[dict[str, Any]] = []
 
     for record in records:
         msg = _as_msg(record)
-        compact = msg.metadata.get("context_compact")
-        if isinstance(compact, dict) and compact.get("mode") == "summary":
-            messages.clear()
+        # compact 摘要 Msg：作为 user 消息发给 LLM，正文带前缀标记。
+        if msg.name == MsgName.COMPACT:
             summary = msg.get_text_content() or ""
             if summary:
                 messages.append(
@@ -186,10 +188,3 @@ def to_openai(
             if provider_message is not None:
                 messages.append(provider_message)
     return messages
-
-
-def _safe_name(value: str) -> str:
-    cleaned = "".join(
-        char if (char.isalnum() or char in "_-") else "_" for char in value
-    ).strip("_")
-    return (cleaned or "message")[:64]

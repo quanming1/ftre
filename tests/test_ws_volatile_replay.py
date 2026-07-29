@@ -24,8 +24,9 @@ class FakeWebSocket:
 async def test_attach_no_active_replies_sends_nothing():
     """没有进行中 Reply 时，attach 不发送 reply_snapshot。"""
     channel = WebSocketChannel(EventBus())
-    channel._reply_projection = AsyncMock()
-    channel._reply_projection.snapshot = AsyncMock(return_value=[])
+    channel._session_projection = AsyncMock()
+    channel._session_projection.snapshot = AsyncMock(return_value=[])
+    channel._session_projection.session_event_snapshot = AsyncMock(return_value=[])
 
     ws = FakeWebSocket()
     await channel._on_message(
@@ -40,14 +41,15 @@ async def test_attach_no_active_replies_sends_nothing():
 async def test_attach_with_active_reply_sends_snapshot():
     """有进行中 Reply 时，attach 发送 reply_snapshot 帧。"""
     channel = WebSocketChannel(EventBus())
-    channel._reply_projection = AsyncMock()
-    channel._reply_projection.snapshot = AsyncMock(return_value=[
+    channel._session_projection = AsyncMock()
+    channel._session_projection.snapshot = AsyncMock(return_value=[
         {
             "reply_id": "reply_abc",
             "revision": 5,
             "message": {"id": "reply_abc", "role": "assistant", "content": []},
         }
     ])
+    channel._session_projection.session_event_snapshot = AsyncMock(return_value=[])
 
     ws = FakeWebSocket()
     await channel._on_message(
@@ -62,3 +64,27 @@ async def test_attach_with_active_reply_sends_snapshot():
     assert len(frame["data"]["replies"]) == 1
     assert frame["data"]["replies"][0]["reply_id"] == "reply_abc"
     assert frame["data"]["replies"][0]["revision"] == 5
+
+
+@pytest.mark.asyncio
+async def test_attach_with_active_session_event_sends_snapshot():
+    channel = WebSocketChannel(EventBus())
+    channel._session_projection = AsyncMock()
+    channel._session_projection.snapshot = AsyncMock(return_value=[])
+    channel._session_projection.session_event_snapshot = AsyncMock(return_value=[{
+        "type": "CUSTOM",
+        "id": "compact-start-1",
+        "name": "context_compact_start",
+        "value": {"tokens": 2000},
+    }])
+
+    ws = FakeWebSocket()
+    await channel._on_message(
+        json.dumps({"type": "attach", "data": {"session_id": "ws_sess_test"}}),
+        ws,
+    )
+
+    assert len(ws.sent) == 1
+    frame = ws.sent[0]
+    assert frame["data"]["replies"] == []
+    assert frame["data"]["events"][0]["name"] == "context_compact_start"

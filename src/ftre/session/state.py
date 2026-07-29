@@ -1,13 +1,13 @@
 """Agent State 持久化 Schema（schema_version=1）。
 
-每个 Session 一份 state.json，根结构只有五个字段：
+每个 Session 一份 state.json，根结构只有四个字段：
 
-    schema_version / session / messages / summary / metadata
+    schema_version / session / messages / metadata
 
 约束：
 - messages[] 每项必须是完整 Msg（不持久化流式 Event）；
-- summary.message 必须是 SystemMsg，且不放入 messages；
-- summary.through_message_id 必须引用 messages 中真实存在的 Msg；
+- 上下文压缩摘要是一条 role=user、name=compact 的 Msg，直接放在 messages
+  数组中（不再有独立的 summary 字段）；
 - 磁盘 JSON 结构版本由 schema_version 表示，未知版本拒绝加载。
 
 JSON Schema 由 Pydantic 生成，不手工维护第二份：
@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ftre_agent_core.message import Msg
 
 CURRENT_SCHEMA_VERSION = 1
@@ -60,27 +60,6 @@ class SessionState(BaseModel):
     updated_at: str  # ISO 8601
 
 
-class SummaryState(BaseModel):
-    """当前有效的滚动摘要（不保存历史版本）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    message: Msg
-    through_message_id: str
-
-    @field_validator("message", mode="before")
-    @classmethod
-    def reject_event_shape(cls, value: Any) -> Any:
-        _check_msg_shape(value)
-        return value
-
-    @model_validator(mode="after")
-    def validate_summary_message(self) -> "SummaryState":
-        if self.message.role != "system":
-            raise ValueError("summary.message must be a SystemMsg")
-        return self
-
-
 class AgentStateFile(BaseModel):
     """单个 Session 的完整持久化状态。"""
 
@@ -89,7 +68,6 @@ class AgentStateFile(BaseModel):
     schema_version: Literal[1] = 1
     session: SessionState
     messages: list[Msg] = Field(default_factory=list)
-    summary: SummaryState | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("messages", mode="before")
@@ -100,17 +78,13 @@ class AgentStateFile(BaseModel):
                 _check_msg_shape(item)
         return value
 
-    @model_validator(mode="after")
-    def validate_references(self) -> "AgentStateFile":
-        ids = [message.id for message in self.messages]
+    @field_validator("messages", mode="after")
+    @classmethod
+    def validate_no_duplicate_ids(cls, value: list[Msg]) -> list[Msg]:
+        ids = [m.id for m in value]
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate Msg.id in session")
-        if (
-            self.summary is not None
-            and self.summary.through_message_id not in set(ids)
-        ):
-            raise ValueError("summary cursor does not reference a message")
-        return self
+        return value
 
 
 def parse_agent_state(data: dict[str, Any]) -> AgentStateFile:
@@ -118,13 +92,19 @@ def parse_agent_state(data: dict[str, Any]) -> AgentStateFile:
 
     旧程序不得覆盖新格式数据，因此更高版本直接抛
     UnsupportedAgentStateVersion，而不是尽力解析。
+
+    旧 state.json 可能残留 ``summary`` 字段（已废弃），加载时忽略；
+    ``extra="forbid"`` 会拒绝未知字段，因此在反序列化前先剥离已知的
+    遗留键，避免测试期历史数据被误判为损坏。
     """
     if not isinstance(data, dict):
         raise ValueError("AgentState 必须是 JSON 对象")
     version = data.get("schema_version")
-    if version == CURRENT_SCHEMA_VERSION:
-        return AgentStateFile.model_validate(data)
-    raise UnsupportedAgentStateVersion(version)
+    if version != CURRENT_SCHEMA_VERSION:
+        raise UnsupportedAgentStateVersion(version)
+    # 剥离已废弃的遗留键，使旧 state.json 可被新 schema 加载。
+    data = {k: v for k, v in data.items() if k != "summary"}
+    return AgentStateFile.model_validate(data)
 
 
 def parse_agent_state_json(payload: str | bytes) -> AgentStateFile:

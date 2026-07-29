@@ -291,6 +291,24 @@ async def test_recent_messages_hidden_user_not_turn_boundary(manager):
 
 
 @pytest.mark.asyncio
+async def test_recent_messages_include_active_compact_before_page(manager):
+    """当前页在 compact 之后时，刷新仍必须拿到摘要气泡和上下文锚点。"""
+    sid = await manager.create_session("ws")
+    await _seed_turns(manager, sid, 2)
+    compact = _user("summary", hide=True)
+    compact.name = "compact"
+    await manager.save_message(sid, compact)
+    await _seed_turns(manager, sid, 6)
+
+    messages, has_more = await manager.get_recent_messages_by_turns(sid, 5)
+
+    assert has_more is True
+    assert messages[0]["id"] == compact.id
+    assert messages[0]["name"] == "compact"
+    assert [m["id"] for m in messages].count(compact.id) == 1
+
+
+@pytest.mark.asyncio
 async def test_recent_messages_before_ts_cursor(manager):
     sid = await manager.create_session("ws")
     user_ids = await _seed_turns(manager, sid, 5)

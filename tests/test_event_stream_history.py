@@ -7,6 +7,7 @@ from ftre.session.converter import to_openai
 from ftre.session.manager import SessionManager
 from ftre_agent_core.message import (
     AssistantMsg,
+    MsgName,
     ThinkingBlock,
     ToolCallBlock,
     ToolResultBlock,
@@ -15,7 +16,7 @@ from ftre_agent_core.message import (
 
 def test_persisted_msg_converts_without_event_replay():
     message = AssistantMsg(
-        name="assistant",
+        name=MsgName.DEFAULT,
         content=[
             ThinkingBlock(thinking="internal reasoning"),
             ToolCallBlock(id="call-1", name="read", arguments={"path": "README.md"}),
@@ -32,7 +33,6 @@ def test_persisted_msg_converts_without_event_replay():
     assert to_openai([message]) == [
         {
             "role": "assistant",
-            "name": "assistant",
             "content": "",
             "reasoning_content": "internal reasoning",
             "tool_calls": [
@@ -58,19 +58,18 @@ async def test_state_json_stores_msg_without_event_fields(tmp_path):
     session_id = await manager.create_session("ws")
     await manager.save_message(
         session_id,
-        AssistantMsg(name="assistant", content="hello", id="reply-1"),
+        AssistantMsg(name=MsgName.DEFAULT, content="hello", id="reply-1"),
     )
     await manager.close()
 
     state_path = tmp_path / "sessions" / session_id / "state.json"
     payload = json.loads(state_path.read_text(encoding="utf-8"))
 
-    # 根结构只有五个字段
+    # 根结构只有四个字段
     assert set(payload) == {
         "schema_version",
         "session",
         "messages",
-        "summary",
         "metadata",
     }
     assert payload["schema_version"] == 1

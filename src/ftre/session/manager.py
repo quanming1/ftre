@@ -23,12 +23,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
-from ftre_agent_core.message import Msg
+from ftre_agent_core.message import Msg, MsgName
 from ftre_agent_core.types import ReplyFinishedReason
 
 from ftre.config import CONFIG_PATH
 from ftre.session.json_store import CorruptStateError, JsonStateStore
-from ftre.session.state import AgentStateFile, SessionState, SummaryState
+from ftre.session.state import AgentStateFile, SessionState
 
 
 class SessionModel(TypedDict):
@@ -572,75 +572,68 @@ class SessionManager:
         return [self._to_message_model(m, session_id) for m in state.messages]
 
     async def get_context_messages(self, session_id: str) -> list[MessageModel]:
-        """返回给 LLM 使用的 summary + tail（不含被摘要覆盖的历史）。
+        """返回给 LLM 使用的上下文消息：最后一条 compact Msg 及其后的全部消息。
 
-        无摘要时等同 get_messages_by_session()；有摘要时返回
-        [summary.message, *through_message_id 之后的 Msg]。
-        摘要 SystemMsg 保留 metadata.context_compact.mode == "summary"，
-        现有 converter 可继续识别。
+        无 compact Msg 时返回全部 messages。compact Msg（role=user, name=compact）
+        本身包含在返回结果中——它之前的原始消息已被摘要覆盖，不再加载。
+
+        tail 起点由最后一条 compact Msg 的 ``through_message_id`` 决定（而非
+        compact Msg 在数组中的位置），这样 compact 期间到达、但先于 compact Msg
+        写入的新消息不会丢失。无 ``through_message_id`` 时退化为 compact Msg 之后。
+
+        上下文裁剪完全由本方法完成；converter 不再做二次 clear。
         """
         state = self._states.get(session_id)
         if state is None:
             self._ensure_not_corrupt(session_id)
             return []
-        if state.summary is None:
-            return [self._to_message_model(m, session_id) for m in state.messages]
-
-        cursor = self._summary_cursor_index(state)
-        records = [self._to_message_model(state.summary.message, session_id)]
-        records.extend(
-            self._to_message_model(m, session_id)
-            for m in state.messages[cursor + 1:]
+        messages = state.messages
+        last_compact_idx = -1
+        for index, message in enumerate(messages):
+            if message.name == MsgName.COMPACT:
+                last_compact_idx = index
+        if last_compact_idx < 0:
+            return [self._to_message_model(m, session_id) for m in messages]
+        compact_msg = messages[last_compact_idx]
+        through_id = (
+            (compact_msg.metadata.get("context_compact") or {}).get("through_message_id", "")
         )
-        return records
+        # 找 through_id 对应位置；不存在时退化为 compact Msg 之后
+        through_idx = -1
+        if through_id:
+            for index, message in enumerate(messages):
+                if message.id == through_id:
+                    through_idx = index
+                    break
+        start = through_idx if through_idx >= 0 else last_compact_idx
+        result = [compact_msg]
+        for message in messages[start + 1:]:
+            if message.name != MsgName.COMPACT:
+                result.append(message)
+        return [self._to_message_model(m, session_id) for m in result]
 
-    async def get_summary(self, session_id: str) -> SummaryState | None:
-        """返回当前滚动摘要（深拷贝，调用方修改不影响缓存）。"""
-        state = self._states.get(session_id)
-        if state is None:
-            self._ensure_not_corrupt(session_id)
-            return None
-        if state.summary is None:
-            return None
-        return state.summary.model_copy(deep=True)
+    async def upsert_message(
+        self, session_id: str, message: Msg | dict[str, Any]
+    ) -> str:
+        """按 id 幂等写入：存在则更新，不存在则追加。
 
-    async def save_summary(
-        self,
-        session_id: str,
-        message: Msg,
-        *,
-        through_message_id: str,
-    ) -> None:
-        """原子更新当前摘要，不把摘要加入 transcript。
-
-        compact 在锁外完成 LLM 摘要后调用本方法：持 Session 锁、
-        基于当前缓存中的最新 state 只更新 summary 字段，因此 compact
-        期间新增的消息会自然保留在摘要游标之后，不会被旧副本覆盖。
+        供 SessionProjection 投影 context_compact_done 时使用——同一 Event id
+        重放不会产生重复 Msg。
         """
-        if message.role != "system":
-            raise ValueError("summary.message must be a SystemMsg")
+        msg = message if isinstance(message, Msg) else Msg.model_validate(message)
         async with self._store.lock_for(session_id):
             state = self._require_state(session_id)
-            if through_message_id not in {m.id for m in state.messages}:
-                raise ValueError(
-                    f"summary cursor 不存在于 messages: {through_message_id}"
-                )
             new_state = state.model_copy(deep=True)
-            new_state.summary = SummaryState(
-                message=message.model_copy(deep=True),
-                through_message_id=through_message_id,
-            )
+            for index, existing in enumerate(new_state.messages):
+                if existing.id == msg.id:
+                    new_state.messages[index] = msg.model_copy(deep=True)
+                    new_state.session.updated_at = _now_iso()
+                    await self._commit(new_state)
+                    return msg.id
+            new_state.messages.append(msg.model_copy(deep=True))
             new_state.session.updated_at = _now_iso()
             await self._commit(new_state)
-
-    @staticmethod
-    def _summary_cursor_index(state: AgentStateFile) -> int:
-        """through_message_id 在 messages 中的下标；不存在时按覆盖全部处理。"""
-        assert state.summary is not None
-        for index, message in enumerate(state.messages):
-            if message.id == state.summary.through_message_id:
-                return index
-        return len(state.messages) - 1
+        return msg.id
 
     async def get_recent_messages_by_turns(
         self, session_id: str, limit_turns: int = 5, before_ts: float | None = None
@@ -674,6 +667,21 @@ class SessionManager:
         target = visible_user_indexes[-limit_turns:]
         start = target[0]
         messages = records[start:]
+
+        # compact Msg 虽然是隐藏的 user Msg（它不能成为一个 turn 的边界），但它是
+        # 当前上下文的锚点，也是客户端刷新后恢复“已压缩”气泡所需的唯一历史记录。
+        # 当当前页从 compact 之后的新 turn 开始时，把页首之前最近的一条补回来即可；
+        # 更早的 compact 已经被这条新的摘要覆盖，不需要一并返回。
+        latest_compact_before_page = next(
+            (
+                record
+                for record in reversed(records[:start])
+                if record.get("name") == "compact"
+            ),
+            None,
+        )
+        if latest_compact_before_page is not None:
+            messages.insert(0, latest_compact_before_page)
         has_more = start > 0
         return messages, has_more
 

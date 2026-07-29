@@ -1,12 +1,12 @@
 import base64
 
 from ftre.session.converter import to_openai
-from ftre_agent_core.message import Base64Source, DataBlock, UserMsg
+from ftre_agent_core.message import Base64Source, DataBlock, MsgName, UserMsg
 
 
 def _image_message():
     return UserMsg(
-        name="user",
+        name=MsgName.DEFAULT,
         content=[
             DataBlock(
                 source=Base64Source(

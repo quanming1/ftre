@@ -1,4 +1,4 @@
-"""ReplyProjection：Gateway 持有的 Event → Msg 投影层。
+"""SessionProjection：Gateway 持有的会话 Event → Msg 投影层。
 
 AgentScope Event 是实时传输过程；进行中的 assistant Reply 则是由一条可变
 Msg 快照表达的会话事实。本模块是 Event 聚合、checkpoint 与 attach 快照的唯一
@@ -8,12 +8,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from ftre_agent_core.event import ReplyEndEvent, ReplyFinishedReason, ReplyStartEvent
-from ftre_agent_core.message import AssistantMsg, Msg
+from ftre_agent_core.event import (
+    CustomEvent,
+    ReplyEndEvent,
+    ReplyFinishedReason,
+    ReplyStartEvent,
+    UserMessageEvent,
+)
+from ftre_agent_core.message import AssistantMsg, Msg, MsgName, UserMsg
+
+from .compact_events import CompactEventName
 
 if TYPE_CHECKING:
     from ftre.session import SessionManager
@@ -35,6 +43,17 @@ IMMEDIATE_CHECKPOINT_TYPES = frozenset({
 
 
 @dataclass
+class ProjectionResult:
+    """apply() 的返回值：本次投影写入/更新的 Msg 及可选的 completed Msg。
+
+    - ``persisted_messages``：本次投影新写入或更新的 Msg（如 compact 摘要 Msg）。
+    - ``completed_message``：REPLY_END 时完成的 assistant Msg（供调用方取正文）。
+    """
+    persisted_messages: list[Msg] = field(default_factory=list)
+    completed_message: Msg | None = None
+
+
+@dataclass
 class ReplyState:
     """一条正在生成的 assistant Reply 的内存状态。
 
@@ -48,7 +67,7 @@ class ReplyState:
     dirty: bool = False           # 内存 Msg 是否比磁盘中的 checkpoint 更新
 
 
-class ReplyProjection:
+class SessionProjection:
     """将流式 Event 投影为运行中 Msg 快照，并维护其持久化状态。"""
 
     def __init__(self, session_manager: SessionManager) -> None:
@@ -57,20 +76,61 @@ class ReplyProjection:
         # 仅保存尚未 REPLY_END 的运行中 Reply：
         # session_id → reply_id → ReplyState。完成后会立即从这里移除。
         self._replies: dict[str, dict[str, ReplyState]] = {}
+        # 不落盘的 session 级运行状态。它们不是 Msg，也没有 reply_id，但客户端
+        # attach 时必须知道（例如正在进行的 context compact）。终态到达即清除。
+        self._active_session_events: dict[
+            str, dict[CompactEventName, CustomEvent]
+        ] = {}
         # 保护上述内存投影，避免 Event 流、attach snapshot 与取消路径并发修改同一 Reply。
         # 锁内只改内存；SessionManager 的磁盘 I/O 一律在锁外执行。
         self._lock = asyncio.Lock()
 
-    async def apply(self, session_id: str, event) -> Msg | None:
-        """应用一个 Event；若为 ``REPLY_END`` 则返回已完成的 Msg。
+    async def apply(self, session_id: str, event) -> ProjectionResult:
+        """应用一个 Event，返回投影结果。
+
+        处理两类事件：
+        - Reply 生命周期事件（REPLY_START/.../REPLY_END）：聚合为运行中 assistant
+          Msg 快照，REPLY_END 时返回 completed_message。
+        - CustomEvent(name=context_compact_done)：投影为一条 user/compact Msg
+          并 upsert 落盘；其他 CustomEvent 不持久化。
 
         Msg 只在这里创建和修改，Turn 与 WebSocket 均不持有它。每个成功接收的
-        Event 都会推进内存快照的 revision。
+        Reply 事件都会推进内存快照的 revision。
         """
+        if isinstance(event, UserMessageEvent):
+            message = UserMsg(
+                name=MsgName.DEFAULT,
+                content=event.content,
+                id=event.id,
+                created_at=event.created_at,
+                metadata=event.message_metadata,
+            )
+            await self._session_manager.upsert_message(session_id, message)
+            return ProjectionResult(persisted_messages=[message])
+
         reply_id = getattr(event, "reply_id", "") or ""
         if not reply_id:
-            # 非 Reply 生命周期事件（如 TURN_START）没有对应 Msg，只负责实时转发。
-            return None
+            # 非 Reply 生命周期事件。CustomEvent 可能携带 compact 投影语义。
+            if isinstance(event, CustomEvent):
+                if event.name == CompactEventName.START:
+                    async with self._lock:
+                        self._active_session_events.setdefault(session_id, {})[
+                            CompactEventName.START
+                        ] = event
+                    return ProjectionResult()
+                if event.name == CompactEventName.DONE:
+                    # 先完成 Msg 落盘，再清除 start，避免 attach 落在两者之间时
+                    # 既拿不到 active start，也读不到已完成摘要。
+                    result = await self._project_compact_done(session_id, event)
+                    await self._clear_active_session_event(
+                        session_id, CompactEventName.START
+                    )
+                    return result
+                if event.name == CompactEventName.FAILED:
+                    await self._clear_active_session_event(
+                        session_id, CompactEventName.START
+                    )
+            return ProjectionResult()
 
         event_type = getattr(event, "type", "")
         is_start = isinstance(event, ReplyStartEvent)
@@ -85,14 +145,23 @@ class ReplyProjection:
             replies = self._replies.setdefault(session_id, {})
             state = replies.get(reply_id)
             if state is None:
+                metadata = {}
+                if is_start and getattr(event, "name", ""):
+                    # Msg.name 只表示消息语义；实际调用的模型属于可选元数据。
+                    metadata["model"] = event.name
                 message = AssistantMsg(
-                    name=getattr(event, "name", "") or "assistant",
+                    name=MsgName.DEFAULT,
                     content=[], id=reply_id, created_at=getattr(event, "created_at", None),
+                    metadata=metadata,
                 )
                 state = ReplyState(session_id, reply_id, message)
                 replies[reply_id] = state
                 # 即便流异常地缺少 REPLY_START，也必须能生成可持久化 Msg。
                 save_new = True
+
+            # 少数异常流会先到达 reply 事件、后到 REPLY_START；仍在此补齐模型元数据。
+            if is_start and getattr(event, "name", ""):
+                state.message.metadata["model"] = event.name
 
             state.message.append_event(event)
             state.revision += 1
@@ -122,7 +191,36 @@ class ReplyProjection:
             await self._session_manager.update_message(update_snapshot)
         if completed is not None:
             await self._session_manager.update_message(completed)
-        return completed
+        return ProjectionResult(completed_message=completed)
+
+    async def _project_compact_done(
+        self, session_id: str, event: CustomEvent
+    ) -> ProjectionResult:
+        """把 context_compact_done 投影为一条 user/compact Msg 并幂等落盘。
+
+        仅 summary 模式投影为 Msg（正文为完整摘要）；fast 模式只裁剪工具输出，
+        不产生摘要 Msg，返回空结果（事件仍由统一出口实时广播）。
+        event.id 作为 Msg id，保证同一事件重放不会产生重复 Msg。
+        """
+        value = event.value or {}
+        if value.get("mode") != "summary":
+            return ProjectionResult()
+        summary_text = value.get("summary_text") or ""
+        compact_meta = {
+            "through_message_id": value.get("through_message_id", ""),
+            "trigger": value.get("trigger", "auto"),
+            "tokens_before": value.get("tokens_before", 0),
+            "tokens_after": value.get("tokens_after", 0),
+        }
+        message = UserMsg(
+            name=MsgName.COMPACT,
+            content=summary_text,
+            id=event.id,
+            created_at=event.created_at,
+            metadata={"hide": True, "context_compact": compact_meta},
+        )
+        await self._session_manager.upsert_message(session_id, message)
+        return ProjectionResult(persisted_messages=[message])
 
     async def finish_open(
         self, session_id: str, reason: ReplyFinishedReason, *, error: dict | None = None,
@@ -150,6 +248,25 @@ class ReplyProjection:
                  "message": state.message.model_dump(mode="json")}
                 for state in self._replies.get(session_id, {}).values()
             ]
+
+    async def session_event_snapshot(self, session_id: str) -> list[dict]:
+        """返回仅驻内存、仍处于 active 状态的 session 级 Event。"""
+        async with self._lock:
+            return [
+                event.model_dump(mode="json")
+                for event in self._active_session_events.get(session_id, {}).values()
+            ]
+
+    async def _clear_active_session_event(
+        self, session_id: str, key: CompactEventName
+    ) -> None:
+        async with self._lock:
+            events = self._active_session_events.get(session_id)
+            if not events:
+                return
+            events.pop(key, None)
+            if not events:
+                self._active_session_events.pop(session_id, None)
 
     def _mark_checkpointed(self, state: ReplyState) -> Msg:
         """标记内存与磁盘将同步；返回要在锁外写入的完整 Msg。"""

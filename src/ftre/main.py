@@ -313,8 +313,8 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
     agent_loop.start()
     set_agent_loop(agent_loop)
 
-    # 注入 ReplyProjection，供 attach 时读取运行中 Msg 快照。
-    ws_channel.set_reply_projection(agent_loop.reply_projection)
+    # 注入 SessionProjection，供 attach 时读取运行中 Msg 与 session Event 快照。
+    ws_channel.set_session_projection(agent_loop.session_projection)
 
     # 注册内置斜杠指令（/compact、/clear、/title 等）
     from ftre.command.builtin import register_builtin_commands

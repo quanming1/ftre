@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from ftre.agent.reply_projection import ReplyProjection
+from ftre.agent.session_projection import SessionProjection
 from ftre.agent.loop import AgentLoop
 from ftre.agent.turn_executor import TurnExecutor
 from ftre.bus import BusMessage
@@ -75,6 +75,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop._injected_config = config
     loop._event_loop = asyncio.get_running_loop()
     loop._active_agents = {}
+    loop._compacting_sessions = set()
     loop._session_tasks = {}
     loop._session_locks = {}
     loop._subagent_done_futures = {}
@@ -92,6 +93,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop.tool_registry = None
     loop.core_hook_manager = None
     loop.compact_manager = AsyncMock()
+    loop.compact_manager.is_compacting = Mock(return_value=False)
     loop.compact_manager.should_compact = AsyncMock(return_value=False)
     loop.compact_manager.maybe_schedule_idle_compact = AsyncMock()
     loop.command_manager = Mock()
@@ -101,7 +103,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop.command_manager.try_dispatch = AsyncMock(return_value=None)
     loop.tracer = Mock()
 
-    loop.reply_projection = ReplyProjection(loop.session_manager)
+    loop.session_projection = SessionProjection(loop.session_manager)
 
     executor = TurnExecutor(loop)
     executor._build_messages = AsyncMock(
@@ -125,11 +127,16 @@ def _inbound():
 
 
 def _saved_messages(executor):
-    """所有通过 save_message 持久化的消息。"""
-    return [
+    """所有通过 SessionProjection 持久化的消息。"""
+    projected = [
+        call.args[1]
+        for call in executor._loop.session_manager.upsert_message.call_args_list
+    ]
+    appended = [
         call.args[1]
         for call in executor._loop.session_manager.save_message.call_args_list
     ]
+    return projected + appended
 
 def _updated_messages(executor):
     """所有通过 update_message 更新的消息。"""
@@ -151,6 +158,58 @@ async def test_user_msg_is_persisted_before_agent_run():
     assert saved[0].role == "user"
     assert saved[0].get_text_content() == "hello"
     assert agent._captured_runtime_context["reply_id"].startswith("turn_")
+
+
+@pytest.mark.asyncio
+async def test_user_message_is_dropped_before_pipeline_while_compacting(caplog):
+    agent = FakeAgent()
+    executor = _make_executor(agent)
+    executor._loop.compact_manager.is_compacting.return_value = True
+
+    with caplog.at_level("WARNING"):
+        await executor.execute(_inbound())
+
+    assert _saved_messages(executor) == []
+    assert agent._captured_runtime_context is None
+    executor._loop.bus.publish_outbound.assert_not_awaited()
+    assert "正在压缩，丢弃新消息" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_user_message_is_projected_before_frontend_echo():
+    executor = _make_executor(FakeAgent())
+    order: list[str] = []
+
+    async def record_upsert(*args, **kwargs):
+        order.append("persist")
+
+    async def record_publish(message):
+        if message.data.get("type") == "USER_MESSAGE":
+            order.append("broadcast")
+
+    executor._loop.session_manager.upsert_message.side_effect = record_upsert
+    executor._loop.bus.publish_outbound.side_effect = record_publish
+
+    await executor.execute(_inbound())
+
+    assert order == ["persist", "broadcast"]
+
+
+@pytest.mark.asyncio
+async def test_critical_path_compact_is_visible_to_client():
+    executor = _make_executor(FakeAgent())
+    executor._loop.compact_manager.should_compact = AsyncMock(return_value=True)
+
+    await executor.execute(_inbound())
+
+    executor._loop.compact_manager.compact.assert_awaited_once()
+    compact_call = executor._loop.compact_manager.compact.await_args
+    assert "silent" not in compact_call.kwargs
+    assert compact_call.kwargs["trigger"] == "auto"
+    assert executor._publish_session_status_async.await_args_list[0].args == (
+        "test-session", "compacting"
+    )
+    assert "test-session" not in executor._loop._compacting_sessions
 
 
 @pytest.mark.asyncio

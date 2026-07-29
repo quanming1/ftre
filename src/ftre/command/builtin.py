@@ -53,7 +53,6 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
                 session_id,
                 channel_id,
                 config=config,
-                silent=False,
                 trigger="manual",
             )
         except Exception:
@@ -77,7 +76,6 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
                 session_id,
                 channel_id,
                 config=config,
-                silent=False,
             )
         except Exception:
             logger.exception(f"[command] /compress-fast 执行异常 session={session_id}")

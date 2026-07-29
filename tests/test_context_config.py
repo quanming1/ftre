@@ -37,7 +37,6 @@ def test_context_defaults_when_missing(fake_config):
     assert cfg.context.consolidation_ratio == 0.5
     assert cfg.context.safety_buffer == 1024
     assert cfg.context.idle_compaction is True
-    assert cfg.context.silent is True
 
 
 def test_context_camel_case(fake_config):
@@ -49,7 +48,6 @@ def test_context_camel_case(fake_config):
                 "consolidationRatio": 0.4,
                 "safetyBuffer": 2048,
                 "idleCompaction": False,
-                "silent": False,
             }
         }
     })
@@ -58,7 +56,6 @@ def test_context_camel_case(fake_config):
     assert cfg.context.consolidation_ratio == 0.4
     assert cfg.context.safety_buffer == 2048
     assert cfg.context.idle_compaction is False
-    assert cfg.context.silent is False
 
 
 def test_context_snake_case_also_works(fake_config):

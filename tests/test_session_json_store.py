@@ -76,7 +76,7 @@ async def test_write_and_reload_recovers_state(store):
 
     # 文件可读（人类可读 JSON），目录名即 session_id
     raw = json.loads(store.state_path("ws_sess_1").read_text(encoding="utf-8"))
-    assert set(raw) == {"schema_version", "session", "messages", "summary", "metadata"}
+    assert set(raw) == {"schema_version", "session", "messages", "metadata"}
     assert raw["messages"][0]["content"][0]["text"] == "第一条"
     assert (store.root / "ws_sess_1" / "state.json").exists()
 
@@ -103,6 +103,28 @@ async def test_failed_write_keeps_old_file(store, monkeypatch):
     store2 = JsonStateStore(store.root)
     await store2.load_all()
     assert store2.states["ws_sess_1"].messages[0].get_text_content() == "old"
+
+
+@pytest.mark.asyncio
+async def test_replace_uses_unique_tmp_and_retries_sharing_violation(store, monkeypatch):
+    """短暂文件锁应重试；每次写入的临时文件不能是共享的固定路径。"""
+    original_replace = os.replace
+    calls = 0
+
+    def flaky_replace(source, target):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise PermissionError(5, "Access is denied", str(target))
+        return original_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    monkeypatch.setattr("ftre.session.json_store.time.sleep", lambda _: None)
+    await store.write(_state("ws_sess_1", "saved"))
+
+    assert calls == 3
+    assert store.state_path("ws_sess_1").exists()
+    assert not list(store.state_path("ws_sess_1").parent.glob("state.json.tmp-*"))
 
 
 @pytest.mark.asyncio

@@ -8,13 +8,12 @@ from ftre.agent.compact_manager import (
     _build_prompt,
     _estimate_body_chars,
     _serialize_messages,
-    get_cursor_index,
-    get_previous_summary,
 )
 from ftre.session.converter import to_openai
+from ftre_agent_core.event import CustomEvent
 from ftre_agent_core.message import (
     AssistantMsg,
-    SystemMsg,
+    MsgName,
     TextBlock,
     ToolCallBlock,
     ToolResultBlock,
@@ -30,45 +29,29 @@ def _record(message, timestamp=1.0):
     }
 
 
-def test_summary_cursor_and_previous_summary_use_msg_metadata():
+def test_converter_translates_compact_msg_to_summary_user_message():
+    """compact Msg 转为带前缀的 user 消息；不再 messages.clear。"""
     messages = [
-        _record(UserMsg(name="user", content="before"), 1),
         _record(
-            SystemMsg(
-                name="context_compact",
-                content="summary v1",
-                metadata={"context_compact": {"mode": "summary"}},
-            ),
-            2,
-        ),
-        _record(UserMsg(name="user", content="after"), 3),
-    ]
-    assert get_cursor_index(messages) == 2
-    assert get_previous_summary(messages) == "summary v1"
-
-
-def test_converter_resets_context_at_summary_msg():
-    messages = [
-        _record(UserMsg(name="user", content="discarded"), 1),
-        _record(
-            SystemMsg(
-                name="context_compact",
+            UserMsg(
+                name=MsgName.COMPACT,
                 content="kept summary",
-                metadata={"context_compact": {"mode": "summary"}},
+                metadata={"hide": True, "context_compact": {"mode": "summary"}},
             ),
             2,
         ),
-        _record(UserMsg(name="user", content="new request"), 3),
+        _record(UserMsg(name=MsgName.DEFAULT, content="new request"), 3),
     ]
-    assert to_openai(messages) == [
+    result = to_openai(messages)
+    assert result == [
         {"role": "user", "content": "[历史上下文摘要]\nkept summary"},
-        {"role": "user", "content": [{"type": "text", "text": "new request"}], "name": "user"},
+        {"role": "user", "content": [{"type": "text", "text": "new request"}]},
     ]
 
 
 def test_serialize_messages_includes_tool_call_and_result():
     assistant = AssistantMsg(
-        name="assistant",
+        name=MsgName.DEFAULT,
         content=[
             ToolCallBlock(id="call-1", name="read", arguments={"path": "a.txt"}),
             ToolResultBlock(
@@ -85,9 +68,9 @@ def test_serialize_messages_includes_tool_call_and_result():
 
 
 @pytest.mark.asyncio
-async def test_fast_compact_updates_tool_result_blocks_without_marker_message():
+async def test_fast_compact_updates_tool_result_blocks_via_emit_event():
     assistant = AssistantMsg(
-        name="assistant",
+        name=MsgName.DEFAULT,
         content=[
             ToolCallBlock(id=f"call-{index}", name="read", arguments={})
             for index in range(4)
@@ -102,10 +85,15 @@ async def test_fast_compact_updates_tool_result_blocks_without_marker_message():
             for index in range(4)
         ],
     )
+    record = _record(assistant)
     session_manager = AsyncMock()
-    session_manager.get_messages_by_session.return_value = [_record(assistant)]
-    bus = AsyncMock()
-    manager = CompactManager(session_manager=session_manager, bus=bus)
+    session_manager.get_context_messages.return_value = [record]
+    emitted: list = []
+
+    async def emit_event(session_id, channel_id, event):
+        emitted.append(event)
+
+    manager = CompactManager(session_manager=session_manager, emit_event=emit_event)
 
     changed = await manager.compress_fast(
         "ws::session",
@@ -127,6 +115,12 @@ async def test_fast_compact_updates_tool_result_blocks_without_marker_message():
         "[工具输出已压缩]",
     ]
     assert results[-1].output == "large output 3"
+    # done 事件经统一出口派发
+    assert any(
+        isinstance(e, CustomEvent) and e.name == "context_compact_done"
+        and e.value.get("mode") == "fast"
+        for e in emitted
+    )
 
 
 def test_build_prompt_and_body_estimate():

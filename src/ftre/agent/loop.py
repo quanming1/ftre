@@ -26,7 +26,7 @@ from ftre.config import AgentConfig
 from ftre.session import SessionManager
 from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
 
-from .reply_projection import ReplyProjection
+from .session_projection import SessionProjection
 from .compact_manager import CompactManager
 from .turn_executor import TurnExecutor
 
@@ -87,11 +87,11 @@ class AgentLoop:
         self._executor = TurnExecutor(self)
 
         # ─── 进行中 Reply 快照注册表 ──────────────────────────
-        self.reply_projection = ReplyProjection(session_manager)
+        self.session_projection = SessionProjection(session_manager)
 
         self.compact_manager = CompactManager(
             session_manager=self.session_manager,
-            bus=self.bus,
+            emit_event=self.emit_session_event,
             threshold=self._initial_context_cfg().compact_threshold,
         )
 
@@ -186,6 +186,36 @@ class AgentLoop:
     def _load_current_config(self) -> AgentConfig:
         """读取当前生效的配置（委托给 TurnExecutor）。"""
         return self._executor._load_current_config()
+
+    async def emit_session_event(
+        self,
+        session_id: str,
+        channel_id: str,
+        event,
+        *,
+        metadata: dict | None = None,
+    ) -> "ProjectionResult":
+        """统一事件出口：先投影落盘，再实时广播。
+
+        CompactManager 与 TurnExecutor 共用此入口，保证"Projection 落盘成功 →
+        广播 WebSocket"的顺序。dispatch 序列化的是 core Event 本身，不嵌套私有
+        {type, data} 协议。
+        """
+        from .session_projection import ProjectionResult  # 局部 import 避免循环
+
+        result = await self.session_projection.apply(session_id, event)
+        await self.bus.publish_outbound(
+            BusMessage(
+                type="agent_event",
+                from_channel=channel_id,
+                to_channel=channel_id,
+                from_session=session_id,
+                to_session=session_id,
+                data=event.model_dump(mode="json"),
+                metadata=metadata or {},
+            )
+        )
+        return result
 
     async def _publish_session_status_async(self, session_id: str, status: str) -> None:
         """广播 session 运行态变化（委托给 TurnExecutor，builtin command handler 用）。"""

@@ -140,8 +140,8 @@ class WebSocketChannel(Channel):
         self._ws_sessions: dict[WebSocket, set[str]] = {}
         # per-session 输出锁：保证 attach snapshot 与实时 Event 的 FIFO 顺序
         self._session_output_locks: dict[str, asyncio.Lock] = {}
-        # ReplyProjection（由 main.py 注入），attach 时读取 reply_snapshot。
-        self._reply_projection = None
+        # SessionProjection（由 main.py 注入），attach 时读取 reply/session 快照。
+        self._session_projection = None
         self._server = None
         self._server_task: asyncio.Task | None = None
 
@@ -157,9 +157,9 @@ class WebSocketChannel(Channel):
             for router in plugin_manager.routers:
                 self.app.include_router(router, prefix="/api")
 
-    def set_reply_projection(self, projection) -> None:
-        """注入 ReplyProjection（由 main.py 在 AgentLoop 创建后调用）。"""
-        self._reply_projection = projection
+    def set_session_projection(self, projection) -> None:
+        """注入 SessionProjection（由 main.py 在 AgentLoop 创建后调用）。"""
+        self._session_projection = projection
 
     async def start(self) -> None:
         """启动 WebSocket 服务"""
@@ -406,10 +406,11 @@ class WebSocketChannel(Channel):
 
     async def _send_reply_snapshot(self, session_id: str, ws: WebSocket) -> None:
         """attach 时发送当前进行中 Reply 的完整 Msg 快照。"""
-        if self._reply_projection is None:
+        if self._session_projection is None:
             return
-        replies = await self._reply_projection.snapshot(session_id)
-        if not replies:
+        replies = await self._session_projection.snapshot(session_id)
+        session_events = await self._session_projection.session_event_snapshot(session_id)
+        if not replies and not session_events:
             return
         payload = {
             "frame_id": f"sync_{session_id}",
@@ -417,6 +418,7 @@ class WebSocketChannel(Channel):
             "data": {
                 "session_id": session_id,
                 "replies": replies,
+                "events": session_events,
             },
         }
         try:

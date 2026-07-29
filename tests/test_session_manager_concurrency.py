@@ -3,7 +3,7 @@
 验收标准：
 - 两个并发 save_message 两条都在；
 - save_message + update_metadata 两项修改都在；
-- compact 期间新增消息保留在 summary tail（save_summary 基于最新 state）；
+- compact 期间新增消息保留在 compact tail（save_message 基于最新 state）；
 - update_message 与 delete_session 交错不损坏其他文件。
 """
 import asyncio
@@ -11,7 +11,7 @@ import json
 
 import pytest
 import pytest_asyncio
-from ftre_agent_core.message import SystemMsg, UserMsg
+from ftre_agent_core.message import MsgName, UserMsg
 
 from ftre.session.manager import SessionManager
 
@@ -25,7 +25,22 @@ async def manager(tmp_path):
 
 
 def _user(text: str) -> UserMsg:
-    return UserMsg(name="default", content=text, metadata={"hide": False})
+    return UserMsg(name=MsgName.DEFAULT, content=text, metadata={"hide": False})
+
+
+def _compact(text: str, through_message_id: str) -> UserMsg:
+    """创建一条 compact 摘要 Msg（role=user, name=compact, hide=True）。"""
+    return UserMsg(
+        name=MsgName.COMPACT,
+        content=text,
+        metadata={
+            "hide": True,
+            "context_compact": {
+                "mode": "summary",
+                "through_message_id": through_message_id,
+            },
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -53,59 +68,38 @@ async def test_concurrent_save_message_and_metadata_update(manager):
 
 
 @pytest.mark.asyncio
-async def test_save_summary_does_not_clobber_concurrent_messages(manager):
+async def test_compact_does_not_clobber_concurrent_messages(manager):
     sid = await manager.create_session("ws")
     first = _user("u1")
     await manager.save_message(sid, first)
 
     # 模拟 compact：锁外"生成摘要"期间，新消息先进来
-    summary_msg = SystemMsg(
-        name="context_compact",
-        content="截至 u1 的摘要",
-        metadata={"context_compact": {"mode": "summary"}},
-    )
+    summary_msg = _compact("截至 u1 的摘要", first.id)
 
-    async def delayed_summary():
+    async def delayed_compact():
         await asyncio.sleep(0.05)
-        await manager.save_summary(sid, summary_msg, through_message_id=first.id)
+        await manager.save_message(sid, summary_msg)
 
     async def new_message():
         await asyncio.sleep(0.01)
         await manager.save_message(sid, _user("u2 新增"))
 
-    await asyncio.gather(delayed_summary(), new_message())
+    await asyncio.gather(delayed_compact(), new_message())
 
-    # 两条消息都在，摘要游标仍指向 u1，u2 留在 tail
+    # 两条原始消息都在，加上 compact Msg 共 3 条
     messages = await manager.get_messages_by_session(sid)
-    assert [m["content"][0]["text"] for m in messages] == ["u1", "u2 新增"]
-    summary = await manager.get_summary(sid)
-    assert summary is not None
-    assert summary.through_message_id == first.id
+    non_compact = [m for m in messages if m["name"] != MsgName.COMPACT]
+    assert [m["content"][0]["text"] for m in non_compact] == ["u1", "u2 新增"]
 
+    # compact Msg 的 through_message_id 仍指向 u1
+    compact_msgs = [m for m in messages if m["name"] == MsgName.COMPACT]
+    assert len(compact_msgs) == 1
+    assert compact_msgs[0]["metadata"]["context_compact"]["through_message_id"] == first.id
+
+    # LLM 上下文 = compact + tail（u2 留在 tail）
     context = await manager.get_context_messages(sid)
     assert context[0]["metadata"]["context_compact"]["mode"] == "summary"
     assert [m["content"][0]["text"] for m in context[1:]] == ["u2 新增"]
-
-
-@pytest.mark.asyncio
-async def test_save_summary_rejects_dangling_cursor(manager):
-    sid = await manager.create_session("ws")
-    await manager.save_message(sid, _user("u1"))
-    with pytest.raises(ValueError, match="cursor"):
-        await manager.save_summary(
-            sid,
-            SystemMsg(name="context_compact", content="s"),
-            through_message_id="msg_missing",
-        )
-
-
-@pytest.mark.asyncio
-async def test_save_summary_requires_system_msg(manager):
-    sid = await manager.create_session("ws")
-    user = _user("u1")
-    await manager.save_message(sid, user)
-    with pytest.raises(ValueError, match="SystemMsg"):
-        await manager.save_summary(sid, _user("not system"), through_message_id=user.id)
 
 
 @pytest.mark.asyncio

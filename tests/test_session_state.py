@@ -1,17 +1,17 @@
-"""AgentStateFile Schema 测试（设计文档 §7 / §18.1）。
+"""AgentStateFile Schema 测试（新协议：无 summary 字段）。
 
 验收标准：
 - 合法 AgentState 可 round-trip；
-- 非法 Msg、重复 ID、悬空 summary cursor 被拒绝；
-- 未知 schema_version 明确报不支持。
+- 非法 Msg、重复 ID 被拒绝；
+- 未知 schema_version 明确报不支持；
+- 旧 state.json 残留 summary 字段可被剥离加载。
 """
 import pytest
-from ftre_agent_core.message import AssistantMsg, SystemMsg, UserMsg
+from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
 from pydantic import ValidationError
 
 from ftre.session.state import (
     AgentStateFile,
-    SummaryState,
     UnsupportedAgentStateVersion,
     parse_agent_state,
     parse_agent_state_json,
@@ -33,59 +33,52 @@ def _session(**overrides) -> dict:
 
 
 def _user(msg_id: str, text: str = "hi") -> dict:
-    return UserMsg(name="default", content=text, id=msg_id).model_dump(mode="json")
+    return UserMsg(name=MsgName.DEFAULT, content=text, id=msg_id).model_dump(mode="json")
 
 
-def _summary_msg(text: str = "摘要") -> SystemMsg:
-    return SystemMsg(
-        name="context_compact",
+def _compact_msg(msg_id: str = "compact_1", text: str = "摘要") -> dict:
+    return UserMsg(
+        name=MsgName.COMPACT,
         content=text,
-        metadata={"context_compact": {"mode": "summary"}},
-    )
+        id=msg_id,
+        metadata={"hide": True, "context_compact": {"mode": "summary"}},
+    ).model_dump(mode="json")
 
 
 def test_minimal_state_round_trip():
-    state = AgentStateFile(session=_session()  # type: ignore[arg-type]
-                           )
+    state = AgentStateFile(session=_session())  # type: ignore[arg-type]
     payload = state.model_dump(mode="json")
     assert set(payload) == {
         "schema_version",
         "session",
         "messages",
-        "summary",
         "metadata",
     }
     assert payload["schema_version"] == 1
     assert payload["messages"] == []
-    assert payload["summary"] is None
     assert payload["metadata"] == {}
 
     loaded = parse_agent_state(payload)
     assert loaded == state
-    # JSON 文本 round-trip
     assert parse_agent_state_json(state.model_dump_json()) == state
 
 
-def test_full_state_round_trip():
+def test_full_state_with_compact_msg_round_trip():
     user = _user("msg_u1")
     assistant = AssistantMsg(
-        name="default", content="回答", id="reply_1"
+        name=MsgName.DEFAULT, content="回答", id="reply_1"
     ).model_dump(mode="json")
-    summary = SummaryState(
-        message=_summary_msg("截至 msg_u1 的滚动摘要"),
-        through_message_id="msg_u1",
-    )
+    compact = _compact_msg("compact_1", "截至 msg_u1 的滚动摘要")
     state = AgentStateFile(
         session=_session(),  # type: ignore[arg-type]
-        messages=[user, assistant],  # type: ignore[list-item]
-        summary=summary,
+        messages=[user, assistant, compact],  # type: ignore[list-item]
         metadata={"plan": None, "external": None},
     )
     loaded = parse_agent_state_json(state.model_dump_json())
     assert loaded == state
-    assert loaded.summary is not None
-    assert loaded.summary.through_message_id == "msg_u1"
-    assert loaded.summary.message.role == "system"
+    compact_msgs = [m for m in loaded.messages if m.name == MsgName.COMPACT]
+    assert len(compact_msgs) == 1
+    assert compact_msgs[0].get_text_content() == "截至 msg_u1 的滚动摘要"
 
 
 def test_unknown_root_field_rejected():
@@ -118,29 +111,22 @@ def test_duplicate_msg_id_rejected():
         )
 
 
-def test_summary_must_be_system_msg():
-    with pytest.raises(ValidationError, match="SystemMsg"):
-        SummaryState(
-            message=UserMsg(name="default", content="not system"),
-            through_message_id="msg_u1",
-        )
-
-
-def test_summary_cursor_must_reference_real_message():
-    with pytest.raises(ValidationError, match="does not reference"):
-        AgentStateFile(
-            session=_session(),  # type: ignore[arg-type]
-            messages=[_user("msg_u1")],  # type: ignore[list-item]
-            summary=SummaryState(
-                message=_summary_msg(), through_message_id="msg_missing"
-            ),
-        )
+def test_legacy_summary_field_stripped_on_load():
+    """旧 state.json 残留 summary 字段可被剥离，正常加载。"""
+    payload = AgentStateFile(
+        session=_session(),  # type: ignore[arg-type]
+        messages=[_user("msg_u1")],  # type: ignore[list-item]
+    ).model_dump(mode="json")
+    payload["summary"] = {"message": _compact_msg(), "through_message_id": "msg_u1"}
+    loaded = parse_agent_state(payload)
+    assert not hasattr(loaded, "summary") or "summary" not in loaded.model_fields
+    assert len(loaded.messages) == 1
 
 
 def test_event_shape_in_messages_rejected():
     event_like = {
         "id": "evt_1",
-        "name": "assistant",
+        "name": "default",
         "role": "assistant",
         "type": "TEXT_BLOCK_DELTA",
         "data": {"delta": "x"},
@@ -160,6 +146,5 @@ def test_json_schema_generable():
         "schema_version",
         "session",
         "messages",
-        "summary",
         "metadata",
     }

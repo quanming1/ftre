@@ -102,8 +102,6 @@ class ContextConfig:
     safety_buffer: int = 1024
     # 是否开启后台空闲压缩（每轮 done 后异步 LLM 摘要）
     idle_compaction: bool = True
-    # 压缩事件是否标记 silent（前端不渲染气泡，对用户无感）
-    silent: bool = True
 
 
 @dataclass
@@ -302,7 +300,6 @@ def load_config() -> AgentConfig:
         consolidation_ratio=float(_f("consolidationRatio", "consolidation_ratio", 0.5)),
         safety_buffer=int(_f("safetyBuffer", "safety_buffer", 1024)),
         idle_compaction=bool(_f("idleCompaction", "idle_compaction", True)),
-        silent=bool(_f("silent", "silent", True)),
     )
 
     # 配置日志统一降为 DEBUG，避免每次重新加载刷屏
@@ -317,7 +314,7 @@ def load_config() -> AgentConfig:
         f"context: ratio={context_cfg.consolidation_ratio}, "
         f"precompact={context_cfg.precompact_threshold}, "
         f"compact={context_cfg.compact_threshold}, "
-        f"idle={context_cfg.idle_compaction}, silent={context_cfg.silent}"
+        f"idle={context_cfg.idle_compaction}"
         + (" (重新加载)" if config_changed else "")
     )
 
