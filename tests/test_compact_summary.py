@@ -44,6 +44,39 @@ async def env(tmp_path):
     await manager.close()
 
 
+@pytest.mark.asyncio
+async def test_compact_generation_passes_reasoning_effort_to_handler(monkeypatch):
+    """Context compaction forwards the selected LLM configuration's effort."""
+    from ftre.agent import compact_manager
+
+    captured = {}
+
+    class FakeHandler:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def stream(self, *args, **kwargs):
+            if False:
+                yield None
+
+    monkeypatch.setattr(compact_manager, "LLMHandler", FakeHandler)
+    compact = CompactManager(session_manager=None, emit_event=None)
+    llm = SimpleNamespace(
+        model="summary-model",
+        api_key="key",
+        api_base="",
+        api_type="completions",
+        reasoning_effort="none",
+    )
+    config = SimpleNamespace(llm=llm, compact_llm=None)
+
+    assert await compact._run_compact_llm(
+        [{"role": "user", "content": [{"type": "text", "text": "summarize this"}]}],
+        config=config,
+    ) is None
+    assert captured["reasoning_effort"] == "none"
+
+
 async def _seed(manager, sid, turns: int) -> list[str]:
     ids = []
     for index in range(turns):

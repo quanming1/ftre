@@ -24,9 +24,27 @@ def fake_config(monkeypatch):
         monkeypatch.setattr(ftre_config, "_last_sig", "")
         # 避免读取真实 ~/.ftre/agents/default/agent.config.json
         monkeypatch.setattr(ftre_config, "_read_default_agent_llm", lambda: ("", "", ""))
+        monkeypatch.setattr(ftre_config, "_read_default_agent_reasoning_effort", lambda: None)
         return ftre_config.load_config()
 
     return _make
+
+
+def test_default_agent_reasoning_effort_overrides_model_default(monkeypatch):
+    data = {
+        "providers": {
+            "openai": {
+                "models": [{"id": "gpt-test", "reasoning_effort": "high"}],
+            },
+        },
+    }
+    monkeypatch.setattr(ftre_config, "load_config_file", lambda: data)
+    monkeypatch.setattr(ftre_config, "_last_config", None)
+    monkeypatch.setattr(ftre_config, "_last_sig", "")
+    monkeypatch.setattr(ftre_config, "_read_default_agent_llm", lambda: ("openai", "gpt-test", ""))
+    monkeypatch.setattr(ftre_config, "_read_default_agent_reasoning_effort", lambda: "")
+
+    assert ftre_config.load_config().llm.reasoning_effort == ""
 
 
 def test_context_defaults_when_missing(fake_config):

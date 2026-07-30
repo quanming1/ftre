@@ -95,6 +95,9 @@ class AgentManager:
         model = agent_llm.get("model", "") or global_model
 
         llm = _build_llm_config(global_data, provider, model)
+        if "reasoning_effort" in agent_llm:
+            effort = agent_llm["reasoning_effort"]
+            llm.reasoning_effort = effort if isinstance(effort, str) else ""
         if not llm.model:
             # agent 指定的 provider/model 在全局找不到 → 回退全局默认
             logger.warning(
@@ -252,6 +255,7 @@ class AgentManager:
                 "name": profile.name or agent_id,
                 "model": model,
                 "provider": provider,
+                "reasoning_effort": profile.llm.reasoning_effort if profile.llm else "",
                 "workspace": profile.workspace,
                 "tools_allow": tools_allow,
                 "tools_deny": tools_deny,
@@ -559,6 +563,7 @@ class AgentManager:
             tool_registry=registry,
             max_iterations=c.max_iterations,
             max_tokens=c.llm.max_output,
+            reasoning_effort=c.llm.reasoning_effort,
             tracer=tracer,
             hook_manager=hook_manager,
         )

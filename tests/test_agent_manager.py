@@ -35,7 +35,7 @@ def fake_global_config():
                 "api_base": "https://api.openai.com/v1",
                 "api_protocol": "openai",
                 "models": [
-                    {"id": "gpt-4o", "name": "GPT-4o", "context_window": 128000, "max_output": 16384, "vision": True},
+                    {"id": "gpt-4o", "name": "GPT-4o", "context_window": 128000, "max_output": 16384, "vision": True, "reasoning_effort": "high"},
                     {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "context_window": 128000, "max_output": 16384, "vision": False},
                 ],
             },
@@ -44,7 +44,7 @@ def fake_global_config():
                 "api_base": "https://api.anthropic.com",
                 "api_protocol": "anthropic",
                 "models": [
-                    {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet", "context_window": 200000, "max_output": 16384, "vision": True},
+                    {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet", "context_window": 200000, "max_output": 16384, "vision": True, "reasoning_effort": "high"},
                 ],
             },
         },
@@ -81,6 +81,7 @@ def test_load_default_agent_uses_global_config(tmp_agents_dir, fake_global_confi
     assert profile.agent_id == "default"
     assert profile.llm.model == "gpt-4o"
     assert profile.llm.api_key == "sk-global"
+    assert profile.llm.reasoning_effort == "high"
     assert profile.workspace == "/tmp"
     assert profile.tools_config is None  # no tools key → all available
     assert "playwright" in profile.mcp_config
@@ -156,6 +157,25 @@ def test_load_agent_with_tool_overrides(tmp_agents_dir, fake_global_config):
     assert profile.llm.api_key == "sk-global"
     assert profile.workspace == "/custom/workspace"
     assert profile.tools_config == {"allow": ["bash", "read", "write", "edit"], "deny": ["cron", "task", "send_message"]}
+
+
+def test_agent_reasoning_effort_overrides_model_default_including_empty_value(tmp_agents_dir, fake_global_config):
+    """An explicitly configured effort wins over the matching model's default."""
+    from ftre.agent.agent_manager import AgentManager
+
+    coder_dir = tmp_agents_dir / "coder"
+    coder_dir.mkdir()
+    (coder_dir / "agent.config.json").write_text(json.dumps({
+        "llm": {"reasoning_effort": ""},
+    }), encoding="utf-8")
+
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
+    assert mgr.load("coder").llm.reasoning_effort == ""
+
+    (coder_dir / "agent.config.json").write_text(json.dumps({
+        "llm": {"reasoning_effort": "none"},
+    }), encoding="utf-8")
+    assert mgr.load("coder").llm.reasoning_effort == "none"
 
 
 def test_load_agent_with_mcp_merge(tmp_agents_dir, fake_global_config):
@@ -271,6 +291,7 @@ def test_list_agents(tmp_agents_dir, fake_global_config):
     coder = [a for a in agents if a["id"] == "coder"][0]
     assert coder["model"] == "claude-sonnet-4-20250514"
     assert coder["provider"] == "anthropic"
+    assert coder["reasoning_effort"] == "high"
     assert coder["has_soul"] is True
 
 
@@ -507,6 +528,18 @@ def test_ensure_default_picks_first_provider(tmp_path, monkeypatch):
 
 
 # ─── Task 7: Create and Delete agents ────────────────────────────────
+
+def test_create_agent_passes_reasoning_effort_to_core(tmp_agents_dir, fake_global_config):
+    """The merged effort reaches ReActAgent instead of its empty-string default."""
+    from ftre.agent.agent_manager import AgentManager
+    from ftre.config import AgentConfig
+
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
+    profile = mgr.load("default")
+    agent = mgr.create_agent(profile, AgentConfig())
+
+    assert agent.reasoning_effort == "high"
+
 
 def test_create_agent_profile(tmp_path):
     """create_agent_profile creates a new agent directory with config and empty md files."""

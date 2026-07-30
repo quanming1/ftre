@@ -33,6 +33,23 @@ def _load_system_prompt() -> str:
     return f'<SYSTEM_PROMPT desc="系统提示词基座，定义运行时行为规范" path="{SYSTEM_PROMPT_PATH}">\n- 你是一个 AI 助手。\n</SYSTEM_PROMPT>'
 
 
+def _read_default_agent_reasoning_effort() -> str | None:
+    """读取 default Agent 显式配置的 reasoning_effort，缺失时返回 None。"""
+    cfg_path = AGENTS_DIR / "default" / "agent.config.json"
+    if not cfg_path.exists():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        llm = cfg.get("llm", {})
+        if not isinstance(llm, dict) or "reasoning_effort" not in llm:
+            return None
+        effort = llm["reasoning_effort"]
+        return effort if isinstance(effort, str) else ""
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[config] 读取 default agent 配置失败: {e}")
+        return None
+
+
 def _read_default_agent_llm() -> tuple[str, str, str]:
     """读取 default agent 的 llm provider/model 和 workspace。
 
@@ -81,6 +98,7 @@ class LLMConfig:
     context_window: int | None = None
     max_output: int | None = None
     vision: bool = False
+    reasoning_effort: str = ""
     # 派生：LiteLLM 模型名（含 provider 前缀）
     model: str = ""
 
@@ -203,6 +221,7 @@ def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfi
         context_window=cw if isinstance(cw, int) else None,
         max_output=mo if isinstance(mo, int) else None,
         vision=bool(model_entry.get("vision", False)),
+        reasoning_effort=model_entry.get("reasoning_effort", "") if isinstance(model_entry.get("reasoning_effort", ""), str) else "",
         model=_build_model_name(model_id, protocol),
     )
 
@@ -256,6 +275,9 @@ def load_config() -> AgentConfig:
         workspace = ""
 
     llm = _build_llm_config(data, provider_name, model_id)
+    default_effort = _read_default_agent_reasoning_effort()
+    if default_effort is not None:
+        llm.reasoning_effort = default_effort
 
     # 标题生成模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
     title_llm: LLMConfig | None = None
