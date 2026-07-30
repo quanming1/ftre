@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -26,17 +27,17 @@ class FakeAgent:
         self.fail_after_delta = fail_after_delta
         self._captured_runtime_context = None
         self.tool_registry = Mock()
-        self.state = RunState()
-        self.state.done_reason = ReplyFinishedReason.COMPLETED
-        self.state.status = RunStatus.COMPLETED
-        self.state.iteration = 1
-        self.state.token_usage = {
+        self.run_state = RunState()
+        self.run_state.done_reason = ReplyFinishedReason.COMPLETED
+        self.run_state.status = RunStatus.COMPLETED
+        self.run_state.iteration = 1
+        self.run_state.token_usage = {
             "prompt_tokens": 10,
             "completion_tokens": 5,
             "total_tokens": 15,
         }
-        self.state.error = None
-        self.state.error_code = None
+        self.run_state.error = None
+        self.run_state.error_code = None
 
     async def run(self, messages, runtime_context=None):
         self._captured_runtime_context = runtime_context
@@ -213,6 +214,40 @@ async def test_critical_path_compact_is_visible_to_client():
 
 
 @pytest.mark.asyncio
+async def test_compact_decisions_use_selected_agent_context_window():
+    executor = _make_executor(FakeAgent())
+    coder_llm = LLMConfig(
+        model="kiro/gpt-5.6-sol",
+        context_window=1_050_000,
+    )
+    executor._loop.agent_manager.load.return_value = SimpleNamespace(
+        llm=coder_llm,
+        agent_dir="",
+    )
+    inbound = _inbound()
+    inbound.metadata["agent_id"] = "coder"
+
+    await executor.execute(inbound)
+
+    decision_config = (
+        executor._loop.compact_manager.should_compact.await_args.args[2]
+    )
+    assert decision_config.llm.model == "kiro/gpt-5.6-sol"
+    assert decision_config.llm.context_window == 1_050_000
+
+    idle_configs = [
+        call.args[2]
+        for call in executor._loop.compact_manager.maybe_schedule_idle_compact.await_args_list
+    ]
+    assert idle_configs
+    assert all(
+        config.llm.model == "kiro/gpt-5.6-sol"
+        and config.llm.context_window == 1_050_000
+        for config in idle_configs
+    )
+
+
+@pytest.mark.asyncio
 async def test_delta_is_live_only_and_reply_persists_as_one_msg():
     executor = _make_executor(FakeAgent(stream=True))
     await executor.execute(_inbound())
@@ -234,6 +269,22 @@ async def test_delta_is_live_only_and_reply_persists_as_one_msg():
         if call.args and getattr(call.args[0], "type", "") == "agent_event"
     ]
     assert any(frame.get("type") == "TEXT_BLOCK_DELTA" for frame in outbound)
+    turn_end = next(
+        frame
+        for frame in outbound
+        if frame.get("type") == "CUSTOM" and frame.get("name") == "TURN_END"
+    )
+    assert turn_end["value"]["success"] is True
+    assert turn_end["value"]["reason"] == "completed"
+    assert turn_end["value"]["iterations"] == 1
+    assert turn_end["value"]["token_usage"]["total_tokens"] == 15
+
+    pipeline_end = next(
+        frame
+        for frame in outbound
+        if frame.get("type") == "CUSTOM" and frame.get("name") == "PIPELINE_END"
+    )
+    assert pipeline_end["value"]["success"] is True
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
-from ftre_agent_core.agent import ReActAgent
+from ftre_agent_core.agent import ReActAgent, RunStatus
 from ftre_agent_core.event import (
     EventBase,
     ReplyStartEvent,
@@ -44,6 +44,7 @@ from ftre.command.types import Handled, Passthrough, RewritePrompt, SendMessage
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .agent_manager import AgentProfile
     from .loop import AgentLoop
 
 logger = logging.getLogger(__name__)
@@ -96,11 +97,18 @@ class Turn:
     user_message_id: str = ""    # 本轮已持久化 UserMsg；关键路径压缩从它开始保留 tail
 
     # ── Agent 执行上下文（_build 写入，_run 读取）──
+    agent_profile: "AgentProfile | None" = None  # 本轮选定的 Agent 私有配置
+    config: "AgentConfig | None" = None          # 本轮实际使用的有效配置快照
     agent: "ReActAgent | None" = None        # 创建的 Agent 实例，None 表示未进入执行
     messages: list = field(default_factory=list)          # 发给 LLM 的消息列表
     runtime_context: dict = field(default_factory=dict)   # 工具共享的运行时上下文
     final_content: str = ""                  # 最后一条完整 assistant 回复（task 工具用）
     subagent_status: str = "completed"       # subagent 完成态：completed/cancelled/error
+
+    # ── 权限确认恢复（user_confirm_result 帧触发时非 None）──
+    # 非 None 表示本 Turn 是恢复请求：跳过指令匹配/UserMsg 存储/普通消息构建，
+    # 注入历史 context 到新 agent，run() 时传入此事件而非 messages。
+    confirm_event: object | None = None
 
     # ── 事件序列（供回放/调试）──
     events: list = field(default_factory=list)  # 本 Turn 产生的所有 CustomEvent
@@ -242,6 +250,21 @@ class TurnExecutor:
         loop = self._loop
         inbound = turn.inbound
         session_id = turn.session_id
+
+        # ── 权限确认恢复：跳过指令匹配与 UserMsg 存储，直接进 BUILDING ──
+        # user_confirm_result 帧不是用户消息，不该被当作 slash command，也不该
+        # 产生一条 UserMsg。构造 core 的 UserConfirmResultEvent 存到 turn，_build
+        # 会据此走恢复构建。
+        if inbound.type == "user_confirm_result":
+            from ftre_agent_core.event import UserConfirmResultEvent
+
+            turn.confirm_event = UserConfirmResultEvent(
+                reply_id=inbound.data.get("reply_id", ""),
+                tool_call_id=inbound.data.get("tool_call_id", ""),
+                approved=bool(inbound.data.get("approved")),
+            )
+            return TurnStatus.BUILDING
+
         content = inbound.data.get("content", "")
         attachments = inbound.data.get("attachments") or []
         agent_id = (inbound.metadata or {}).get("agent_id", "") or "default"
@@ -324,7 +347,8 @@ class TurnExecutor:
         """[状态 1/4] 判断是否需要压缩上下文。
 
         只做判断，不真正压缩——把结论写进 turn.need_compact，
-        真正的压缩在 _build 里执行（因为压缩需要 config，_build 才加载 per-agent config）。
+        真正的压缩在 _build 里执行。判断和执行必须共用本 Turn 的有效配置快照，
+        否则 coder 等私有 Agent 会被 default Agent 的 context_window 错误判定。
 
         只对 user_message 判断（其它类型消息直接进 BUILDING）。
         should_compact 看历史 token 是否超过阈值。异常不阻断，继续往下走。
@@ -339,7 +363,7 @@ class TurnExecutor:
             return TurnStatus.BUILDING
 
         try:
-            config = self._load_current_config()
+            config, _ = self._resolve_turn_config(turn)
             need = await loop.compact_manager.should_compact(
                 session_id,
                 inbound.from_channel,
@@ -385,11 +409,9 @@ class TurnExecutor:
             )
             return TurnStatus.COMPLETED
 
-        # ── 加载 per-agent 配置（不同 agent 可用不同 LLM）──
-        agent_id = (inbound.metadata or {}).get("agent_id", "") or "default"
-        agent_profile = None
-        if loop.agent_manager is not None:
-            agent_profile = loop.agent_manager.load(agent_id)
+        # ── 取得本 Turn 已解析的有效配置（不同 agent 可用不同 LLM）──
+        # _compact 通常已经建立快照；非 user_message 等特殊路径在这里兜底建立。
+        config, agent_profile = self._resolve_turn_config(turn)
 
         # ── 并发防御：理论上 session lock 已保证串行，这里是兜底 ──
         # 若发现同 session 已有 Agent 在跑，说明锁逻辑有 bug，强制取消旧的
@@ -401,12 +423,13 @@ class TurnExecutor:
             )
             existing.cancel_nowait()
 
+        # ── 权限确认恢复分支：注入历史 Msg 到新 agent，跳过普通消息构建 ──
+        if turn.confirm_event is not None:
+            return await self._build_resume(
+                turn, session, config, agent_profile
+            )
+
         # ── 关键路径压缩（_compact 判定需要时才做）──
-        config = self._load_current_config()
-        if agent_profile is not None:
-            # per-agent 只覆盖 llm，不覆盖 workspace（agent 的家目录 ≠ 对话 cwd）
-            config = copy.deepcopy(config)
-            config.llm = agent_profile.llm
         if turn.need_compact:
             # 用户消息已经进入关键路径并正在等待摘要完成，先切换为压缩状态。
             loop._compacting_sessions.add(session_id)
@@ -442,6 +465,13 @@ class TurnExecutor:
             agent_dir=(agent_profile.agent_dir if agent_profile else ""),
             reply_id=turn.turn_id,
         )
+        # 后续 idle compact 必须继续使用真正创建 Agent 时的配置，而不是重新读取
+        # 此刻可能已经切换过的 default Agent 配置。
+        turn.config = copy.deepcopy(hook_config)
+        if agent_profile is not None:
+            # create_agent() 也会以 profile.llm 为最终值；这里保持快照与真实
+            # Agent 完全一致，避免 hook/test double 返回了另一套 llm。
+            turn.config.llm = copy.deepcopy(agent_profile.llm)
 
         # ── 创建 Agent 并注册到 _active_agents（/cancel 时通过它取消）──
         assert loop.agent_manager is not None, "agent_manager must be provided"
@@ -505,12 +535,85 @@ class TurnExecutor:
 
         return TurnStatus.RUNNING
 
+    async def _build_resume(
+        self, turn: Turn, session: dict, config, agent_profile
+    ) -> TurnStatus:
+        """[状态 2/4 · 恢复] 权限确认恢复专用构建。
+
+        与普通 _build 的差异：
+        - 不写 UserMsg、不做 compact；
+        - 直接把持久化历史 Msg（含 ASKING 的 tool_call）注入 AgentState.context，
+          而非转成 provider dict——ToolCallState 只存活在 typed Msg 里；
+        - 注入默认权限规则的 permission_context；
+        - runtime_context.reply_id 用确认事件携带的原 reply_id，保证恢复产出的
+          工具结果/后续事件聚合回原 assistant Msg。
+        """
+        from ftre_agent_core.agent import AgentState
+        from ftre.session.converter import _as_msg
+
+        loop = self._loop
+        inbound = turn.inbound
+        session_id = turn.session_id
+        workspace = session.get("workspace", "") or config.workspace or os.getcwd()
+
+        # 读完整历史 transcript，转成 typed Msg 注入 context（保留 ToolCallState）
+        records = await loop.session_manager.get_messages_by_session(session_id)
+        context_msgs = [_as_msg(r) for r in records]
+
+        # 复用默认权限规则，注入历史 context
+        state = loop.agent_manager._default_agent_state()
+        state.context = context_msgs
+
+        assert loop.agent_manager is not None, "agent_manager must be provided"
+        agent = loop.agent_manager.create_agent(
+            profile=agent_profile,
+            config=config,
+            channel_manager=loop.channel_manager,
+            tool_registry=loop.tool_registry,
+            tracer=loop.tracer,
+            channel_id=inbound.from_channel,
+            session_id=session_id,
+            hook_manager=loop.core_hook_manager,
+            state=state,
+        )
+        turn.agent = agent
+        turn.config = copy.deepcopy(config)
+        loop._active_agents[session_id] = agent
+        await self._publish_session_status_async(session_id, "running")
+
+        reply_id = turn.confirm_event.reply_id
+        turn.runtime_context = {
+            "session_id": session_id,
+            "channel_id": inbound.from_channel,
+            "event_loop": loop._event_loop,
+            "session_manager": loop.session_manager,
+            "bus": loop.bus,
+            "agent_loop": loop,
+            "llm_config": config.llm,
+            "agent_profile": agent_profile,
+            "workspace": WorkspaceAccessor(
+                session_id=session_id,
+                session_manager=loop.session_manager,
+                event_loop=loop._event_loop,  # type: ignore[arg-type]
+                fallback_cwd=workspace,
+            ),
+            "trace_name": f"session:{session_id}",
+            "trace_tags": [inbound.from_channel or "unknown"],
+            "trace_metadata": {
+                "session_id": session_id,
+                "channel_id": inbound.from_channel,
+                "workspace": workspace,
+            },
+            "reply_id": reply_id,
+        }
+        return TurnStatus.RUNNING
+
     async def _run(self, turn: Turn) -> TurnStatus:
         """[状态 3/4] 驱动 Agent 执行，逐条投递事件。
 
         流程：TURN_START → 遍历 agent.run() 产出的事件 → TURN_END。
         三种结局：
-        - 正常跑完 → TURN_END（reason 从 agent.state 取）→ FINALIZING
+        - 正常跑完 → TURN_END（reason 从 agent.run_state 取）→ FINALIZING
         - 被 cancel → TURN_END(cancelled) → CANCELLED
         - 抛异常   → TURN_END(error) → ERROR
 
@@ -525,8 +628,13 @@ class TurnExecutor:
             await self._emit_step(turn, "TURN_START", start_trigger="user")
 
             # ── 遍历 Agent 产出的事件流 ──
+            # 恢复请求传 UserConfirmResultEvent 驱动 core 从挂起继续；
+            # 普通请求传消息列表。
+            run_input = (
+                turn.confirm_event if turn.confirm_event is not None else turn.messages
+            )
             async for event in agent.run(
-                turn.messages, runtime_context=turn.runtime_context
+                run_input, runtime_context=turn.runtime_context
             ):
                 # Event 只用于实时传输；在内存中聚合，REPLY_END 时才落一条 Msg。
                 completed_message = await self.publish_agent_event(turn, event)
@@ -539,7 +647,7 @@ class TurnExecutor:
                     and turn.inbound.from_channel != SUBAGENT_CHANNEL_ID
                 ):
                     try:
-                        _cfg = self._load_current_config()
+                        _cfg, _ = self._resolve_turn_config(turn)
                         await self._loop.compact_manager.maybe_schedule_idle_compact(
                             turn.session_id, turn.inbound.from_channel, _cfg
                         )
@@ -548,17 +656,37 @@ class TurnExecutor:
                             "[turn-executor] 调度 usage 压缩失败", exc_info=True
                         )
 
-            # ── 正常结束：TURN_END 的字段从 agent.state 读 ──
-            _is_error = agent.state.done_reason == ReplyFinishedReason.ERROR
+            # AgentState 只保存可持久化的消息上下文；一次 run 的结束原因、
+            # 迭代次数、token 用量和错误信息都属于临时 RunState。
+            run_state = agent.run_state
+
+            # ── 权限挂起（PAUSED）──
+            # 工具命中 ASK → run() 提前结束但未 finalize，done_reason 为 None。
+            # 这不是错误也不是回复结束：ASKING 状态已随 Msg 落盘，不产 error TURN_END、
+            # 不 finish open replies；发一条 success 的 TURN_END(reason=paused) 让客户端
+            # 退出 busy，Turn 正常收尾、agent 实例销毁。用户确认后由新 Turn 恢复。
+            if run_state.status == RunStatus.PAUSED:
+                await self._emit_step(
+                    turn,
+                    "TURN_END",
+                    success=True,
+                    reason="paused",
+                    iterations=run_state.iteration,
+                    token_usage=dict(run_state.token_usage),
+                )
+                return TurnStatus.FINALIZING
+
+            done_reason = run_state.done_reason or ReplyFinishedReason.ERROR
+            _is_error = done_reason == ReplyFinishedReason.ERROR
             await self._emit_step(
                 turn,
                 "TURN_END",
-                success=(agent.state.done_reason == ReplyFinishedReason.COMPLETED),
-                reason=str(agent.state.done_reason or ReplyFinishedReason.ERROR),
-                iterations=agent.state.iteration,
-                token_usage=dict(agent.state.token_usage),
-                error_message=agent.state.error if _is_error else None,
-                error_code=agent.state.error_code if _is_error else None,
+                success=(done_reason == ReplyFinishedReason.COMPLETED),
+                reason=str(done_reason),
+                iterations=run_state.iteration,
+                token_usage=dict(run_state.token_usage),
+                error_message=run_state.error if _is_error else None,
+                error_code=run_state.error_code if _is_error else None,
             )
             return TurnStatus.FINALIZING
 
@@ -633,7 +761,7 @@ class TurnExecutor:
         # ── 本轮结束后调度后台 idle 压缩（非 subagent）──
         if turn.inbound.from_channel != SUBAGENT_CHANNEL_ID:
             try:
-                _cfg = self._load_current_config()
+                _cfg, _ = self._resolve_turn_config(turn)
                 await loop.compact_manager.maybe_schedule_idle_compact(
                     session_id, turn.inbound.from_channel, _cfg
                 )
@@ -745,6 +873,33 @@ class TurnExecutor:
         if loop._injected_config is not None:
             return loop._injected_config
         return load_config()
+
+    def _resolve_turn_config(
+        self, turn: Turn
+    ) -> tuple[AgentConfig, "AgentProfile | None"]:
+        """取得并缓存本 Turn 真正使用的 Agent 配置。
+
+        context_window、模型调用和回复结束后的 idle compact 必须来自同一份快照。
+        不能在 compact 判断时只读全局/default 配置，再在 _build 阶段才覆盖
+        per-agent LLM；否则不同窗口大小的 Agent 会产生错误压缩。
+        """
+        if turn.config is not None:
+            return turn.config, turn.agent_profile
+
+        config = copy.deepcopy(self._load_current_config())
+        agent_id = (
+            (turn.inbound.metadata or {}).get("agent_id", "") or "default"
+        )
+        profile = None
+        if self._loop.agent_manager is not None:
+            profile = self._loop.agent_manager.load(agent_id)
+        if profile is not None:
+            # Agent 私有 llm 是实际模型配置；workspace 仍按现有规则由 session 决定。
+            config.llm = copy.deepcopy(profile.llm)
+
+        turn.agent_profile = profile
+        turn.config = config
+        return config, profile
 
     async def _build_messages(
         self,

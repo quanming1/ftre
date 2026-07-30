@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 IMMEDIATE_CHECKPOINT_TYPES = frozenset({
     "REPLY_START", "TEXT_BLOCK_END", "THINKING_BLOCK_END", "DATA_BLOCK_END",
     "TOOL_CALL_START", "TOOL_CALL_END", "TOOL_RESULT_END", "MODEL_CALL_END",
+    # 权限确认：把 tool_call 置 ASKING 后必须立即落盘。挂起不产 REPLY_END，
+    # 若不在此 checkpoint，ASKING 只停留在内存，进程/实例销毁后无法从 state.json 恢复。
+    "REQUIRE_USER_CONFIRM",
 })
 
 

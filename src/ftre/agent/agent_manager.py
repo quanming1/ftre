@@ -526,15 +526,24 @@ class AgentManager:
         channel_id: str | None = None,
         session_id: str | None = None,
         hook_manager=None,
+        state=None,
     ):
         """根据 AgentProfile + 全局 config 构建 ReActAgent。
 
         所有 agent 构建逻辑集中在此：LLM 覆盖 → 工具构建+过滤 → prompt 合成 → ReActAgent 实例化。
+
+        权限：始终注入 PermissionEngine。state 未传时新建一个带默认权限规则的
+        AgentState（bash 需用户确认，其余默认放行）；恢复场景由调用方传入已注入
+        历史 context 的 state。
         """
         from ftre_agent_core.agent import ReActAgent
+        from ftre_agent_core.permission import PermissionEngine
         from ftre.tools import build_default_tools, filter_tools
 
         c = copy.deepcopy(config)
+
+        if state is None:
+            state = self._default_agent_state()
 
         # 用 profile 的 llm 覆盖
         if profile is not None:
@@ -566,6 +575,31 @@ class AgentManager:
             reasoning_effort=c.llm.reasoning_effort,
             tracer=tracer,
             hook_manager=hook_manager,
+            state=state,
+            permission_engine=PermissionEngine(),
+        )
+
+    @staticmethod
+    def _default_agent_state():
+        """新建带默认权限规则的 AgentState。
+
+        默认策略：bash 工具每次调用需用户确认（ASK），其余工具默认放行（allow）。
+        规则以序列化形式存入 permission_context，随 state.json 持久化。
+        """
+        from ftre_agent_core.agent import AgentState
+        from ftre_agent_core.permission import PermissionBehavior, PermissionRule
+
+        bash_ask = PermissionRule(
+            id="default-bash-ask",
+            tool_name="bash",
+            behavior=PermissionBehavior.ASK,
+            priority=0,
+        )
+        return AgentState(
+            permission_context={
+                "permission_rules": [bash_ask.model_dump(mode="json")],
+                "default_behavior": PermissionBehavior.ALLOW.value,
+            }
         )
 
     @staticmethod

@@ -372,6 +372,33 @@ class WebSocketChannel(Channel):
             )
             return
 
+        # ─── user_confirm_result 帧：工具权限确认结果 ───
+        # 前端收到 REQUIRE_USER_CONFIRM 后回传用户决定，驱动 Agent 从挂起恢复。
+        if frame_type == "user_confirm_result":
+            reply_id = data.get("reply_id", "")
+            tool_call_id = data.get("tool_call_id", "")
+            approved = data.get("approved")
+            if not session_id:
+                logger.warning("[ws-channel] user_confirm_result 缺少 session_id，忽略")
+                return
+            if not reply_id or not tool_call_id or not isinstance(approved, bool):
+                await self._reject(
+                    ws, frame.get("frame_id", ""), session_id,
+                    "user_confirm_result 需要 reply_id、tool_call_id 和布尔 approved",
+                )
+                return
+            self._attach(session_id, ws)
+            metadata = frame.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            frame_id = frame.get("frame_id") or ""
+            if frame_id:
+                metadata = {**metadata, "frame_id": frame_id}
+            await self.receive(
+                session_id, data, metadata, kind="user_confirm_result"
+            )
+            return
+
         if frame_type != "user_message":
             logger.debug(f"[ws-channel] unknown frame type: {frame_type}")
             return
