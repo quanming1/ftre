@@ -30,6 +30,26 @@ from ftre.config import AgentConfig, LLMConfig, _build_llm_config, load_config_f
 
 logger = logging.getLogger(__name__)
 
+# 默认只放行常见只读 Bash 命令；参数中出现重定向、管道、分号或单个 &
+# 时不会命中。多个安全命令可以用 && / || 串联。
+_SAFE_BASH_HEAD = (
+    r"(?:cd(?:\s+/d)?|dir|type|where|whoami|hostname|ver|echo|rg|findstr|"
+    r"git\s+(?:status|diff|log|show|ls-files|ls-tree|rev-parse|blame|grep|"
+    r"shortlog|describe))"
+)
+_SAFE_GIT_CONFIG_QUERY = (
+    r"git\s+config(?:\s+--(?:local|global|system|worktree))?\s+"
+    r"(?:--get(?:-all|-regexp)?\s+\S+|--list|-l|[A-Za-z0-9][A-Za-z0-9._-]*)"
+)
+_SAFE_BASH_SEGMENT = (
+    rf"(?:{_SAFE_GIT_CONFIG_QUERY}|"
+    rf"{_SAFE_BASH_HEAD}(?:\s+[^\r\n&|;<>]*)?)"
+)
+_SAFE_BASH_COMMAND_REGEX = (
+    rf"(?i)\s*{_SAFE_BASH_SEGMENT}"
+    rf"(?:\s*(?:&&|\|\|)\s*{_SAFE_BASH_SEGMENT})*\s*"
+)
+
 
 @dataclass
 class AgentProfile:
@@ -583,12 +603,19 @@ class AgentManager:
     def _default_agent_state():
         """新建带默认权限规则的 AgentState。
 
-        默认策略：bash 工具每次调用需用户确认（ASK），其余工具默认放行（allow）。
+        默认 Bash 规则目前暂时停用，所有工具走 default_behavior=allow。
         规则以序列化形式存入 permission_context，随 state.json 持久化。
         """
         from ftre_agent_core.agent import AgentState
         from ftre_agent_core.permission import PermissionBehavior, PermissionRule
 
+        bash_safe = PermissionRule(
+            id="default-bash-safe",
+            tool_name="bash",
+            argument_regex={"command": _SAFE_BASH_COMMAND_REGEX},
+            behavior=PermissionBehavior.ALLOW,
+            priority=10,
+        )
         bash_ask = PermissionRule(
             id="default-bash-ask",
             tool_name="bash",
@@ -597,7 +624,11 @@ class AgentManager:
         )
         return AgentState(
             permission_context={
-                "permission_rules": [bash_ask.model_dump(mode="json")],
+                "permission_rules": [
+                    # 默认 Bash 权限规则暂时停用；需要时取消下面两行注释。
+                    # bash_safe.model_dump(mode="json"),
+                    # bash_ask.model_dump(mode="json"),
+                ],
                 "default_behavior": PermissionBehavior.ALLOW.value,
             }
         )

@@ -41,7 +41,9 @@ IMMEDIATE_CHECKPOINT_TYPES = frozenset({
     "TOOL_CALL_START", "TOOL_CALL_END", "TOOL_RESULT_END", "MODEL_CALL_END",
     # 权限确认：把 tool_call 置 ASKING 后必须立即落盘。挂起不产 REPLY_END，
     # 若不在此 checkpoint，ASKING 只停留在内存，进程/实例销毁后无法从 state.json 恢复。
-    "REQUIRE_USER_CONFIRM",
+    # 用户决定同样必须立即落盘，否则同批多个 ASK 在逐个确认、新建 Agent 时
+    # 会丢失前一次 ALLOWED/FINISHED 状态。
+    "REQUIRE_USER_CONFIRM", "USER_CONFIRM_RESULT",
 })
 
 
@@ -141,6 +143,26 @@ class SessionProjection:
         save_new = False
         update_snapshot: Msg | None = None
         completed: Msg | None = None
+        restored_message: Msg | None = None
+
+        # Gateway 重启后内存投影为空，但暂停中的 Reply 已经 checkpoint 到磁盘。
+        # 恢复事件不能新建同 id 的空 Msg（save_message 会冲突），应先复用持久化快照。
+        if not is_start:
+            async with self._lock:
+                has_active = reply_id in self._replies.get(session_id, {})
+            if not has_active:
+                from ftre.session.converter import _as_msg
+
+                records = await self._session_manager.get_messages_by_session(
+                    session_id
+                )
+                for record in records:
+                    record_id = (
+                        record.id if isinstance(record, Msg) else record.get("id")
+                    )
+                    if record_id == reply_id:
+                        restored_message = _as_msg(record)
+                        break
 
         async with self._lock:
             # 同一 session 的 Event 可能来自异步流与取消路径；锁只保护内存投影，
@@ -148,19 +170,23 @@ class SessionProjection:
             replies = self._replies.setdefault(session_id, {})
             state = replies.get(reply_id)
             if state is None:
-                metadata = {}
-                if is_start and getattr(event, "name", ""):
-                    # Msg.name 只表示消息语义；实际调用的模型属于可选元数据。
-                    metadata["model"] = event.name
-                message = AssistantMsg(
-                    name=MsgName.DEFAULT,
-                    content=[], id=reply_id, created_at=getattr(event, "created_at", None),
-                    metadata=metadata,
-                )
+                if restored_message is not None:
+                    message = restored_message
+                else:
+                    metadata = {}
+                    if is_start and getattr(event, "name", ""):
+                        # Msg.name 只表示消息语义；实际调用的模型属于可选元数据。
+                        metadata["model"] = event.name
+                    message = AssistantMsg(
+                        name=MsgName.DEFAULT,
+                        content=[], id=reply_id,
+                        created_at=getattr(event, "created_at", None),
+                        metadata=metadata,
+                    )
                 state = ReplyState(session_id, reply_id, message)
                 replies[reply_id] = state
                 # 即便流异常地缺少 REPLY_START，也必须能生成可持久化 Msg。
-                save_new = True
+                save_new = restored_message is None
 
             # 少数异常流会先到达 reply 事件、后到 REPLY_START；仍在此补齐模型元数据。
             if is_start and getattr(event, "name", ""):

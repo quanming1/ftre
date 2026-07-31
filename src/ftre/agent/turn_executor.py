@@ -263,6 +263,14 @@ class TurnExecutor:
                 tool_call_id=inbound.data.get("tool_call_id", ""),
                 approved=bool(inbound.data.get("approved")),
             )
+            # 确认结果是 Core 的输入事件，不会由 agent.run() 再 yield 出来；
+            # 必须在恢复前由 Gateway 主动投影，确保新 Agent 读取到已更新的状态。
+            await loop.emit_session_event(
+                session_id,
+                inbound.from_channel,
+                turn.confirm_event,
+                metadata=inbound.metadata,
+            )
             return TurnStatus.BUILDING
 
         content = inbound.data.get("content", "")
@@ -556,8 +564,28 @@ class TurnExecutor:
         session_id = turn.session_id
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
 
-        # 读完整历史 transcript，转成 typed Msg 注入 context（保留 ToolCallState）
-        records = await loop.session_manager.get_messages_by_session(session_id)
+        # 只读 LLM 有效上下文（最后一条 compact 摘要 + tail），避免把已经被摘要
+        # 覆盖的完整 transcript 重新注入。保留 typed Msg 以维持 ToolCallState。
+        records = await loop.session_manager.get_context_messages(session_id)
+        hook_config = copy.deepcopy(config)
+        if loop.hook_manager is not None:
+            from ftre.plugin import BEFORE_MESSAGES_BUILD, MessagesBuildContext
+
+            messages_ctx = MessagesBuildContext(
+                session_id=session_id,
+                channel_id=inbound.from_channel,
+                inbound_data=inbound.data,
+                workspace=workspace,
+                reply_id=turn.confirm_event.reply_id,
+                agent_dir=(agent_profile.agent_dir if agent_profile else ""),
+                config=hook_config,
+                messages=records,
+            )
+            messages_ctx = await loop.hook_manager.trigger(
+                BEFORE_MESSAGES_BUILD, messages_ctx
+            )
+            hook_config = messages_ctx.config
+            records = messages_ctx.messages
         context_msgs = [_as_msg(r) for r in records]
 
         # 复用默认权限规则，注入历史 context
@@ -567,7 +595,7 @@ class TurnExecutor:
         assert loop.agent_manager is not None, "agent_manager must be provided"
         agent = loop.agent_manager.create_agent(
             profile=agent_profile,
-            config=config,
+            config=hook_config,
             channel_manager=loop.channel_manager,
             tool_registry=loop.tool_registry,
             tracer=loop.tracer,
@@ -576,8 +604,38 @@ class TurnExecutor:
             hook_manager=loop.core_hook_manager,
             state=state,
         )
+
+        # 恢复路径同样必须触发 BEFORE_AGENT_RUN：私有 MCP 工具在这里按需注册，
+        # Skill/MCP/Plan 等插件也会扩展 system prompt。typed context 继续作为
+        # 权限状态事实源，hook 只修改 provider 视图与 agent 的 system prompt。
+        if loop.hook_manager is not None:
+            from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext
+            from ftre_agent_core.message_context import MessageContext
+
+            hook_messages = MessageContext.get_messages(
+                state.context, agent.system_prompt
+            )
+            ctx = AgentRunContext(
+                session_id=session_id,
+                channel_id=inbound.from_channel,
+                messages=hook_messages,
+                config=hook_config,
+                agent_profile=agent_profile,
+                agent_tool_registry=agent.tool_registry,
+            )
+            ctx = await loop.hook_manager.trigger(BEFORE_AGENT_RUN, ctx)
+            system_parts = [
+                str(message.get("content") or "")
+                for message in ctx.messages
+                if isinstance(message, dict) and message.get("role") == "system"
+            ]
+            if system_parts:
+                agent.system_prompt = "\n\n".join(
+                    part for part in system_parts if part
+                )
+
         turn.agent = agent
-        turn.config = copy.deepcopy(config)
+        turn.config = copy.deepcopy(hook_config)
         loop._active_agents[session_id] = agent
         await self._publish_session_status_async(session_id, "running")
 
@@ -589,7 +647,7 @@ class TurnExecutor:
             "session_manager": loop.session_manager,
             "bus": loop.bus,
             "agent_loop": loop,
-            "llm_config": config.llm,
+            "llm_config": hook_config.llm,
             "agent_profile": agent_profile,
             "workspace": WorkspaceAccessor(
                 session_id=session_id,
