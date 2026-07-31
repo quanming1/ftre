@@ -22,7 +22,13 @@ from ftre_agent_core.event import (
     RequireUserConfirmEvent,
     UserConfirmResultEvent,
 )
-from ftre_agent_core.message import Msg, TextBlock
+from ftre_agent_core.message import (
+    AssistantMsg,
+    Msg,
+    TextBlock,
+    ToolCallBlock,
+    ToolCallState,
+)
 
 
 class PausingAgent:
@@ -109,6 +115,7 @@ def _make_executor(agent) -> TurnExecutor:
         return_value={"channel_id": "ws", "workspace": "/tmp"}
     )
     loop.session_manager.get_messages_by_session = AsyncMock(return_value=[])
+    loop.session_manager.get_context_messages = AsyncMock(return_value=[])
     loop.bus = AsyncMock()
     loop.agent_manager = Mock()
     loop.agent_manager.load = Mock(return_value=None)
@@ -257,11 +264,22 @@ async def test_confirm_result_injects_history_and_drives_resume():
     """恢复：读历史 context 注入新 agent，run() 收到 UserConfirmResultEvent。"""
     history = [
         Msg(role="user", content=[TextBlock(type="text", text="run ls")]),
-        Msg(role="assistant", content=[TextBlock(type="text", text="ok")]),
+        AssistantMsg(
+            id="turn_orig",
+            content=[
+                ToolCallBlock(
+                    id="call-1", name="bash", arguments={"command": "ls"},
+                    state=ToolCallState.ASKING,
+                )
+            ],
+        ),
     ]
     agent = ResumingAgent()
     executor = _make_executor(agent)
     executor._loop.session_manager.get_messages_by_session = AsyncMock(
+        return_value=history
+    )
+    executor._loop.session_manager.get_context_messages = AsyncMock(
         return_value=history
     )
 
@@ -274,6 +292,14 @@ async def test_confirm_result_injects_history_and_drives_resume():
     injected_state = create_kwargs["state"]
     assert injected_state is not None
     assert injected_state.context == history
+    executor._loop.session_manager.get_context_messages.assert_awaited_once_with(
+        "test-session"
+    )
+    executor._loop.session_manager.get_messages_by_session.assert_awaited_once_with(
+        "test-session"
+    )
+    checkpoint = executor._loop.session_manager.update_message.await_args.args[0]
+    assert checkpoint.content[0].state == ToolCallState.ALLOWED
 
     # run() 的输入是 UserConfirmResultEvent，不是消息列表
     run_input = agent._captured_run_input
@@ -297,3 +323,24 @@ async def test_confirm_result_denied_still_resumes():
     run_input = agent._captured_run_input
     assert isinstance(run_input, UserConfirmResultEvent)
     assert run_input.approved is False
+
+
+@pytest.mark.asyncio
+async def test_confirm_resume_runs_before_agent_hook_and_applies_system_prompt():
+    agent = ResumingAgent()
+    agent.system_prompt = "base"
+    executor = _make_executor(agent)
+    hooks = AsyncMock()
+
+    async def inject(point, ctx):
+        if point == "before_agent_run":
+            ctx.messages[0]["content"] += "\nprivate tools ready"
+        return ctx
+
+    hooks.trigger.side_effect = inject
+    executor._loop.hook_manager = hooks
+
+    await executor.execute(_confirm_inbound(approved=True))
+
+    assert hooks.trigger.await_count == 2
+    assert agent.system_prompt == "base\nprivate tools ready"

@@ -6,11 +6,20 @@ from ftre.agent.session_projection import SessionProjection
 from ftre_agent_core.event import UserMessageEvent
 from ftre_agent_core.event import (
     CustomEvent,
+    RequireUserConfirmEvent,
     ReplyEndEvent,
     ReplyFinishedReason,
     ReplyStartEvent,
     TextBlockDeltaEvent,
     TextBlockStartEvent,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
+    UserConfirmResultEvent,
+)
+from ftre_agent_core.message import (
+    AssistantMsg,
+    ToolCallBlock,
+    ToolCallState,
 )
 
 
@@ -127,3 +136,75 @@ async def test_compact_done_persists_and_clears_active_state():
 
     sessions.upsert_message.assert_awaited_once()
     assert await projection.session_event_snapshot(session_id) == []
+
+
+@pytest.mark.asyncio
+async def test_user_confirmation_result_checkpoints_tool_call_state():
+    sessions = AsyncMock()
+    projection = SessionProjection(sessions)
+    session_id = "ws_sess_test"
+    reply_id = "reply_test"
+    call_id = "call-1"
+
+    await projection.apply(session_id, ReplyStartEvent(
+        session_id=session_id, reply_id=reply_id, name="assistant",
+    ))
+    await projection.apply(session_id, ToolCallStartEvent(
+        reply_id=reply_id, tool_call_id=call_id, tool_call_name="bash",
+    ))
+    await projection.apply(session_id, ToolCallEndEvent(
+        reply_id=reply_id,
+        tool_call_id=call_id,
+        tool_call_name="bash",
+        arguments={"command": "pwd"},
+    ))
+    await projection.apply(session_id, RequireUserConfirmEvent(
+        reply_id=reply_id,
+        tool_call_id=call_id,
+        tool_call_name="bash",
+        arguments={"command": "pwd"},
+        reason="confirm",
+    ))
+    sessions.update_message.reset_mock()
+
+    await projection.apply(session_id, UserConfirmResultEvent(
+        reply_id=reply_id,
+        tool_call_id=call_id,
+        approved=True,
+    ))
+
+    checkpoint = sessions.update_message.await_args.args[0]
+    tool_call = next(block for block in checkpoint.content if block.type == "tool_call")
+    assert tool_call.state == ToolCallState.ALLOWED
+
+
+@pytest.mark.asyncio
+async def test_confirmation_rehydrates_paused_reply_after_gateway_restart():
+    reply_id = "reply_paused"
+    persisted = AssistantMsg(
+        id=reply_id,
+        content=[
+            ToolCallBlock(
+                id="call-1",
+                name="bash",
+                arguments={"command": "pwd"},
+                state=ToolCallState.ASKING,
+            )
+        ],
+    )
+    sessions = AsyncMock()
+    sessions.get_messages_by_session.return_value = [
+        persisted.model_dump(mode="json")
+    ]
+    projection = SessionProjection(sessions)
+
+    await projection.apply("ws_sess_test", UserConfirmResultEvent(
+        reply_id=reply_id,
+        tool_call_id="call-1",
+        approved=True,
+    ))
+
+    sessions.save_message.assert_not_awaited()
+    checkpoint = sessions.update_message.await_args.args[0]
+    assert checkpoint.id == reply_id
+    assert checkpoint.content[0].state == ToolCallState.ALLOWED
