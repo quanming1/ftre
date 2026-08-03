@@ -64,9 +64,18 @@ def set_agent_manager(mgr) -> None:
 
 
 @router.get("/traces")
-async def list_traces(limit: int = 100, offset: int = 0):
-    """List recent Agent traces without returning full prompt/tool payloads."""
-    page = await asyncio.to_thread(list_trace_summaries, limit=limit, offset=offset)
+async def list_traces(
+    limit: int = 100,
+    offset: int = 0,
+    session_id: str | None = None,
+):
+    """按 Session 分页返回 Agent Trace 摘要，不加载完整输入和工具载荷。"""
+    page = await asyncio.to_thread(
+        list_trace_summaries,
+        limit=limit,
+        offset=offset,
+        session_id=session_id,
+    )
     return {**page, "path": str(TRACE_DB_PATH)}
 
 

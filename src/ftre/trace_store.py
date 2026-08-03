@@ -125,20 +125,27 @@ def list_trace_summaries(
     *,
     limit: int = 100,
     offset: int = 0,
+    session_id: str | None = None,
 ) -> dict:
-    """Return one page of recent trace summaries.
+    """分页返回最近的 Trace 摘要，可限定到单个 Session。
 
-    Uses pure SQL aggregation to avoid loading child runs into Python,
-    which is critical for large databases (390MB+) bloated by inputs_json.
+    聚合完全在 SQL 中完成，避免把子 Run 和大型输入载荷读入 Python；
+    对体积较大的 Trace 数据库尤其重要。
     """
     limit = max(1, min(int(limit or 100), 500))
     offset = max(0, int(offset or 0))
     conn = _connect(path)
     try:
         _ensure_schema(conn)
+        where_sql = "parent_run_id IS NULL"
+        where_params: list[object] = []
+        if session_id:
+            where_sql += " AND json_extract(metadata_json, '$.session_id') = ?"
+            where_params.append(session_id)
         total = int(
             conn.execute(
-                "SELECT COUNT(*) FROM trace_runs WHERE parent_run_id IS NULL"
+                f"SELECT COUNT(*) FROM trace_runs WHERE {where_sql}",
+                where_params,
             ).fetchone()[0]
         )
         # Step 1: Get root runs with pagination (fast, uses index)
@@ -147,11 +154,11 @@ def list_trace_summaries(
             SELECT trace_id, name, status, start_time, end_time, duration_ms,
                    metadata_json, tags_json, outputs_json
             FROM trace_runs
-            WHERE parent_run_id IS NULL
+            WHERE {where_sql}
             ORDER BY start_time DESC, id DESC
             LIMIT ? OFFSET ?
-            """,
-            (limit, offset),
+            """.format(where_sql=where_sql),
+            (*where_params, limit, offset),
         ).fetchall()
         if not roots:
             return {

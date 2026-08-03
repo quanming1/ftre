@@ -45,7 +45,7 @@ def _run(
 
 def test_sqlite_trace_store_writes_and_reads_runs(tmp_path):
     db_path = tmp_path / "agent-traces.sqlite"
-    exporter = SQLiteTraceExporter(db_path)
+    exporter = SQLiteTraceExporter(db_path, max_age_days=0)
     root = _run(
         trace_id="trace-1",
         run_id="root",
@@ -91,7 +91,7 @@ def test_sqlite_trace_store_writes_and_reads_runs(tmp_path):
 
 def test_sqlite_trace_store_paginates_root_traces(tmp_path):
     db_path = tmp_path / "agent-traces.sqlite"
-    exporter = SQLiteTraceExporter(db_path)
+    exporter = SQLiteTraceExporter(db_path, max_age_days=0)
     for idx in range(3):
         trace_id = f"trace-{idx}"
         root_id = f"root-{idx}"
@@ -122,6 +122,10 @@ def test_sqlite_trace_store_paginates_root_traces(tmp_path):
     assert [item["trace_id"] for item in second["traces"]] == ["trace-0"]
     assert second["has_more"] is False
     assert second["next_offset"] is None
+
+    scoped = list_trace_summaries(db_path, session_id="sess_1")
+    assert scoped["total"] == 1
+    assert [item["trace_id"] for item in scoped["traces"]] == ["trace-1"]
 
 
 def test_sqlite_trace_store_migrates_legacy_inputs_to_payload_table(tmp_path):
