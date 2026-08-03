@@ -39,7 +39,13 @@ from ftre.config import AgentConfig, load_config
 from ftre.session.multimodal import build_user_content, normalize_stored_user_content
 from ftre.tools._workspace import WorkspaceAccessor
 
-from ftre.command.types import Handled, Passthrough, RewritePrompt, SendMessage
+from ftre.command.types import (
+    Handled,
+    Passthrough,
+    ResumeAgent,
+    RewritePrompt,
+    SendMessage,
+)
 
 from typing import TYPE_CHECKING
 
@@ -105,8 +111,8 @@ class Turn:
     final_content: str = ""                  # 最后一条完整 assistant 回复（task 工具用）
     subagent_status: str = "completed"       # subagent 完成态：completed/cancelled/error
 
-    # ── 权限确认恢复（user_confirm_result 帧触发时非 None）──
-    # 非 None 表示本 Turn 是恢复请求：跳过指令匹配/UserMsg 存储/普通消息构建，
+    # ── 权限确认恢复（/allow、/deny 指令触发时非 None）──
+    # 非 None 表示本 Turn 是恢复请求：跳过普通消息构建，
     # 注入历史 context 到新 agent，run() 时传入此事件而非 messages。
     confirm_event: object | None = None
 
@@ -251,28 +257,6 @@ class TurnExecutor:
         inbound = turn.inbound
         session_id = turn.session_id
 
-        # ── 权限确认恢复：跳过指令匹配与 UserMsg 存储，直接进 BUILDING ──
-        # user_confirm_result 帧不是用户消息，不该被当作 slash command，也不该
-        # 产生一条 UserMsg。构造 core 的 UserConfirmResultEvent 存到 turn，_build
-        # 会据此走恢复构建。
-        if inbound.type == "user_confirm_result":
-            from ftre_agent_core.event import UserConfirmResultEvent
-
-            turn.confirm_event = UserConfirmResultEvent(
-                reply_id=inbound.data.get("reply_id", ""),
-                tool_call_id=inbound.data.get("tool_call_id", ""),
-                approved=bool(inbound.data.get("approved")),
-            )
-            # 确认结果是 Core 的输入事件，不会由 agent.run() 再 yield 出来；
-            # 必须在恢复前由 Gateway 主动投影，确保新 Agent 读取到已更新的状态。
-            await loop.emit_session_event(
-                session_id,
-                inbound.from_channel,
-                turn.confirm_event,
-                metadata=inbound.metadata,
-            )
-            return TurnStatus.BUILDING
-
         content = inbound.data.get("content", "")
         attachments = inbound.data.get("attachments") or []
         agent_id = (inbound.metadata or {}).get("agent_id", "") or "default"
@@ -348,6 +332,20 @@ class TurnExecutor:
                 return TurnStatus.COMPLETED        # 短路
             case Passthrough():
                 return TurnStatus.COMPACTING       # 继续跑 Agent
+            case ResumeAgent(events=events):
+                if not events:
+                    return TurnStatus.COMPLETED
+                # 批量确认必须先全部落盘。核心层随后从持久化上下文读取整批
+                # ALLOWED/FINISHED 状态，最后一个事件只负责触发恢复。
+                for event in events:
+                    await loop.emit_session_event(
+                        session_id,
+                        inbound.from_channel,
+                        event,
+                        metadata=inbound.metadata,
+                    )
+                turn.confirm_event = events[-1]
+                return TurnStatus.BUILDING
             case _:
                 return TurnStatus.COMPACTING
 

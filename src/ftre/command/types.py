@@ -38,7 +38,19 @@ class Passthrough:
     pass
 
 
-CommandResult = Union[RewritePrompt, SendMessage, Handled, Passthrough]
+@dataclass
+class ResumeAgent:
+    """用一组已构造的输入事件恢复暂停中的 Agent。"""
+    events: list[Any]
+
+
+CommandResult = Union[
+    RewritePrompt,
+    SendMessage,
+    Handled,
+    Passthrough,
+    ResumeAgent,
+]
 """handler 返回值联合类型。None 视为 Handled（兼容旧 handler）。"""
 
 
@@ -81,6 +93,7 @@ Handler = Callable[[CommandContext], CommandResult | Awaitable[CommandResult] | 
 - SendMessage  → 推消息给前端，短路
 - Handled      → 短路
 - Passthrough  → 继续 → LLM
+- ResumeAgent  → 持久化输入事件并恢复暂停中的 Agent
 - None         → 视为 Handled（兼容旧 handler）
 
 同步或 async def 均可，dispatch 会统一 await。

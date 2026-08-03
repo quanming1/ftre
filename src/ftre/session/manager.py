@@ -68,6 +68,19 @@ class ExternalSessionModel(TypedDict):
     updated_at: float
 
 
+class StatePageModel(TypedDict):
+    """state.json 的分页只读视图。messages 保持原始 Msg 结构。"""
+
+    schema_version: int
+    file_path: str
+    session: dict[str, Any]
+    messages: list[dict[str, Any]]
+    metadata: dict[str, Any]
+    truncated_message_ids: list[str]
+    stats: dict[str, int | str | None]
+    page: dict[str, int | bool]
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,6 +101,40 @@ def _iso_to_epoch(value: str | None) -> float:
         return datetime.fromisoformat(value or "").timestamp()
     except ValueError:
         return time.time()
+
+
+def _truncate_large_strings(value: Any, *, max_chars: int) -> tuple[Any, bool]:
+    """递归压缩超长字符串，避免 state 分页被单个 base64/tool output 撑大。"""
+    if isinstance(value, str):
+        if len(value) <= max_chars:
+            return value, False
+        omitted = len(value) - max_chars
+        return (
+            f"{value[:max_chars]}\n"
+            f"… <省略 {omitted} 个字符，展开后可加载完整消息>",
+            True,
+        )
+    if isinstance(value, list):
+        output = []
+        truncated = False
+        for item in value:
+            compacted, item_truncated = _truncate_large_strings(
+                item, max_chars=max_chars,
+            )
+            output.append(compacted)
+            truncated = truncated or item_truncated
+        return output, truncated
+    if isinstance(value, dict):
+        output = {}
+        truncated = False
+        for key, item in value.items():
+            compacted, item_truncated = _truncate_large_strings(
+                item, max_chars=max_chars,
+            )
+            output[key] = compacted
+            truncated = truncated or item_truncated
+        return output, truncated
+    return value, False
 
 
 # channel_id 只允许字母、数字、下划线、连字符（保证拼接后的 session_id 可安全作目录名）
@@ -372,6 +419,118 @@ class SessionManager:
             self._ensure_not_corrupt(session_id)
             return None
         return self._to_session_model(state)
+
+    async def get_state_page(
+        self,
+        session_id: str,
+        *,
+        offset: int | None = None,
+        limit: int = 50,
+        max_string_chars: int = 20_000,
+    ) -> StatePageModel | None:
+        """读取 state.json 的一致性分页快照。
+
+        ``offset=None`` 默认返回最后一页，适合 Inspector 首次打开时快速查看
+        当前状态；传入 offset 可继续向前分页。读取与写入共用 per-session 锁，
+        因而不会把不同版本的 session / messages / metadata 拼在一起。
+        """
+        async with self._store.lock_for(session_id):
+            state = self._states.get(session_id)
+            if state is None:
+                self._ensure_not_corrupt(session_id)
+                return None
+
+            total = len(state.messages)
+            role_counts = {"user": 0, "assistant": 0, "system": 0}
+            block_counts = {
+                "text": 0,
+                "thinking": 0,
+                "tool_call": 0,
+                "tool_result": 0,
+                "data": 0,
+            }
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
+            latest_model: str | None = None
+            for message in state.messages:
+                if message.role in role_counts:
+                    role_counts[message.role] += 1
+                model = message.metadata.get("model")
+                if isinstance(model, str) and model:
+                    latest_model = model
+                if message.token is not None:
+                    prompt_tokens += message.token.usage.prompt_tokens
+                    completion_tokens += message.token.usage.completion_tokens
+                    total_tokens += message.token.usage.total_tokens
+                for block in message.content:
+                    block_type = getattr(block, "type", "")
+                    if block_type in block_counts:
+                        block_counts[block_type] += 1
+            page_limit = max(1, min(limit, 100))
+            page_offset = (
+                max(0, total - page_limit)
+                if offset is None
+                else max(0, min(offset, total))
+            )
+            end = min(total, page_offset + page_limit)
+            messages: list[dict[str, Any]] = []
+            truncated_message_ids: list[str] = []
+            for message in state.messages[page_offset:end]:
+                payload = message.model_dump(mode="json")
+                compacted, truncated = _truncate_large_strings(
+                    payload,
+                    max_chars=max(1_000, min(max_string_chars, 100_000)),
+                )
+                messages.append(compacted)
+                if truncated:
+                    truncated_message_ids.append(message.id)
+            return {
+                "schema_version": state.schema_version,
+                "file_path": str(self._store.state_path(session_id)),
+                "session": state.session.model_dump(mode="json"),
+                "messages": messages,
+                "metadata": state.metadata.copy(),
+                "truncated_message_ids": truncated_message_ids,
+                "stats": {
+                    "message_count": total,
+                    "user_messages": role_counts["user"],
+                    "assistant_messages": role_counts["assistant"],
+                    "system_messages": role_counts["system"],
+                    "text_blocks": block_counts["text"],
+                    "thinking_blocks": block_counts["thinking"],
+                    "tool_calls": block_counts["tool_call"],
+                    "tool_results": block_counts["tool_result"],
+                    "data_blocks": block_counts["data"],
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "model": latest_model,
+                },
+                "page": {
+                    "offset": page_offset,
+                    "limit": page_limit,
+                    "total": total,
+                    "has_more_before": page_offset > 0,
+                    "has_more_after": end < total,
+                },
+            }
+
+    async def get_state_message(
+        self,
+        session_id: str,
+        message_id: str,
+    ) -> dict[str, Any] | None:
+        """按需读取 state.json 中一条完整 Msg，供分页视图展开超大内容。"""
+        async with self._store.lock_for(session_id):
+            state = self._states.get(session_id)
+            if state is None:
+                self._ensure_not_corrupt(session_id)
+                return None
+            for message in state.messages:
+                if message.id == message_id:
+                    return message.model_dump(mode="json")
+            return None
 
     async def update_session(
         self,

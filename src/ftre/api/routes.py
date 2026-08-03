@@ -222,6 +222,34 @@ async def get_messages(
     return {"messages": messages, "status": status, "metadata": metadata}
 
 
+@router.get("/sessions/{session_id}/state")
+async def get_session_state(
+    session_id: str,
+    offset: int | None = None,
+    limit: int = 50,
+    max_string_chars: int = 20_000,
+):
+    """分页读取 state.json；默认返回最近一页消息，单页最多 100 条。"""
+    page = await _session_manager.get_state_page(
+        session_id,
+        offset=offset,
+        limit=limit,
+        max_string_chars=max_string_chars,
+    )
+    if page is None:
+        raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
+    return page
+
+
+@router.get("/sessions/{session_id}/state/messages/{message_id}")
+async def get_session_state_message(session_id: str, message_id: str):
+    """按需读取一条未截断的原始 Msg。"""
+    message = await _session_manager.get_state_message(session_id, message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail=f"消息不存在: {message_id}")
+    return message
+
+
 @router.get("/sessions/{session_id}/token_usage")
 async def get_token_usage(session_id: str):
     """

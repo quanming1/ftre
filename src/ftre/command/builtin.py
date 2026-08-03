@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from ftre.command.types import Handled
+from ftre.command.types import Handled, ResumeAgent, SendMessage
 
 if TYPE_CHECKING:
     from ftre.command.manager import CommandManager
@@ -37,6 +37,77 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
             task.cancel()
             logger.info(f"[command] cancel task 已取消 session={sid}")
         return Handled()
+
+    async def _confirm_tools(ctx, *, approved: bool):
+        """把 /allow、/deny 参数解析为核心确认事件。
+
+        tool_call_id 是客户端唯一需要提交的身份；reply_id 从当前会话
+        已持久化的 AssistantMsg 反查，避免让传输层维护核心事件字段。
+        """
+        tool_call_ids = list(dict.fromkeys((ctx.args or "").split()))
+        if not tool_call_ids:
+            return SendMessage(
+                f"用法：{ctx.command} <tool_id> [tool_id...]",
+                level="error",
+            )
+
+        from ftre.session.converter import _as_msg
+        from ftre_agent_core.event import UserConfirmResultEvent
+        from ftre_agent_core.message import ToolCallBlock, ToolCallState
+
+        inbound = ctx.meta.inbound
+        session_id = inbound.from_session or inbound.data.get("session_id", "")
+        records = await loop.session_manager.get_messages_by_session(session_id)
+        targets: dict[str, tuple[str, ToolCallBlock]] = {}
+        wanted = set(tool_call_ids)
+        for record in records:
+            message = _as_msg(record)
+            for block in message.content:
+                if (
+                    isinstance(block, ToolCallBlock)
+                    and block.id in wanted
+                ):
+                    targets[block.id] = (message.id, block)
+
+        missing = [tool_id for tool_id in tool_call_ids if tool_id not in targets]
+        if missing:
+            return SendMessage(
+                f"找不到待确认的工具调用：{', '.join(missing)}",
+                level="error",
+            )
+
+        not_asking = [
+            tool_id
+            for tool_id in tool_call_ids
+            if targets[tool_id][1].state != ToolCallState.ASKING
+        ]
+        if not_asking:
+            return SendMessage(
+                f"工具调用已不在待确认状态：{', '.join(not_asking)}",
+                level="warning",
+            )
+
+        reply_ids = {targets[tool_id][0] for tool_id in tool_call_ids}
+        if len(reply_ids) != 1:
+            return SendMessage(
+                "一次确认只能处理同一条回复中的工具调用",
+                level="error",
+            )
+        reply_id = next(iter(reply_ids))
+        return ResumeAgent(events=[
+            UserConfirmResultEvent(
+                reply_id=reply_id,
+                tool_call_id=tool_id,
+                approved=approved,
+            )
+            for tool_id in tool_call_ids
+        ])
+
+    async def _on_allow(ctx):
+        return await _confirm_tools(ctx, approved=True)
+
+    async def _on_deny(ctx):
+        return await _confirm_tools(ctx, approved=False)
 
     # /compact：普通指令，在锁内执行，串行安全
     async def _on_compact(ctx) -> Handled:
@@ -86,6 +157,20 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
         _on_cancel,
         description="取消当前会话执行",
         system=True,
+        persist_input=False,
+    )
+    mgr.register(
+        "/allow",
+        _on_allow,
+        description="允许一个或多个待确认工具调用",
+        args_hint="<tool_id> [tool_id...]",
+        persist_input=False,
+    )
+    mgr.register(
+        "/deny",
+        _on_deny,
+        description="拒绝一个或多个待确认工具调用",
+        args_hint="<tool_id> [tool_id...]",
         persist_input=False,
     )
     mgr.register(
