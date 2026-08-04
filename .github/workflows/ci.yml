@@ -20,6 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: quanming1/ftre-agent-core
+          ref: master
           path: ftre-agent-core
 
       - name: Set up Python ${{ matrix.python-version }}
