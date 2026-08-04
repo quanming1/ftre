@@ -552,12 +552,12 @@ class AgentManager:
 
         所有 agent 构建逻辑集中在此：LLM 覆盖 → 工具构建+过滤 → prompt 合成 → ReActAgent 实例化。
 
-        权限：始终注入 PermissionEngine。state 未传时新建一个带默认权限规则的
+        权限：规则与默认行为只通过 AgentState.permission_context 传入；PermissionEngine
+        由 Core 内部创建，应用层不再注入。state 未传时新建一个带默认权限规则的
         AgentState（bash 需用户确认，其余默认放行）；恢复场景由调用方传入已注入
         历史 context 的 state。
         """
         from ftre_agent_core.agent import ReActAgent
-        from ftre_agent_core.permission import PermissionEngine
         from ftre.tools import build_default_tools, filter_tools
 
         c = copy.deepcopy(config)
@@ -596,7 +596,6 @@ class AgentManager:
             tracer=tracer,
             hook_manager=hook_manager,
             state=state,
-            permission_engine=PermissionEngine(),
         )
 
     @staticmethod
@@ -604,10 +603,14 @@ class AgentManager:
         """新建带默认权限规则的 AgentState。
 
         默认 Bash 规则目前暂时停用，所有工具走 default_behavior=allow。
-        规则以序列化形式存入 permission_context，随 state.json 持久化。
+        规则以类型化 PermissionContext 存入 AgentState，随 state.json 持久化。
         """
         from ftre_agent_core.agent import AgentState
-        from ftre_agent_core.permission import PermissionBehavior, PermissionRule
+        from ftre_agent_core.permission import (
+            PermissionBehavior,
+            PermissionContext,
+            PermissionRule,
+        )
 
         bash_safe = PermissionRule(
             id="default-bash-safe",
@@ -623,14 +626,14 @@ class AgentManager:
             priority=0,
         )
         return AgentState(
-            permission_context={
-                "permission_rules": [
+            permission_context=PermissionContext(
+                permission_rules=[
                     # 默认 Bash 权限规则暂时停用；需要时取消下面两行注释。
-                    # bash_safe.model_dump(mode="json"),
-                    # bash_ask.model_dump(mode="json"),
+                    # bash_safe,
+                    # bash_ask,
                 ],
-                "default_behavior": PermissionBehavior.ALLOW.value,
-            }
+                default_behavior=PermissionBehavior.ALLOW,
+            )
         )
 
     @staticmethod
