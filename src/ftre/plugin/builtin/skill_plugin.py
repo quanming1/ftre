@@ -31,6 +31,38 @@ def _read_text_safe(path: Path) -> str:
 
 DEFAULT_SKILLS_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "skills"
 
+# 会话工作区扩展目录名：<cwd>/.ftre/skills
+WORKSPACE_EXT_DIR = ".ftre"
+
+
+def workspace_skills_dir(workspace: str) -> Path | None:
+    """返回 <workspace>/.ftre/skills，仅当目录存在时返回，否则 None（只读发现，不创建）。"""
+    if not workspace:
+        return None
+    d = Path(workspace) / WORKSPACE_EXT_DIR / "skills"
+    return d if d.is_dir() else None
+
+
+def _merge_skill_descriptions(base: list[dict], overrides: list[dict]) -> list[dict]:
+    """按 name 合并 skill 描述列表，overrides 同名覆盖 base（高优先级在后）。"""
+    if not overrides:
+        return base
+    override_names = {d["name"] for d in overrides}
+    kept = [d for d in base if d["name"] not in override_names]
+    kept.extend(overrides)
+    return kept
+
+
+def _workspace_cwd(workspace) -> str:
+    """从注入的 workspace（WorkspaceAccessor）安全取当前 cwd；缺失时返回空串。"""
+    getter = getattr(workspace, "get", None)
+    if callable(getter):
+        try:
+            return getter() or ""
+        except Exception:
+            return ""
+    return ""
+
 
 class SkillPlugin(Plugin):
     """Register the loadSkill tool."""
@@ -113,14 +145,33 @@ class SkillPlugin(Plugin):
         return _read_text_safe(skill_file).strip()
 
     async def _inject_system_prompt(self, ctx):
+        # 三级 Skill 目录的具体路径（工作区级用当前 session 的真实 cwd）
+        global_dir = get_skills_dir_path(self._skills_dir)
+        agent_profile = getattr(ctx, "agent_profile", None)
+        agent_dir = (
+            str((Path(agent_profile.agent_dir) / "skills").resolve())
+            if agent_profile is not None and agent_profile.agent_dir
+            else "~/.ftre/agents/<agent_name>/skills"
+        )
+        cwd = getattr(ctx, "workspace", "") or ""
+        workspace_dir = (
+            str((Path(cwd) / WORKSPACE_EXT_DIR / "skills").resolve())
+            if cwd
+            else "<当前工作区>/.ftre/skills"
+        )
         parts = [
             "<skill_desc>\n"
-            "Skill 是本地能力说明文件。全局 Skill 存放在 ~/.ftre/skills，"
-            "Agent 私有 Skill 存放在 ~/.ftre/agents/<agent_name>/skills。"
-            "如果用户点名某个 Skill，或用户需求与下方任一 Skill 的能力描述匹配，"
+            "Skill 是本地能力说明文件，按作用域分三级（同名优先级：工作区 > Agent > 全局）：\n"
+            f"- 全局 Skill：{global_dir}（对所有 Agent、所有工作区生效）\n"
+            f"- Agent 私有 Skill：{agent_dir}（仅当前 Agent 生效）\n"
+            f"- 工作区专属 Skill：{workspace_dir}（仅当前工作区生效，优先级最高）\n"
+            "使用：如果用户点名某个 Skill，或用户需求与下方任一 Skill 的能力描述匹配，"
             "且该 Skill 的完整内容尚未在当前对话历史中被加载过，"
             "请调用 loadSkill 读取该 Skill 的完整内容，再按 Skill 内容执行任务。"
-            "同一个 Skill 在当前对话中只需加载一次，不要重复加载。"
+            "同一个 Skill 在当前对话中只需加载一次，不要重复加载。\n"
+            "创建 Skill：先判断作用域再落到对应目录——只服务当前项目/工作区就写工作区级，"
+            "只服务当前 Agent 人设就写 Agent 私有级，通用能力才写全局级；"
+            "写入前用上面对应的绝对路径，Skill 形态为 <目录>/<name>/SKILL.md。"
             "\n</skill_desc>"
         ]
         skill_list = self._build_skill_list_prompt(ctx)
@@ -370,11 +421,16 @@ class SkillPlugin(Plugin):
         agent_profile = getattr(ctx, "agent_profile", None)
         if agent_profile is not None and agent_profile.agent_dir:
             private_dir = Path(agent_profile.agent_dir) / "skills"
-            private_descs = list_skill_descriptions(private_dir)
-            if private_descs:
-                private_names = {d["name"] for d in private_descs}
-                descriptions = [d for d in descriptions if d["name"] not in private_names]
-                descriptions.extend(private_descs)
+            descriptions = _merge_skill_descriptions(
+                descriptions, list_skill_descriptions(private_dir)
+            )
+
+        # 合并 session 工作区 skill（<cwd>/.ftre/skills，同名覆盖 agent + global）
+        ws_skills_dir = workspace_skills_dir(getattr(ctx, "workspace", ""))
+        if ws_skills_dir is not None:
+            descriptions = _merge_skill_descriptions(
+                descriptions, list_skill_descriptions(ws_skills_dir)
+            )
 
         if not descriptions:
             return ""
@@ -408,7 +464,11 @@ def create_load_skill_tool(skills_dir: Path, disabled_skills: set[str] | None = 
 
     _disabled = disabled_skills if disabled_skills is not None else set()
 
-    def loadSkill(skill: str, agent_profile=Injected("agent_profile")) -> str:
+    def loadSkill(
+        skill: str,
+        agent_profile=Injected("agent_profile"),
+        workspace=Injected("workspace"),
+    ) -> str:
         skill_name = (skill or "").strip()
         if not skill_name:
             return "[error] skill name is required"
@@ -423,12 +483,15 @@ def create_load_skill_tool(skills_dir: Path, disabled_skills: set[str] | None = 
         if skill_name in effective_disabled:
             return f"[error] skill '{skill_name}' is disabled"
 
-        # 搜索顺序：agent 私有目录 → 全局目录
+        # 搜索顺序（高优先级在前）：session 工作区 → agent 私有 → 全局
         search_dirs = [skills_dir]
         if agent_profile is not None and agent_profile.agent_dir:
             private_dir = Path(agent_profile.agent_dir) / "skills"
             if private_dir not in search_dirs:
                 search_dirs.insert(0, private_dir)
+        ws_dir = workspace_skills_dir(_workspace_cwd(workspace))
+        if ws_dir is not None and ws_dir not in search_dirs:
+            search_dirs.insert(0, ws_dir)
 
         for d in search_dirs:
             candidates = (

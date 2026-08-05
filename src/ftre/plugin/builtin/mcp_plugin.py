@@ -25,6 +25,54 @@ from ftre.config import CONFIG_PATH, AGENTS_DIR
 
 logger = logging.getLogger(__name__)
 
+# 会话工作区扩展目录：<cwd>/.ftre/mcp.json
+WORKSPACE_EXT_DIR = ".ftre"
+WORKSPACE_MCP_FILE = "mcp.json"
+
+
+def _workspace_cwd(ctx) -> str:
+    """从 hook ctx 取当前会话工作区（cwd）绝对路径；缺失时返回空串。"""
+    return str(getattr(ctx, "workspace", "") or "")
+
+
+def _workspace_prefix(cwd: str) -> str:
+    """按 cwd 生成短哈希前缀，避免不同工作区的同名 MCP server 撞名。"""
+    import hashlib
+
+    digest = hashlib.blake2b(cwd.encode("utf-8"), digest_size=4).hexdigest()
+    return f"ws_{digest}__"
+
+
+def _load_workspace_mcp_configs(cwd: str) -> list["McpServerConfig"]:
+    """读取 <cwd>/.ftre/mcp.json，解析为带工作区前缀的 McpServerConfig 列表。
+
+    只读发现：文件不存在或解析失败返回空列表。server name 加 cwd 短哈希前缀，
+    确保不同工作区的同名 server 在全局连接池中互不冲突。
+    """
+    if not cwd:
+        return []
+    mcp_file = Path(cwd) / WORKSPACE_EXT_DIR / WORKSPACE_MCP_FILE
+    if not mcp_file.is_file():
+        return []
+    try:
+        raw = json.loads(mcp_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("[mcp-plugin] 读取工作区 MCP 配置失败 %s: %s", mcp_file, e)
+        return []
+    # 支持两种形态：顶层直接是 server 映射，或包一层 {"mcp": {...}}
+    servers = raw.get("mcp", raw) if isinstance(raw, dict) else {}
+    if not isinstance(servers, dict):
+        return []
+    prefix = _workspace_prefix(cwd)
+    configs: list[McpServerConfig] = []
+    for name, server_raw in servers.items():
+        if not isinstance(server_raw, dict):
+            continue
+        cfg = McpServerConfig.from_raw(f"{prefix}{name}", server_raw)
+        if cfg:
+            configs.append(cfg)
+    return configs
+
 
 class McpPlugin(Plugin):
     name = "mcp"
@@ -80,6 +128,9 @@ class McpPlugin(Plugin):
                 cfg = McpServerConfig.from_raw(name, raw)
                 if cfg:
                     private_configs.append(cfg)
+
+        # 追加 session 工作区 MCP（<cwd>/.ftre/mcp.json，server name 带 cwd 哈希前缀防撞名）
+        private_configs.extend(_load_workspace_mcp_configs(_workspace_cwd(ctx)))
 
         # 连接 + 注册私有 MCP 工具
         if private_configs and ctx.agent_tool_registry:

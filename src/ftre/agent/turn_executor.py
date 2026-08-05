@@ -37,7 +37,7 @@ from ftre.bus import BusMessage, GLOBAL_CHANNEL, GLOBAL_SESSION
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 from ftre.config import AgentConfig, load_config
 from ftre.session.multimodal import build_user_content, normalize_stored_user_content
-from ftre.tools._workspace import WorkspaceAccessor
+from ftre.tools._workspace import WorkspaceAccessor, ensure_workspace_ext_dir
 
 from ftre.command.types import (
     Handled,
@@ -457,6 +457,8 @@ class TurnExecutor:
 
         # ── 构建发给 LLM 的消息 ──
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
+        # 发送消息时确保当前工作区有 .ftre 扩展目录骨架（工作区级 skill / mcp.json 的落点）
+        ensure_workspace_ext_dir(workspace)
         # prompt_override 来自 RewritePrompt 指令：发给 LLM 用改写后的，DB 存原始
         prompt_override = (inbound.data.get("metadata") or {}).get("prompt_override")
         llm_content = prompt_override if prompt_override else content
@@ -533,6 +535,7 @@ class TurnExecutor:
                 config=hook_config,
                 agent_profile=agent_profile,
                 agent_tool_registry=agent.tool_registry,
+                workspace=workspace,
             )
             ctx = await loop.hook_manager.trigger(BEFORE_AGENT_RUN, ctx)
             turn.messages = ctx.messages  # hook 可能改写了 messages
@@ -620,6 +623,7 @@ class TurnExecutor:
                 config=hook_config,
                 agent_profile=agent_profile,
                 agent_tool_registry=agent.tool_registry,
+                workspace=workspace,
             )
             ctx = await loop.hook_manager.trigger(BEFORE_AGENT_RUN, ctx)
             system_parts = [

@@ -103,6 +103,7 @@ class AgentRunContext:
     config: "AgentConfig"
     agent_profile: "AgentProfile | None" = None
     agent_tool_registry: "ToolRegistry | None" = None
+    workspace: str = ""  # 当前会话工作区（cwd）绝对路径，插件据此装载 <cwd>/.ftre 扩展
 
 
 

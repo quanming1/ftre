@@ -18,12 +18,46 @@ API：
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ftre.session import SessionManager
+
+logger = logging.getLogger(__name__)
+
+# 会话工作区扩展目录：<cwd>/.ftre，其下可放 skills/ 与 mcp.json
+WORKSPACE_EXT_DIR = ".ftre"
+WORKSPACE_MCP_FILE = "mcp.json"
+
+
+def ensure_workspace_ext_dir(cwd: str) -> None:
+    """确保 <cwd>/.ftre 扩展骨架存在（skills/ 目录 + 空 mcp.json）。
+
+    在处理 user 消息、cwd 确定后调用一次：给当前工作区默认建好扩展目录骨架，
+    方便用户直接往里放工作区级 skill / mcp。cwd 为空或不是已存在目录时跳过
+    （不对不存在的路径乱建）；已存在的文件不覆盖；失败只记日志，不影响主流程。
+    """
+    if not cwd:
+        return
+    base = Path(cwd)
+    if not base.is_dir():
+        return
+    ext_dir = base / WORKSPACE_EXT_DIR
+    try:
+        (ext_dir / "skills").mkdir(parents=True, exist_ok=True)
+        mcp_file = ext_dir / WORKSPACE_MCP_FILE
+        if not mcp_file.exists():
+            mcp_file.write_text(
+                json.dumps({"mcp": {}}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+    except OSError as e:
+        logger.warning("[workspace] 创建 %s/%s 失败: %s", cwd, WORKSPACE_EXT_DIR, e)
 
 
 @dataclass

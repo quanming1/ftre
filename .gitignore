@@ -22,3 +22,6 @@ debug_*.py
 
 # 鏃ュ織
 *.log 
+
+# 工作区扩展目录：gateway 运行时在 cwd 下自动创建的 skill/mcp 骨架，非源码
+/.ftre/
