@@ -15,6 +15,7 @@ from .read import create_read_tool
 from .send_message import create_send_message_tool
 from .set_workspace import create_set_workspace_tool
 from .task import create_task_tool
+from .team import create_team_tools
 from .write import create_write_tool
 
 
@@ -73,6 +74,8 @@ def build_default_tools(
     if channel_manager:
         registry.register(create_task_tool(channel_manager))
         registry.register(create_send_message_tool(channel_manager))
+        for tool in create_team_tools(channel_manager):
+            registry.register(tool)
 
     if tool_registry is not None:
         for tool in tool_registry.snapshot():
