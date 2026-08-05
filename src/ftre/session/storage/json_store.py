@@ -31,7 +31,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from .state import AgentStateFile, parse_agent_state_json
+from ..entity.state import AgentStateFile, parse_agent_state_json
 
 logger = logging.getLogger(__name__)
 

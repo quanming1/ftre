@@ -10,7 +10,7 @@ import pytest
 from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
 from pydantic import ValidationError
 
-from ftre.session.state import (
+from ftre.session.entity.state import (
     AgentStateFile,
     UnsupportedAgentStateVersion,
     parse_agent_state,

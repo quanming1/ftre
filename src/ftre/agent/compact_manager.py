@@ -255,7 +255,7 @@ class CompactManager:
         )
 
         # 估算压缩前后 token（只算活跃区间）
-        from ftre.session.token_counter import estimate_messages_tokens
+        from ftre.session.message.token_counter import estimate_messages_tokens
         tokens_before = estimate_messages_tokens(active_records)
         changed_messages: dict[str, Msg] = {}
         for message, block in to_compact:
@@ -367,7 +367,7 @@ class CompactManager:
             return None
 
         # 6. 估算摘要后 token
-        from ftre.session.token_counter import estimate_messages_tokens
+        from ftre.session.message.token_counter import estimate_messages_tokens
         tokens_after = estimate_messages_tokens([{
             "role": "user",
             "content": [{"type": "text", "text": summary}],
@@ -578,7 +578,7 @@ def _serialize_messages(
     tool_output_max_chars: int = 2000,
 ) -> str:
     """把 Msg 历史序列化为 LLM 可读的纯文本。"""
-    from ftre.session.converter import to_openai
+    from ftre.session.message.converter import to_openai
 
     def content_text(content, *, include_thinking: bool = False) -> str:
         if isinstance(content, str):

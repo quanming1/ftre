@@ -151,7 +151,7 @@ class SessionProjection:
             async with self._lock:
                 has_active = reply_id in self._replies.get(session_id, {})
             if not has_active:
-                from ftre.session.converter import _as_msg
+                from ftre.session.message.converter import _as_msg
 
                 records = await self._session_manager.get_messages_by_session(
                     session_id

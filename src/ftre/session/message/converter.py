@@ -19,8 +19,8 @@ from ftre_agent_core.message import (
     to_openai_part,
 )
 
-from ftre.session.manager import MessageModel
-from ftre.session.multimodal import IMAGE_OMITTED_NOTICE
+from ftre.session.entity.models import MessageModel
+from .multimodal import IMAGE_OMITTED_NOTICE
 
 
 def _as_msg(record: MessageModel | Msg | dict[str, Any]) -> Msg:

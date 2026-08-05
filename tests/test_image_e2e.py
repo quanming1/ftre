@@ -1,6 +1,6 @@
 import base64
 
-from ftre.session.converter import to_openai
+from ftre.session.message.converter import to_openai
 from ftre_agent_core.message import Base64Source, DataBlock, MsgName, UserMsg
 
 

@@ -36,7 +36,7 @@ from ftre_agent_core.message import Msg, from_openai_message
 from ftre.bus import BusMessage, GLOBAL_CHANNEL, GLOBAL_SESSION
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 from ftre.config import AgentConfig, load_config
-from ftre.session.multimodal import build_user_content, normalize_stored_user_content
+from ftre.session.message.multimodal import build_user_content, normalize_stored_user_content
 from ftre.tools._workspace import WorkspaceAccessor, ensure_workspace_ext_dir
 
 from ftre.command.types import (
@@ -558,7 +558,7 @@ class TurnExecutor:
           工具结果/后续事件聚合回原 assistant Msg。
         """
         from ftre_agent_core.agent import AgentState
-        from ftre.session.converter import _as_msg
+        from ftre.session.message.converter import _as_msg
 
         loop = self._loop
         inbound = turn.inbound
@@ -1015,7 +1015,7 @@ class TurnExecutor:
         )
 
         if messages:
-            from ftre.session.converter import to_openai
+            from ftre.session.message.converter import to_openai
 
             # 持久化 Msg 转 OpenAI messages（已含本轮 user Msg）
             history = to_openai(

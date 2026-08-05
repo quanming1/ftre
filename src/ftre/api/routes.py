@@ -206,6 +206,21 @@ async def delete_session(session_id: str):
     return {"status": "deleted", "session_id": session_id}
 
 
+@router.post("/sessions/{session_id}/fork")
+async def fork_session_endpoint(session_id: str):
+    """把指定 session 复制为一个独立的新 session（沿用 channel/workspace，
+    复制消息与 metadata，追加 forked_from 溯源）。返回新 session 信息。"""
+    session = await _session_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
+    result = await _session_manager.fork_session(session_id)
+    return {
+        "fork_session_id": result.fork_session_id,
+        "title": result.title,
+        "workspace": result.workspace,
+    }
+
+
 @router.get("/sessions/{session_id}/messages")
 async def get_messages(
     session_id: str,

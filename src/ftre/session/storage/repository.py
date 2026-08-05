@@ -1,0 +1,546 @@
+"""SessionRepository —— Session 纯数据存取（CRUD + 索引 + 提交）。
+
+只负责把 AgentStateFile 搬进搬出并维护索引，不含任何业务规则
+（上下文裁剪 / token 计算 / 前端投影等归 Service 层）。
+
+并发模型：per-session asyncio.Lock + 全局 create/delete 锁；
+写盘采用临时文件 + fsync + os.replace 原子替换，写盘成功后才提交内存缓存。
+
+旧 ``sessions.db`` 不做迁移兼容：启动时直接删除遗留文件（含 wal/shm），
+历史数据不保留。
+"""
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+import logging
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from ftre_agent_core.message import Msg
+
+from ftre.config import CONFIG_PATH
+from ftre.session.entity.models import (
+    ExternalSessionModel,
+    MessageModel,
+    SessionModel,
+)
+from ftre.session.entity.state import AgentStateFile, SessionState
+from .json_store import JsonStateStore
+
+logger = logging.getLogger(__name__)
+
+
+# 旧 SQLite 数据库路径：~/.ftre/sessions.db（不再使用，启动时直接删除）
+DEFAULT_DB_PATH = str(CONFIG_PATH.parent / "sessions.db")
+
+
+def _now_iso() -> str:
+    return datetime.now().astimezone().isoformat()
+
+
+def _epoch_to_iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts).astimezone().isoformat()
+
+
+def _iso_to_epoch(value: str | None) -> float:
+    try:
+        return datetime.fromisoformat(value or "").timestamp()
+    except ValueError:
+        return time.time()
+
+
+# channel_id 只允许字母、数字、下划线、连字符（保证拼接后的 session_id 可安全作目录名）
+_CHANNEL_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_channel_id(channel_id: str) -> None:
+    if not channel_id:
+        raise ValueError("channel_id 不能为空")
+    if not _CHANNEL_ID_RE.match(channel_id):
+        raise ValueError(
+            f"channel_id 含非法字符（只允许 [A-Za-z0-9_-]）: {channel_id!r}"
+        )
+
+
+class SessionRepository:
+    """Session 数据存取唯一入口；调用方不应直接读写 state.json。"""
+
+    def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
+        # db_path 仅用于推导配置目录（sessions/ 与其同级）；旧库文件会被删除
+        self._db_path = db_path or DEFAULT_DB_PATH
+        root = Path(sessions_dir) if sessions_dir else Path(self._db_path).parent / "sessions"
+        self._store = JsonStateStore(root)
+        self._states = self._store.states  # 引用同一 dict（store 负责清空/填充）
+        # Msg.id → session_id（Msg.id 在配置目录内全局唯一）
+        self._message_sessions: dict[str, str] = {}
+        # (channel_id, external_key) → session_id
+        self._external_sessions: dict[tuple[str, str], str] = {}
+
+    async def init(self) -> None:
+        """启动：删除遗留 sessions.db（不迁移），加载全部 JSON 状态并建索引。"""
+        await self._discard_legacy_db()
+        await self._store.load_all()
+        self._rebuild_indexes()
+
+    async def _discard_legacy_db(self) -> None:
+        """直接删除遗留 SQLite 文件（含 wal/shm/journal），不做数据迁移。"""
+        legacy = Path(self._db_path)
+        if not legacy.exists():
+            return
+        logger.warning(
+            "[session-store] 删除遗留 sessions.db（不迁移兼容）: %s", legacy
+        )
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = Path(str(legacy) + suffix)
+            try:
+                if path.exists():
+                    await asyncio.to_thread(path.unlink)
+            except OSError:
+                logger.exception("[session-store] 删除失败: %s", path)
+
+    def create_id(self) -> str:
+        """生成新的 session_id"""
+        return f"sess_{uuid.uuid4().hex[:12]}"
+
+    # ============================================================
+    # 供 Service 层使用的数据访问原语
+    # ============================================================
+
+    def get_state(self, session_id: str) -> AgentStateFile | None:
+        """读取内存中的完整状态；不存在返回 None（损坏 session 明确报错）。"""
+        state = self._states.get(session_id)
+        if state is None:
+            self._ensure_not_corrupt(session_id)
+            return None
+        return state
+
+    def all_states(self) -> list[tuple[str, AgentStateFile]]:
+        """全部 (session_id, 状态) 快照列表，供启动期全量扫描类业务使用。"""
+        return list(self._states.items())
+
+    def lock_for(self, session_id: str) -> asyncio.Lock:
+        """一个 Session 一把锁；读写同一 session 的状态须持有。"""
+        return self._store.lock_for(session_id)
+
+    @property
+    def global_lock(self) -> asyncio.Lock:
+        return self._store.global_lock
+
+    def state_path(self, session_id: str) -> Path:
+        return self._store.state_path(session_id)
+
+    async def commit(self, new_state: AgentStateFile) -> None:
+        """原子写盘成功后提交内存缓存（并发场景调用方必须已持有对应锁）。"""
+        await self._store.write(new_state)
+        session_id = new_state.session.id
+        old_state = self._states.get(session_id)
+        if old_state is not None:
+            for message in old_state.messages:
+                self._message_sessions.pop(message.id, None)
+        self._states[session_id] = new_state
+        for message in new_state.messages:
+            self._message_sessions[message.id] = session_id
+        external = self._external_of(new_state)
+        stale = [k for k, v in self._external_sessions.items() if v == session_id]
+        for key in stale:
+            self._external_sessions.pop(key, None)
+        if external is not None:
+            key = (external["channel_id"], external["external_key"])
+            self._external_sessions[key] = session_id
+
+    # ============================================================
+    # 内部：索引 / 边界转换
+    # ============================================================
+
+    def _rebuild_indexes(self) -> None:
+        self._message_sessions.clear()
+        self._external_sessions.clear()
+        for session_id, state in self._states.items():
+            for message in state.messages:
+                self._message_sessions[message.id] = session_id
+            external = self._external_of(state)
+            if external is not None:
+                key = (external["channel_id"], external["external_key"])
+                self._external_sessions[key] = session_id
+
+    @staticmethod
+    def _external_of(state: AgentStateFile) -> dict[str, Any] | None:
+        external = state.metadata.get("external")
+        if (
+            isinstance(external, dict)
+            and isinstance(external.get("channel_id"), str)
+            and isinstance(external.get("external_key"), str)
+        ):
+            return external
+        return None
+
+    def _ensure_not_corrupt(self, session_id: str) -> None:
+        """访问已隔离的损坏 Session 时明确报错，而不是当作不存在。"""
+        error = self._store.corrupt.get(session_id)
+        if error is not None:
+            raise error
+
+    def _require_state(self, session_id: str) -> AgentStateFile:
+        state = self._states.get(session_id)
+        if state is None:
+            self._ensure_not_corrupt(session_id)
+            raise ValueError(f"session 不存在: {session_id}")
+        return state
+
+    @staticmethod
+    def to_session_model(state: AgentStateFile) -> SessionModel:
+        session = state.session
+        return SessionModel(
+            id=session.id,
+            channel_id=session.channel_id,
+            title=session.title,
+            workspace=session.workspace,
+            metadata=dict(state.metadata),
+            created_at=_iso_to_epoch(session.created_at),
+            updated_at=_iso_to_epoch(session.updated_at),
+        )
+
+    @staticmethod
+    def to_message_model(msg: Msg, session_id: str) -> MessageModel:
+        payload = msg.model_dump(mode="json")
+        return MessageModel(
+            id=msg.id,
+            session_id=session_id,
+            name=msg.name,
+            role=msg.role,
+            content=payload["content"],
+            metadata=payload["metadata"],
+            created_at=msg.created_at,
+            token=payload.get("token"),
+            finished_at=msg.finished_at,
+            finished_reason=payload.get("finished_reason"),
+            structured_output=payload.get("structured_output"),
+            error=payload.get("error"),
+            timestamp=_iso_to_epoch(msg.created_at),
+        )
+
+    # ============================================================
+    # Session CRUD
+    # ============================================================
+
+    async def create_session(
+        self, channel_id: str, title: str = "", workspace: str = ""
+    ) -> str:
+        """创建新 session，返回 session_id（格式: '<channel_id>_sess_<hex12>'）"""
+        _validate_channel_id(channel_id)
+        sid = f"{channel_id}_{self.create_id()}"
+        now = _now_iso()
+        state = AgentStateFile(
+            session=SessionState(
+                id=sid,
+                channel_id=channel_id,
+                title=title,
+                workspace=workspace,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        async with self._store.global_lock:
+            await self.commit(state)
+        return sid
+
+    async def get_or_create_external_session(
+        self,
+        channel_id: str,
+        external_key: str,
+        title: str = "",
+        workspace: str = "",
+        external_data: dict[str, Any] | None = None,
+    ) -> str:
+        """Get or create a local session bound to an external platform conversation."""
+        _validate_channel_id(channel_id)
+        if not external_key:
+            raise ValueError("external_key cannot be empty")
+
+        async with self._store.global_lock:
+            session_id = self._external_sessions.get((channel_id, external_key))
+            state = self._states.get(session_id) if session_id else None
+            now = _now_iso()
+            if state is not None:
+                # 已存在：更新 external data 和 updated_at
+                new_state = state.model_copy(deep=True)
+                external = new_state.metadata["external"]
+                external["data"] = dict(external_data or {})
+                external["updated_at"] = now
+                new_state.session.updated_at = now
+                await self.commit(new_state)
+                return session_id
+
+            session_id = f"{channel_id}_{self.create_id()}"
+            state = AgentStateFile(
+                session=SessionState(
+                    id=session_id,
+                    channel_id=channel_id,
+                    title=title,
+                    workspace=workspace,
+                    created_at=now,
+                    updated_at=now,
+                ),
+                metadata={
+                    "external": {
+                        "channel_id": channel_id,
+                        "external_key": external_key,
+                        "data": dict(external_data or {}),
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                },
+            )
+            await self.commit(state)
+            return session_id
+
+    async def get_external_session(self, session_id: str) -> ExternalSessionModel | None:
+        """Look up external platform conversation metadata by local session id."""
+        state = self._states.get(session_id)
+        if state is None:
+            self._ensure_not_corrupt(session_id)
+            return None
+        external = self._external_of(state)
+        if external is None:
+            return None
+        return ExternalSessionModel(
+            channel_id=external["channel_id"],
+            external_key=external["external_key"],
+            session_id=session_id,
+            external_data=dict(external.get("data") or {}),
+            created_at=_iso_to_epoch(external.get("created_at")),
+            updated_at=_iso_to_epoch(external.get("updated_at")),
+        )
+
+    async def get_session(self, session_id: str) -> SessionModel | None:
+        """获取 session，不存在返回 None"""
+        state = self._states.get(session_id)
+        if state is None:
+            self._ensure_not_corrupt(session_id)
+            return None
+        return self.to_session_model(state)
+
+    async def update_session(
+        self,
+        session_id: str,
+        title: str | None = None,
+        workspace: str | None = None,
+    ) -> None:
+        """
+        更新 session（title / workspace / updated_at）。
+        title 或 workspace 任一非 None 即更新对应字段；都为 None 时仅刷 updated_at。
+        """
+        async with self._store.lock_for(session_id):
+            state = self._states.get(session_id)
+            if state is None:
+                self._ensure_not_corrupt(session_id)
+                return
+            new_state = state.model_copy(deep=True)
+            if title is not None:
+                new_state.session.title = title
+            if workspace is not None:
+                new_state.session.workspace = workspace
+            new_state.session.updated_at = _now_iso()
+            await self.commit(new_state)
+
+    async def get_session_metadata(self, session_id: str) -> dict[str, Any]:
+        """读取 session 的完整 metadata（解析后的 dict）。session 不存在返回空 dict。"""
+        state = self._states.get(session_id)
+        if state is None:
+            self._ensure_not_corrupt(session_id)
+            return {}
+        return dict(state.metadata)
+
+    async def update_session_metadata(
+        self, session_id: str, key: str, value: Any | None
+    ) -> dict[str, Any]:
+        """合并写入 metadata 的单个 key。
+
+        Args:
+            key: metadata 中的字段名
+            value: 要写入的值；传 None 表示删除该 key
+
+        Returns:
+            写入后的完整 metadata dict
+        """
+        async with self._store.lock_for(session_id):
+            state = self._require_state(session_id)
+            new_state = state.model_copy(deep=True)
+            if value is None:
+                new_state.metadata.pop(key, None)
+            else:
+                new_state.metadata[key] = value
+            new_state.session.updated_at = _now_iso()
+            await self.commit(new_state)
+            return dict(new_state.metadata)
+
+    async def delete_session(self, session_id: str) -> None:
+        """删除 session 及其所有 messages（只删除精确目标文件）"""
+        async with self._store.global_lock:
+            async with self._store.lock_for(session_id):
+                state = self._states.pop(session_id, None)
+                if state is not None:
+                    for message in state.messages:
+                        self._message_sessions.pop(message.id, None)
+                    stale = [
+                        k for k, v in self._external_sessions.items() if v == session_id
+                    ]
+                    for key in stale:
+                        self._external_sessions.pop(key, None)
+                await self._store.delete(session_id)
+                self._store.locks.pop(session_id, None)
+
+    async def list_sessions(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        channel_id: str | None = None,
+        workspace: str | None = None,
+    ) -> list[SessionModel]:
+        """
+        列出 sessions（按 updated_at 倒序）。
+
+        Args:
+            limit:      返回数量上限
+            offset:     偏移量（分页用）
+            channel_id: 非空时仅返回该 channel
+            workspace:  非 None 时仅返回该 workspace（空串 "" = 未设置工作区的会话）
+        """
+        states = self._filter_states(channel_id=channel_id, workspace=workspace)
+        states.sort(key=lambda s: _iso_to_epoch(s.session.updated_at), reverse=True)
+        return [
+            self.to_session_model(state) for state in states[offset:offset + limit]
+        ]
+
+    async def count_sessions(
+        self,
+        channel_id: str | None = None,
+        workspace: str | None = None,
+    ) -> int:
+        """返回 sessions 总数（用于分页 total）"""
+        return len(self._filter_states(channel_id=channel_id, workspace=workspace))
+
+    def _filter_states(
+        self,
+        *,
+        channel_id: str | None = None,
+        workspace: str | None = None,
+    ) -> list[AgentStateFile]:
+        states = []
+        for state in self._states.values():
+            if channel_id and state.session.channel_id != channel_id:
+                continue
+            if workspace is not None and state.session.workspace != workspace:
+                continue
+            states.append(state)
+        return states
+
+    async def list_workspaces(self, channel_id: str | None = None) -> list[dict]:
+        """
+        枚举所有出现过的 workspace，按各自最新活跃时间倒序。
+
+        每个 workspace 返回：
+        - workspace: 工作区路径（"" = 未设置）
+        - session_count: 该工作区下的会话数
+        - latest_at: 该工作区下最新会话的 updated_at
+
+        Args:
+            channel_id: 非空时仅统计该 channel（如 "ws"）下的工作区
+        """
+        grouped: dict[str, dict] = {}
+        for state in self._filter_states(channel_id=channel_id):
+            workspace = state.session.workspace or ""
+            updated = _iso_to_epoch(state.session.updated_at)
+            entry = grouped.setdefault(
+                workspace, {"workspace": workspace, "session_count": 0, "latest_at": 0.0}
+            )
+            entry["session_count"] += 1
+            entry["latest_at"] = max(entry["latest_at"], updated)
+        return sorted(grouped.values(), key=lambda e: e["latest_at"], reverse=True)
+
+    # ============================================================
+    # Message（Msg 快照）
+    # ============================================================
+
+    async def save_message(
+        self,
+        session_id: str,
+        message: Msg | dict[str, Any],
+        *,
+        timestamp: float | None = None,
+    ) -> str:
+        """保存一条完整 Msg；流式 Event 不属于这个存储边界。
+
+        timestamp 参数仅为旧接口兼容保留，磁盘不再保存单独的
+        timestamp；排序以 messages 数组顺序为准，对外游标由 created_at 派生。
+        """
+        del timestamp  # 见 docstring
+        msg = message if isinstance(message, Msg) else Msg.model_validate(message)
+        async with self._store.lock_for(session_id):
+            state = self._require_state(session_id)
+            owner = self._message_sessions.get(msg.id)
+            if owner is not None:
+                raise ValueError(f"message 已存在: {msg.id} (session={owner})")
+            new_state = state.model_copy(deep=True)
+            # 深拷贝隔离：调用方持有的 Msg 不能直接改到内部缓存
+            new_state.messages.append(msg.model_copy(deep=True))
+            new_state.session.updated_at = _now_iso()
+            await self.commit(new_state)
+        return msg.id
+
+    async def update_message(self, message: Msg | dict[str, Any]) -> None:
+        """更新已持久化 Msg 的可变快照字段，不改变数组中的位置。"""
+        msg = message if isinstance(message, Msg) else Msg.model_validate(message)
+        session_id = self._message_sessions.get(msg.id)
+        if session_id is None:
+            raise ValueError(f"message 不存在: {msg.id}")
+        async with self._store.lock_for(session_id):
+            state = self._require_state(session_id)
+            new_state = state.model_copy(deep=True)
+            for index, existing in enumerate(new_state.messages):
+                if existing.id == msg.id:
+                    new_state.messages[index] = msg.model_copy(deep=True)
+                    break
+            else:  # pragma: no cover - 索引与状态不一致的兜底
+                raise ValueError(f"message 不存在: {msg.id}")
+            new_state.session.updated_at = _now_iso()
+            await self.commit(new_state)
+
+    async def get_messages_by_session(self, session_id: str) -> list[MessageModel]:
+        """获取指定 session 的完整 transcript（按消息顺序正序）。
+
+        供 HTTP API / Desktop 历史展示使用；给 LLM 构建上下文请用
+        ContextService.get_context_messages()。
+        """
+        state = self._states.get(session_id)
+        if state is None:
+            self._ensure_not_corrupt(session_id)
+            return []
+        return [self.to_message_model(m, session_id) for m in state.messages]
+
+    async def upsert_message(
+        self, session_id: str, message: Msg | dict[str, Any]
+    ) -> str:
+        """按 id 幂等写入：存在则更新，不存在则追加。
+
+        供 SessionProjection 投影 context_compact_done 时使用——同一 Event id
+        重放不会产生重复 Msg。
+        """
+        msg = message if isinstance(message, Msg) else Msg.model_validate(message)
+        async with self._store.lock_for(session_id):
+            state = self._require_state(session_id)
+            new_state = state.model_copy(deep=True)
+            for index, existing in enumerate(new_state.messages):
+                if existing.id == msg.id:
+                    new_state.messages[index] = msg.model_copy(deep=True)
+                    new_state.session.updated_at = _now_iso()
+                    await self.commit(new_state)
+                    return msg.id
+            new_state.messages.append(msg.model_copy(deep=True))
+            new_state.session.updated_at = _now_iso()
+            await self.commit(new_state)
+        return msg.id

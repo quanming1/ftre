@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from ftre.session.converter import to_openai
+from ftre.session.message.converter import to_openai
 
-from ftre.session.manager import SessionManager
+from ftre.session import SessionManager
 from ftre_agent_core.message import (
     AssistantMsg,
     MsgName,

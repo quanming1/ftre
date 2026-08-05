@@ -18,7 +18,7 @@ from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
 
 from ftre.agent.compact_manager import CompactManager
 from ftre.agent.session_projection import SessionProjection
-from ftre.session.manager import SessionManager
+from ftre.session import SessionManager
 
 
 def _config() -> SimpleNamespace:

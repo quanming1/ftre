@@ -51,7 +51,7 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
                 level="error",
             )
 
-        from ftre.session.converter import _as_msg
+        from ftre.session.message.converter import _as_msg
         from ftre_agent_core.event import UserConfirmResultEvent
         from ftre_agent_core.message import ToolCallBlock, ToolCallState
 
@@ -152,6 +152,25 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
             logger.exception(f"[command] /compress-fast 执行异常 session={session_id}")
         return Handled()
 
+    # /fork：把当前会话复制成一个独立的新会话（沿用 channel/workspace，复制
+    # 消息与 metadata，追加 forked_from 溯源）。不入库对话本身。
+    async def _on_fork(ctx) -> SendMessage:
+        inbound = ctx.meta.inbound
+        session_id = inbound.from_session or inbound.data.get("session_id", "")
+        if not session_id:
+            return SendMessage("无法确定当前会话", level="error")
+        try:
+            result = await loop.session_manager.fork_session(session_id)
+        except ValueError as e:
+            return SendMessage(f"fork 失败：{e}", level="error")
+        except Exception:
+            logger.exception(f"[command] /fork 执行异常 session={session_id}")
+            return SendMessage("fork 失败，请查看日志", level="error")
+        return SendMessage(
+            f"已 fork 当前会话到新会话「{result.title}」：{result.fork_session_id}",
+            level="info",
+        )
+
     mgr.register(
         "/cancel",
         _on_cancel,
@@ -182,4 +201,10 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
         "/compress-fast",
         _on_compress_fast,
         description="快速压缩：裁剪旧工具输出，不调 LLM",
+    )
+    mgr.register(
+        "/fork",
+        _on_fork,
+        description="复制当前会话为一个独立的新会话",
+        persist_input=False,
     )

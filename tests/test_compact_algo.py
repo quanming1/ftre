@@ -9,7 +9,7 @@ from ftre.agent.compact_manager import (
     _estimate_body_chars,
     _serialize_messages,
 )
-from ftre.session.converter import to_openai
+from ftre.session.message.converter import to_openai
 from ftre_agent_core.event import CustomEvent
 from ftre_agent_core.message import (
     AssistantMsg,
