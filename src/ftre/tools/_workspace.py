@@ -36,11 +36,12 @@ WORKSPACE_MCP_FILE = "mcp.json"
 
 
 def ensure_workspace_ext_dir(cwd: str) -> None:
-    """确保 <cwd>/.ftre 扩展骨架存在（skills/ 目录 + 空 mcp.json）。
+    """确保 <cwd>/.ftre 扩展骨架存在（skills/ 目录 + 空 mcp.json），并把它加入 .gitignore。
 
     在处理 user 消息、cwd 确定后调用一次：给当前工作区默认建好扩展目录骨架，
     方便用户直接往里放工作区级 skill / mcp。cwd 为空或不是已存在目录时跳过
     （不对不存在的路径乱建）；已存在的文件不覆盖；失败只记日志，不影响主流程。
+    .ftre 是运行时产物，默认写入工作区 .gitignore，避免被误提交进用户仓库。
     """
     if not cwd:
         return
@@ -58,6 +59,29 @@ def ensure_workspace_ext_dir(cwd: str) -> None:
             )
     except OSError as e:
         logger.warning("[workspace] 创建 %s/%s 失败: %s", cwd, WORKSPACE_EXT_DIR, e)
+        return
+    _ensure_gitignore_entry(base, f"{WORKSPACE_EXT_DIR}/")
+
+
+def _ensure_gitignore_entry(base: Path, entry: str) -> None:
+    """把 entry 追加到 <base>/.gitignore（幂等：已包含该行则跳过）。
+
+    .gitignore 不存在则创建；末尾无换行时先补换行再追加。失败只记日志。
+    """
+    gitignore = base / ".gitignore"
+    try:
+        if gitignore.exists():
+            content = gitignore.read_text(encoding="utf-8")
+            lines = {ln.strip() for ln in content.splitlines()}
+            if entry in lines:
+                return
+            prefix = "" if content == "" or content.endswith("\n") else "\n"
+            with gitignore.open("a", encoding="utf-8") as f:
+                f.write(f"{prefix}{entry}\n")
+        else:
+            gitignore.write_text(f"{entry}\n", encoding="utf-8")
+    except OSError as e:
+        logger.warning("[workspace] 更新 %s/.gitignore 失败: %s", base, e)
 
 
 @dataclass
