@@ -80,7 +80,7 @@ def _ensure_gitignore_entry(base: Path, entry: str) -> None:
                 f.write(f"{prefix}{entry}\n")
         else:
             gitignore.write_text(f"{entry}\n", encoding="utf-8")
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
         logger.warning("[workspace] 更新 %s/.gitignore 失败: %s", base, e)
 
 
