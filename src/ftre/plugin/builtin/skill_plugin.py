@@ -161,14 +161,14 @@ class SkillPlugin(Plugin):
         )
         parts = [
             "<skill_desc>\n"
-            "Skill 是本地能力说明文件，按作用域分三级（同名优先级：工作区 > Agent > 全局）：\n"
+            "动手前 MUST 先扫下方 <skill_list> 每个 description，任务一旦匹配就"
+            "**必须先 loadSkill 加载再执行**——NEVER 在有匹配 Skill 却没加载时凭直觉硬干。"
+            "Skill 不是工具、不能直接用，看到名字不等于掌握内容；同一 Skill 一轮只加载一次。\n"
+            "\n"
+            "Skill 按作用域分三级（同名优先级：工作区 > Agent > 全局）：\n"
             f"- 全局 Skill：{global_dir}（对所有 Agent、所有工作区生效）\n"
             f"- Agent 私有 Skill：{agent_dir}（仅当前 Agent 生效）\n"
             f"- 工作区专属 Skill：{workspace_dir}（仅当前工作区生效，优先级最高）\n"
-            "使用：如果用户点名某个 Skill，或用户需求与下方任一 Skill 的能力描述匹配，"
-            "且该 Skill 的完整内容尚未在当前对话历史中被加载过，"
-            "请调用 loadSkill 读取该 Skill 的完整内容，再按 Skill 内容执行任务。"
-            "同一个 Skill 在当前对话中只需加载一次，不要重复加载。\n"
             "创建 Skill：先判断作用域再落到对应目录——只服务当前项目/工作区就写工作区级，"
             "只服务当前 Agent 人设就写 Agent 私有级，通用能力才写全局级；"
             "写入前用上面对应的绝对路径，Skill 形态为 <目录>/<name>/SKILL.md。"
@@ -447,7 +447,8 @@ class SkillPlugin(Plugin):
             return ""
 
         lines = [
-            "<skill_list desc=\"以下是你当前可以使用的全部 skill（含全局和当前 agent 私有），通过 loadSkill 工具按名称加载对应 skill 后再使用\">",
+            "<skill_list desc=\"以下是你当前可用的全部 skill（含全局、Agent 私有、工作区专属）。"
+            "开始任务前先对照每个 description 判断是否匹配；匹配就必须先用 loadSkill 加载再动手。\">",
         ]
         for item in descriptions:
             lines.append(
@@ -507,13 +508,10 @@ def create_load_skill_tool(skills_dir: Path, disabled_skills: set[str] | None = 
     return Tool(
         name="loadSkill",
         description=(
-            "加载一个本地 Skill 的说明文本。Skill 是存放在 "
-            f"~/.ftre/skills 下的可复用能力说明；当前电脑上的 Skill 文件夹绝对路径是 "
-            f"{get_skills_dir_path(skills_dir)}。通常包含某类任务的"
-            "工作流程、约束、示例、工具用法或项目约定。"
-            "如果用户点名某个 Skill，或用户需求与某个 Skill 的能力描述匹配，"
-            "且该 Skill 内容尚未在当前对话中被读取过，请调用本工具读取。"
-            "同一个 Skill 在当前对话中只需加载一次，不要重复加载。"
+            "加载一个本地 Skill 的完整说明到当前对话。"
+            "任务匹配 <skill_list> 里某个 Skill 时 MUST 先用本工具加载再执行——"
+            "Skill 不能直接用、必须先加载；同一 Skill 一轮只加载一次。"
+            f"（Skill 目录：{get_skills_dir_path(skills_dir)}）"
         ),
         parameters=[
             ToolParameter(
