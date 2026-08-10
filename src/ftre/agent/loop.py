@@ -124,25 +124,34 @@ class AgentLoop:
             return "compacting"
         return "idle"
 
-    def register_subagent_done_future(
-        self, session_id: str, future: Future[dict]
-    ) -> bool:
-        """注册 subagent 单轮执行完成通知；返回 False 表示已有等待者。"""
-        existing = self._subagent_done_futures.get(session_id)
-        if existing is not None and not existing.done():
-            return False
-        self._subagent_done_futures[session_id] = future
-        return True
+    def cancel_session(self, session_id: str) -> bool:
+        """取消指定 session 正在运行的 Agent 与 turn task（与 /cancel 同逻辑）。
 
-    def unregister_subagent_done_future(
-        self,
-        session_id: str,
-        future: Future[dict] | None = None,
-    ) -> None:
-        """移除未完成的 subagent 等待者，避免启动/执行超时后残留。"""
-        existing = self._subagent_done_futures.get(session_id)
-        if existing is not None and (future is None or existing is future):
-            self._subagent_done_futures.pop(session_id, None)
+        必须在事件循环线程调用（cancel_nowait 触达 asyncio.Task）。
+        """
+        cancelled = False
+        agent = self._active_agents.get(session_id)
+        if agent:
+            agent.cancel_nowait()
+            cancelled = True
+        task = self._session_tasks.get(session_id)
+        if task and not task.done():
+            task.cancel()
+            cancelled = True
+        return cancelled
+
+    async def wait_session_idle(self, session_id: str, timeout: float = 2.0) -> bool:
+        """轮询等待 session 的运行态收尾（_finalize 摘除 _active_agents）。
+
+        给删除等操作一个有界窗口，避免与收尾写盘打架；超时返回 False。
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while session_id in self._active_agents:
+            if loop.time() > deadline:
+                return False
+            await asyncio.sleep(0.05)
+        return True
 
     async def stop(self) -> None:
         """优雅关闭：取消消费循环 + 中断所有 Agent。"""

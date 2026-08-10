@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import copy
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -71,16 +72,49 @@ class AgentProfile:
 class AgentManager:
     """加载和管理 ~/.ftre/agents/ 下的 agent 配置。"""
 
-    def __init__(self, agents_dir: Path):
+    def __init__(self, agents_dir: Path, fallback_agents_dir: Path | None = None):
         self._agents_dir = Path(agents_dir)
+        # 本目录没有 default agent 时的兜底来源（如团队 sub_agents 目录
+        # 回退到全局 ~/.ftre/agents/，让成员默认继承全局模型配置）
+        self._fallback_agents_dir = (
+            Path(fallback_agents_dir) if fallback_agents_dir else None
+        )
 
-    def load(self, agent_id: str) -> AgentProfile:
-        """加载 agent 配置。agent_id 不存在时回退到 default。"""
-        agent_dir = self._agents_dir / agent_id
+    # agent_id 允许的字符集（与 session_id、create_agent_profile 校验同规则），
+    # 防止 metadata 传入的 agent_id 携带路径分隔符/绝对路径/.. 造成目录穿越。
+    _SAFE_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+    def _resolve_agent_dir(self, agent_id: str) -> Path:
+        """校验 agent_id 并解析为目录；非法字符或越界抛 ValueError。"""
+        if not isinstance(agent_id, str) or not self._SAFE_AGENT_ID_RE.match(agent_id or ""):
+            raise ValueError(
+                f"agent_id 含非法字符（只允许 [A-Za-z0-9_-]）: {agent_id!r}"
+            )
+        path = (self._agents_dir / agent_id).resolve()
+        if path.parent != self._agents_dir.resolve():
+            raise ValueError(f"agent 路径越界: {agent_id!r}")
+        return path
+
+    def load(self, agent_id: str, *, strict: bool = False) -> AgentProfile:
+        """加载 agent 配置。agent_id 不存在时回退到 default。
+
+        strict=True 时不回退：agent_id 非法或目录不存在直接抛异常
+        （供团队成员 profile 加载使用——空壳回退会用空 llm 污染配置）。
+        """
+        try:
+            agent_dir = self._resolve_agent_dir(agent_id)
+        except ValueError:
+            if strict:
+                raise
+            logger.warning(f"[agent-manager] 非法 agent_id，回退到 default: {agent_id!r}")
+            agent_id = "default"
+            agent_dir = self._agents_dir / "default"
         if not agent_dir.is_dir():
+            if strict:
+                raise FileNotFoundError(f"agent '{agent_id}' 不存在")
             logger.warning(f"[agent-manager] agent '{agent_id}' 不存在，回退到 default")
             agent_id = "default"
-            agent_dir = self._agents_dir / agent_id
+            agent_dir = self._agents_dir / "default"
             if not agent_dir.is_dir():
                 # default 也不存在——返回空 profile（走全局兜底）
                 return AgentProfile(agent_id="default")
@@ -134,7 +168,23 @@ class AgentManager:
         # ─── 合并 tools ─────────────────────────────────────
         tools_config = agent_cfg.get("tools")
         if tools_config is not None and not isinstance(tools_config, dict):
+            logger.warning(
+                f"[agent-manager] agent '{agent_id}' 的 tools 配置不是对象，已忽略"
+            )
             tools_config = None
+        if isinstance(tools_config, dict):
+            # 宽容降级：手工/LLM 配置出错不应让整个 agent 起不来；
+            # 真正的强校验在 filter_tools（执行期严抛，绝不静默清空工具）。
+            from ftre.tools import coerce_tool_name_list
+            try:
+                for _field in ("allow", "deny"):
+                    if _field in tools_config:
+                        coerce_tool_name_list(tools_config[_field], _field)
+            except ValueError as e:
+                logger.warning(
+                    f"[agent-manager] agent '{agent_id}' 的 tools 配置非法，已忽略: {e}"
+                )
+                tools_config = None
 
         # ─── 合并 MCP（深度合并） ───────────────────────────
         global_mcp = global_data.get("mcp", {})
@@ -300,7 +350,7 @@ class AgentManager:
         Returns:
             更新后的 agent.config.json 内容
         """
-        agent_dir = self._agents_dir / agent_id
+        agent_dir = self._resolve_agent_dir(agent_id)
         if not agent_dir.is_dir():
             raise FileNotFoundError(f"agent '{agent_id}' 不存在")
 
@@ -402,7 +452,7 @@ class AgentManager:
         if agent_id == "default":
             raise ValueError("不允许删除 default agent")
 
-        agent_dir = self._agents_dir / agent_id
+        agent_dir = self._resolve_agent_dir(agent_id)
         if not agent_dir.is_dir():
             raise FileNotFoundError(f"agent '{agent_id}' 不存在")
 
@@ -416,8 +466,11 @@ class AgentManager:
         """读取 default agent 的 llm provider/model 和 workspace。
 
         全局兜底配置的单一事实源——其他 agent 未指定 llm 时回退到 default agent。
+        本目录没有 default 时，回退到 fallback_agents_dir（如全局 agents 目录）。
         """
         cfg_path = self._agents_dir / "default" / "agent.config.json"
+        if not cfg_path.exists() and self._fallback_agents_dir is not None:
+            cfg_path = self._fallback_agents_dir / "default" / "agent.config.json"
         if not cfg_path.exists():
             return "", "", ""
         try:
@@ -507,8 +560,11 @@ class AgentManager:
     _PROMPT_FILES = ("SOUL.md", "AGENTS.md", "USER.md")
 
     def read_prompts(self, agent_id: str) -> dict[str, str]:
-        """读取 agent 的三个 prompt 文件内容。agent_id 不存在时回退到 default。"""
-        agent_dir = self._agents_dir / agent_id
+        """读取 agent 的三个 prompt 文件内容。agent_id 不存在/非法时回退到 default。"""
+        try:
+            agent_dir = self._resolve_agent_dir(agent_id)
+        except ValueError:
+            agent_dir = self._agents_dir / "default"
         if not agent_dir.is_dir():
             agent_dir = self._agents_dir / "default"
         if not agent_dir.is_dir():
@@ -524,7 +580,10 @@ class AgentManager:
         if filename not in self._PROMPT_FILES:
             raise ValueError(f"不支持的 prompt 文件: {filename}，仅支持 {self._PROMPT_FILES}")
 
-        agent_dir = self._agents_dir / agent_id
+        try:
+            agent_dir = self._resolve_agent_dir(agent_id)
+        except ValueError:
+            agent_dir = self._agents_dir / "default"
         if not agent_dir.is_dir():
             agent_dir = self._agents_dir / "default"
         if not agent_dir.is_dir():

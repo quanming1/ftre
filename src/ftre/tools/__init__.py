@@ -19,6 +19,27 @@ from .team import create_team_tools
 from .write import create_write_tool
 
 
+def coerce_tool_name_list(value, field: str) -> list[str]:
+    """tools.allow / tools.deny 规范化。
+
+    None → []；单个字符串宽容为单元素列表（allow="bash" 语义即"只放行 bash"）；
+    其余必须是字符串列表，否则抛 ValueError——宁可显式失败，
+    也不能让畸形配置静默清空成员的全部工具。
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError(
+            f"tools.{field} 必须是字符串列表，实际: {type(value).__name__}"
+        )
+    bad = [x for x in value if not isinstance(x, str) or not x.strip()]
+    if bad:
+        raise ValueError(f"tools.{field} 含非字符串或空元素: {bad!r}")
+    return value
+
+
 def filter_tools(registry: ToolRegistry, tools_config: dict | None) -> ToolRegistry:
     """按 agent 的 tools.allow / tools.deny 在 registry 上原地过滤。
 
@@ -30,12 +51,15 @@ def filter_tools(registry: ToolRegistry, tools_config: dict | None) -> ToolRegis
     Returns:
         过滤后的同一个 registry（原地修改）。
         tools_config 为 None 时不做任何操作。
+
+    Raises:
+        ValueError: allow/deny 形状非法（防止静默清空工具）。
     """
     if not tools_config:
         return registry
 
-    allow = set(tools_config.get("allow", []))
-    deny = set(tools_config.get("deny", []))
+    allow = set(coerce_tool_name_list(tools_config.get("allow"), "allow"))
+    deny = set(coerce_tool_name_list(tools_config.get("deny"), "deny"))
 
     for name in list(registry.names):
         if name in deny:

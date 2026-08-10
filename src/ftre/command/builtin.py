@@ -29,13 +29,8 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
         sid = ctx.meta.inbound.from_session or ctx.meta.inbound.data.get(
             "session_id", ""
         )
-        agent = loop._active_agents.get(sid)
-        if agent:
-            agent.cancel_nowait()
-        task = loop._session_tasks.get(sid)
-        if task and not task.done():
-            task.cancel()
-            logger.info(f"[command] cancel task 已取消 session={sid}")
+        if loop.cancel_session(sid):
+            logger.info(f"[command] cancel 已取消 session={sid}")
         return Handled()
 
     async def _confirm_tools(ctx, *, approved: bool):

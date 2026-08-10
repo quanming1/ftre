@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import copy
 import logging
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ftre_agent_core.message import Msg, MsgName
@@ -47,11 +49,19 @@ class SessionManager:
 
     def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
         self._repo = SessionRepository(db_path, sessions_dir=sessions_dir)
+        # AgentLoop 运行时引用（duck-typed，main.py 启动时注入）；
+        # session 包不得 import agent 包（避免模块循环），故用 setter 注入。
+        self._agent_loop = None
+
+    def set_agent_loop(self, agent_loop) -> None:
+        """注入 AgentLoop，供删除级联时取消运行中的 agent。"""
+        self._agent_loop = agent_loop
 
     async def init(self) -> None:
-        """启动：加载全部 JSON 状态、建索引，并修复遗留的 open reply。"""
+        """启动：加载全部 JSON 状态、建索引、修复遗留 open reply、清扫孤儿目录。"""
         await self._repo.init()
         await self._fix_open_replies()
+        await self._sweep_orphan_session_dirs()
 
     async def close(self) -> None:
         """安全幂等：JSON Store 无长连接，仅清理内存状态。"""
@@ -64,6 +74,10 @@ class SessionManager:
 
     def create_id(self) -> str:
         return self._repo.create_id()
+
+    def session_dir(self, session_id: str) -> Path:
+        """Session 目录（state.json 所在目录），同步纯路径计算。"""
+        return self._repo.state_path(session_id).parent
 
     async def create_session(
         self, channel_id: str, title: str = "", workspace: str = ""
@@ -104,8 +118,96 @@ class SessionManager:
     ) -> dict[str, Any]:
         return await self._repo.update_session_metadata(session_id, key, value)
 
+    async def mutate_session_metadata(
+        self, session_id: str, key: str, updater
+    ) -> dict[str, Any]:
+        """原子读-改-写 metadata 的单个 key（updater(旧值) -> 新值，全程在锁内）。"""
+        return await self._repo.mutate_session_metadata(session_id, key, updater)
+
     async def delete_session(self, session_id: str) -> None:
+        """删除 session。
+
+        若是 team leader：级联取消并删除全部成员 session 与 sub_agents profile 树。
+        若是 team 成员（被单独删除）：反向从 leader 的 teams 摘除并删其 profile。
+        """
+        from ftre.agent import sub_agent_profile  # 惰性导入避免包间循环
+
+        meta = await self.get_session_metadata(session_id)  # 不存在 → {}，幂等入口
+
+        # 1) 收集受影响 session：自身 +（若是 leader）全部成员
+        member_sids: list[str] = []
+        teams = meta.get("teams")
+        if isinstance(teams, dict):
+            for team in teams.values():
+                if isinstance(team, dict) and isinstance(team.get("members"), dict):
+                    member_sids.extend(
+                        k for k in team["members"] if isinstance(k, str)
+                    )
+
+        # 2) 先取消所有受影响 session 的运行中 Agent，给有界收尾窗口
+        if self._agent_loop is not None:
+            for sid in (session_id, *member_sids):
+                await self._agent_loop.cancel_session(sid)
+                await self._agent_loop.wait_session_idle(sid, timeout=2.0)
+
+        # 3) 删成员 session（成员不能再建团队，级联深度恒为 1，无环）
+        for msid in member_sids:
+            await self._repo.delete_session(msid)
+
+        # 4) 删 leader 的 sub_agents 整棵树（含未登记的残留目录）
+        sub_agent_profile.delete_all_profiles(self, session_id)
+
+        # 5) 删自身
         await self._repo.delete_session(session_id)
+
+        # 6) 反向解绑：被单独删除的是 team 成员时，从 leader 的 teams 摘除
+        binding = sub_agent_profile.binding_of(meta)
+        if binding is not None:
+            await self._unbind_member_from_leader(
+                binding["leader_session"], binding.get("team_id", ""), session_id
+            )
+            sub_agent_profile.delete_member_profile(
+                self, binding["leader_session"], session_id
+            )
+
+    async def _unbind_member_from_leader(
+        self, leader_sid: str, team_id: str, member_sid: str
+    ) -> None:
+        """从 leader 的 metadata['teams'][team_id].members 摘除成员（原子 RMW）。
+
+        leader 不存在/团队不存在时静默 no-op。
+        """
+        def _remove(old):
+            teams_now = old if isinstance(old, dict) else {}
+            team_now = teams_now.get(team_id)
+            if isinstance(team_now, dict) and isinstance(team_now.get("members"), dict):
+                team_now["members"].pop(member_sid, None)
+            return teams_now
+
+        try:
+            await self._repo.mutate_session_metadata(leader_sid, "teams", _remove)
+        except ValueError:
+            pass  # leader session 已不存在
+
+    async def _sweep_orphan_session_dirs(self) -> None:
+        """删除 sessions/ 下的孤儿目录：既无 state.json、又非损坏隔离件、
+        且目录名不属于任何已加载 session。典型来源：旧版本删除 leader 后
+        遗留的 sub_agents 树。"""
+        known_ids = {sid for sid, _ in self._repo.all_states()}
+        try:
+            root = self._repo.sessions_root()
+            children = sorted(root.iterdir())
+        except OSError:
+            return
+        for child in children:
+            if not child.is_dir() or child.name in known_ids:
+                continue
+            if (child / "state.json").exists():
+                continue  # 有正式文件却未加载 → 异常态，不动
+            if list(child.glob("state.json.corrupt-*")):
+                continue  # 损坏隔离件，保留取证
+            shutil.rmtree(child, ignore_errors=True)
+            logger.warning("[session-store] 清理孤儿 session 目录: %s", child)
 
     async def list_sessions(
         self,
@@ -383,6 +485,14 @@ class SessionManager:
     # Fork：基于父 session 派生一个独立副本
     # ============================================================
 
+    # fork 复制的是对话内容；以下 key 是「活资源的所有权/身份绑定」，
+    # 只能属于原 session，fork 一律不继承：
+    # - teams:       团队关系（含活跃成员 session 引用，复制会产生悬空引用，
+    #                fork 上 team_delete 会误删原 leader 的成员）
+    # - team_member: 成员身份绑定（fork 不能冒充原成员）
+    # - external:    外部平台会话绑定（复制会让两个 session 抢占同一外部会话索引）
+    FORK_METADATA_EXCLUDE = frozenset({"teams", "team_member", "external"})
+
     async def fork_session(self, parent_session_id: str) -> ForkResult:
         """把 parent_session_id 派生为一个新的独立 session。
 
@@ -421,10 +531,12 @@ class SessionManager:
             cloned = msg.model_copy(deep=True, update={"id": _gen_msg_id()})
             await self.save_message(fork_id, cloned)
 
-        # 深拷贝父 metadata（保留 teams/plan/external 等所有键），逐个顶层 key 写入，
-        # 最后追加溯源信息。
+        # 深拷贝父 metadata（保留 plan 等内容性键；teams/team_member/external
+        # 等活资源所有权键不继承），逐个顶层 key 写入，最后追加溯源信息。
         parent_metadata = copy.deepcopy(await self.get_session_metadata(parent_session_id))
         for key, value in parent_metadata.items():
+            if key in self.FORK_METADATA_EXCLUDE:
+                continue
             await self.update_session_metadata(fork_id, key, value)
 
         await self.update_session_metadata(fork_id, "forked_from", parent_session_id)

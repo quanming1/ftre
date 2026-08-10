@@ -310,6 +310,8 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
         plugin_manager=plugin_manager,
         agent_manager=agent_manager,
     )
+    # 删除级联需要取消运行中 agent：把 loop 反向注入 session 门面
+    session_manager.set_agent_loop(agent_loop)
     agent_loop.start()
     set_agent_loop(agent_loop)
 

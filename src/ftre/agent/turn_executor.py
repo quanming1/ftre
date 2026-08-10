@@ -371,7 +371,7 @@ class TurnExecutor:
             return TurnStatus.BUILDING
 
         try:
-            config, _ = self._resolve_turn_config(turn)
+            config, _ = await self._resolve_turn_config(turn)
             need = await loop.compact_manager.should_compact(
                 session_id,
                 inbound.from_channel,
@@ -419,7 +419,7 @@ class TurnExecutor:
 
         # ── 取得本 Turn 已解析的有效配置（不同 agent 可用不同 LLM）──
         # _compact 通常已经建立快照；非 user_message 等特殊路径在这里兜底建立。
-        config, agent_profile = self._resolve_turn_config(turn)
+        config, agent_profile = await self._resolve_turn_config(turn)
 
         # ── 并发防御：理论上 session lock 已保证串行，这里是兜底 ──
         # 若发现同 session 已有 Agent 在跑，说明锁逻辑有 bug，强制取消旧的
@@ -709,7 +709,7 @@ class TurnExecutor:
                     and turn.inbound.from_channel != SUBAGENT_CHANNEL_ID
                 ):
                     try:
-                        _cfg, _ = self._resolve_turn_config(turn)
+                        _cfg, _ = await self._resolve_turn_config(turn)
                         await self._loop.compact_manager.maybe_schedule_idle_compact(
                             turn.session_id, turn.inbound.from_channel, _cfg
                         )
@@ -826,7 +826,7 @@ class TurnExecutor:
         # ── 本轮结束后调度后台 idle 压缩（非 subagent）──
         if turn.inbound.from_channel != SUBAGENT_CHANNEL_ID:
             try:
-                _cfg, _ = self._resolve_turn_config(turn)
+                _cfg, _ = await self._resolve_turn_config(turn)
                 await loop.compact_manager.maybe_schedule_idle_compact(
                     session_id, turn.inbound.from_channel, _cfg
                 )
@@ -939,7 +939,7 @@ class TurnExecutor:
             return loop._injected_config
         return load_config()
 
-    def _resolve_turn_config(
+    async def _resolve_turn_config(
         self, turn: Turn
     ) -> tuple[AgentConfig, "AgentProfile | None"]:
         """取得并缓存本 Turn 真正使用的 Agent 配置。
@@ -947,17 +947,54 @@ class TurnExecutor:
         context_window、模型调用和回复结束后的 idle compact 必须来自同一份快照。
         不能在 compact 判断时只读全局/default 配置，再在 _build 阶段才覆盖
         per-agent LLM；否则不同窗口大小的 Agent 会产生错误压缩。
+
+        profile 解析优先级：
+        1. inbound metadata 的 agent_ref（team 工具显式携带，必须指向本 session）
+        2. 成员 session 的 metadata['team_member'] 结构性绑定（任意入口都生效）
+        3. 全局 agent（metadata.agent_id 或 default）
         """
         if turn.config is not None:
             return turn.config, turn.agent_profile
 
         config = copy.deepcopy(self._load_current_config())
-        agent_id = (
-            (turn.inbound.metadata or {}).get("agent_id", "") or "default"
-        )
         profile = None
         if self._loop.agent_manager is not None:
-            profile = self._loop.agent_manager.load(agent_id)
+            from ftre.agent import sub_agent_profile
+
+            inbound_metadata = turn.inbound.metadata
+
+            # 路径 1：team 工具携带的 agent_ref。一致性校验：sub_agent 必须是
+            # 本 session——metadata 外部可构造，不允许借它加载他人的 profile。
+            agent_ref = inbound_metadata.agent_ref
+            if (
+                agent_ref is not None
+                and agent_ref.sub_agent == turn.session_id
+            ):
+                profile = sub_agent_profile.load_member_profile(
+                    self._loop.session_manager,
+                    agent_ref.leader_session,
+                    turn.session_id,
+                )
+
+            # 路径 2：session 级结构性绑定。WS/HTTP/send_message 等旁路入口
+            # 不带 agent_ref，靠成员 session 自己的 team_member 绑定兜底。
+            if profile is None:
+                session_metadata = await self._loop.session_manager.get_session_metadata(
+                    turn.session_id
+                )
+                binding = sub_agent_profile.binding_of(session_metadata)
+                if binding is not None:
+                    profile = sub_agent_profile.load_member_profile(
+                        self._loop.session_manager,
+                        binding["leader_session"],
+                        turn.session_id,
+                    )
+
+            # 路径 3：全局 agent
+            if profile is None:
+                agent_id = inbound_metadata.agent_id or "default"
+                profile = self._loop.agent_manager.load(agent_id)
+
         if profile is not None:
             # Agent 私有 llm 是实际模型配置；workspace 仍按现有规则由 session 决定。
             config.llm = copy.deepcopy(profile.llm)

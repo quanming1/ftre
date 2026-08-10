@@ -18,7 +18,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ftre_agent_core.message import Msg, MsgName
 
@@ -159,6 +159,10 @@ class SessionRepository:
 
     def state_path(self, session_id: str) -> Path:
         return self._store.state_path(session_id)
+
+    def sessions_root(self) -> Path:
+        """sessions 存储根目录（~/.ftre/sessions/）。"""
+        return self._store.root
 
     async def commit(self, new_state: AgentStateFile) -> None:
         """原子写盘成功后提交内存缓存（并发场景调用方必须已持有对应锁）。"""
@@ -402,6 +406,31 @@ class SessionRepository:
                 new_state.metadata.pop(key, None)
             else:
                 new_state.metadata[key] = value
+            new_state.session.updated_at = _now_iso()
+            await self.commit(new_state)
+            return dict(new_state.metadata)
+
+    async def mutate_session_metadata(
+        self, session_id: str, key: str, updater: Callable[[Any], Any]
+    ) -> dict[str, Any]:
+        """原子读-改-写 metadata 的单个 key：updater(旧值) -> 新值。
+
+        全程在 session 锁内执行，并发调用互斥，不会丢失更新。
+        updater 必须是同步纯函数（无 I/O、不 await）；入参为 key 当前值
+        （可能 None），返回 None 表示删除该 key。updater 抛异常时不提交，
+        状态保持不变，异常向调用方传播。
+
+        Returns:
+            写入后的完整 metadata dict
+        """
+        async with self._store.lock_for(session_id):
+            state = self._require_state(session_id)
+            new_state = state.model_copy(deep=True)
+            new_value = updater(new_state.metadata.get(key))
+            if new_value is None:
+                new_state.metadata.pop(key, None)
+            else:
+                new_state.metadata[key] = new_value
             new_state.session.updated_at = _now_iso()
             await self.commit(new_state)
             return dict(new_state.metadata)
