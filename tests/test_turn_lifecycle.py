@@ -4,10 +4,11 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from ftre.agent.event_hub import AgentEventHub
 from ftre.agent.session_projection import SessionProjection
 from ftre.agent.loop import AgentLoop
 from ftre.agent.turn_executor import TurnExecutor
-from ftre.bus import BusMessage
+from ftre.bus import BusMessage, InboundMetadata
 from ftre.config import AgentConfig, ContextConfig, LLMConfig
 from ftre_agent_core.agent.runner import RunState, RunStatus
 from ftre_agent_core.event import (
@@ -79,7 +80,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop._compacting_sessions = set()
     loop._session_tasks = {}
     loop._session_locks = {}
-    loop._subagent_done_futures = {}
+    loop.events = AgentEventHub()
     loop._dispatch_tasks = set()
     loop.session_manager = AsyncMock()
     loop.session_manager.get_session = AsyncMock(
@@ -225,7 +226,7 @@ async def test_compact_decisions_use_selected_agent_context_window():
         agent_dir="",
     )
     inbound = _inbound()
-    inbound.metadata["agent_id"] = "coder"
+    inbound.metadata = InboundMetadata(agent_id="coder")
 
     await executor.execute(inbound)
 

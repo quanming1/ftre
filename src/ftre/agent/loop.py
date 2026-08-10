@@ -13,19 +13,19 @@ AgentLoop 只管消费循环 + 并发控制 + 生命周期。
 
 import asyncio
 import logging
-from concurrent.futures import Future
 
 from ftre_agent_core import Tracer
 from ftre_agent_core.agent import ReActAgent
 from ftre_agent_core.hooks import FtreCoreHookManager
 from ftre_agent_core.tool import ToolRegistry
 
-from ftre.bus import BusMessage, EventBus
+from ftre.bus import BusMessage, EventBus, InboundMetadata
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 from ftre.config import AgentConfig
 from ftre.session import SessionManager
 from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
 
+from .event_hub import AgentEventHub
 from .session_projection import SessionProjection
 from .compact_manager import CompactManager
 from .turn_executor import TurnExecutor
@@ -78,10 +78,12 @@ class AgentLoop:
         # ─── 并发控制 ──────────────────────────────────────────
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._active_agents: dict[str, ReActAgent] = {}
-        self._subagent_done_futures: dict[str, Future[dict]] = {}
         self._session_tasks: dict[str, asyncio.Task] = {}
         self._dispatch_tasks: set[asyncio.Task] = set()
         self._compacting_sessions: set[str] = set()
+
+        # ─── Agent 生命周期事件中心（subagent 完成通知等）────────
+        self.events = AgentEventHub()
 
         # ─── Turn 执行器 ──────────────────────────────────────
         self._executor = TurnExecutor(self)
@@ -156,17 +158,15 @@ class AgentLoop:
         self._session_tasks.clear()
 
         self.compact_manager.cancel_all_compact_tasks()
-        for sid, future in self._subagent_done_futures.items():
-            if not future.done():
-                future.set_result(
-                    {
-                        "session_id": sid,
-                        "channel_id": SUBAGENT_CHANNEL_ID,
-                        "status": "cancelled",
-                        "final_content": "",
-                    }
-                )
-        self._subagent_done_futures.clear()
+        # 兜底唤醒所有残留等待者（task/team 在 stop 时可能仍在等）
+        self.events.cancel_all(
+            {
+                "session_id": "",
+                "channel_id": SUBAGENT_CHANNEL_ID,
+                "status": "cancelled",
+                "final_content": "",
+            }
+        )
 
     # ─── 消费循环 ────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ class AgentLoop:
         channel_id: str,
         event,
         *,
-        metadata: dict | None = None,
+        metadata: InboundMetadata | None = None,
     ) -> "ProjectionResult":
         """统一事件出口：先投影落盘，再实时广播。
 
@@ -212,7 +212,7 @@ class AgentLoop:
                 from_session=session_id,
                 to_session=session_id,
                 data=event.model_dump(mode="json"),
-                metadata=metadata or {},
+                metadata=metadata or InboundMetadata(),
             )
         )
         return result

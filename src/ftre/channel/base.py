@@ -7,9 +7,10 @@ Channel 负责：
 """
 from abc import ABC, abstractmethod
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ftre.bus import BusMessage
+from ftre.bus.protocol import InboundData, coerce_inbound_metadata
 
 if TYPE_CHECKING:
     from ftre.bus import EventBus
@@ -41,7 +42,7 @@ class Channel(ABC):
     async def receive(
         self,
         session_id: str,
-        data: dict,
+        data: dict[str, Any] | InboundData,
         metadata: dict | None = None,
         *,
         kind: str = "user_message",
@@ -53,11 +54,17 @@ class Channel(ABC):
         调用这里，而不是自己构造 BusMessage 直接 publish_inbound，确保
         "外部 → Bus" 的入口唯一可控。
 
+        边界校验（wire 协议契约见 ftre.bus.protocol）：
+        - data     过 InboundData 归一（未知键丢弃）
+        - metadata 过 InboundMetadata 归一（服务端受信来源，非白名单）
+
         Args:
             session_id: 目标 session
-            data:       payload
-            metadata:   附加元数据（如外部协议帧 id 通过 metadata["frame_id"] 携带，
-                        AgentLoop echo 时回填到 outbound 帧给前端做占位去重）
+            data:       user_message 载荷（InboundData 形状）
+            metadata:   附加元数据（InboundMetadata 形状；外部协议帧 id 通过
+                        frame_id 携带，AgentLoop echo 时回填到 outbound 帧给
+                        前端做占位去重）。WS 客户端帧必须先用
+                        InboundMetadata.from_client 过白名单再传进来。
             kind:       BusMessage.type，通常为 "user_message"
                         （控制操作统一使用不持久化的 slash command）
         """
@@ -67,8 +74,8 @@ class Channel(ABC):
             from_session=session_id,
             to_channel=self.channel_id,
             to_session=session_id,
-            data=data,
-            metadata=metadata or {},
+            data=InboundData.coerce(data).model_dump(),
+            metadata=coerce_inbound_metadata(metadata),
         )
         await self.bus.publish_inbound(msg)
 

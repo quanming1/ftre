@@ -42,7 +42,7 @@ async def test_allow_command_is_a_plain_user_message():
     message = published[0]
     assert message.type == "user_message"
     assert message.data["content"] == "/allow call_1 call_2"
-    assert message.metadata["frame_id"] == "f1"
+    assert message.metadata.frame_id == "f1"
 
 
 @pytest.mark.asyncio

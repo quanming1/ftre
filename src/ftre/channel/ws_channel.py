@@ -22,7 +22,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketState
 
-from ftre.bus import BusMessage, EventBus, GLOBAL_SESSION
+from ftre.bus import BusMessage, EventBus, GLOBAL_SESSION, InboundMetadata, OutboundMetadata
 from .base import Channel
 
 logger = logging.getLogger(__name__)
@@ -198,7 +198,11 @@ class WebSocketChannel(Channel):
           无视 attach 关系（用于 session 状态等全局控制信号）。
         - 非全局消息持 per-session 输出锁，保证 attach snapshot 与 Event 的 FIFO 顺序。
         """
-        metadata = dict(msg.metadata or {})
+        metadata = OutboundMetadata.from_inbound(
+            msg.metadata,
+            channel_id=msg.to_channel,
+            session_id=msg.to_session,
+        )
 
         if msg.to_session == GLOBAL_SESSION:
             targets = list(self._ws_sessions.keys())
@@ -215,11 +219,7 @@ class WebSocketChannel(Channel):
             "frame_id": msg.id,
             "type": msg.type,
             "data": msg.data,
-            "metadata": {
-                **metadata,
-                "channel_id": msg.to_channel,
-                "session_id": msg.to_session,
-            },
+            "metadata": metadata.model_dump(exclude_none=True),
         }
         text = json.dumps(payload, ensure_ascii=False, default=str)
 
@@ -358,12 +358,10 @@ class WebSocketChannel(Channel):
                 logger.warning("[ws-channel] cancel 缺少 session_id，忽略")
                 return
             self._attach(session_id, ws)
-            metadata = frame.get("metadata") or {}
-            if not isinstance(metadata, dict):
-                metadata = {}
+            metadata = InboundMetadata.from_client(frame.get("metadata"))
             frame_id = frame.get("frame_id") or ""
             if frame_id:
-                metadata = {**metadata, "frame_id": frame_id}
+                metadata = metadata.model_copy(update={"frame_id": frame_id})
             await self.receive(
                 session_id,
                 data={"content": "/cancel", "session_id": session_id},
@@ -393,14 +391,12 @@ class WebSocketChannel(Channel):
         # user_message 隐式 attach：接收消息的 ws 自动跟踪该 session
         self._attach(session_id, ws)
 
-        metadata = frame.get("metadata") or {}
-        if not isinstance(metadata, dict):
-            metadata = {}
+        metadata = InboundMetadata.from_client(frame.get("metadata"))
         # 把客户端协议帧 id 装进 metadata.frame_id，AgentLoop echo 时
         # 回填给前端，前端用它去重本地乐观占位。
         frame_id = frame.get("frame_id") or ""
         if frame_id:
-            metadata = {**metadata, "frame_id": frame_id}
+            metadata = metadata.model_copy(update={"frame_id": frame_id})
 
         await self.receive(session_id, data, metadata, kind="user_message")
 

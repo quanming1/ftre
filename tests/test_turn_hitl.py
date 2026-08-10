@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from ftre.agent.event_hub import AgentEventHub
 from ftre.agent.session_projection import SessionProjection
 from ftre.agent.loop import AgentLoop
 from ftre.agent.turn_executor import TurnExecutor
@@ -110,7 +111,7 @@ def _make_executor(agent) -> TurnExecutor:
     loop._compacting_sessions = set()
     loop._session_tasks = {}
     loop._session_locks = {}
-    loop._subagent_done_futures = {}
+    loop.events = AgentEventHub()
     loop._dispatch_tasks = set()
     loop.session_manager = AsyncMock()
     loop.session_manager.get_session = AsyncMock(

@@ -160,7 +160,7 @@ def _do_notify(
         data={"type": "external_message", "data": event_data},
     )
     persisted_message = AssistantMsg(
-        name="external",
+        name="default",
         content=content,
         metadata={
             "external": True,

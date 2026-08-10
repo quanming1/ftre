@@ -8,18 +8,18 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 - 投递后阻塞等待目标 session 跑完，返回最后一条 ai 回复 + session_id
 
 终止判定：
-- 在 AgentLoop 注册一个 session_id → Future[dict] 的一次性完成通知。
-- AgentLoop._run 在 finally 里必定 set_result，所以无论 done 是否被发出（异常
-  / 被 cancel）都能正确感知 agent 已结束。
-- Future payload 中携带 status 和最后一条完整 assistant Msg 内容。
+- 通过 AgentLoop.events（AgentEventHub）注册 session_id 的一次性完成等待。
+- AgentLoop 在 _finalize 里必定 emit agent_finished，所以无论 done 是否被发出
+  （异常 / 被 cancel）都能正确感知 agent 已结束。
+- payload 中携带 status 和最后一条完整 assistant Msg 内容。
 
 防递归：subagent channel 的调用方禁止再调 task。
 """
 import asyncio
 import time
-from concurrent.futures import Future
 
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre.agent.event_hub import AgentEventHub
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 
 
@@ -124,8 +124,8 @@ def create_task_tool(channel_manager) -> Tool:
                 )
 
             # 先注册完成通知再投递消息，避免 subagent 极快结束时漏掉结果。
-            done_future = Future()
-            if not agent_loop.register_subagent_done_future(sid, done_future):
+            done_future = agent_loop.events.wait(sid, AgentEventHub.AGENT_FINISHED)
+            if done_future is None:
                 return (
                     f"<FTRE_SYSTEM_FACT>[session={sid}, status=busy]</FTRE_SYSTEM_FACT>\n"
                     "该 subagent session 已有一轮 task 在等待完成，请稍后重试"
@@ -142,7 +142,7 @@ def create_task_tool(channel_manager) -> Tool:
             )
         except Exception as e:
             if sid and done_future is not None:
-                agent_loop.unregister_subagent_done_future(sid, done_future)
+                agent_loop.events.unregister(sid, AgentEventHub.AGENT_FINISHED, done_future)
             return f"[error] 派发失败: {type(e).__name__}: {e}"
 
         # 阶段 A：验证 AgentLoop 已经消费 inbound，并进入本轮 _run。
@@ -152,7 +152,7 @@ def create_task_tool(channel_manager) -> Tool:
             lambda: agent_loop.is_session_running(sid) or done_future.done(),
             _STARTUP_TIMEOUT,
         ):
-            agent_loop.unregister_subagent_done_future(sid, done_future)
+            agent_loop.events.unregister(sid, AgentEventHub.AGENT_FINISHED, done_future)
             return (
                 f"<FTRE_SYSTEM_FACT>[session={sid}, status=startup_timeout]</FTRE_SYSTEM_FACT>\n"
                 f"派发后 {_STARTUP_TIMEOUT}s 内 agent 仍未启动，可能 AgentLoop "
@@ -164,7 +164,7 @@ def create_task_tool(channel_manager) -> Tool:
         try:
             done_payload = done_future.result()
         except Exception as e:
-            agent_loop.unregister_subagent_done_future(sid, done_future)
+            agent_loop.events.unregister(sid, AgentEventHub.AGENT_FINISHED, done_future)
             return f"[error] 等待 subagent 完成时出错: {type(e).__name__}: {e}"
 
         # agent 已结束，使用 AgentLoop 回传的最后一条完整 assistant Msg。

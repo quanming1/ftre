@@ -39,6 +39,8 @@ from ftre.config import AgentConfig, load_config
 from ftre.session.message.multimodal import build_user_content, normalize_stored_user_content
 from ftre.tools._workspace import WorkspaceAccessor, ensure_workspace_ext_dir
 
+from .event_hub import AgentEventHub
+
 from ftre.command.types import (
     Handled,
     Passthrough,
@@ -157,7 +159,7 @@ class TurnExecutor:
             and session_id
             and loop.compact_manager.is_compacting(session_id)
         ):
-            frame_id = (inbound.metadata or {}).get("frame_id", "")
+            frame_id = inbound.metadata.frame_id
             logger.warning(
                 "[compact] session=%s 正在压缩，丢弃新消息 frame_id=%s",
                 session_id,
@@ -259,7 +261,7 @@ class TurnExecutor:
 
         content = inbound.data.get("content", "")
         attachments = inbound.data.get("attachments") or []
-        agent_id = (inbound.metadata or {}).get("agent_id", "") or "default"
+        agent_id = inbound.metadata.agent_id or "default"
 
         # ── 1. 匹配指令（不执行 handler，只判断是否命中）──
         cmd_def = (
@@ -800,19 +802,22 @@ class TurnExecutor:
         else:
             should_emit_idle = False
 
-        # ── subagent 场景：唤醒等待结果的父 task（task 工具）──
-        # finally 覆盖正常/取消/异常，是父 task 被唤醒的唯一出口
-        if turn.inbound.from_channel == SUBAGENT_CHANNEL_ID:
-            future = loop._subagent_done_futures.pop(session_id, None)
-            if future is not None and not future.done():
-                future.set_result(
-                    {
-                        "session_id": session_id,
-                        "channel_id": turn.inbound.from_channel,
-                        "status": turn.subagent_status,
-                        "final_content": turn.final_content,
-                    }
-                )
+        # ── 广播 agent 完成事件（AgentEventHub）──
+        # 无条件 emit（不依赖通道推断）：task/team 只对 subagent session wait，
+        # 非 subagent 完成时无人订阅，零开销；未来其它功能可订阅同一事件。
+        try:
+            loop.events.emit(
+                session_id,
+                AgentEventHub.AGENT_FINISHED,
+                {
+                    "session_id": session_id,
+                    "channel_id": turn.inbound.from_channel,
+                    "status": turn.subagent_status,
+                    "final_content": turn.final_content,
+                },
+            )
+        except Exception:
+            logger.exception("[turn-executor] 广播 agent_finished 事件异常")
 
         # ── 广播 idle：客户端恢复空闲态 ──
         if should_emit_idle:
