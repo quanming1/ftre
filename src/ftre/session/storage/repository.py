@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ftre_agent_core.message import Msg
+from ftre_agent_core.message import Msg, MsgName
 
 from ftre.config import CONFIG_PATH
 from ftre.session.entity.models import (
@@ -64,6 +64,33 @@ def _validate_channel_id(channel_id: str) -> None:
         raise ValueError(
             f"channel_id 含非法字符（只允许 [A-Za-z0-9_-]）: {channel_id!r}"
         )
+
+
+# 会话列表预览：最后一条真实用户消息文本的最大长度（字符）
+_LAST_USER_TEXT_MAX = 200
+
+
+def _last_user_text(state: AgentStateFile) -> str:
+    """提取最后一条真实用户消息的文本摘要（倒序找第一条命中的）。
+
+    "真实用户消息"判定：role == user 且 name == default（跳过 compact/compact_fast
+    摘要，它们虽 role=user 但是系统生成的）。取该消息全部 TextBlock 文本，
+    折叠空白、截断到 _LAST_USER_TEXT_MAX。无命中返回空串。
+    """
+    for msg in reversed(state.messages):
+        if msg.role != "user":
+            continue
+        if msg.name != MsgName.DEFAULT.value:
+            continue
+        if msg.metadata.get("hide"):
+            continue
+        texts = [b.text for b in msg.content if getattr(b, "type", "") == "text"]
+        joined = " ".join(t.strip() for t in texts if t and t.strip())
+        joined = re.sub(r"\s+", " ", joined).strip()
+        if not joined:
+            continue
+        return joined[:_LAST_USER_TEXT_MAX]
+    return ""
 
 
 class SessionRepository:
@@ -202,6 +229,7 @@ class SessionRepository:
             metadata=dict(state.metadata),
             created_at=_iso_to_epoch(session.created_at),
             updated_at=_iso_to_epoch(session.updated_at),
+            last_user_text=_last_user_text(state),
         )
 
     @staticmethod

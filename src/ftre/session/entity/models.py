@@ -22,6 +22,7 @@ class SessionModel(TypedDict):
     metadata: dict       # 会话级元数据（JSON 解析后的 dict，如 plan 等）
     created_at: float    # 创建时间戳
     updated_at: float    # 最后活跃时间戳
+    last_user_text: str  # 最后一条真实用户消息的文本摘要（跳过 compact 摘要；可能为空串）
 
 
 class MessageModel(TypedDict):
