@@ -374,7 +374,7 @@ class TurnExecutor:
                 session_id,
                 inbound.from_channel,
                 config,
-                threshold=getattr(config.context, "compact_threshold", 0.7),
+                threshold=getattr(config.context, "compact_threshold", 0.8),
             )
             if need:
                 turn.need_compact = True  # 传给 _build，让它先压缩再构建消息

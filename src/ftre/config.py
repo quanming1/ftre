@@ -111,9 +111,9 @@ class ContextConfig:
     详细设计见文档 docs/context-management.md。
     """
     # 后台预压缩水位：每轮 LLM 回复结束后检查，≥ 此值时后台调 LLM 生成摘要
-    precompact_threshold: float = 0.5
+    precompact_threshold: float = 0.7
     # 强制压缩水位：用户发消息时检查，≥ 此值时阻塞式压缩
-    compact_threshold: float = 0.7
+    compact_threshold: float = 0.8
     # 压缩目标比例：target = budget * consolidation_ratio
     consolidation_ratio: float = 0.5
     # 预算安全垫：budget = context_window - max_output - safety_buffer
@@ -317,8 +317,8 @@ def load_config() -> AgentConfig:
         return ctx_raw.get(key_snake, default)
 
     context_cfg = ContextConfig(
-        precompact_threshold=float(_f("precompactThreshold", "precompact_threshold", 0.5)),
-        compact_threshold=float(_f("compactThreshold", "compact_threshold", _f("threshold", "threshold", 0.6))),
+        precompact_threshold=float(_f("precompactThreshold", "precompact_threshold", 0.7)),
+        compact_threshold=float(_f("compactThreshold", "compact_threshold", _f("threshold", "threshold", 0.8))),
         consolidation_ratio=float(_f("consolidationRatio", "consolidation_ratio", 0.5)),
         safety_buffer=int(_f("safetyBuffer", "safety_buffer", 1024)),
         idle_compaction=bool(_f("idleCompaction", "idle_compaction", True)),

@@ -2,8 +2,8 @@
 CompactManager — 上下文压缩处理器
 
 设计：
-- 50% 水位（precompact_threshold）：每轮 LLM 回复结束后后台异步压缩
-- 70% 水位（compact_threshold）：用户发消息时阻塞式压缩
+- 70% 水位（precompact_threshold）：每轮 LLM 回复结束后后台异步压缩
+- 80% 水位（compact_threshold）：用户发消息时阻塞式压缩
 - /compact 手动：立即压缩
 - /compress-fast：零 LLM 成本裁剪旧 ToolResultBlock 输出
 
@@ -33,8 +33,8 @@ from .compact_events import CompactEventName
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PRECOMPACT_THRESHOLD = 0.5
-DEFAULT_COMPACT_THRESHOLD = 0.7
+DEFAULT_PRECOMPACT_THRESHOLD = 0.7
+DEFAULT_COMPACT_THRESHOLD = 0.8
 
 # compress-fast 默认保留最近 N 个工具结果完整
 DEFAULT_FAST_KEEP_RECENT = 3

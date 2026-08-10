@@ -50,8 +50,8 @@ def test_default_agent_reasoning_effort_overrides_model_default(monkeypatch):
 def test_context_defaults_when_missing(fake_config):
     cfg = fake_config({"agents": {"title_generation": {"provider": "x", "model": "y"}}})
     assert isinstance(cfg.context, ContextConfig)
-    assert cfg.context.precompact_threshold == 0.5
-    assert cfg.context.compact_threshold == 0.6
+    assert cfg.context.precompact_threshold == 0.7
+    assert cfg.context.compact_threshold == 0.8
     assert cfg.context.consolidation_ratio == 0.5
     assert cfg.context.safety_buffer == 1024
     assert cfg.context.idle_compaction is True
@@ -101,7 +101,7 @@ def test_context_legacy_threshold_maps_to_compact_threshold(fake_config):
             }
         }
     })
-    assert cfg.context.precompact_threshold == 0.5
+    assert cfg.context.precompact_threshold == 0.7
     assert cfg.context.compact_threshold == 0.75
 
 
