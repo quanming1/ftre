@@ -104,11 +104,13 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
     async def _on_deny(ctx):
         return await _confirm_tools(ctx, approved=False)
 
-    # /compact：普通指令，在锁内执行，串行安全
+    # /compact [提示词]：普通指令，在锁内执行，串行安全
+    # 可选参数是自然语言提示词，透传给摘要 LLM，强调优先保留的上下文。
     async def _on_compact(ctx) -> Handled:
         inbound = ctx.meta.inbound
         session_id = inbound.from_session
         channel_id = inbound.from_channel
+        focus_hint = (ctx.args or "").strip()
 
         loop._compacting_sessions.add(session_id)
         await loop._publish_session_status_async(session_id, "compacting")
@@ -120,6 +122,7 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
                 channel_id,
                 config=config,
                 trigger="manual",
+                focus_hint=focus_hint,
             )
         except Exception:
             logger.exception(f"[command] /compact 执行异常 session={session_id}")
@@ -130,11 +133,15 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
             )
         return Handled()
 
-    # /compress-fast：零 LLM 成本的快速压缩
+    # /compress-fast [轮数]：零 LLM 成本的快速压缩
+    # 可选整数参数 = 保护最近 N 轮对话内的工具输出不被裁剪（默认 0=全裁）。
     async def _on_compress_fast(ctx) -> Handled:
         inbound = ctx.meta.inbound
         session_id = inbound.from_session
         channel_id = inbound.from_channel
+
+        arg = (ctx.args or "").strip()
+        keep_turns = int(arg) if arg.isdigit() else 0
 
         try:
             config = loop._load_current_config()
@@ -142,6 +149,7 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
                 session_id,
                 channel_id,
                 config=config,
+                keep_turns=keep_turns,
             )
         except Exception:
             logger.exception(f"[command] /compress-fast 执行异常 session={session_id}")
@@ -190,12 +198,14 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
     mgr.register(
         "/compact",
         _on_compact,
-        description="压缩当前会话上下文",
+        description="压缩当前会话上下文（可附提示词强调优先保留的内容）",
+        args_hint="[强调保留的内容]",
     )
     mgr.register(
         "/compress-fast",
         _on_compress_fast,
-        description="快速压缩：裁剪旧工具输出，不调 LLM",
+        description="快速压缩：裁剪旧工具输出，不调 LLM（可附轮数保护最近 N 轮）",
+        args_hint="[保护最近轮数]",
     )
     mgr.register(
         "/fork",

@@ -36,8 +36,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_PRECOMPACT_THRESHOLD = 0.7
 DEFAULT_COMPACT_THRESHOLD = 0.8
 
-# compress-fast 默认保留最近 N 个工具结果完整
-DEFAULT_FAST_KEEP_RECENT = 3
+# compress-fast 默认保护最近 N 轮对话内的工具输出不被裁剪（0 = 全裁）
+DEFAULT_FAST_KEEP_TURNS = 0
 
 
 # 不可重试的 LLM 错误码 → 触发冷却退避
@@ -143,11 +143,15 @@ class CompactManager:
         config,
         trigger: Literal["auto", "manual", "idle"] = "auto",
         preserve_from_message_id: str = "",
+        focus_hint: str = "",
     ) -> str | None:
         """执行或等待该 session 当前唯一的压缩任务。
 
         创建 Task 与写入字典之间没有 ``await``，在 asyncio 单线程事件循环中
         是原子的。``shield`` 保证某个等待者被取消时，共享压缩仍继续运行。
+
+        ``focus_hint`` 为用户在 ``/compact`` 后附带的自然语言提示词，透传给
+        摘要 LLM，强调必须优先完整保留的上下文（如「登录模块相关代码」）。
         """
         task, created = self._get_or_create_compact_task(
             session_id,
@@ -155,6 +159,7 @@ class CompactManager:
             config=config,
             trigger=trigger,
             preserve_from_message_id=preserve_from_message_id,
+            focus_hint=focus_hint,
         )
         if not created:
             logger.info(
@@ -172,6 +177,7 @@ class CompactManager:
         config,
         trigger: Literal["auto", "manual", "idle"],
         preserve_from_message_id: str = "",
+        focus_hint: str = "",
     ) -> tuple[asyncio.Task[str | None], bool]:
         """同步取得或创建共享压缩 Task；返回 ``(task, 是否新建)``。"""
         existing = self._compact_tasks.get(session_id)
@@ -185,6 +191,7 @@ class CompactManager:
                 config=config,
                 trigger=trigger,
                 preserve_from_message_id=preserve_from_message_id,
+                focus_hint=focus_hint,
             )
         )
         self._compact_tasks[session_id] = task
@@ -210,12 +217,14 @@ class CompactManager:
         channel_id: str,
         *,
         config,
-        keep_recent: int = DEFAULT_FAST_KEEP_RECENT,
+        keep_turns: int = DEFAULT_FAST_KEEP_TURNS,
     ) -> bool:
         """快速压缩：不调 LLM，直接裁剪旧 ToolResultBlock 输出。
 
-        策略：保留最近 keep_recent 个工具结果完整，其余结果原位替换成
-        ``[工具输出已压缩]``，不会写入任何流式事件或兼容标记。
+        策略：按 turn 边界（一条 role=user 的 Msg 开启一轮）保护最近
+        ``keep_turns`` 轮对话，这些轮内的工具输出全部完整保留；更早的
+        ToolResultBlock 原位替换成 ``[工具输出已压缩]``，不写入任何流式
+        事件或兼容标记。``keep_turns=0`` 表示裁剪活跃区间内的全部工具输出。
 
         Returns:
             True: 执行了裁剪
@@ -232,8 +241,24 @@ class CompactManager:
         if not active_records:
             return False
         messages = [Msg.model_validate(record) for record in active_records]
+
+        # 按 turn 边界确定保护区：从后往前数 keep_turns 个 role=user 的 Msg，
+        # 该 Msg 及其之后的所有 Msg 属于受保护轮，其中的工具输出不裁剪。
+        # compact_fast 气泡是 role=assistant，天然不参与用户轮计数，无需特殊排除。
+        protected_start = len(messages)  # 默认 keep_turns=0 → 无保护，全部可裁
+        if keep_turns > 0:
+            seen_turns = 0
+            for index in range(len(messages) - 1, -1, -1):
+                if messages[index].role == "user":
+                    seen_turns += 1
+                    protected_start = index
+                    if seen_turns >= keep_turns:
+                        break
+
         tool_results: list[tuple[Msg, ToolResultBlock]] = []
-        for message in messages:
+        for index, message in enumerate(messages):
+            if index >= protected_start:
+                break  # 受保护轮内的工具输出全部保留
             for block in message.content:
                 if (
                     isinstance(block, ToolResultBlock)
@@ -241,24 +266,18 @@ class CompactManager:
                 ):
                     tool_results.append((message, block))
 
-        if len(tool_results) <= keep_recent:
+        if not tool_results:
             logger.info(
-                f"[compact-fast] session={session_id} 工具结果数 "
-                f"{len(tool_results)} <= keep_recent={keep_recent}，跳过"
+                f"[compact-fast] session={session_id} 无可裁剪工具结果"
+                f"（keep_turns={keep_turns}），跳过"
             )
             return False
-
-        to_compact = (
-            tool_results[:-keep_recent]
-            if keep_recent > 0
-            else tool_results
-        )
 
         # 估算压缩前后 token（只算活跃区间）
         from ftre.session.message.token_counter import estimate_messages_tokens
         tokens_before = estimate_messages_tokens(active_records)
         changed_messages: dict[str, Msg] = {}
-        for message, block in to_compact:
+        for message, block in tool_results:
             block.output = [TextBlock(text="[工具输出已压缩]")]
             changed_messages[message.id] = message
         tokens_after = estimate_messages_tokens(messages)
@@ -270,20 +289,20 @@ class CompactManager:
             logger.exception(f"[compact-fast] 更新 Msg 失败 session={session_id}")
             return False
 
-        # 通知前端（fast 模式不投影为 Msg，仅广播）
+        # 通知前端（fast 模式投影为一条 compact_fast 展示气泡 Msg）
         await self._emit_event(session_id, channel_id, CustomEvent(
             name=CompactEventName.DONE,
             value={
                 "mode": "fast",
                 "messages": len(changed_messages),
-                "tool_results": len(to_compact),
+                "tool_results": len(tool_results),
                 "tokens_before": tokens_before,
                 "tokens_after": tokens_after,
             },
         ))
 
         logger.info(
-            f"[compact-fast] session={session_id} 裁剪 {len(to_compact)} 个工具结果, "
+            f"[compact-fast] session={session_id} 裁剪 {len(tool_results)} 个工具结果, "
             f"tokens {tokens_before} → {tokens_after}"
         )
         return True
@@ -296,6 +315,7 @@ class CompactManager:
         config,
         trigger: Literal["auto", "manual", "idle"] = "auto",
         preserve_from_message_id: str = "",
+        focus_hint: str = "",
     ) -> str | None:
         """压缩主逻辑：读 Msg → LLM 摘要 → 发 context_compact_done 投影为 Msg。
 
@@ -359,7 +379,7 @@ class CompactManager:
         # 5. LLM 直调摘要（previous_summary 参与滚动摘要）
         summary = await self._run_compact_llm(
             head_messages, config=config, previous_summary=previous_summary,
-            session_id=session_id,
+            session_id=session_id, focus_hint=focus_hint,
         )
         if not summary:
             logger.warning(f"[compact] session={session_id} LLM 摘要失败")
@@ -413,6 +433,7 @@ class CompactManager:
         config,
         previous_summary: str | None = None,
         session_id: str = "",
+        focus_hint: str = "",
     ) -> str | None:
         """调用 LLM 生成摘要（异步）。
 
@@ -432,6 +453,7 @@ class CompactManager:
                 previous_summary=previous_summary,
                 context=[context],
                 min_chars=max(200, int(_estimate_body_chars(context) * 0.6)),
+                focus_hint=focus_hint,
             )
 
             messages = [
@@ -668,6 +690,7 @@ def _build_prompt(
     previous_summary: str | None = None,
     context: list[str] | None = None,
     min_chars: int = 200,
+    focus_hint: str = "",
 ) -> list[str]:
     """构建 LLM 摘要的 user messages（多条）。
 
@@ -679,6 +702,9 @@ def _build_prompt(
     首次压缩：Create a new anchored summary from the conversation history.
     增量压缩：Update the anchored summary below using the conversation history above.
               Preserve still-true details, remove stale details, and merge in the new facts.
+
+    ``focus_hint`` 为用户 ``/compact`` 附带的自然语言提示词，非空时在指令末尾
+    追加强调段，要求摘要优先完整保留相关上下文。
     """
     messages: list[str] = []
 
@@ -706,6 +732,13 @@ def _build_prompt(
             "以上是对话记录。\n"
             "请根据对话记录创建一份新的锚定摘要。\n"
             + base
+        )
+
+    # 用户强调：优先完整保留指定上下文
+    if focus_hint.strip():
+        instruction += (
+            f"\n\n【用户强调】以下内容对用户至关重要，摘要中必须优先、完整、"
+            f"详尽地保留其原始细节，不得因压缩而丢失：\n{focus_hint.strip()}"
         )
 
     messages.append(instruction)

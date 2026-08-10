@@ -363,12 +363,57 @@ async def test_done_event_idempotent_no_duplicate(env, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_compress_fast_emits_done_without_compact_msg(env):
+async def test_compress_fast_no_tool_results_returns_false(env):
     manager, emitted, projection, compact = env
     sid = await manager.create_session("ws")
-    # 需要有 tool result 才能裁剪；这里只验证无工具结果时返回 False
+    # 无工具结果时返回 False，不产生任何 compact 事件
     await _seed(manager, sid, 1)
     changed = await compact.compress_fast(sid, "ws", config=SimpleNamespace())
     assert changed is False
-    # 无 compact done 事件（无可裁剪）
     assert "context_compact_done" not in _event_names(emitted)
+
+
+@pytest.mark.asyncio
+async def test_compress_fast_projects_compact_fast_msg(env):
+    """fast 压缩裁剪工具输出后投影为一条 name=compact_fast 的展示气泡 Msg，
+    且不污染上下文锚点（get_context_messages 的 tail 起点只认 MsgName.COMPACT）。"""
+    from ftre_agent_core.message import (
+        AssistantMsg as _AssistantMsg,
+        ToolCallBlock,
+        ToolResultBlock,
+    )
+
+    manager, emitted, projection, compact = env
+    sid = await manager.create_session("ws")
+
+    user = UserMsg(name=MsgName.DEFAULT, content="请读取文件")
+    assistant = _AssistantMsg(
+        name=MsgName.DEFAULT,
+        content=[
+            ToolCallBlock(id="c1", name="read", arguments={}),
+            ToolResultBlock(id="c1", name="read", output="很长的工具输出" * 10, state="success"),
+        ],
+    )
+    await manager.save_message(sid, user)
+    await manager.save_message(sid, assistant)
+
+    changed = await compact.compress_fast(sid, "ws", config=SimpleNamespace(), keep_turns=0)
+    assert changed is True
+
+    # 生成了一条 name=compact_fast 的 Msg（role=assistant，无 hide）
+    full = await manager.get_messages_by_session(sid)
+    fast_msgs = [m for m in full if m["name"] == MsgName.COMPACT_FAST]
+    assert len(fast_msgs) == 1
+    assert fast_msgs[0]["role"] == "assistant"
+    assert fast_msgs[0]["metadata"].get("hide") is not True
+    assert fast_msgs[0]["metadata"]["context_compact"]["mode"] == "fast"
+    assert "裁剪" in fast_msgs[0]["content"][0]["text"]
+
+    # compact_fast 不是上下文锚点：无 compact Msg 时 get_context_messages 返回全部
+    # （含 compact_fast 本身，作为提醒发给 LLM），但绝不把它当 tail 起点。
+    context = await manager.get_context_messages(sid)
+    assert not any(
+        m["name"] == MsgName.COMPACT for m in context
+    ), "不应存在 summary 锚点"
+    # compact_fast Msg 作为普通提醒消息进入上下文
+    assert any(m["name"] == MsgName.COMPACT_FAST for m in context)

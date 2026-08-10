@@ -225,14 +225,48 @@ class SessionProjection:
     async def _project_compact_done(
         self, session_id: str, event: CustomEvent
     ) -> ProjectionResult:
-        """把 context_compact_done 投影为一条 user/compact Msg 并幂等落盘。
+        """把 context_compact_done 投影为一条 Msg 并幂等落盘。
 
-        仅 summary 模式投影为 Msg（正文为完整摘要）；fast 模式只裁剪工具输出，
-        不产生摘要 Msg，返回空结果（事件仍由统一出口实时广播）。
+        - summary 模式：投影为 name=compact 的上下文锚点 Msg（正文为完整摘要）。
+        - fast 模式：投影为 name=compact_fast 的展示气泡 Msg（正文为提示文案，
+          告知工具输出已被裁剪）。该 Msg 不是上下文锚点，不设 through_message_id，
+          不参与 tail 计算，仅供前端展示与提醒 Agent。
         event.id 作为 Msg id，保证同一事件重放不会产生重复 Msg。
         """
         value = event.value or {}
-        if value.get("mode") != "summary":
+        mode = value.get("mode")
+
+        if mode == "fast":
+            tool_results = int(value.get("tool_results", 0) or 0)
+            tokens_before = int(value.get("tokens_before", 0) or 0)
+            tokens_after = int(value.get("tokens_after", 0) or 0)
+            saved = max(0, tokens_before - tokens_after)
+            text = (
+                f"已快速压缩：{tool_results} 个较早的工具输出已被裁剪，"
+                f"其原始内容不再可见（约节省 {saved} tokens）。"
+                "后续如需相关信息请重新获取。"
+            )
+            # 用 assistant 角色：语义上是「助手自述裁剪了工具输出」，且不会被
+            # compress_fast 的 user-turn 计数误当成一轮（role != user）。
+            # 前端按 name=compact_fast 专属分支渲染成气泡，无需 hide 标记。
+            message = AssistantMsg(
+                name=MsgName.COMPACT_FAST,
+                content=text,
+                id=event.id,
+                created_at=event.created_at,
+                metadata={
+                    "context_compact": {
+                        "mode": "fast",
+                        "tool_results": tool_results,
+                        "tokens_before": tokens_before,
+                        "tokens_after": tokens_after,
+                    },
+                },
+            )
+            await self._session_manager.upsert_message(session_id, message)
+            return ProjectionResult(persisted_messages=[message])
+
+        if mode != "summary":
             return ProjectionResult()
         summary_text = value.get("summary_text") or ""
         compact_meta = {
