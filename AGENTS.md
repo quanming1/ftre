@@ -11,304 +11,94 @@
 
 ## Git Flow 规范（强制）
 
-### 基本纪律
-
 - **禁止私自 commit / push**：除非用户明确要求（如"commit"、"push"、"提交"），否则只改代码不提交
-- **回滚需确认**：回滚前必须告知用户回滚的内容、范围和影响，得到确认后再执行
-- **push 前先 commit**：不要把未 commit 的改动直接 push
-- **多仓库联动**：改 core 后同步验证 ftre 后端，改前端后同步验证后端 API
-- **操作不同仓库时用 `set_workspace` 显式切换**：`cd A && git ...` 组合命令中的 `cd` 不改变 bash 工具工作区，曾导致 `git init` 误在错误仓库执行
+- **回滚需确认**；**push 前先 commit**；**多仓库联动**（改 core 后验证后端，改前端后验证 API）
+- **跨仓库操作必须 `set_workspace` 显式切换**：`cd A && git ...` 中的 `cd` 不改变 bash 工具工作区
 
-### 分支模型
+分支模型：`master`（仅发布，永不直接提交）← `develop`（默认基底）← `feature/<阶段id>-<name>` / `prd-update` / `todos-update` / `release/<ver>` / `hotfix/<name>`
 
-```
-master            ← 仅存放可发布版本（受保护语义：永不直接提交）
-  └─ develop      ← 日常集成分支（默认工作基底）
-       ├─ feature/<阶段id>-<name>   新功能 / 新任务
-       ├─ prd-update                PRD 文档专用分支
-       ├─ todos-update              TODO 文档专用分支
-       ├─ release/<ver>             发布准备
-       └─ hotfix/<name>             生产紧急修复
-```
-
-### 分支规则
-
-- 默认工作分支是 **develop**；master 永不直接提交代码；**develop 同样禁止直接提交，只接受 feature/* → merge 合入**（pre-push hook 强制）。
-- 每个任务/功能开独立分支：`git checkout -b feature/<阶段id>-<short-name> develop`，**feat/fix 分支名必须关联 TODO 阶段 id**（如 `feature/A2-config`，大小写不敏感）。
-- **交叉校验**：feat/fix 提交的 scope 必须与分支名中的阶段 id 一致（commit-msg hook 强制）；分支名不含阶段 id 时 feat/fix 提交直接拒绝。
-- 规划类专用分支：`prd-update`（PRD 文档提交）、`todos-update`（TODO 文档提交）。
-
-### 提交规范（Conventional Commits）
-
-```
-<type>(<scope>): <subject>
-```
-
-- **subject 使用中文**（type/scope 保持英文）。
-- type：`feat` / `fix` / `prd` / `todos` / `docs` / `refactor` / `test` / `style` / `chore` / `perf`
-- **scope 分三类**：
-  - `feat` / `fix` / `prd` / `todos`：scope **必须**是 `docs/TODO.yaml` 中的阶段 id（如 `A1` / `C2` / `B1`），且必须真实存在（commit-msg hook 实时校验，防写错阶段号）
-  - `prd` / `todos` 额外强制：只在 `prd-update` / `todos-update` 分支下提交，且暂存文件必须全部在 `docs/` 下（规划与代码隔离）
-  - 其他 type（docs/refactor/test/style/chore/perf）：scope 用模块名，白名单定义在 `.githooks/.scopes`（agent/bus/channel/session/tools/api/config/command/plugin/trace/main/tests/docs）
-- **一条提交只做一件事**；禁止 `fix stuff`、`update`、`misc` 这类无意义 message。
-- **本地强制**：`.githooks/commit-msg` hook 在每次 commit 时校验（type 白名单、阶段格式与存在性、分支名交叉校验、prd/todos 分支与文档-only 约束），不符合直接拒绝；`git config core.hooksPath .githooks` 已配置（新 clone 后需执行一次）。
-- 提交规范完整定义见 `docs/COMMIT.md`。
-
-### 合并策略
-
-- `feature/*` → `develop`：**`git merge --no-ff feature/xxx`**（保留合并提交，不 squash 历史）。
-- **develop 只接受 merge 合入**：禁止直接 commit 到 develop（pre-push hook 校验）。
-- `develop` → `master`：走 `release/*`（冻结 → 回归 → 打 tag → 合并）。
-- `hotfix/*` → `master` + 回灌 `develop`。
-- **禁止 rebase 重写已推送历史**。
-
-### 本地保护（hooks）
-
-- 仓库内置 `.githooks/`：
-  - `commit-msg`：提交时校验消息格式/type/scope/阶段 id/分支交叉（详见 `docs/COMMIT.md`）
-  - `pre-push`：禁止非 master 分支 push 到 master、禁止删除 master、develop 新增提交必须全部是 merge commit
-- `merge:` / `Merge` / `revert:` / `Revert` 开头的系统提交自动跳过。
-- hook 生效前提：`git config core.hooksPath .githooks`（新 clone 后执行一次）。
-- 说明：GitHub free 账号的 private 仓库无法开启服务端 branch protection，hook 是本地强制替代；AI agent 与人同规则。
-
-### 标准流程（每次任务）
-
-```bash
-git checkout develop && git pull          # 1. 同步基底
-git checkout -b feature/<阶段id>-<task>   # 2. 开任务分支
-# ... 开发 + 本地测试（pytest / ruff）...
-git add <改动文件>                          # 3. 提交（conventional）
-git commit -m "feat(A1): 描述"
-git checkout develop && git merge --no-ff feature/<task>   # 4. 合并回 develop
-git push origin develop                   # 5. 推送
-```
+- 默认工作分支是 **develop**；master 永不直接提交；develop 禁止直接 commit，只接受 `feature/*` → `git merge --no-ff` 合入
+- **feat/fix 分支名必须关联 TODO 阶段 id**（如 `feature/A2-config`），提交 scope 与分支名阶段 id 必须一致（commit-msg hook 强制）
+- 提交格式 `<type>(<scope>): <subject>`，subject 中文；feat/fix/prd/todos 的 scope 必须是 `docs/TODO.yaml` 中真实存在的阶段 id；其他 type 的 scope 用 `.githooks/.scopes` 白名单模块名
+- 合并：`feature/* → develop` 用 `--no-ff`；develop → master 走 `release/*`；**禁止 rebase 已推送历史**
+- 本地强制：`.githooks/commit-msg`（提交校验）+ `.githooks/pre-push`（master 保护 + develop merge-only）；`merge:`/`revert:` 开头系统提交跳过；hook 完整规则见 `docs/COMMIT.md`
+- 标准流程：`checkout develop → checkout -b feature/<阶段id>-<task> → 开发+测试 → commit → merge --no-ff → push develop`
 
 ## PRD 驱动开发（强制）
 
-- **先 PRD，后开发**：每个 TODO 阶段开工前，必须先在 `docs/prd/` 创建对应 PRD（命名 `PRD-<阶段>-<名称>.md`，从 `docs/prd/PRD-TEMPLATE.md` 复制），评审定稿（状态 `approved`）后才能开发。
-- **PRD 是开发的唯一依据**：需求、实现、测试、验收全部对照 PRD；禁止开发 PRD 未定义的内容。
-- **验收按 PRD 标准**：每阶段完成必须按 PRD「验收标准」逐条核对，全部通过才算完成。
-- 推进管理办法详见 `docs/PROCESS.md`；阶段状态与阶段 id 见 `docs/TODO.yaml`。
+- **先 PRD，后开发**：TODO 阶段开工前先在 `docs/prd/` 建 PRD（从 `PRD-TEMPLATE.md` 复制）并定稿 `approved`
+- **PRD 是唯一依据**：需求/实现/测试/验收全部对照 PRD；验收按 PRD「验收标准」逐条核对，全部通过才算完成
+- 流程详见 `docs/PROCESS.md`；阶段 id 与状态见 `docs/TODO.yaml`
 
 ## 仓库关系
 
 ```
-ftre-agent-core    Agent 核心库（无状态、纯算法）
-      │              ReActAgent / LLMHandler / Tool 体系 / Runner
-      │              被 ftre 后端 import 使用，不独立部署
-      │
-      ├── ftre-octo-plugin  Octo IM 外部插件（生态重要组成部分）
-      │                     真实路径：C:\Users\蒋全明\.ftre\plugins\octo_plugin
-      │                     Python + Node 混合项目：WuKongIM 桥接 / Octo Channel / octo_management Tool
-      │                     通过 shim `C:\Users\蒋全明\.ftre\plugins\octo_channel.py` 被 Gateway 扫描加载
+ftre-agent-core    Agent 核心库（无状态、纯算法）被后端 import，不独立部署
+      ├── ftre-octo_plugin  Octo IM 外部插件（Python+Node：WuKongIM 桥接/Octo Channel/octo_management Tool）
+      ▼                    （shim: ~/.ftre/plugins/octo_channel.py 被 Gateway 扫描加载）
+ftre               Gateway 后端（有状态、长驻进程）：Session 管理 / EventBus / Channel / 插件 / MCP
       ▼
-ftre               Gateway 后端（有状态、长驻进程）
-      │              Session 管理 / EventBus / Channel / 插件 / MCP
-      │              内置插件：skill、mcp、context_govern、title_gen
-      │              内置工具：bash / read / write / edit / set_workspace / cron / task / send_message
-      │              对 desktop 提供 WebSocket + HTTP API
+ftre-desktop       Desktop 客户端（Electron+React），WebSocket 与后端通信
       ▼
-ftre-desktop        Desktop 客户端（Electron + React）
-      │              GUI 体验：聊天界面、编辑器、Inspector 面板、文件树、设置
-      │              通过 WebSocket 与后端通信
-      ▼
-ftre-docs          文档站（React + Vite）
-                     Markdown 源文件在 src/content/，侧边栏自动渲染
-                     独立部署，不依赖后端
+ftre-docs          文档站（React+Vite），独立部署
 ```
 
-## AgentLoop SessionLane 架构
+## 核心架构
 
-后端消息处理保留 `Channel -> EventBus -> AgentLoop` 三件套，并在
-`AgentLoop` 内按 `session_id` 扩展出独立的 `SessionLane`：
+### AgentLoop SessionLane（后端消息处理）
 
-```mermaid
-flowchart LR
-    CH["Channel"] --> BUS["EventBus"]
-    BUS --> LOOP["AgentLoop"]
-    LOOP --> REG["SessionLaneRegistry"]
+`Channel → EventBus → AgentLoop`；`AgentLoop` 内按 session_id 建独立 `SessionLane`（单 session actor，负责 FIFO/取消/压缩门控/状态发布）。协作组件：`MailboxStore`（持久化 pending）、`ContextGate`（领取前水位检查）、`CompactManager`（共享压缩）、`TurnExecutor`（只执行已领取 turn，返回 `TurnOutcome`）、`CompletionRegistry`（进程内精确等待）。
 
-    REG --> LA["SessionLane(session-A)"]
-    REG --> LB["SessionLane(session-B)"]
+不变量：不同 session 可并行；**同一 session 任意时刻最多一个 active turn，且 turn 与 compaction 不并发**。领取 at-most-once：pending 被取走后崩溃不重放。
 
-    LA --> MA["MailboxStore"]
-    LB --> MA
+### 多 Agent 架构
 
-    MA --> P["QueueItem<br/>pending"]
-    P --> G["ContextGate"]
-
-    G -->|"需要压缩"| CM["CompactManager"]
-    CM --> G
-
-    G -->|"允许领取"| A["TurnOperation<br/>仅内存"]
-    A --> TE["TurnExecutor"]
-    TE --> O["TurnOutcome"]
-
-    TE --> MSG["messages<br/>持久化聊天历史"]
-    O --> RC["CompletionRegistry<br/>仅内存等待"]
-
-    MA --> SNAP["Mailbox Snapshot<br/>pending + phase"]
-
-    SNAP --> BUS
-```
-
-模块职责：
-
-- `Channel`：接收 WebSocket、HTTP、插件输入，并发送下行消息。
-- `EventBus`：传输类型化消息，不负责 session 排序。
-- `AgentLoop`：根据 `session_id` 将请求路由到对应的 lane。
-- `SessionLaneRegistry`：维护 lane 生命周期，保证一个 session 只有一个 lane。
-- `SessionLane`：单 session actor，负责 FIFO、取消、压缩门控和状态发布。
-- `MailboxStore`：只持久化 pending。
-- `ContextGate`：判断下一条请求是否允许领取，必要时等待压缩完成。
-- `CompactManager`：执行共享上下文压缩。
-- `TurnExecutor`：只执行一个已领取的 turn，返回 `TurnOutcome`，不负责消费队列。
-- `TurnOperation` / `CompletionRegistry`：进程内的执行与精确等待状态。
-- `messages`：唯一持久化聊天历史；`Mailbox Snapshot`：只投影 pending 和运行 phase。
-
-领取采用 at-most-once 语义：pending 被取走后 Gateway 崩溃时不自动重放；已写入
-messages 的 UserMessage 会保留，用户可发送“继续”开启新的 Turn。
-
-不变量：不同 session 可以并行执行；同一个 session 任意时刻最多一个 active
-turn，且 turn 与 compaction 不会并发。
-
-## 多 Agent 架构
-
-每个 agent 有独立配置目录 `~/.ftre/agents/<agent_id>/`：
-
-```
-~/.ftre/agents/<agent_id>/
-  ├── agent.config.json    # LLM、tools、workspace、mcp、plugins、disabled_skills
-  ├── SOUL.md              # 人设（追加到全局 system_prompt 之后）
-  ├── AGENTS.md            # 项目约定（context_govern 注入）
-  ├── USER.md              # 用户偏好（追加到 SOUL.md 之后）
-  └── skills/              # Agent 私有 Skill（同名覆盖全局）
-```
-
-### 配置合并规则（AgentManager.\_load_and_merge）
+每个 agent 独立配置目录 `~/.ftre/agents/<agent_id>/`（agent.config.json / SOUL.md / AGENTS.md / USER.md / skills/）。配置合并规则：
 
 | 字段 | 合并策略 |
 | --- | --- |
-| llm | provider + model 可覆盖，api_key/base_url/vision 始终用全局 |
-| tools | 整体替换（写了就用 agent 的，不写则全部可用） |
-| workspace | Agent 的"家目录"（存放 prompt 文件的路径，不是对话 cwd） |
-| mcp | 深度合并（按 server name 为 key，agent 覆盖全局） |
-| plugins | 按 name 合并（同名 agent 覆盖全局，全局有但 agent 没提的保留） |
-| disabled_skills | 整体替换（agent 写了就用 agent 的，不写则用全局） |
+| llm | provider+model 可覆盖，api_key/base_url/vision 始终用全局 |
+| tools / disabled_skills | 整体替换（写了就用 agent 的，不写则全部可用） |
+| workspace | Agent 家目录 |
+| mcp / plugins | 按 server name / name 深度合并（agent 覆盖全局） |
 
-## Hook 系统
+### Hook 系统
 
-全异步 filter chain，`HookManager.trigger()` 为 `async def`，自动 `await` coroutine 返回值。
+全异步 filter chain（回调必须 `async def`，自动 await coroutine）。调用点在 `loop.py`：
+- `before_messages_build`：events 加载后、to_openai_messages 前；可改 events/config（context_govern：事件治理 + AGENTS.md 注入）
+- `before_agent_run`：Agent 创建后、run() 前；可改 messages（MCP/Skill：提示词注入 + 私有 MCP 工具注册）
 
-| 挂点 | 触发时机 | 上下文 | 典型用途 |
-| --- | --- | --- | --- |
-| `before_messages_build` | events 加载后、to_openai_messages 前 | `MessagesBuildContext`（可改 events/config） | context_govern：事件流治理 + AGENTS.md 注入 |
-| `before_agent_run` | Agent 创建后、agent.run() 前 | `AgentRunContext`（可改 messages，含 agent_profile + agent_tool_registry） | MCP/Skill：系统提示词注入 + 私有 MCP 工具注册 |
+### 插件体系
 
-调用点在 `loop.py`，两处均 `await self.hook_manager.trigger(...)`。
+内置插件（`src/ftre/plugin/builtin/`）：`skill`（Skill 管理）/ `mcp`（MCP 双层配置）/ `context_govern`（AGENTS.md 双注入 + 工具事件配对去重）/ `title_gen`（标题生成）。外部插件目录 `~/.ftre/plugins/` 保留扩展点。
 
-## 插件体系
+插件通过 `FtrePluginApi` 注册能力：`tool_registry`（工具）、`append_system_prompt`（提示词）、`register_router`（HTTP 路由）、`register_hook`（hook）。
 
-内置插件（`src/ftre/plugin/builtin/`）随代码仓库发布，无需用户手动安装：
+MCP 双层配置：公共（config.json `mcp` 段 → 全局 tool_registry，启动注册 + watcher 热重载）；私有（agent.config.json `mcp` 段 → per-agent registry，`BEFORE_AGENT_RUN` 按需连接）。连接池按 server name 全局去重复用，配置相同不二次加载；HTTP API 用 `?scope=global|private&agent_id=xxx` 区分。
 
-| 插件 | 职责 |
-| --- | --- |
-| `skill` | Skill 管理（loadSkill 工具、Skill CRUD API、system prompt 注入、per-agent 私有 skill 支持） |
-| `mcp` | MCP 服务器管理（公共+私有双层配置、连接池、工具注册、CRUD API、config watcher） |
-| `context_govern` | 上下文治理（AGENTS.md 双注入、工具事件配对/去重/悬挂清理） |
-| `title_gen` | 标题生成（首条消息自动生成会话标题） |
+**Octo 插件**（重要外部插件）：`C:\Users\蒋全明\.ftre\plugins\octo_plugin\`，独立 git 仓库；改 Octo IM / WuKongIM / 外部消息通道需求时优先看这里；入口 shim `octo_channel.py`；进入该目录前先读它的 AGENTS.md 和 README.md。
 
-插件通过 `FtrePluginApi` 注册能力：
-- `self.api.tool_registry` — 注册工具（全局共享）
-- `self.api.append_system_prompt(...)` — 注入 system prompt
-- `self.api.register_router(APIRouter)` — 注册 HTTP 路由
-- `self.api.register_hook(...)` — 注册 hook（所有 hook 回调必须为 `async def`）
+## 启动方式
 
-外部插件目录 `~/.ftre/plugins/` 仍保留作为扩展点，`PluginManager` 先加载内置插件再扫描外部目录。
+两个终端：`ftre gateway`（后端）；`cd E:\binn\ftre-desktop && pnpm dev`（客户端）。打包模式 Electron 自动 spawn 内嵌 Python 后端，无需手动启动。
 
-### MCP 双层配置
+## CLI 入口点
 
-| 层级 | 配置来源 | 注册位置 | 连接管理 |
-| --- | --- | --- | --- |
-| 公共 MCP | `config.json` 的 `mcp` 段 | 全局 `tool_registry`（所有 agent 共享） | 启动时 `start_and_register` + config watcher 热重载 |
-| 私有 MCP | `agent.config.json` 的 `mcp` 段 | per-agent `ctx.agent_tool_registry` | `BEFORE_AGENT_RUN` hook 中 `ensure_connections` 按需连接 |
+`pyproject.toml` 注册 `ftre = "ftre.main:app"`，editable 安装改代码直接生效；**只有改 pyproject.toml 入口点名时才需重新 `pip install -e .`**；`ftre.exe` 所在 `Scripts/` 目录需加入 PATH。
 
-连接池全局共享（`McpManager._connections`），按 server name 去重。`ensure_connection` 已连接且配置相同则复用，不二次加载。私有 MCP 工具注册到 per-agent registry，不污染全局。
+## 内置工具
 
-HTTP API 通过 `?scope=global|private&agent_id=xxx` 区分操作目标。
-
-### context_govern 消息治理
-
-`messages` 表只存聚合完成的 `Msg` 快照；流式 `AgentStreamEvent` 仅用于
-WebSocket 实时传输和 trace，不入库。`ToolCallBlock` 与
-`ToolResultBlock` 直接保存在 assistant Msg 的 `content[]` 中，不做数据库
-事件重放或旧协议兼容。
-
-AGENTS.md 注入两份（叠加）：`agent_dir/AGENTS.md`（Agent 行为规则）+ `workspace/AGENTS.md`（项目约定）。
-
-### 重要外部插件
-
-- **Octo 插件**：`C:\Users\蒋全明\.ftre\plugins\octo_plugin\`
-  - 这是 ftre 生态的重要组成部分，不是临时脚本目录
-  - 改动 Octo IM / WuKongIM / 外部消息通道相关需求时，优先检查这里
-  - 入口 shim：`C:\Users\蒋全明\.ftre\plugins\octo_channel.py`
-  - 项目内也有自己的 `AGENTS.md` 和 `README.md`，进入该目录工作前先阅读
-  - 该项目是独立 git 仓库，和 `E:\ftre` 主仓库分开管理
-
-### 启动方式
-
-两个终端：
-
-```
-# 终端 1 — 后端
-ftre gateway
-
-# 终端 2 — 客户端（ftre-desktop 仓库）
-cd E:\binn\ftre-desktop && pnpm dev
-```
-
-打包模式：Electron 自动 spawn 内嵌 Python 后端，无需手动启动。
-
-### CLI 入口点
-
-`pyproject.toml` 注册了 `ftre = "ftre.main:app"`，`pip install -e .` 后在 `Scripts/` 生成 `ftre.exe`。
-
-- `ftre.exe` 只是个启动器，内容固定就是 `from ftre.main import app; app()`，不随代码更新变化
-- editable 模式通过 `site-packages/__editable__.ftre-0.1.0.pth` 指向 `src/` 源码目录，改代码直接生效
-- **只有改 `pyproject.toml` 的 `[project.scripts]` 入口点名时才需要重新 `pip install -e .`**
-- `ftre.exe` 所在的 `Scripts/` 目录需加入用户 PATH
-
-### 内置工具
-
-定义在 `src/ftre/tools/`，`build_default_tools()` 在 `agent_manager._build_agent()` 中按 Agent 配置构建 + 裁剪：
+定义在 `src/ftre/tools/`，`build_default_tools()` 按 Agent 配置构建 + 裁剪：
 
 | 工具 | 说明 |
 | --- | --- |
-| `bash` | 执行 shell 命令，纯 cd 拦截持久切换工作区，RTK 自动重写减少 token，semble 语义检索集成 |
-| `read` | 读取文件/图片/目录，返回 `(result_str, metadata)` 元组，metadata 含内容快照（file/content/start_line/end_line） |
+| `bash` | 执行 shell 命令，纯 cd 拦截持久切换工作区，RTK 自动重写减 token，semble 语义检索 |
+| `read` | 读文件/图片/目录，返回 `(result_str, metadata)`，metadata 含内容快照（file/content/start_line/end_line） |
 | `write` | 创建/覆盖文件，保留原编码和换行风格，返回 `(result_str, diff_metadata)` |
-| `edit` | 字符串模式 + 行号模式修改文件，返回 `(result_str, diff_metadata)`（before/after/diff/additions/deletions） |
+| `edit` | 字符串/行号模式修改，返回 `(result_str, diff_metadata)`（before/after/diff/additions/deletions） |
 | `set_workspace` | 切换 session 工作区（持久到 DB） |
 | `cron` | 定时任务管理（`~/.ftre/cron/`，CronScheduler 30s 扫描） |
 | `task` | 派发子任务到 subagent session 同步执行（防递归） |
 | `send_message` | 跨 session 消息（notify 通知 / invoke 唤起） |
 
 `ToolHandler.run_one()` 支持 `str` / `EventBase` / `tuple[str, dict]` 三种返回值，`react_runner` 在 `ToolResultEndEvent` 中透传 `metadata=result.metadata`。
-
-### Inspector 面板
-
-Desktop 右侧扩展面板（`features/inspector/`），read/edit/write 工具完成后点击打开：
-
-| Tab 类型 | 数据来源 | 展示方式 |
-| --- | --- | --- |
-| `file` | read 工具 `metadata.content` 内容快照 | Monaco 只读编辑器，不回读磁盘 |
-| `diff` | edit/write 工具 `metadata.before`/`after` | Monaco side-by-side diff |
-| `image` | 文件树点击图片文件 | `<img>` base64 data URL（IPC `fs:readImageBase64`） |
-
-Tab 按 `toolCallId` 去重（per-tool，不是 per-file），重复点击跳转到已有 tab 并重新定位。
-
-**文件树侧边栏**：tab bar 左侧按钮开关，懒加载目录（`fs:readDir`），vscode-icons 图标，git 状态标记（文件名/目录名按状态染色）。
-
-**Git 轮询**：`git:poll` IPC 采用协商缓存设计——Phase 1 stat `.git/index` + `.git/HEAD` 拼 etag（<1ms），客户端带 `lastEtag` 比较；变了才走 Phase 2（`git status --porcelain` + `git diff --numstat`）。1 秒轮询，每 5 次强制走 Phase 2 兜底外部编辑器改文件。
-
-**Changes 节点**：虚拟节点平铺所有 git 变更文件，显示状态字母（M/A/D/R/U/C）+ 增删行数（`+N -M`），点击 modified/added/deleted 打开 diff 预览。
