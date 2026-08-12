@@ -116,6 +116,62 @@ ftre/
 └── pyproject.toml
 ```
 
+## AgentLoop SessionLane Architecture
+
+The backend keeps the existing `Channel -> EventBus -> AgentLoop` pipeline and
+extends `AgentLoop` with one serialized lane per session:
+
+```mermaid
+flowchart LR
+    CH["Channel"] --> BUS["EventBus"]
+    BUS --> LOOP["AgentLoop"]
+    LOOP --> REG["SessionLaneRegistry"]
+
+    REG --> LA["SessionLane(session-A)"]
+    REG --> LB["SessionLane(session-B)"]
+
+    LA --> MA["MailboxStore"]
+    LB --> MA
+
+    MA --> P["QueueItem<br/>pending"]
+    P --> G["ContextGate"]
+
+    G -->|"needs compaction"| CM["CompactManager"]
+    CM --> G
+
+    G -->|"claim allowed"| A["TurnOperation<br/>memory only"]
+    A --> TE["TurnExecutor"]
+    TE --> O["TurnOutcome"]
+
+    TE --> MSG["messages<br/>durable chat history"]
+    O --> RC["CompletionRegistry<br/>memory-only wait"]
+
+    MA --> SNAP["Mailbox Snapshot<br/>pending + phase"]
+
+    SNAP --> BUS
+```
+
+Responsibilities are deliberately separated:
+
+- `Channel` accepts WebSocket/HTTP/plugin input and emits outbound frames.
+- `EventBus` transports typed messages; it does not own session ordering.
+- `AgentLoop` routes an inbound request to the correct lane.
+- `SessionLaneRegistry` owns the lifecycle of lanes and guarantees one lane per session.
+- `SessionLane` is the single actor for one session: FIFO claim, cancellation, compaction gates, and state publication.
+- `MailboxStore` persists pending requests only.
+- `ContextGate` decides whether the next request may be claimed and waits for compaction when required.
+- `CompactManager` performs the shared context compaction operation.
+- `TurnExecutor` executes exactly one claimed turn and returns a `TurnOutcome`; it does not drain queues.
+- `TurnOperation` and `CompletionRegistry` are in-memory execution and waiting state.
+- `messages` is the only durable chat history; `Mailbox Snapshot` projects pending items and runtime phase.
+
+Claiming uses at-most-once semantics: after a pending request is taken, a gateway crash does
+not replay it automatically. A persisted UserMessage remains in `messages`, so the user may
+send “continue” to begin a new turn.
+
+The core invariant is: different sessions may run concurrently, but one session
+never has two active turns or a turn and compaction running at the same time.
+
 ## Core Features
 
 ### Built-in Tools

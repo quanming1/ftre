@@ -116,6 +116,53 @@ ftre/
 └── pyproject.toml
 ```
 
+## AgentLoop SessionLane 架构
+
+后端保留 `Channel -> EventBus -> AgentLoop` 三件套，并在 AgentLoop 内按
+`session_id` 扩展出独立的 SessionLane：
+
+```mermaid
+flowchart LR
+    CH["Channel"] --> BUS["EventBus"]
+    BUS --> LOOP["AgentLoop"]
+    LOOP --> REG["SessionLaneRegistry"]
+
+    REG --> LA["SessionLane(session-A)"]
+    REG --> LB["SessionLane(session-B)"]
+
+    LA --> MA["MailboxStore"]
+    LB --> MA
+
+    MA --> P["QueueItem<br/>pending"]
+    P --> G["ContextGate"]
+
+    G -->|"需要压缩"| CM["CompactManager"]
+    CM --> G
+
+    G -->|"允许领取"| A["TurnOperation<br/>仅内存"]
+    A --> TE["TurnExecutor"]
+    TE --> O["TurnOutcome"]
+
+    TE --> MSG["messages<br/>持久化聊天历史"]
+    O --> RC["CompletionRegistry<br/>仅内存等待"]
+
+    MA --> SNAP["Mailbox Snapshot<br/>pending + phase"]
+
+    SNAP --> BUS
+```
+
+职责边界：Channel 负责接入，EventBus 负责传输，AgentLoop 负责路由；
+SessionLane 负责单会话串行状态机；MailboxStore 只负责 pending 持久化；
+ContextGate 和 CompactManager 负责压缩门控；TurnExecutor 只执行一个已领取的
+turn；TurnOperation 与 CompletionRegistry 都是进程内运行态；`messages` 是唯一聊天
+历史。Mailbox Snapshot 只投影 pending 和运行 phase。
+
+领取请求采用 at-most-once 语义：pending 被取走后若 Gateway 意外中断，该请求不自动
+重放；已经写入 messages 的 UserMessage 保留，用户可以发送“继续”开启新的 Turn。
+
+不同 session 可以并行执行，但同一 session 不会同时运行两个 turn，也不会让
+turn 与 compaction 并发。
+
 ## 核心特性
 
 ### 内置工具

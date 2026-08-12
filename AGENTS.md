@@ -44,6 +44,61 @@ ftre-docs          文档站（React + Vite）
                      独立部署，不依赖后端
 ```
 
+## AgentLoop SessionLane 架构
+
+后端消息处理保留 `Channel -> EventBus -> AgentLoop` 三件套，并在
+`AgentLoop` 内按 `session_id` 扩展出独立的 `SessionLane`：
+
+```mermaid
+flowchart LR
+    CH["Channel"] --> BUS["EventBus"]
+    BUS --> LOOP["AgentLoop"]
+    LOOP --> REG["SessionLaneRegistry"]
+
+    REG --> LA["SessionLane(session-A)"]
+    REG --> LB["SessionLane(session-B)"]
+
+    LA --> MA["MailboxStore"]
+    LB --> MA
+
+    MA --> P["QueueItem<br/>pending"]
+    P --> G["ContextGate"]
+
+    G -->|"需要压缩"| CM["CompactManager"]
+    CM --> G
+
+    G -->|"允许领取"| A["TurnOperation<br/>仅内存"]
+    A --> TE["TurnExecutor"]
+    TE --> O["TurnOutcome"]
+
+    TE --> MSG["messages<br/>持久化聊天历史"]
+    O --> RC["CompletionRegistry<br/>仅内存等待"]
+
+    MA --> SNAP["Mailbox Snapshot<br/>pending + phase"]
+
+    SNAP --> BUS
+```
+
+模块职责：
+
+- `Channel`：接收 WebSocket、HTTP、插件输入，并发送下行消息。
+- `EventBus`：传输类型化消息，不负责 session 排序。
+- `AgentLoop`：根据 `session_id` 将请求路由到对应的 lane。
+- `SessionLaneRegistry`：维护 lane 生命周期，保证一个 session 只有一个 lane。
+- `SessionLane`：单 session actor，负责 FIFO、取消、压缩门控和状态发布。
+- `MailboxStore`：只持久化 pending。
+- `ContextGate`：判断下一条请求是否允许领取，必要时等待压缩完成。
+- `CompactManager`：执行共享上下文压缩。
+- `TurnExecutor`：只执行一个已领取的 turn，返回 `TurnOutcome`，不负责消费队列。
+- `TurnOperation` / `CompletionRegistry`：进程内的执行与精确等待状态。
+- `messages`：唯一持久化聊天历史；`Mailbox Snapshot`：只投影 pending 和运行 phase。
+
+领取采用 at-most-once 语义：pending 被取走后 Gateway 崩溃时不自动重放；已写入
+messages 的 UserMessage 会保留，用户可发送“继续”开启新的 Turn。
+
+不变量：不同 session 可以并行执行；同一个 session 任意时刻最多一个 active
+turn，且 turn 与 compaction 不会并发。
+
 ## 多 Agent 架构
 
 每个 agent 有独立配置目录 `~/.ftre/agents/<agent_id>/`：
