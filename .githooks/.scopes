@@ -1,0 +1,14 @@
+# ftre backend module scopes
+agent
+bus
+channel
+session
+tools
+api
+config
+command
+plugin
+trace
+main
+tests
+docs
