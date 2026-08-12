@@ -46,7 +46,7 @@ class Channel(ABC):
         metadata: dict | None = None,
         *,
         kind: str = "user_message",
-    ) -> None:
+    ):
         """
         接收外部输入 → 投递到 Bus。
 
@@ -61,9 +61,9 @@ class Channel(ABC):
         Args:
             session_id: 目标 session
             data:       user_message 载荷（InboundData 形状）
-            metadata:   附加元数据（InboundMetadata 形状；外部协议帧 id 通过
-                        frame_id 携带，AgentLoop echo 时回填到 outbound 帧给
-                        前端做占位去重）。WS 客户端帧必须先用
+            metadata:   附加元数据（InboundMetadata 形状；WS 会在自己的边界
+                        将 frame_id 转成 request_id，AgentLoop 仅处理后者）。
+                        WS 客户端帧必须先用
                         InboundMetadata.from_client 过白名单再传进来。
             kind:       BusMessage.type，通常为 "user_message"
                         （控制操作统一使用不持久化的 slash command）
@@ -77,7 +77,8 @@ class Channel(ABC):
             data=InboundData.coerce(data).model_dump(),
             metadata=coerce_inbound_metadata(metadata),
         )
-        await self.bus.publish_inbound(msg)
+        # 用户输入必须等待 AgentLoop 的 durable admission ACK，不能只确认进了内存队列。
+        return await self.bus.request_inbound(msg)
 
     @abstractmethod
     async def send(self, msg: BusMessage) -> None:

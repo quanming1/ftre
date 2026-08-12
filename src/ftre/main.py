@@ -311,17 +311,18 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
         agent_manager=agent_manager,
     )
     # 删除级联需要取消运行中 agent：把 loop 反向注入 session 门面
-    session_manager.set_agent_loop(agent_loop)
-    agent_loop.start()
-    set_agent_loop(agent_loop)
 
-    # 注入 SessionProjection，供 attach 时读取运行中 Msg 与 session Event 快照。
-    ws_channel.set_session_projection(agent_loop.session_projection)
-
-    # 注册内置斜杠指令（/compact、/clear、/title 等）
+    # 注册控制/普通命令后再启动恢复 worker，避免重启后的 pending command 在
+    # CommandManager 尚未就绪时被当作普通 prompt 消费。
     from ftre.command.builtin import register_builtin_commands
 
     register_builtin_commands(cmd, agent_loop)
+    agent_loop.start()
+    set_agent_loop(agent_loop)
+
+    # 注入 Projection + Coordinator，attach 一次恢复 reply、queue 与权威状态。
+    ws_channel.set_session_projection(agent_loop.session_projection)
+    ws_channel.set_session_snapshot_provider(agent_loop)
 
     # 启动所有 Channel（WebSocket 监听端口）+ 分发循环
     await mgr.start()

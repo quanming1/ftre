@@ -110,7 +110,7 @@ class ContextConfig:
     所有字段都有默认值，缺省即沿用代码内常量；旧配置零改动可用。
     详细设计见文档 docs/context-management.md。
     """
-    # 后台预压缩水位：每轮 LLM 回复结束后检查，≥ 此值时后台调 LLM 生成摘要
+    # 轮后预压缩水位：本轮收尾且存在下一条 pending 时，≥ 此值先完成摘要再领取下一条。
     precompact_threshold: float = 0.7
     # 强制压缩水位：用户发消息时检查，≥ 此值时阻塞式压缩
     compact_threshold: float = 0.8
@@ -118,8 +118,8 @@ class ContextConfig:
     consolidation_ratio: float = 0.5
     # 预算安全垫：budget = context_window - max_output - safety_buffer
     safety_buffer: int = 1024
-    # 是否开启后台空闲压缩（每轮 done 后异步 LLM 摘要）
-    idle_compaction: bool = True
+    # 同一 session 可接纳的 pending 请求上限，防止离线入口无限占用磁盘。
+    mailbox_capacity: int = 100
 
 
 @dataclass
@@ -321,7 +321,7 @@ def load_config() -> AgentConfig:
         compact_threshold=float(_f("compactThreshold", "compact_threshold", _f("threshold", "threshold", 0.8))),
         consolidation_ratio=float(_f("consolidationRatio", "consolidation_ratio", 0.5)),
         safety_buffer=int(_f("safetyBuffer", "safety_buffer", 1024)),
-        idle_compaction=bool(_f("idleCompaction", "idle_compaction", True)),
+        mailbox_capacity=max(1, int(_f("mailboxCapacity", "mailbox_capacity", 100))),
     )
 
     # 配置日志统一降为 DEBUG，避免每次重新加载刷屏
@@ -336,7 +336,6 @@ def load_config() -> AgentConfig:
         f"context: ratio={context_cfg.consolidation_ratio}, "
         f"precompact={context_cfg.precompact_threshold}, "
         f"compact={context_cfg.compact_threshold}, "
-        f"idle={context_cfg.idle_compaction}"
         + (" (重新加载)" if config_changed else "")
     )
 

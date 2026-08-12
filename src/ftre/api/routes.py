@@ -153,10 +153,11 @@ async def list_sessions(
     total = await _session_manager.count_sessions(
         channel_id=channel_id, workspace=workspace
     )
-    # 标注每个 session 是否有正在执行的 ReActAgent（O(1) dict 查询）
+    # Coordinator 是运行态唯一事实源；queue/compact 也属于 busy。
     if _agent_loop is not None:
         for s in sessions:
-            s["running"] = _agent_loop.is_session_running(s["id"])
+            s["running"] = _agent_loop.is_session_busy(s["id"])
+            s["activity"] = _agent_loop.get_session_status(s["id"])
     return {
         "sessions": sessions,
         "total": total,
@@ -202,8 +203,37 @@ async def delete_session(session_id: str):
     session = await _session_manager.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
-    await _session_manager.delete_session(session_id)
+    if _agent_loop is None:
+        raise HTTPException(status_code=503, detail="AgentLoop 尚未就绪")
+    await _agent_loop.delete_session(session_id)
     return {"status": "deleted", "session_id": session_id}
+
+
+@router.delete("/sessions/{session_id}/queue/{request_id}")
+async def cancel_queued_message(session_id: str, request_id: str):
+    """取消一条尚未被 Session Worker 领取的排队消息。
+
+    这里删除的是 mailbox 中的 pending 项对应的执行资格，不删除历史消息；
+    下一次 mailbox 快照不再包含该项，客户端的队列横幅会自然移除。
+    如果消息已经被领取，接口返回 409，调用方应改用取消当前 Turn 的控制接口。
+    """
+    session = await _session_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
+    if _agent_loop is None:
+        raise HTTPException(status_code=503, detail="AgentLoop 尚未就绪")
+
+    result = await _agent_loop.cancel_queued_message(session_id, request_id)
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail="消息不存在、已经执行，或者已经进入 processing 状态",
+        )
+    return {
+        "status": "cancelled",
+        "session_id": session_id,
+        "request_id": result.request_id,
+    }
 
 
 @router.post("/sessions/{session_id}/fork")
@@ -235,15 +265,31 @@ async def get_messages(
     before_ts 为游标，只返回 timestamp < before_ts 的 Msg（用于加载更早）。
     """
     status = _agent_loop.get_session_status(session_id) if _agent_loop else "idle"
+    mailbox = (
+        await _agent_loop.get_mailbox_snapshot(session_id)
+        if _agent_loop is not None
+        else None
+    )
     session = await _session_manager.get_session(session_id)
     metadata = session["metadata"] if session else {}
     if limit_turns is not None and limit_turns > 0:
         messages, has_more = await _session_manager.get_recent_messages_by_turns(
             session_id, limit_turns, before_ts=before_ts
         )
-        return {"messages": messages, "has_more": has_more, "status": status, "metadata": metadata}
+        return {
+            "messages": messages,
+            "has_more": has_more,
+            "status": status,
+            "mailbox": mailbox,
+            "metadata": metadata,
+        }
     messages = await _session_manager.get_messages_by_session(session_id)
-    return {"messages": messages, "status": status, "metadata": metadata}
+    return {
+        "messages": messages,
+        "status": status,
+        "mailbox": mailbox,
+        "metadata": metadata,
+    }
 
 
 @router.get("/sessions/{session_id}/state")

@@ -24,12 +24,13 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
     :param loop: AgentLoop 实例（handler 通过闭包捕获）
     """
 
-    # /cancel：系统级指令，在锁外执行，立即取消当前 session 的 Agent
-    def _on_cancel(ctx) -> Handled:
+    # 文本 /cancel 仍保留为兼容入口；WS 的停止按钮会发送 turn_cancel，
+    # 不经过这条用户指令，也不会写入聊天历史。
+    async def _on_cancel(ctx) -> Handled:
         sid = ctx.meta.inbound.from_session or ctx.meta.inbound.data.get(
             "session_id", ""
         )
-        if loop.cancel_session(sid):
+        if await loop.cancel_session(sid):
             logger.info(f"[command] cancel 已取消 session={sid}")
         return Handled()
 
@@ -112,8 +113,7 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
         channel_id = inbound.from_channel
         focus_hint = (ctx.args or "").strip()
 
-        loop._compacting_sessions.add(session_id)
-        await loop._publish_session_status_async(session_id, "compacting")
+        await loop.set_session_compacting(session_id, True)
 
         try:
             config = loop._load_current_config()
@@ -127,10 +127,7 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
         except Exception:
             logger.exception(f"[command] /compact 执行异常 session={session_id}")
         finally:
-            loop._compacting_sessions.discard(session_id)
-            await loop._publish_session_status_async(
-                session_id, loop.get_session_status(session_id)
-            )
+            await loop.set_session_compacting(session_id, False)
         return Handled()
 
     # /compress-fast [轮数]：零 LLM 成本的快速压缩
