@@ -29,7 +29,7 @@ from ftre.session.entity.models import (
     SessionModel,
 )
 from ftre.session.entity.state import AgentStateFile, SessionState
-from .json_store import JsonStateStore
+from .json_store import JsonStateStore, validate_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +279,40 @@ class SessionRepository:
         async with self._store.global_lock:
             await self.commit(state)
         return sid
+
+    def make_session_id(self, channel_id: str) -> str:
+        """生成 '<channel_id>_sess_<hex12>' 格式的 session_id（格式规则唯一出处）。"""
+        _validate_channel_id(channel_id)
+        return f"{channel_id}_{self.create_id()}"
+
+    async def create_session_with_state(self, state: AgentStateFile) -> str:
+        """用调用方已构建完整的 state 原子创建一个 session：单次 commit 落盘。
+
+        业务规则（复制哪些消息/metadata、重生成 Msg.id 等）由 Service 层在构建
+        state 时完成；本方法只做格式校验、防覆盖与跨 session Msg.id 唯一性检查，
+        并在 global_lock 内一次性提交（1 次序列化 + 1 次 fsync + 1 次 replace）。
+
+        Raises:
+            ValueError: session_id 非法、已存在/损坏，或任一 Msg.id 已被占用。
+        """
+        validate_session_id(state.session.id)
+        _validate_channel_id(state.session.channel_id)
+        async with self._store.global_lock:
+            if (
+                state.session.id in self._states
+                or state.session.id in self._store.corrupt
+            ):
+                raise ValueError(
+                    f"session 已存在或损坏，拒绝覆盖: {state.session.id}"
+                )
+            # 与 save_message 的跨 session Msg.id 唯一性检查等价（绕开逐条
+            # save_message 后此防线必须由本方法补齐，否则会静默劫持索引）。
+            for msg in state.messages:
+                owner = self._message_sessions.get(msg.id)
+                if owner is not None:
+                    raise ValueError(f"message 已存在: {msg.id} (session={owner})")
+            await self.commit(state)
+        return state.session.id
 
     async def get_or_create_external_session(
         self,

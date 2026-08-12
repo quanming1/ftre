@@ -27,6 +27,7 @@ from ftre.session.entity.models import (
     StatePageModel,
 )
 from ftre.session.storage.repository import SessionRepository
+from ftre.session.entity.state import AgentStateFile, SessionState
 
 from .message.converter import _as_msg
 
@@ -494,60 +495,79 @@ class SessionManager:
     FORK_METADATA_EXCLUDE = frozenset({"teams", "team_member", "external"})
 
     async def fork_session(self, parent_session_id: str) -> ForkResult:
-        """把 parent_session_id 派生为一个新的独立 session。
+        """把 parent_session_id 派生为一个新的独立 session（单次原子落盘）。
 
         fork 出的新 session 沿用父的 channel/workspace，完整复制父的 messages
         （每条 Msg 重新生成 id，避免与父 session 的 Msg.id 冲突），并深拷贝父的
         metadata，额外追加 forked_from / forked_at 溯源信息。
 
+        性能：整份新 state 在内存一次性构建后单次 commit 落盘（1 次序列化 +
+        1 次 fsync + 1 次 replace），不再逐条 save_message / 逐 key 写 metadata
+        （原实现每条消息/每个 key 都全量写盘，O(N²)）。
+
+        并发：阶段 1 在父 session 锁内做一次性一致快照后释放；阶段 2 在锁外组装
+        完整 state；阶段 3 由 repository 在 global_lock 内提交。父锁与 global_lock
+        顺序获取、绝不嵌套——禁止把阶段 1 挪进 global_lock 临界区，也禁止持父锁时
+        获取 global_lock，否则与 delete_session 的 global→session 嵌套构成死锁。
+
         Raises:
             ValueError: 父 session 不存在。
         """
-        parent = await self.get_session(parent_session_id)
-        if parent is None:
-            raise ValueError(f"session not found: {parent_session_id}")
+        # ── 阶段 1：父锁内一次性一致快照（messages + metadata 同 commit 点）──
+        async with self._repo.lock_for(parent_session_id):
+            parent_state = self._repo.get_state(parent_session_id)
+            if parent_state is None:
+                raise ValueError(f"session not found: {parent_session_id}")
 
-        parent_title = parent["title"]
-        parent_workspace = parent["workspace"]
-        channel_id = parent["channel_id"]
+            parent_header = parent_state.session
+            fork_id = self._repo.make_session_id(parent_header.channel_id)
+            fork_title = (
+                f"fork of {parent_header.title}"
+                if parent_header.title
+                else f"fork of {parent_session_id}"
+            )
+            fork_workspace = parent_header.workspace
+            parent_agent_id = parent_header.agent_id
+            parent_channel_id = parent_header.channel_id
+            now = _now_iso()
+            # 关键：每条 Msg 重新生成 id，避免跨 session 的 Msg.id 冲突
+            # （content/created_at 等其余字段原样保留，数组顺序与父一致）。
+            cloned_messages = [
+                msg.model_copy(deep=True, update={"id": _gen_msg_id()})
+                for msg in parent_state.messages
+            ]
+            # 业务规则留在 manager：活资源所有权键不继承（FORK_METADATA_EXCLUDE）
+            fork_metadata = {
+                key: copy.deepcopy(value)
+                for key, value in parent_state.metadata.items()
+                if key not in self.FORK_METADATA_EXCLUDE
+            }
 
-        fork_title = (
-            f"fork of {parent_title}"
-            if parent_title
-            else f"fork of {parent_session_id}"
+        # ── 阶段 2：锁外组装完整 state（全新构建，绝不 model_copy 父 state——
+        # 否则会连带继承 external/teams/id/时间戳）──
+        fork_metadata["forked_from"] = parent_session_id
+        fork_metadata["forked_at"] = datetime.now(timezone.utc).isoformat()
+        new_state = AgentStateFile(
+            session=SessionState(
+                id=fork_id,
+                agent_id=parent_agent_id,
+                channel_id=parent_channel_id,
+                title=fork_title,
+                workspace=fork_workspace,
+                created_at=now,
+                updated_at=now,
+            ),
+            messages=cloned_messages,
+            metadata=fork_metadata,
         )
 
-        fork_id = await self.create_session(
-            channel_id=channel_id,
-            title=fork_title,
-            workspace=parent_workspace,
-        )
-
-        # 逐条复制父 messages：dict → Msg → 重新生成 id → 写入新 session。
-        parent_messages = await self.get_messages_by_session(parent_session_id)
-        for record in parent_messages:
-            msg = _as_msg(record)
-            # 关键：重新生成 id，避免跨 session 的 Msg.id 冲突。
-            cloned = msg.model_copy(deep=True, update={"id": _gen_msg_id()})
-            await self.save_message(fork_id, cloned)
-
-        # 深拷贝父 metadata（保留 plan 等内容性键；teams/team_member/external
-        # 等活资源所有权键不继承），逐个顶层 key 写入，最后追加溯源信息。
-        parent_metadata = copy.deepcopy(await self.get_session_metadata(parent_session_id))
-        for key, value in parent_metadata.items():
-            if key in self.FORK_METADATA_EXCLUDE:
-                continue
-            await self.update_session_metadata(fork_id, key, value)
-
-        await self.update_session_metadata(fork_id, "forked_from", parent_session_id)
-        await self.update_session_metadata(
-            fork_id, "forked_at", datetime.now(timezone.utc).isoformat()
-        )
+        # ── 阶段 3：单次原子落盘（repository 内部持 global_lock）──
+        await self._repo.create_session_with_state(new_state)
 
         return ForkResult(
             fork_session_id=fork_id,
             title=fork_title,
-            workspace=parent_workspace,
+            workspace=fork_workspace,
         )
 
     # ============================================================
