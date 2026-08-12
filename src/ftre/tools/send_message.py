@@ -44,6 +44,7 @@ def create_send_message_tool(channel_manager) -> Tool:
         event_loop=Injected("event_loop"),
         bus=Injected("bus"),
         session_manager=Injected("session_manager"),
+        agent_loop=Injected("agent_loop"),
     ) -> str:
         # ── 通用前置校验 ────────────────────────────────────
         if caller_channel == SUBAGENT_CHANNEL_ID:
@@ -79,15 +80,24 @@ def create_send_message_tool(channel_manager) -> Tool:
                 return f"已通知 {channel_id}:{session_id}"
 
             # kind == "invoke"
-            _do_invoke(
+            ack = _do_invoke(
                 target_channel=target_channel,
                 event_loop=event_loop,
+                agent_loop=agent_loop,
                 target_session_id=session_id,
                 content=content,
                 caller_channel=caller_channel or "",
                 caller_session=caller_session or "",
             )
-            return f"已唤起 {channel_id}:{session_id}"
+            if not ack.accepted:
+                return (
+                    f"[error] 目标消息队列已满: {channel_id}:{session_id} "
+                    f"(reason={ack.error})"
+                )
+            return (
+                f"已排队 {channel_id}:{session_id} "
+                f"(request_id={ack.request_id}, position={ack.queue_position})"
+            )
         except Exception as e:
             return f"[error] 发送失败: {type(e).__name__}: {e}"
 
@@ -189,11 +199,12 @@ def _do_invoke(
     *,
     target_channel,
     event_loop,
+    agent_loop,
     target_session_id: str,
     content: str,
     caller_channel: str,
     caller_session: str,
-) -> None:
+) -> object:
     # 来源归因：唯一让被唤起 agent 知道"这是别的 session 发来的"的方式，
     # 是把出处写进它能看见的内容里（LLM 不会读 metadata）。
     prefixed_content = _INVOKE_PREFIX_TEMPLATE.format(
@@ -205,7 +216,18 @@ def _do_invoke(
         "content": prefixed_content,
         "session_id": target_session_id,
     }
-    asyncio.run_coroutine_threadsafe(
-        target_channel.receive(target_session_id, data, kind="user_message"),
-        event_loop,
+    if agent_loop is None:
+        raise RuntimeError("runtime context 未注入 agent_loop")
+    inbound = BusMessage(
+        type="user_message",
+        from_channel=target_channel.channel_id,
+        from_session=target_session_id,
+        to_channel=target_channel.channel_id,
+        to_session=target_session_id,
+        data=data,
+    )
+    # submit_inbound 返回时 state.json 的 Mailbox 已经原子落盘；这才是 invoke 的
+    # "发送成功"边界，而不是仅仅放进 EventBus 内存队列。
+    return asyncio.run_coroutine_threadsafe(
+        agent_loop.submit_inbound(inbound), event_loop
     ).result(timeout=10)

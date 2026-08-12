@@ -45,15 +45,12 @@ team 工具集 — 让主 agent（leader）组建并管理一个由多个 subage
 成员 AGENTS.md 里也写入了同等约束。
 """
 import asyncio
-import time
 import uuid
-from concurrent.futures import Future
 from datetime import datetime, timezone
 
 from ftre_agent_core.tool import Tool, ToolParameter, Injected
 from ftre.agent import sub_agent_profile
-from ftre.agent.event_hub import AgentEventHub
-from ftre.bus import AgentRef, InboundMetadata
+from ftre.bus import AgentRef, BusMessage, InboundMetadata
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
 
 
@@ -82,55 +79,48 @@ def _agent_ref_metadata(leader_session_id: str, member_session_id: str) -> Inbou
 def _dispatch_to_member(
     channel_manager,
     event_loop,
+    agent_loop,
     leader_session_id: str,
     member_session_id: str,
     content: str,
-) -> None:
+) -> object:
     """向团队成员投递一条 inbound user_message（团队内发消息的唯一入口）。
 
-    走标准 Inbound 通路 Channel.receive(kind="user_message")——与 send_message
-    的 invoke 路径同源，AgentLoop 会正常消费、持久化、驱动成员 agent。
+    直接调用 AgentLoop.submit_inbound()，返回时 request 已耐久接纳；
+    与 send_message invoke 使用同一个 SessionLane 入口。
     统一携带 agent_ref 定位标记（成员据此加载自己的 profile）。
 
     Raises:
         RuntimeError: subagent channel 未注册。
-        其它异常由 Channel.receive 传播，调用方决定如何处理。
+        其它异常由 durable admission 传播，调用方决定如何处理。
     """
     subagent_channel = channel_manager.get(SUBAGENT_CHANNEL_ID)
     if subagent_channel is None:
         raise RuntimeError(f"未注册 channel: {SUBAGENT_CHANNEL_ID}")
-    _run_async(
-        subagent_channel.receive(
-            session_id=member_session_id,
-            data={"content": content, "session_id": member_session_id},
-            metadata=_agent_ref_metadata(leader_session_id, member_session_id),
-            kind="user_message",
-        ),
-        event_loop,
+    if agent_loop is None:
+        raise RuntimeError("runtime context 未注入 agent_loop")
+    inbound = BusMessage(
+        type="user_message",
+        from_channel=SUBAGENT_CHANNEL_ID,
+        from_session=member_session_id,
+        to_channel=SUBAGENT_CHANNEL_ID,
+        to_session=member_session_id,
+        data={
+            "content": content,
+            "session_id": member_session_id,
+        },
+        metadata=_agent_ref_metadata(leader_session_id, member_session_id),
     )
+    return _run_async(agent_loop.submit_inbound(inbound), event_loop)
 
 
-def _run_async(coro, event_loop, timeout: float = 10.0):
+def _run_async(coro, event_loop, timeout: float | None = 10.0):
     """跨线程执行 coroutine 并等结果。"""
     return asyncio.run_coroutine_threadsafe(coro, event_loop).result(timeout=timeout)
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-# 轮询参数（wait_agent 用，与 task 对齐）
-_POLL_INTERVAL = 0.5
-_STARTUP_TIMEOUT = 30
-
-
-def _wait_until(predicate, timeout: float, interval: float = _POLL_INTERVAL) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if predicate():
-            return True
-        time.sleep(interval)
-    return False
 
 
 def _read_teams(session_manager, event_loop, parent_sid: str) -> dict:
@@ -280,6 +270,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         session_id: str = Injected("session_id"),
         event_loop=Injected("event_loop"),
         session_manager=Injected("session_manager"),
+        agent_loop=Injected("agent_loop"),
         caller_channel: str = Injected("channel_id"),
         workspace=Injected("workspace"),
     ) -> str:
@@ -337,7 +328,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
             )
         except (OSError, ValueError) as e:
             try:
-                _run_async(session_manager.delete_session(member_sid), event_loop)
+                _run_async(agent_loop.delete_session(member_sid), event_loop)
             except Exception:
                 pass
             return f"[error] 写入成员 profile 失败: {type(e).__name__}: {e}"
@@ -356,7 +347,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         except Exception as e:
             sub_agent_profile.delete_member_profile(session_manager, session_id, member_sid)
             try:
-                _run_async(session_manager.delete_session(member_sid), event_loop)
+                _run_async(agent_loop.delete_session(member_sid), event_loop)
             except Exception:
                 pass
             return f"[error] 写入成员绑定失败: {type(e).__name__}: {e}"
@@ -381,7 +372,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         except Exception as e:
             sub_agent_profile.delete_member_profile(session_manager, session_id, member_sid)
             try:
-                _run_async(session_manager.delete_session(member_sid), event_loop)
+                _run_async(agent_loop.delete_session(member_sid), event_loop)
             except Exception:
                 pass
             return (
@@ -400,7 +391,8 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         # invoke 已传：作为成员的第一条 user 消息，创建后立即执行
         try:
             _dispatch_to_member(
-                channel_manager, event_loop, session_id, member_sid, invoke.strip()
+                channel_manager, event_loop, agent_loop,
+                session_id, member_sid, invoke.strip()
             )
         except Exception as e:
             return (
@@ -502,23 +494,22 @@ def _create_team_say_tool(channel_manager) -> Tool:
                 f"请重新 team_add_agent 添加该成员。"
             )
 
-        # 成员正忙则直接返回，让 leader 自行控流（可 wait_agent 后再 say）
-        if agent_loop is not None and agent_loop.is_session_running(session_id.strip()):
-            return (
-                f"[busy] 成员 '{member.get('name')}'（{session_id}）正在执行上一轮任务，"
-                f"暂时无法接收新消息。请先用 wait_agent 等它完成，再 team_say。"
-            )
-
         try:
-            _dispatch_to_member(
-                channel_manager, event_loop,
+            ack = _dispatch_to_member(
+                channel_manager, event_loop, agent_loop,
                 parent_session_id, session_id.strip(), content,
             )
         except Exception as e:
             return f"[error] 投递失败: {type(e).__name__}: {e}"
 
+        if not ack.accepted:
+            return (
+                f"[error] 成员消息队列拒绝接纳（reason={ack.error}）"
+            )
+
         return (
-            f"已向成员 '{member.get('name')}'（{session_id}）派发消息，正在后台处理。"
+            f"已向成员 '{member.get('name')}'（{session_id}）排队消息 "
+            f"(request_id={ack.request_id}, position={ack.queue_position})。"
             f"用 wait_agent 等待完成，或 team_agent_status 查看进展。"
         )
 
@@ -527,7 +518,7 @@ def _create_team_say_tool(channel_manager) -> Tool:
         description=(
             "给团队某个成员发送一条消息/派发新任务（异步，不阻塞）。\n"
             "- 按成员 session_id 定位（team_add_agent 返回的那个 id）。\n"
-            "- 若成员正在执行上一轮任务，返回 [busy]，此时你应先用 wait_agent 等它完成再发。\n"
+            "- 成员正在执行时新消息会进入该 session 的 FIFO 队列。\n"
             "- 投递后立即返回，成员在后台处理；用 wait_agent / team_agent_status 获取结果。"
         ),
         parameters=[
@@ -584,7 +575,7 @@ def _create_team_agent_status_tool() -> Tool:
             """(status, last_text, msg_count, elapsed)"""
             running = (
                 agent_loop is not None
-                and agent_loop.is_session_running(member_sid)
+                and agent_loop.is_session_busy(member_sid)
             )
             status = "running" if running else "idle"
             last_text = _member_last_text(session_manager, event_loop, member_sid)
@@ -711,7 +702,7 @@ def _create_team_delete_tool() -> Tool:
         deleted, failed = 0, 0
         for msid in member_sids:
             try:
-                _run_async(session_manager.delete_session(msid), event_loop)
+                _run_async(agent_loop.delete_session(msid), event_loop)
                 deleted += 1
             except Exception:
                 failed += 1
@@ -771,59 +762,23 @@ def _create_wait_agent_tool() -> Tool:
         if unknown:
             return f"[error] 以下 session 不属于你的任何团队: {unknown}"
 
-        # 为每个 session 注册完成等待（AgentEventHub 一次性 wait；已完成/未运行的直接跳过等待）
-        futures: dict[str, Future] = {}
-        for sid in sids:
-            fut = agent_loop.events.wait(sid, AgentEventHub.AGENT_FINISHED)
-            if fut is None:
-                # 已有等待者：不重复等，标记为 skipped
-                futures[sid] = None
-                continue
-            futures[sid] = fut
-
-        # 逐个等待（Promise.all 效果）：先确认已启动或已完成，再取结果
+        # Coordinator 的 quiescent barrier 覆盖 Turn、轮后压缩和已接纳 FIFO。
+        # 它不依赖 session 级一次性事件，因此多条排队消息不会误唤醒。
         results: list[str] = []
         for sid in sids:
-            fut = futures.get(sid)
-            if fut is None:
-                results.append(f"- {sid}: [skipped] 已有其他等待者，未重复等待")
-                continue
-
-            # 若该 session 既没在跑也没结果，说明它可能已完成上一轮，直接跳过等待
-            if not agent_loop.is_session_running(sid) and not fut.done():
-                # 快速路径：成员从未收到过任何消息（没被派活）→ 必然空闲
-                try:
-                    has_messages = bool(
-                        _run_async(session_manager.get_messages_by_session(sid), event_loop)
-                    )
-                except Exception:
-                    has_messages = True
-                if not has_messages:
-                    agent_loop.events.unregister(sid, AgentEventHub.AGENT_FINISHED, fut)
-                    results.append(f"- {sid}: [idle] 成员尚未收到过任务。")
-                    continue
-                # 已派活但运行态未确认：给足启动窗口（与 task 对齐），避免误报 idle
-                started = _wait_until(
-                    lambda: agent_loop.is_session_running(sid) or fut.done(),
-                    _STARTUP_TIMEOUT,
-                )
-                if not started:
-                    agent_loop.events.unregister(sid, AgentEventHub.AGENT_FINISHED, fut)
-                    last = _member_last_text(session_manager, event_loop, sid)
-                    results.append(
-                        f"- {sid}: [idle] 当前无任务在跑。"
-                        + (f"最后输出：{last}" if last else "无输出。")
-                    )
-                    continue
-
             try:
-                payload = fut.result()
+                _run_async(
+                    agent_loop.wait_session_quiescent(sid),
+                    event_loop,
+                    timeout=None,
+                )
+                # 已确认队列与当前 Turn 全部清空；完成历史只在内存的
+                # CompletionRegistry 保留，不再写入 session state.json。
             except Exception as e:
-                agent_loop.events.unregister(sid, AgentEventHub.AGENT_FINISHED, fut)
                 results.append(f"- {sid}: [error] 等待出错: {type(e).__name__}: {e}")
                 continue
 
-            status = payload.get("status") or "completed"
+            status = "quiescent"
             # 与 team_agent_status 保持一致：返回成员最后一条 assistant 消息的
             # 最后一个 text block 完整内容，不截断、不用可能被截断的 final_content
             final = _member_last_text(session_manager, event_loop, sid)
