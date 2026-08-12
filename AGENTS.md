@@ -4,18 +4,91 @@
 - 前端路径：E:\binn\ftre-desktop\
 - 文档路径：E:\ftre-docs\
 - Agent 核心库：E:\ftre-agent-core\
-- Octo 插件路径：C:\Users\蒋全明\.ftre\plugins\octo-plugin\
+- Octo 插件路径：C:\Users\蒋全明\.ftre\plugins\octo_plugin\
 - 配置目录：C:\Users\蒋全明\.ftre\
 - 使用 Python 3.12 + TypeScript
 - 日志统一用 logging（Python）、console（前端）
 
-## Git 规范
+## Git Flow 规范（强制）
+
+### 基本纪律
 
 - **禁止私自 commit / push**：除非用户明确要求（如"commit"、"push"、"提交"），否则只改代码不提交
 - **回滚需确认**：回滚前必须告知用户回滚的内容、范围和影响，得到确认后再执行
 - **push 前先 commit**：不要把未 commit 的改动直接 push
 - **多仓库联动**：改 core 后同步验证 ftre 后端，改前端后同步验证后端 API
 - **操作不同仓库时用 `set_workspace` 显式切换**：`cd A && git ...` 组合命令中的 `cd` 不改变 bash 工具工作区，曾导致 `git init` 误在错误仓库执行
+
+### 分支模型
+
+```
+master            ← 仅存放可发布版本（受保护语义：永不直接提交）
+  └─ develop      ← 日常集成分支（默认工作基底）
+       ├─ feature/<阶段id>-<name>   新功能 / 新任务
+       ├─ prd-update                PRD 文档专用分支
+       ├─ todos-update              TODO 文档专用分支
+       ├─ release/<ver>             发布准备
+       └─ hotfix/<name>             生产紧急修复
+```
+
+### 分支规则
+
+- 默认工作分支是 **develop**；master 永不直接提交代码；**develop 同样禁止直接提交，只接受 feature/* → merge 合入**（pre-push hook 强制）。
+- 每个任务/功能开独立分支：`git checkout -b feature/<阶段id>-<short-name> develop`，**feat/fix 分支名必须关联 TODO 阶段 id**（如 `feature/A2-config`，大小写不敏感）。
+- **交叉校验**：feat/fix 提交的 scope 必须与分支名中的阶段 id 一致（commit-msg hook 强制）；分支名不含阶段 id 时 feat/fix 提交直接拒绝。
+- 规划类专用分支：`prd-update`（PRD 文档提交）、`todos-update`（TODO 文档提交）。
+
+### 提交规范（Conventional Commits）
+
+```
+<type>(<scope>): <subject>
+```
+
+- **subject 使用中文**（type/scope 保持英文）。
+- type：`feat` / `fix` / `prd` / `todos` / `docs` / `refactor` / `test` / `style` / `chore` / `perf`
+- **scope 分三类**：
+  - `feat` / `fix` / `prd` / `todos`：scope **必须**是 `docs/TODO.yaml` 中的阶段 id（如 `A1` / `C2` / `B1`），且必须真实存在（commit-msg hook 实时校验，防写错阶段号）
+  - `prd` / `todos` 额外强制：只在 `prd-update` / `todos-update` 分支下提交，且暂存文件必须全部在 `docs/` 下（规划与代码隔离）
+  - 其他 type（docs/refactor/test/style/chore/perf）：scope 用模块名，白名单定义在 `.githooks/.scopes`（agent/bus/channel/session/tools/api/config/command/plugin/trace/main/tests/docs）
+- **一条提交只做一件事**；禁止 `fix stuff`、`update`、`misc` 这类无意义 message。
+- **本地强制**：`.githooks/commit-msg` hook 在每次 commit 时校验（type 白名单、阶段格式与存在性、分支名交叉校验、prd/todos 分支与文档-only 约束），不符合直接拒绝；`git config core.hooksPath .githooks` 已配置（新 clone 后需执行一次）。
+- 提交规范完整定义见 `docs/COMMIT.md`。
+
+### 合并策略
+
+- `feature/*` → `develop`：**`git merge --no-ff feature/xxx`**（保留合并提交，不 squash 历史）。
+- **develop 只接受 merge 合入**：禁止直接 commit 到 develop（pre-push hook 校验）。
+- `develop` → `master`：走 `release/*`（冻结 → 回归 → 打 tag → 合并）。
+- `hotfix/*` → `master` + 回灌 `develop`。
+- **禁止 rebase 重写已推送历史**。
+
+### 本地保护（hooks）
+
+- 仓库内置 `.githooks/`：
+  - `commit-msg`：提交时校验消息格式/type/scope/阶段 id/分支交叉（详见 `docs/COMMIT.md`）
+  - `pre-push`：禁止非 master 分支 push 到 master、禁止删除 master、develop 新增提交必须全部是 merge commit
+- `merge:` / `Merge` / `revert:` / `Revert` 开头的系统提交自动跳过。
+- hook 生效前提：`git config core.hooksPath .githooks`（新 clone 后执行一次）。
+- 说明：GitHub free 账号的 private 仓库无法开启服务端 branch protection，hook 是本地强制替代；AI agent 与人同规则。
+
+### 标准流程（每次任务）
+
+```bash
+git checkout develop && git pull          # 1. 同步基底
+git checkout -b feature/<阶段id>-<task>   # 2. 开任务分支
+# ... 开发 + 本地测试（pytest / ruff）...
+git add <改动文件>                          # 3. 提交（conventional）
+git commit -m "feat(A1): 描述"
+git checkout develop && git merge --no-ff feature/<task>   # 4. 合并回 develop
+git push origin develop                   # 5. 推送
+```
+
+## PRD 驱动开发（强制）
+
+- **先 PRD，后开发**：每个 TODO 阶段开工前，必须先在 `docs/prd/` 创建对应 PRD（命名 `PRD-<阶段>-<名称>.md`，从 `docs/prd/PRD-TEMPLATE.md` 复制），评审定稿（状态 `approved`）后才能开发。
+- **PRD 是开发的唯一依据**：需求、实现、测试、验收全部对照 PRD；禁止开发 PRD 未定义的内容。
+- **验收按 PRD 标准**：每阶段完成必须按 PRD「验收标准」逐条核对，全部通过才算完成。
+- 推进管理办法详见 `docs/PROCESS.md`；阶段状态与阶段 id 见 `docs/TODO.yaml`。
 
 ## 仓库关系
 
@@ -25,7 +98,7 @@ ftre-agent-core    Agent 核心库（无状态、纯算法）
       │              被 ftre 后端 import 使用，不独立部署
       │
       ├── ftre-octo-plugin  Octo IM 外部插件（生态重要组成部分）
-      │                     真实路径：C:\Users\蒋全明\.ftre\plugins\octo-plugin
+      │                     真实路径：C:\Users\蒋全明\.ftre\plugins\octo_plugin
       │                     Python + Node 混合项目：WuKongIM 桥接 / Octo Channel / octo_management Tool
       │                     通过 shim `C:\Users\蒋全明\.ftre\plugins\octo_channel.py` 被 Gateway 扫描加载
       ▼
@@ -175,7 +248,7 @@ AGENTS.md 注入两份（叠加）：`agent_dir/AGENTS.md`（Agent 行为规则�
 
 ### 重要外部插件
 
-- **Octo 插件**：`C:\Users\蒋全明\.ftre\plugins\octo-plugin\`
+- **Octo 插件**：`C:\Users\蒋全明\.ftre\plugins\octo_plugin\`
   - 这是 ftre 生态的重要组成部分，不是临时脚本目录
   - 改动 Octo IM / WuKongIM / 外部消息通道相关需求时，优先检查这里
   - 入口 shim：`C:\Users\蒋全明\.ftre\plugins\octo_channel.py`
