@@ -1,0 +1,168 @@
+# TODO.yaml — ftre 后端功能阶段划分
+# 状态图例：done 已完成 · in_progress 进行中 · todo 未开始
+# PRD 驱动：每个阶段开工前先写 PRD（docs/prd/PRD-<阶段>-<名称>.md），流程见 docs/PROCESS.md。
+# 消费方：.githooks/check_commit_msg.py 校验 feat/fix 的 scope 阶段标识真实存在。
+
+meta:
+  project: ftre
+  status_legend:
+    done: 已完成
+    in_progress: 进行中
+    todo: 未开始
+
+stages:
+  - id: A
+    name: 地基
+    steps:
+      - id: A1
+        title: 基础架构
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-A1-base-architecture.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/channel/base.py
+          - src/ftre/bus/bus.py
+          - src/ftre/agent/loop.py
+          - src/ftre/config.py
+          - src/ftre/main.py
+        acceptance: ftre gateway 启动监听，WS 连接可建立，config 正确加载
+
+      - id: A2
+        title: Session 管理
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-A2-session-management.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/session/manager.py
+          - src/ftre/session/storage/repository.py
+          - src/ftre/session/entity/state.py
+          - src/ftre/session/entity/models.py
+          - src/ftre/session/storage/json_store.py
+        acceptance: session CRUD 正确，JSON 持久化可恢复，fork 继承 messages 不继承 mailbox
+
+      - id: A3
+        title: 内置工具体系
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-A3-builtin-tools.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/tools/bash.py
+          - src/ftre/tools/read.py
+          - src/ftre/tools/write.py
+          - src/ftre/tools/edit.py
+          - src/ftre/tools/set_workspace.py
+          - src/ftre/tools/cron.py
+          - src/ftre/tools/task.py
+          - src/ftre/tools/send_message.py
+          - src/ftre/tools/team.py
+        acceptance: 每个工具可正确执行，工具返回 (result_str, metadata) 元组，Inspector 可消费 metadata
+
+      - id: A4
+        title: Bus + Channel 协议
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-A4-bus-channel.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/bus/bus.py
+          - src/ftre/bus/message.py
+          - src/ftre/bus/protocol.py
+          - src/ftre/bus/payloads.py
+          - src/ftre/channel/ws_channel.py
+          - src/ftre/channel/subagent_channel.py
+        acceptance: Bus 消息类型校验，request_inbound 等待 ACK，ws_channel admission ack 正确
+
+  - id: B
+    name: Agent 核心
+    steps:
+      - id: B1
+        title: AgentLoop SessionLane 架构
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-B1-session-lane.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/agent/session_lane.py
+          - src/ftre/agent/mailbox_store.py
+          - src/ftre/agent/context_gate.py
+          - src/ftre/agent/completion_registry.py
+          - src/ftre/agent/loop.py
+          - src/ftre/agent/turn_executor.py
+        acceptance: 同 session 最多一个 active turn，turn 与 compaction 不并发，pending 持久化可恢复，request_id 幂等
+
+      - id: B2
+        title: CompactManager 上下文压缩
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-B2-compact-manager.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/agent/compact_manager.py
+          - src/ftre/agent/compact_events.py
+        acceptance: 水位 ≥ threshold 触发压缩，共享 Task 不重复，compress-fast 裁剪 ToolResultBlock
+
+      - id: B3
+        title: TurnExecutor 状态机
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-B3-turn-executor.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/agent/turn_executor.py
+        acceptance: Turn 状态正确流转，Hook 在正确时机触发，命令绕过 agent 执行
+
+  - id: C
+    name: 插件与扩展
+    steps:
+      - id: C1
+        title: 插件体系
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-C1-plugin-system.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/plugin/skill_plugin.py
+          - src/ftre/plugin/mcp_plugin.py
+          - src/ftre/plugin/context_govern.py
+          - src/ftre/plugin/title_gen.py
+          - src/ftre/plugin/__init__.py
+        acceptance: 插件可注册工具和路由，context_govern AGENTS.md 双注入，title_gen 自动生成标题
+
+      - id: C2
+        title: MCP 双层配置
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-C2-mcp-dual-config.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/plugin/mcp_plugin.py
+          - src/ftre/mcp/
+        acceptance: 公共/私有 MCP 工具注册到正确 registry，连接复用不二次加载，config 变更热重载
+
+      - id: C3
+        title: 多 Agent 协作
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-C3-multi-agent.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/tools/team.py
+          - src/ftre/agent/agent_manager.py
+          - src/ftre/agent/sub_agent_profile.py
+        acceptance: 团队创建/派活/等待/解散全流程，agent 配置正确合并，成员 profile 持久化
+
+  - id: D
+    name: 收尾
+    steps:
+      - id: D1
+        title: 测试与 CI
+        status: done
+        date: 2026-08-12
+        prd_status: 已验收
+        modules:
+          - tests/
+          - src/ftre/agent/trace_store.py
+        acceptance: pytest 测试套件全部通过，trace_store SQLite 可写入和查询

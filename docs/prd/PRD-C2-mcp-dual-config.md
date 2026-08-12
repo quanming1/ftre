@@ -1,0 +1,74 @@
+# PRD-C2-MCP双层配置
+
+> 状态生命周期：草稿 → 评审 → approved（定稿）→ 开发中 → 已验收
+
+## 元信息
+
+| 字段 | 值 |
+|---|---|
+| 阶段 | C2 |
+| 名称 | MCP 双层配置（公共+私有 MCP + 连接池 + config watcher + CRUD API） |
+| 状态 | 已验收 |
+| 创建日期 | 2026-08-12 |
+| 定稿日期 | 2026-08-12 |
+| 验收日期 | 2026-08-12 |
+| 关联文档 | docs/TODO.yaml 阶段 C2；AGENTS.md |
+
+## 1. 背景与目标
+
+- **背景**：MCP（Model Context Protocol）服务器需要公共（全局共享，所有 agent 可用）和私有（per-agent 独享）双层管理。公共 MCP 配置在 `config.json`，私有 MCP 配置在 `agent.config.json`。连接需要复用，避免重复加载。
+- **目标**：实现 MCP 双层配置——公共/私有分离，连接池全局共享按 server name 去重，config watcher 热重载，HTTP API 按 scope 区分操作目标。
+- **非目标**：不实现 MCP 协议本身、不实现外部插件加载机制（C1）。
+
+## 2. 需求范围
+
+### 2.1 功能需求
+
+- [x] FR1：公共 MCP config.json——`config.json` 的 `mcp` 段定义公共 MCP 服务器，注册到全局 `tool_registry`，所有 agent 共享
+- [x] FR2：私有 MCP agent.config.json——`agent.config.json` 的 `mcp` 段定义私有 MCP 服务器，注册到 per-agent `agent_tool_registry`
+- [x] FR3：连接池全局共享——`McpManager._connections` 按 server name 去重，`ensure_connection` 已连接且配置相同则复用，不二次加载
+- [x] FR4：ensure_connection 按需连接——在 `BEFORE_AGENT_RUN` hook 中调用 `ensure_connections`，按 agent 配置按需连接
+- [x] FR5：config watcher 热重载——监控 `config.json` 的 `mcp` 段变更，自动重连和重新注册工具
+- [x] FR6：HTTP API ?scope=global|private——CRUD API 通过 query 参数区分操作公共或私有 MCP
+
+### 2.2 非功能需求
+
+- 性能：MCP 连接复用，相同配置不二次加载
+- 安全：私有 MCP 工具不污染全局 registry
+- 兼容性：config watcher 变更后平滑切换，不中断正在执行的 turn
+
+## 3. 技术方案
+
+### 模块设计
+
+| 文件 | 职责 |
+|---|---|
+| `src/ftre/plugin/mcp_plugin.py` | MCP 插件——CRUD API + config watcher + 工具注册 |
+| `src/ftre/mcp/` | MCP 管理器——连接池 + ensure_connection + server 通信 |
+
+### 关键数据结构
+
+```python
+class McpManager:
+    _connections: dict[str, McpConnection]  # server name → 连接（全局共享去重）
+
+    async def ensure_connection(self, server_name: str, config: dict) -> McpConnection: ...
+
+# 配置合并规则
+# llm:        provider + model 可覆盖，api_key/base_url/vision 始终用全局
+# tools:      整体替换
+# mcp:        深度合并（按 server name 为 key，agent 覆盖全局）
+```
+
+### 双层配置表
+
+| 层级 | 配置来源 | 注册位置 | 连接管理 |
+|---|---|---|---|
+| 公共 MCP | `config.json` 的 `mcp` 段 | 全局 `tool_registry` | 启动时 `start_and_register` + config watcher |
+| 私有 MCP | `agent.config.json` 的 `mcp` 段 | per-agent `agent_tool_registry` | `BEFORE_AGENT_RUN` hook 中 `ensure_connections` |
+
+## 5. 验收标准
+
+- [x] AC1：公共/私有 MCP 工具注册到正确 registry——公共 MCP 工具在全局 registry，私有 MCP 工具在 per-agent registry
+- [x] AC2：连接复用不二次加载——相同 server name + 相同配置的 MCP 连接只建立一次
+- [x] AC3：config 变更热重载——修改 `config.json` 的 MCP 配置后，config watcher 触发重连和工具重新注册
