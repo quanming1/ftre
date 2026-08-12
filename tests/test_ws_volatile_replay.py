@@ -1,90 +1,95 @@
-"""reply_snapshot attach 协议测试（替代旧 volatile replay 测试）。
+"""WebSocket 只通过 Bus request/reply 取得 durable admission ACK。"""
+from __future__ import annotations
 
-设计文档：docs/running-reply-snapshot-resume-design.md §5.4
-"""
+import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from starlette.websockets import WebSocketState
 
-from ftre.bus import BusMessage, EventBus
+from ftre.bus import EventBus
 from ftre.channel.ws_channel import WebSocketChannel
 
 
 class FakeWebSocket:
     def __init__(self):
         self.sent: list[dict] = []
-        self.application_state = 1  # WebSocketState.CONNECTED
+        self.application_state = WebSocketState.CONNECTED
 
     async def send_text(self, text: str) -> None:
         self.sent.append(json.loads(text))
 
 
 @pytest.mark.asyncio
-async def test_attach_no_active_replies_sends_nothing():
-    """没有进行中 Reply 时，attach 不发送 reply_snapshot。"""
+async def test_attach_reads_agent_loop_mailbox_snapshot():
     channel = WebSocketChannel(EventBus())
     channel._session_projection = AsyncMock()
     channel._session_projection.snapshot = AsyncMock(return_value=[])
     channel._session_projection.session_event_snapshot = AsyncMock(return_value=[])
+    channel._session_snapshot_provider = AsyncMock()
+    channel._session_snapshot_provider.get_mailbox_snapshot = AsyncMock(
+        return_value={"revision": 3, "pending": [{"request_id": "request-b"}]}
+    )
 
     ws = FakeWebSocket()
     await channel._on_message(
-        json.dumps({"type": "attach", "data": {"session_id": "ws_sess_test"}}),
-        ws,
+        json.dumps({"type": "attach", "data": {"session_id": "ws_sess_test"}}), ws
     )
 
-    assert len(ws.sent) == 0
+    assert ws.sent[0]["type"] == "reply_snapshot"
+    assert ws.sent[0]["data"]["mailbox"]["pending"][0]["request_id"] == "request-b"
 
 
 @pytest.mark.asyncio
-async def test_attach_with_active_reply_sends_snapshot():
-    """有进行中 Reply 时，attach 发送 reply_snapshot 帧。"""
-    channel = WebSocketChannel(EventBus())
-    channel._session_projection = AsyncMock()
-    channel._session_projection.snapshot = AsyncMock(return_value=[
-        {
-            "reply_id": "reply_abc",
-            "revision": 5,
-            "message": {"id": "reply_abc", "role": "assistant", "content": []},
-        }
-    ])
-    channel._session_projection.session_event_snapshot = AsyncMock(return_value=[])
-
+async def test_user_message_ack_waits_for_bus_reply():
+    bus = EventBus()
+    channel = WebSocketChannel(bus)
     ws = FakeWebSocket()
-    await channel._on_message(
-        json.dumps({"type": "attach", "data": {"session_id": "ws_sess_test"}}),
+    received = asyncio.create_task(channel._on_message(
+        json.dumps({
+            "frame_id": "client-frame-1",
+            "type": "user_message",
+            "data": {"session_id": "ws_sess_test", "content": "hello"},
+        }),
         ws,
-    )
+    ))
 
-    assert len(ws.sent) == 1
-    frame = ws.sent[0]
-    assert frame["type"] == "reply_snapshot"
-    assert frame["data"]["session_id"] == "ws_sess_test"
-    assert len(frame["data"]["replies"]) == 1
-    assert frame["data"]["replies"][0]["reply_id"] == "reply_abc"
-    assert frame["data"]["replies"][0]["revision"] == 5
+    inbound = await anext(bus.subscribe_inbound())
+    assert not received.done()
+    bus.resolve_inbound(
+        inbound.id,
+        SimpleNamespace(
+            accepted=True,
+            session_id="ws_sess_test",
+            request_id="request-a",
+            queue_position=1,
+            created=True,
+        ),
+    )
+    await received
+
+    assert ws.sent == [{
+        "frame_id": "client-frame-1",
+        "type": "message_ack",
+        "data": {
+            "session_id": "ws_sess_test",
+            "request_id": "request-a",
+                "queue_position": 1,
+            "created": True,
+        },
+        "metadata": {"channel_id": "ws", "session_id": "ws_sess_test"},
+    }]
 
 
 @pytest.mark.asyncio
-async def test_attach_with_active_session_event_sends_snapshot():
-    channel = WebSocketChannel(EventBus())
-    channel._session_projection = AsyncMock()
-    channel._session_projection.snapshot = AsyncMock(return_value=[])
-    channel._session_projection.session_event_snapshot = AsyncMock(return_value=[{
-        "type": "CUSTOM",
-        "id": "compact-start-1",
-        "name": "context_compact_start",
-        "value": {"tokens": 2000},
-    }])
-
+async def test_user_message_without_frame_id_is_rejected_before_bus():
+    bus = EventBus()
+    channel = WebSocketChannel(bus)
     ws = FakeWebSocket()
     await channel._on_message(
-        json.dumps({"type": "attach", "data": {"session_id": "ws_sess_test"}}),
-        ws,
+        json.dumps({"type": "user_message", "data": {"session_id": "s", "content": "x"}}), ws
     )
-
-    assert len(ws.sent) == 1
-    frame = ws.sent[0]
-    assert frame["data"]["replies"] == []
-    assert frame["data"]["events"][0]["name"] == "context_compact_start"
+    assert ws.sent[0]["data"]["code"] == "missing_request_id"
+    assert bus._inbound_queue.empty()

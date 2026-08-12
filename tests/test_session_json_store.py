@@ -76,7 +76,13 @@ async def test_write_and_reload_recovers_state(store):
 
     # 文件可读（人类可读 JSON），目录名即 session_id
     raw = json.loads(store.state_path("ws_sess_1").read_text(encoding="utf-8"))
-    assert set(raw) == {"schema_version", "session", "messages", "metadata"}
+    assert set(raw) == {
+        "schema_version",
+        "session",
+        "messages",
+        "mailbox",
+        "metadata",
+    }
     assert raw["messages"][0]["content"][0]["text"] == "第一条"
     assert (store.root / "ws_sess_1" / "state.json").exists()
 

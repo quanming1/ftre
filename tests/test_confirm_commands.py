@@ -26,7 +26,7 @@ def _manager(messages):
             get_messages_by_session=AsyncMock(return_value=messages)
         ),
         _active_agents={},
-        _session_tasks={},
+        cancel_session=lambda session_id: False,
     )
     manager = CommandManager()
     register_builtin_commands(manager, loop)

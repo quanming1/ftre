@@ -11,6 +11,7 @@
 - external session 映射语义
 """
 import asyncio
+import json
 
 import pytest
 import pytest_asyncio
@@ -478,22 +479,3 @@ async def test_state_survives_reinit(tmp_path):
 async def test_close_is_idempotent(manager):
     await manager.close()
     await manager.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_sqlite_db_deleted_on_init(tmp_path):
-    """遗留 sessions.db 不做迁移兼容，init 时直接删除（含 wal/shm）。"""
-    db = tmp_path / "sessions.db"
-    db.write_bytes(b"legacy sqlite bytes")
-    wal = tmp_path / "sessions.db-wal"
-    wal.write_bytes(b"wal")
-
-    mgr = SessionManager(str(db))
-    await mgr.init()
-    try:
-        assert not db.exists()
-        assert not wal.exists()
-        # 旧数据不迁移：全新空状态
-        assert await mgr.list_sessions() == []
-    finally:
-        await mgr.close()

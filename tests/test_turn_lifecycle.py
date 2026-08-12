@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from ftre.agent.event_hub import AgentEventHub
 from ftre.agent.session_projection import SessionProjection
 from ftre.agent.loop import AgentLoop
 from ftre.agent.turn_executor import TurnExecutor
@@ -76,12 +75,6 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     config.context = ContextConfig()
     loop._injected_config = config
     loop._event_loop = asyncio.get_running_loop()
-    loop._active_agents = {}
-    loop._compacting_sessions = set()
-    loop._session_tasks = {}
-    loop._session_locks = {}
-    loop.events = AgentEventHub()
-    loop._dispatch_tasks = set()
     loop.session_manager = AsyncMock()
     loop.session_manager.get_session = AsyncMock(
         return_value={"channel_id": "ws", "workspace": "/tmp"}
@@ -97,7 +90,6 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop.compact_manager = AsyncMock()
     loop.compact_manager.is_compacting = Mock(return_value=False)
     loop.compact_manager.should_compact = AsyncMock(return_value=False)
-    loop.compact_manager.maybe_schedule_idle_compact = AsyncMock()
     loop.command_manager = Mock()
     loop.command_manager.try_dispatch_system = AsyncMock(return_value=False)
     loop.command_manager.match = Mock(return_value=None)
@@ -163,7 +155,7 @@ async def test_user_msg_is_persisted_before_agent_run():
 
 
 @pytest.mark.asyncio
-async def test_user_message_is_dropped_before_pipeline_while_compacting(caplog):
+async def test_turn_executor_does_not_drop_message_when_compactor_is_busy(caplog):
     agent = FakeAgent()
     executor = _make_executor(agent)
     executor._loop.compact_manager.is_compacting.return_value = True
@@ -171,10 +163,9 @@ async def test_user_message_is_dropped_before_pipeline_while_compacting(caplog):
     with caplog.at_level("WARNING"):
         await executor.execute(_inbound())
 
-    assert _saved_messages(executor) == []
-    assert agent._captured_runtime_context is None
-    executor._loop.bus.publish_outbound.assert_not_awaited()
-    assert "正在压缩，丢弃新消息" in caplog.text
+    assert len(_saved_messages(executor)) == 1
+    assert agent._captured_runtime_context is not None
+    assert "正在压缩，丢弃新消息" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -198,20 +189,43 @@ async def test_user_message_is_projected_before_frontend_echo():
 
 
 @pytest.mark.asyncio
-async def test_critical_path_compact_is_visible_to_client():
+async def test_claimed_request_identity_is_persisted_on_user_message():
+    executor = _make_executor(FakeAgent())
+    inbound = _inbound()
+    inbound.metadata = InboundMetadata(
+        request_id="request-a",
+    )
+
+    await executor.execute(inbound)
+
+    user = _saved_messages(executor)[0]
+    assert user.metadata["request_id"] == "request-a"
+
+
+@pytest.mark.asyncio
+async def test_channel_mismatch_is_failed_instead_of_false_completed():
+    """防串台拒绝必须成为失败 TurnOutcome，不能伪装成 completed。"""
+    executor = _make_executor(FakeAgent())
+    inbound = _inbound()
+    inbound.from_channel = "cron"
+
+    outcome = await executor.execute(inbound)
+
+    assert outcome.status == "error"
+    assert outcome.error["code"] == "channel_mismatch"
+    executor._loop.agent_manager.create_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_turn_executor_no_longer_owns_critical_path_compaction():
     executor = _make_executor(FakeAgent())
     executor._loop.compact_manager.should_compact = AsyncMock(return_value=True)
 
     await executor.execute(_inbound())
 
-    executor._loop.compact_manager.compact.assert_awaited_once()
-    compact_call = executor._loop.compact_manager.compact.await_args
-    assert "silent" not in compact_call.kwargs
-    assert compact_call.kwargs["trigger"] == "auto"
-    assert executor._publish_session_status_async.await_args_list[0].args == (
-        "test-session", "compacting"
-    )
-    assert "test-session" not in executor._loop._compacting_sessions
+    executor._loop.compact_manager.should_compact.assert_not_awaited()
+    executor._loop.compact_manager.compact.assert_not_awaited()
+    executor._publish_session_status_async.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -230,22 +244,10 @@ async def test_compact_decisions_use_selected_agent_context_window():
 
     await executor.execute(inbound)
 
-    decision_config = (
-        executor._loop.compact_manager.should_compact.await_args.args[2]
-    )
+    decision_config = executor._build_messages.await_args.args[3]
     assert decision_config.llm.model == "kiro/gpt-5.6-sol"
     assert decision_config.llm.context_window == 1_050_000
 
-    idle_configs = [
-        call.args[2]
-        for call in executor._loop.compact_manager.maybe_schedule_idle_compact.await_args_list
-    ]
-    assert idle_configs
-    assert all(
-        config.llm.model == "kiro/gpt-5.6-sol"
-        and config.llm.context_window == 1_050_000
-        for config in idle_configs
-    )
 
 
 @pytest.mark.asyncio

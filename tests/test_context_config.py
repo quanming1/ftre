@@ -54,7 +54,6 @@ def test_context_defaults_when_missing(fake_config):
     assert cfg.context.compact_threshold == 0.8
     assert cfg.context.consolidation_ratio == 0.5
     assert cfg.context.safety_buffer == 1024
-    assert cfg.context.idle_compaction is True
 
 
 def test_context_camel_case(fake_config):
@@ -65,7 +64,6 @@ def test_context_camel_case(fake_config):
                 "compactThreshold": 0.7,
                 "consolidationRatio": 0.4,
                 "safetyBuffer": 2048,
-                "idleCompaction": False,
             }
         }
     })
@@ -73,7 +71,6 @@ def test_context_camel_case(fake_config):
     assert cfg.context.compact_threshold == 0.7
     assert cfg.context.consolidation_ratio == 0.4
     assert cfg.context.safety_buffer == 2048
-    assert cfg.context.idle_compaction is False
 
 
 def test_context_snake_case_also_works(fake_config):
@@ -127,5 +124,3 @@ def test_load_config_with_no_data_returns_default_agent_config(monkeypatch):
     cfg = ftre_config.load_config()
     assert isinstance(cfg, AgentConfig)
     assert isinstance(cfg.context, ContextConfig)
-    # 默认值
-    assert cfg.context.idle_compaction is True

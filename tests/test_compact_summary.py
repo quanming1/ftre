@@ -187,39 +187,6 @@ async def test_same_session_compact_requests_share_one_task(env, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_critical_compact_preserves_current_user_message_as_tail(env, monkeypatch):
-    manager, emitted, projection, compact = env
-    sid = await manager.create_session("ws")
-    ids = await _seed(manager, sid, 2)
-    current = UserMsg(
-        name=MsgName.DEFAULT,
-        content="current request",
-        metadata={"hide": False},
-    )
-    await manager.save_message(sid, current)
-    llm = AsyncMock(return_value="history summary")
-    monkeypatch.setattr(compact, "_run_compact_llm", llm)
-
-    await compact.compact(
-        sid,
-        "ws",
-        config=_config(),
-        trigger="auto",
-        preserve_from_message_id=current.id,
-    )
-
-    summarized_records = llm.await_args.args[0]
-    assert [record["id"] for record in summarized_records] == ids
-    context = await manager.get_context_messages(sid)
-    assert [record["name"] for record in context] == [
-        MsgName.COMPACT,
-        MsgName.DEFAULT,
-    ]
-    assert context[1]["id"] == current.id
-    assert context[0]["metadata"]["context_compact"]["through_message_id"] == ids[-1]
-
-
-@pytest.mark.asyncio
 async def test_second_compact_keeps_both_and_context_uses_last(env, monkeypatch):
     manager, emitted, projection, compact = env
     sid = await manager.create_session("ws")

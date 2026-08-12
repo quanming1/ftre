@@ -65,11 +65,12 @@ async def test_state_json_stores_msg_without_event_fields(tmp_path):
     state_path = tmp_path / "sessions" / session_id / "state.json"
     payload = json.loads(state_path.read_text(encoding="utf-8"))
 
-    # 根结构只有四个字段
+    # Msg transcript 与 durable mailbox 分栏持久化。
     assert set(payload) == {
         "schema_version",
         "session",
         "messages",
+        "mailbox",
         "metadata",
     }
     assert payload["schema_version"] == 1

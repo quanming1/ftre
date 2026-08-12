@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from ftre.agent.event_hub import AgentEventHub
 from ftre.agent.session_projection import SessionProjection
 from ftre.agent.loop import AgentLoop
 from ftre.agent.turn_executor import TurnExecutor
@@ -107,12 +106,6 @@ def _make_executor(agent) -> TurnExecutor:
     config.context = ContextConfig()
     loop._injected_config = config
     loop._event_loop = asyncio.get_running_loop()
-    loop._active_agents = {}
-    loop._compacting_sessions = set()
-    loop._session_tasks = {}
-    loop._session_locks = {}
-    loop.events = AgentEventHub()
-    loop._dispatch_tasks = set()
     loop.session_manager = AsyncMock()
     loop.session_manager.get_session = AsyncMock(
         return_value={"channel_id": "ws", "workspace": "/tmp"}
@@ -133,7 +126,6 @@ def _make_executor(agent) -> TurnExecutor:
     loop.compact_manager = AsyncMock()
     loop.compact_manager.is_compacting = Mock(return_value=False)
     loop.compact_manager.should_compact = AsyncMock(return_value=False)
-    loop.compact_manager.maybe_schedule_idle_compact = AsyncMock()
     loop.command_manager = Mock()
     loop.command_manager.try_dispatch_system = AsyncMock(return_value=False)
     loop.command_manager.match = Mock(return_value=None)
@@ -250,8 +242,7 @@ async def test_tool_ask_pauses_turn_with_success_turn_end():
     )
     assert pipeline_end["value"]["success"] is True
 
-    # agent 已从 active 集合摘除（_finalize 走过）
-    assert "test-session" not in executor._loop._active_agents
+    # TurnExecutor 不再维护 session 全局 active 集合；SessionLane 持有执行所有权。
 
 
 @pytest.mark.asyncio

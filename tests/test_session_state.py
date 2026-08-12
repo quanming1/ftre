@@ -4,7 +4,7 @@
 - 合法 AgentState 可 round-trip；
 - 非法 Msg、重复 ID 被拒绝；
 - 未知 schema_version 明确报不支持；
-- 旧 state.json 残留 summary 字段可被剥离加载。
+- 旧 state.json 未知字段直接拒绝（部署时清理历史 session）。
 """
 import pytest
 from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
@@ -52,10 +52,16 @@ def test_minimal_state_round_trip():
         "schema_version",
         "session",
         "messages",
+        "mailbox",
         "metadata",
     }
     assert payload["schema_version"] == 1
     assert payload["messages"] == []
+    assert payload["mailbox"] == {
+        "revision": 0,
+        "next_sequence": 1,
+        "pending": [],
+    }
     assert payload["metadata"] == {}
 
     loaded = parse_agent_state(payload)
@@ -111,16 +117,15 @@ def test_duplicate_msg_id_rejected():
         )
 
 
-def test_legacy_summary_field_stripped_on_load():
-    """旧 state.json 残留 summary 字段可被剥离，正常加载。"""
+def test_legacy_summary_field_is_rejected():
+    """新格式不再维护历史字段迁移。"""
     payload = AgentStateFile(
         session=_session(),  # type: ignore[arg-type]
         messages=[_user("msg_u1")],  # type: ignore[list-item]
     ).model_dump(mode="json")
     payload["summary"] = {"message": _compact_msg(), "through_message_id": "msg_u1"}
-    loaded = parse_agent_state(payload)
-    assert not hasattr(loaded, "summary") or "summary" not in loaded.model_fields
-    assert len(loaded.messages) == 1
+    with pytest.raises(ValidationError):
+        parse_agent_state(payload)
 
 
 def test_event_shape_in_messages_rejected():
@@ -146,5 +151,6 @@ def test_json_schema_generable():
         "schema_version",
         "session",
         "messages",
+        "mailbox",
         "metadata",
     }
