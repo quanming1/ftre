@@ -6,12 +6,12 @@
 并发模型：per-session asyncio.Lock + 全局 create/delete 锁；
 写盘采用临时文件 + fsync + os.replace 原子替换，写盘成功后才提交内存缓存。
 
-旧 ``sessions.db`` 不做迁移兼容：启动时直接删除遗留文件（含 wal/shm），
-历史数据不保留。
+会话数据只从 ``sessions/`` 目录中的当前 JSON 模型读取，不提供旧格式迁移。
 """
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 import uuid
 import logging
@@ -28,13 +28,18 @@ from ftre.session.entity.models import (
     MessageModel,
     SessionModel,
 )
-from ftre.session.entity.state import AgentStateFile, SessionState
+from ftre.session.entity.state import (
+    AgentStateFile,
+    MailboxState,
+    QueueItem,
+    SessionState,
+)
 from .json_store import JsonStateStore, validate_session_id
 
 logger = logging.getLogger(__name__)
 
 
-# 旧 SQLite 数据库路径：~/.ftre/sessions.db（不再使用，启动时直接删除）
+# 该参数保留为构造函数的目录锚点；实际持久化始终使用 sessions/ JSON 文件。
 DEFAULT_DB_PATH = str(CONFIG_PATH.parent / "sessions.db")
 
 
@@ -97,9 +102,10 @@ class SessionRepository:
     """Session 数据存取唯一入口；调用方不应直接读写 state.json。"""
 
     def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
-        # db_path 仅用于推导配置目录（sessions/ 与其同级）；旧库文件会被删除
+        # db_path 仅用于推导 sessions/ 所在的配置目录。
         self._db_path = db_path or DEFAULT_DB_PATH
         root = Path(sessions_dir) if sessions_dir else Path(self._db_path).parent / "sessions"
+        self._sessions_root = root
         self._store = JsonStateStore(root)
         self._states = self._store.states  # 引用同一 dict（store 负责清空/填充）
         # Msg.id → session_id（Msg.id 在配置目录内全局唯一）
@@ -108,26 +114,9 @@ class SessionRepository:
         self._external_sessions: dict[tuple[str, str], str] = {}
 
     async def init(self) -> None:
-        """启动：删除遗留 sessions.db（不迁移），加载全部 JSON 状态并建索引。"""
-        await self._discard_legacy_db()
+        """启动时加载当前 JSON 状态并重建索引。"""
         await self._store.load_all()
         self._rebuild_indexes()
-
-    async def _discard_legacy_db(self) -> None:
-        """直接删除遗留 SQLite 文件（含 wal/shm/journal），不做数据迁移。"""
-        legacy = Path(self._db_path)
-        if not legacy.exists():
-            return
-        logger.warning(
-            "[session-store] 删除遗留 sessions.db（不迁移兼容）: %s", legacy
-        )
-        for suffix in ("", "-wal", "-shm", "-journal"):
-            path = Path(str(legacy) + suffix)
-            try:
-                if path.exists():
-                    await asyncio.to_thread(path.unlink)
-            except OSError:
-                logger.exception("[session-store] 删除失败: %s", path)
 
     def create_id(self) -> str:
         """生成新的 session_id"""
@@ -263,8 +252,7 @@ class SessionRepository:
         self, channel_id: str, title: str = "", workspace: str = ""
     ) -> str:
         """创建新 session，返回 session_id（格式: '<channel_id>_sess_<hex12>'）"""
-        _validate_channel_id(channel_id)
-        sid = f"{channel_id}_{self.create_id()}"
+        sid = self.make_session_id(channel_id)
         now = _now_iso()
         state = AgentStateFile(
             session=SessionState(
@@ -341,7 +329,7 @@ class SessionRepository:
                 await self.commit(new_state)
                 return session_id
 
-            session_id = f"{channel_id}_{self.create_id()}"
+            session_id = self.make_session_id(channel_id)
             state = AgentStateFile(
                 session=SessionState(
                     id=session_id,
@@ -552,6 +540,182 @@ class SessionRepository:
             entry["session_count"] += 1
             entry["latest_at"] = max(entry["latest_at"], updated)
         return sorted(grouped.values(), key=lambda e: e["latest_at"], reverse=True)
+
+    # ============================================================
+    # Mailbox（SessionLane 的持久请求队列）
+    # ============================================================
+
+    @staticmethod
+    def _find_pending_request(
+        state: AgentStateFile, request_id: str
+    ) -> QueueItem | None:
+        """只在持久化 pending 中查找尚未领取的重复请求。"""
+        if not request_id:
+            return None
+        return next(
+            (
+                item
+                for item in state.mailbox.pending
+                if item.request_id == request_id
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _has_persisted_user_message(
+        state: AgentStateFile, request_id: str
+    ) -> bool:
+        """messages 是领取后请求的持久化幂等凭据，不另存完成结果。"""
+        if not request_id:
+            return False
+        return any(
+            message.role == "user"
+            and str(message.metadata.get("request_id") or "") == request_id
+            for message in state.messages
+        )
+
+    async def admit_request(
+        self,
+        session_id: str,
+        *,
+        request_id: str,
+        content: str,
+        attachments: list[dict[str, Any]],
+        agent_id: str,
+        capacity: int = 100,
+    ) -> tuple[bool, int]:
+        """原子接纳一条消息；返回 ``(created, queue_position)``。
+
+        ``request_id`` 在一个 session 内是幂等键。只有 state.json 原子
+        落盘成功以后才返回 created=True，因此调用方可以把 accepted 当成耐久确认。
+        """
+        # 下面整个临界区保证幂等检查、容量检查、sequence 分配和 state.json 提交不可分割；
+        # 重试同一个 request_id 只返回已有接纳结果，不会再次执行工具副作用。
+        async with self._store.lock_for(session_id):
+            state = self._require_state(session_id)
+            existing = self._find_pending_request(state, request_id)
+            if existing is not None:
+                position = next(
+                    index
+                    for index, item in enumerate(state.mailbox.pending, start=1)
+                    if item.request_id == existing.request_id
+                )
+                return False, position
+            if self._has_persisted_user_message(state, request_id):
+                # 已被领取的请求一定已将 UserMessage 写入 messages；即使 Gateway
+                # 后续中断，也不应因同一 request_id 重试而重复执行。
+                return False, 0
+
+            used = len(state.mailbox.pending)
+            if used >= capacity:
+                raise OverflowError(f"mailbox 已满: {used}/{capacity}")
+
+            now = _now_iso()
+            new_state = state.model_copy(deep=True)
+            item = QueueItem(
+                request_id=request_id,
+                sequence=new_state.mailbox.next_sequence,
+                content=content,
+                attachments=copy.deepcopy(attachments),
+                agent_id=agent_id or "default",
+            )
+            new_state.mailbox.next_sequence += 1
+            new_state.mailbox.pending.append(item)
+            new_state.mailbox.revision += 1
+            new_state.session.updated_at = now
+            await self.commit(new_state)
+            return True, len(new_state.mailbox.pending)
+
+    async def peek_request(self, session_id: str) -> QueueItem | None:
+        async with self._store.lock_for(session_id):
+            state = self._states.get(session_id)
+            if state is None or not state.mailbox.pending:
+                return None
+            return state.mailbox.pending[0].model_copy(deep=True)
+
+    async def take_pending_request(
+        self, session_id: str, request_id: str
+    ) -> QueueItem | None:
+        """原子移除队首，交给 SessionLane 的内存执行态。
+
+        这是刻意选择的 at-most-once 交接点：提交后崩溃不会自动重放该请求。
+        TurnExecutor 随后会将 UserMessage 写入 messages；若恰在两者之间崩溃，
+        用户消息允许丢失，这是本项目明确接受的少数异常语义。
+        """
+        async with self._store.lock_for(session_id):
+            state = self._require_state(session_id)
+            if (
+                not state.mailbox.pending
+                or state.mailbox.pending[0].request_id != request_id
+            ):
+                return None
+            new_state = state.model_copy(deep=True)
+            now = _now_iso()
+            item = new_state.mailbox.pending.pop(0)
+            new_state.mailbox.revision += 1
+            new_state.session.updated_at = now
+            await self.commit(new_state)
+            return item.model_copy(deep=True)
+
+    async def cancel_pending_request(
+        self,
+        session_id: str,
+        request_id: str,
+    ) -> QueueItem | None:
+        """原子移除一条仍在 pending 的消息。
+
+        已被 SessionLane 领取的请求不在磁盘队列中，必须走 cancel_current。
+        取消后不写完成结果：横幅只依赖 pending，移除后下个快照自然消失。
+        """
+        async with self._store.lock_for(session_id):
+            state = self._require_state(session_id)
+            index = next(
+                (
+                    index
+                    for index, item in enumerate(state.mailbox.pending)
+                    if item.request_id == request_id
+                ),
+                -1,
+            )
+            if index < 0:
+                return None
+
+            now = _now_iso()
+            new_state = state.model_copy(deep=True)
+            item = new_state.mailbox.pending.pop(index)
+            new_state.mailbox.revision += 1
+            new_state.session.updated_at = now
+            await self.commit(new_state)
+            return item.model_copy(deep=True)
+
+    async def mailbox_snapshot(self, session_id: str) -> MailboxState:
+        async with self._store.lock_for(session_id):
+            state = self._states.get(session_id)
+            if state is None:
+                return MailboxState()
+            return state.mailbox.model_copy(deep=True)
+
+    async def advance_mailbox_revision(self, session_id: str) -> int:
+        """推进 mailbox 快照版本，但不记录任何运行态对象。
+
+        ``pending`` 未变化时，SessionLane 仍可能发生 ``running → idle``、
+        ``running → compacting`` 等对客户端可见的状态变化。revision 是这些
+        快照的单调版本号；它只保存一个整数，绝不把 active 或完成结果写回磁盘。
+        """
+        async with self._store.lock_for(session_id):
+            state = self._require_state(session_id)
+            new_state = state.model_copy(deep=True)
+            new_state.mailbox.revision += 1
+            new_state.session.updated_at = _now_iso()
+            await self.commit(new_state)
+            return new_state.mailbox.revision
+
+    async def mailbox_session_ids(self) -> list[str]:
+        return [
+            session_id
+            for session_id, state in self._states.items()
+            if state.mailbox.pending
+        ]
 
     # ============================================================
     # Message（Msg 快照）

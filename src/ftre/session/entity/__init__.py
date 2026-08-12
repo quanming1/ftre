@@ -5,6 +5,8 @@
 from .state import (
     AgentStateFile,
     CURRENT_SCHEMA_VERSION,
+    MailboxState,
+    QueueItem,
     SessionState,
     UnsupportedAgentStateVersion,
     parse_agent_state,
@@ -14,6 +16,8 @@ from .state import (
 __all__ = [
     "AgentStateFile",
     "CURRENT_SCHEMA_VERSION",
+    "MailboxState",
+    "QueueItem",
     "SessionState",
     "UnsupportedAgentStateVersion",
     "parse_agent_state",

@@ -20,6 +20,8 @@ from typing import Any
 from ftre_agent_core.message import Msg, MsgName
 from ftre_agent_core.types import ReplyFinishedReason
 
+from ftre.bus import BusMessage
+
 from ftre.session.entity.models import (
     ExternalSessionModel,
     MessageModel,
@@ -27,9 +29,12 @@ from ftre.session.entity.models import (
     StatePageModel,
 )
 from ftre.session.storage.repository import SessionRepository
-from ftre.session.entity.state import AgentStateFile, SessionState
-
-from .message.converter import _as_msg
+from ftre.session.entity.state import (
+    AgentStateFile,
+    MailboxState,
+    QueueItem,
+    SessionState,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +50,26 @@ class ForkResult:
     workspace: str
 
 
+@dataclass(frozen=True)
+class RequestAdmission:
+    """一条入站消息的持久化接纳结果（存储层语义）。
+
+    由 ``SessionManager.admit_inbound()`` 返回，回答"这次接纳尝试发生了什么"：
+    - ``created`` 为 False 表示 request_id 已在 pending 或 UserMessage 中出现；
+    - ``queue_position`` 是 pending 中的 1-based 位置，已领取的历史请求为 0。
+    """
+
+    session_id: str
+    request_id: str
+    created: bool
+    queue_position: int
+
+
 class SessionManager:
     """Session 持久化唯一入口；调用方不应直接读写 state.json。"""
 
     def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
         self._repo = SessionRepository(db_path, sessions_dir=sessions_dir)
-        # AgentLoop 运行时引用（duck-typed，main.py 启动时注入）；
-        # session 包不得 import agent 包（避免模块循环），故用 setter 注入。
-        self._agent_loop = None
-
-    def set_agent_loop(self, agent_loop) -> None:
-        """注入 AgentLoop，供删除级联时取消运行中的 agent。"""
-        self._agent_loop = agent_loop
 
     async def init(self) -> None:
         """启动：加载全部 JSON 状态、建索引、修复遗留 open reply、清扫孤儿目录。"""
@@ -145,13 +158,8 @@ class SessionManager:
                         k for k in team["members"] if isinstance(k, str)
                     )
 
-        # 2) 先取消所有受影响 session 的运行中 Agent，给有界收尾窗口
-        if self._agent_loop is not None:
-            for sid in (session_id, *member_sids):
-                await self._agent_loop.cancel_session(sid)
-                await self._agent_loop.wait_session_idle(sid, timeout=2.0)
-
-        # 3) 删成员 session（成员不能再建团队，级联深度恒为 1，无环）
+        # 删成员 session（成员不能再建团队，级联深度恒为 1，无环）。
+        # 运行时关闭由 AgentLoop.delete_session 先完成，Manager 只负责持久化删除。
         for msid in member_sids:
             await self._repo.delete_session(msid)
 
@@ -228,6 +236,81 @@ class SessionManager:
 
     async def list_workspaces(self, channel_id: str | None = None) -> list[dict]:
         return await self._repo.list_workspaces(channel_id)
+
+    # ============================================================
+    # Mailbox（仅由 AgentLoop 内部的 SessionLane 使用）
+    # ============================================================
+
+    async def admit_inbound(
+        self, inbound: BusMessage, *, mailbox_capacity: int = 100
+    ) -> RequestAdmission:
+        session_id = inbound.data.get("session_id", "") or inbound.from_session
+        if not session_id:
+            raise ValueError("inbound 缺少 session_id")
+        session = await self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session 不存在: {session_id}")
+        if session["channel_id"] != inbound.from_channel:
+            raise ValueError(
+                f"session 与 channel 不匹配: {session_id} ({session['channel_id']})"
+            )
+
+        # request_id 是请求在 mailbox、历史 UserMsg 和 WS 事件间唯一共用的业务 ID。
+        # WS 使用自己的 frame_id 注入它；内部调用未给出时只在这里生成一次。
+        request_id = (
+            inbound.metadata.request_id
+            or f"request_{uuid.uuid4().hex}"
+        )
+        created, position = await self._repo.admit_request(
+            session_id,
+            request_id=request_id,
+            content=str(inbound.data.get("content") or ""),
+            attachments=list(inbound.data.get("attachments") or []),
+            agent_id=inbound.metadata.agent_id,
+            capacity=mailbox_capacity,
+        )
+        return RequestAdmission(
+            session_id=session_id,
+            request_id=request_id,
+            created=created,
+            queue_position=position,
+        )
+
+    async def peek_request(self, session_id: str) -> QueueItem | None:
+        return await self._repo.peek_request(session_id)
+
+    async def take_pending_request(
+        self, session_id: str, request_id: str
+    ) -> QueueItem | None:
+        return await self._repo.take_pending_request(session_id, request_id)
+
+    async def cancel_pending_request(
+        self, session_id: str, request_id: str
+    ) -> QueueItem | None:
+        """取消尚未被 SessionLane 领取的请求。"""
+        return await self._repo.cancel_pending_request(session_id, request_id)
+
+    async def get_mailbox_snapshot(self, session_id: str) -> MailboxState:
+        return await self._repo.mailbox_snapshot(session_id)
+
+    async def advance_mailbox_revision(self, session_id: str) -> int:
+        """记录一次对客户端可见的 Lane 状态变化。"""
+        return await self._repo.advance_mailbox_revision(session_id)
+
+    def has_mailbox_work(self, session_id: str) -> bool:
+        """同步判断该会话是否仍有 pending 或 active 请求。
+
+        AgentLoop 的状态查询不应穿透到 Repository 私有字段；这里仅读内存快照，
+        不做 I/O，也不把 Mailbox 的具体 JSON 结构泄露给调用方。
+        """
+        state = self._repo.get_state(session_id)
+        return bool(state and state.mailbox.pending)
+
+    async def get_pending_request_count(self, session_id: str) -> int:
+        return len((await self._repo.mailbox_snapshot(session_id)).pending)
+
+    async def get_mailbox_session_ids(self) -> list[str]:
+        return await self._repo.mailbox_session_ids()
 
     # ============================================================
     # Message（委托 storage）
@@ -544,7 +627,7 @@ class SessionManager:
             }
 
         # ── 阶段 2：锁外组装完整 state（全新构建，绝不 model_copy 父 state——
-        # 否则会连带继承 external/teams/id/时间戳）──
+        # 否则会连带继承 mailbox/external/teams/id/时间戳）──
         fork_metadata["forked_from"] = parent_session_id
         fork_metadata["forked_at"] = datetime.now(timezone.utc).isoformat()
         new_state = AgentStateFile(
@@ -558,6 +641,7 @@ class SessionManager:
                 updated_at=now,
             ),
             messages=cloned_messages,
+            mailbox=MailboxState(),  # mailbox 不继承：全新空队列
             metadata=fork_metadata,
         )
 

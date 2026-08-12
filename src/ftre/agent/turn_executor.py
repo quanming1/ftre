@@ -3,15 +3,15 @@ TurnExecutor — 单个 Turn 的完整执行。
 
 Turn 是一等公民：一个有状态的生命周期对象，从收到用户消息到响应完成。
 
-状态机驱动：COMMAND → COMPACTING → BUILDING → RUNNING → FINALIZING → COMPLETED。
-execute() 只管边界（PIPELINE_START/END）、系统级指令锁外短路、per-session lock。
+状态机驱动：COMMAND → BUILDING → RUNNING → FINALIZING → COMPLETED。
+execute() 只负责单个已经由 SessionLane 领取的 Turn。
 指令匹配、用户消息存储、普通指令执行都在 COMMAND 状态里做。
 
 处理路径：
-  普通消息：  COMMAND(存消息) → COMPACTING → BUILDING → RUNNING → FINALIZING → COMPLETED
-  /cancel：   锁外执行取消 → 短路（不进状态机、不存消息）
+  普通消息：  COMMAND(存消息) → BUILDING → RUNNING → FINALIZING → COMPLETED
+  turn_cancel：由 SessionLane 在控制面取消当前 task，不进入本执行器
   /compact：  COMMAND(存消息 + 执行 handler) → COMPLETED（短路）
-  RewritePrompt：COMMAND(存消息 + 执行 handler) → COMPACTING → BUILDING → RUNNING → FINALIZING → COMPLETED
+  RewritePrompt：COMMAND(存消息 + 执行 handler) → BUILDING → RUNNING → FINALIZING → COMPLETED
 """
 import asyncio
 import copy
@@ -25,7 +25,6 @@ from ftre_agent_core.agent import ReActAgent, RunStatus
 from ftre_agent_core.event import (
     EventBase,
     ReplyStartEvent,
-    ReplyEndEvent,
     ReplyFinishedReason,
     CustomEvent,
     ToolResultEndEvent,
@@ -33,13 +32,11 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import Msg, from_openai_message
 
-from ftre.bus import BusMessage, GLOBAL_CHANNEL, GLOBAL_SESSION
-from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
+from ftre.bus import BusMessage, CommandMessagePayload, SessionCommandMessage
 from ftre.config import AgentConfig, load_config
 from ftre.session.message.multimodal import build_user_content, normalize_stored_user_content
 from ftre.tools._workspace import WorkspaceAccessor, ensure_workspace_ext_dir
 
-from .event_hub import AgentEventHub
 
 from ftre.command.types import (
     Handled,
@@ -66,14 +63,13 @@ class TurnStatus(str, Enum):
     """Turn 生命周期的阶段。
 
     状态流转（正常路径）：
-        COMMAND → COMPACTING → BUILDING → RUNNING → FINALIZING → COMPLETED
+        COMMAND → BUILDING → RUNNING → FINALIZING → COMPLETED
     终态：COMPLETED（正常）/ CANCELLED（被取消）/ ERROR（异常）
     """
     COMMAND = "command"        # 匹配指令 + 存用户消息 + 执行 handler + 路由
-    COMPACTING = "compacting"  # 判断是否需要压缩上下文
     BUILDING = "building"      # 鉴权 + 构建消息 + 创建 Agent
     RUNNING = "running"        # 驱动 Agent 执行，逐条投递事件
-    FINALIZING = "finalizing"  # 清理 Agent、通知 subagent、调度 idle 压缩
+    FINALIZING = "finalizing"  # Turn 已运行完成，等待统一收尾
     COMPLETED = "completed"    # 正常完成（终态）
     CANCELLED = "cancelled"    # 被用户取消（终态）
     ERROR = "error"            # 执行异常（终态）
@@ -94,15 +90,15 @@ class Turn:
     session_id: str              # 所属会话
 
     # ── 当前状态（状态机读写）──
-    status: TurnStatus = TurnStatus.COMMAND  # 状态机从 COMPACTING 起步
+    status: TurnStatus = TurnStatus.COMMAND
 
     # ── 指令匹配结果（execute 入口设置，命中指令时非 None）──
     command: "CommandDef | None" = None      # 命中的指令定义（含 system / persist_input）
     command_name: str | None = None          # 指令名（如 "/compact"），PIPELINE_END 会带上
 
-    # ── 压缩决策（_compact 写入，_build 读取）──
-    need_compact: bool = False   # True 表示 _build 里要先做关键路径压缩
-    user_message_id: str = ""    # 本轮已持久化 UserMsg；关键路径压缩从它开始保留 tail
+    user_message_id: str = ""    # 本轮持久化后的 UserMsg id
+    # RewritePrompt 只影响本轮构建给 LLM 的内容，不进入 InboundData 的自由 metadata。
+    prompt_override: str | None = None
 
     # ── Agent 执行上下文（_build 写入，_run 读取）──
     agent_profile: "AgentProfile | None" = None  # 本轮选定的 Agent 私有配置
@@ -112,6 +108,7 @@ class Turn:
     runtime_context: dict = field(default_factory=dict)   # 工具共享的运行时上下文
     final_content: str = ""                  # 最后一条完整 assistant 回复（task 工具用）
     subagent_status: str = "completed"       # subagent 完成态：completed/cancelled/error
+    error: dict | None = None                 # 进入 ERROR 时返回给 SessionLane 的结构化原因
 
     # ── 权限确认恢复（/allow、/deny 指令触发时非 None）──
     # 非 None 表示本 Turn 是恢复请求：跳过普通消息构建，
@@ -120,6 +117,17 @@ class Turn:
 
     # ── 事件序列（供回放/调试）──
     events: list = field(default_factory=list)  # 本 Turn 产生的所有 CustomEvent
+
+
+@dataclass(frozen=True)
+class TurnOutcome:
+    """SessionLane 用于完成 request 的结构化 Turn 结果。"""
+
+    turn_id: str
+    status: str
+    user_message_id: str = ""
+    final_content: str = ""
+    error: dict | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -138,13 +146,19 @@ class TurnExecutor:
 
     # ─── 驱动入口 ────────────────────────────────────────────
 
-    async def execute(self, inbound: BusMessage) -> None:
+    async def execute(
+        self,
+        inbound: BusMessage,
+        *,
+        turn_id: str | None = None,
+        config: AgentConfig | None = None,
+        agent_profile: "AgentProfile | None" = None,
+    ) -> TurnOutcome:
         """单条消息的处理入口——Turn 的编排中枢。
 
-        execute() 只管"边界 + 并发"，不管业务逻辑：
+        execute() 只管 Turn 边界和业务状态机：
         - PIPELINE_START / PIPELINE_END 边界（try/finally 保证成对）
-        - 系统级指令锁外短路（/cancel 不能等锁）
-        - per-session lock 管理
+        - 系统级指令 control lane 短路
         - 状态机驱动循环
 
         指令匹配、用户消息存储、普通指令执行都在 COMMAND 状态里做。
@@ -152,31 +166,20 @@ class TurnExecutor:
         loop = self._loop
         session_id = self._session_id_of(inbound)
 
-        # 压缩期间不接受新用户输入。必须在 PIPELINE_START、UserMessageEvent
-        # 和 UserMsg 入库之前丢弃，避免客户端/磁盘出现没有后续回复的半条消息。
-        if (
-            inbound.type == "user_message"
-            and session_id
-            and loop.compact_manager.is_compacting(session_id)
-        ):
-            frame_id = inbound.metadata.frame_id
-            logger.warning(
-                "[compact] session=%s 正在压缩，丢弃新消息 frame_id=%s",
-                session_id,
-                frame_id or "-",
-            )
-            return
-
         turn = Turn(
-            turn_id=f"turn_{uuid.uuid4().hex[:12]}",
+            turn_id=turn_id or f"turn_{uuid.uuid4().hex[:12]}",
             inbound=inbound,
             session_id=session_id,
+            config=config,
+            agent_profile=agent_profile,
         )
         await self._emit_step(turn, "PIPELINE_START")
 
         try:
-            # ── 系统级指令（/cancel）：锁外立即执行，短路 ──
-            # 必须锁外：用户点停止时不能被 session lock 阻塞。
+            # 这里是“单个 Turn”的边界：SessionLane 已经保证同一 session 只有一个
+            # execute() 在运行；TurnExecutor 不再创建第二层队列或锁，只负责把这条
+            # 已领取的请求推进到一个明确的 TurnOutcome。
+            # ── 系统级文本指令：匹配后短路执行 ──
             # match_any 只查不执行，系统级 handler 在这里执行。
             cmd_def = (
                 loop.command_manager.match_any(turn)
@@ -190,49 +193,68 @@ class TurnExecutor:
                     turn, "COMMAND_MATCHED", command_name=cmd_def.command
                 )
                 await loop.command_manager.try_dispatch_system(turn)
-                return  # 短路：PIPELINE_END 在 finally 发
-
-            # ── 后续进 per-session 锁 ──
-            current_task = asyncio.current_task()
-            loop._session_tasks[turn.session_id] = current_task
-            lock = loop._session_locks.setdefault(turn.session_id, asyncio.Lock())
-            try:
-                async with lock:
-                    # 状态机：COMMAND → COMPACTING → BUILDING → RUNNING → FINALIZING
-                    while turn.status not in (
-                        TurnStatus.COMPLETED,
-                        TurnStatus.CANCELLED,
-                        TurnStatus.ERROR,
-                    ):
-                        turn.status = await self._advance(turn)
-            except Exception:
-                logger.exception(
-                    f"[turn-executor] 状态机异常 session={turn.session_id} "
-                    f"status={turn.status}"
+                turn.status = TurnStatus.COMPLETED
+            else:
+                # SessionLane 保证同一 Session 同时最多调用一次 execute()；
+                # TurnExecutor 有意不再持有队列、Session 锁或权威会话状态。
+                while turn.status not in (
+                    TurnStatus.COMPLETED,
+                    TurnStatus.CANCELLED,
+                    TurnStatus.ERROR,
+                ):
+                    turn.status = await self._advance(turn)
+        except asyncio.CancelledError:
+            turn.status = TurnStatus.CANCELLED
+            turn.subagent_status = "cancelled"
+            if turn.agent is not None:
+                await self._persist_open_replies(
+                    turn, ReplyFinishedReason.INTERRUPTED
                 )
-                turn.status = TurnStatus.ERROR
-            finally:
-                if turn.agent is not None:
-                    await self._finalize(turn)
-                if loop._session_tasks.get(turn.session_id) is current_task:
-                    loop._session_tasks.pop(turn.session_id, None)
+        except Exception:
+            logger.exception(
+                f"[turn-executor] 状态机异常 session={turn.session_id} "
+                f"status={turn.status}"
+            )
+            turn.status = TurnStatus.ERROR
+            turn.subagent_status = "error"
         finally:
+            # 无论正常完成、异常还是取消，都必须在离开 execute() 前关闭开放中的
+            # reply/tool 生命周期并发送 PIPELINE_END。SessionLane 在这里返回之后
+            # 清除自己的内存运行态并唤醒同进程等待者；聊天事实已经写入 messages。
+            if turn.agent is not None:
+                await self._finalize(turn)
             await self._emit_step(
                 turn, "PIPELINE_END",
                 success=turn.status == TurnStatus.COMPLETED,
-                reason="error" if turn.status == TurnStatus.ERROR else "",
+                reason=(
+                    "error"
+                    if turn.status == TurnStatus.ERROR
+                    else "cancelled"
+                    if turn.status == TurnStatus.CANCELLED
+                    else ""
+                ),
                 command_name=turn.command_name,
             )
+        return TurnOutcome(
+            turn_id=turn.turn_id,
+            status=turn.status.value,
+            user_message_id=turn.user_message_id,
+            final_content=turn.final_content,
+            error=(
+                turn.error
+                or {"code": "turn_error", "message": "Turn 执行失败", "retryable": True}
+                if turn.status == TurnStatus.ERROR
+                else None
+            ),
+        )
 
     async def _advance(self, turn: Turn) -> TurnStatus:
         """状态转移：根据当前状态调对应处理函数，返回下一个状态。"""
         match turn.status:
             case TurnStatus.COMMAND:
-                return await self._command(turn)    # → COMPACTING 或 COMPLETED
-            case TurnStatus.COMPACTING:
-                return await self._compact(turn)     # → BUILDING
+                return await self._command(turn)    # → BUILDING 或 COMPLETED
             case TurnStatus.BUILDING:
-                return await self._build(turn)      # → RUNNING（或 COMPLETED 鉴权失败）
+                return await self._build(turn)      # → RUNNING（或 ERROR 校验失败）
             case TurnStatus.RUNNING:
                 return await self._run(turn)         # → FINALIZING/CANCELLED/ERROR
             case TurnStatus.FINALIZING:
@@ -246,14 +268,14 @@ class TurnExecutor:
         """[状态 0] 匹配指令 + 存用户消息 + 执行 handler + 路由。
 
         这是状态机的第一个状态，所有非系统级消息都从这里起步。三种结局：
-        - 未命中指令（普通消息）：存 UserMsg → COMPACTING
+        - 未命中指令（普通消息）：存 UserMsg → BUILDING
         - 命中普通指令 → 存 UserMsg → 执行 handler
           - Handled/SendMessage → COMPLETED（短路，不跑 Agent）
-          - RewritePrompt/Passthrough → COMPACTING（继续跑 Agent）
+          - RewritePrompt/Passthrough → BUILDING（继续跑 Agent）
         - command_manager 为 None → 当普通消息处理
 
         存储时机：在指令执行之前存，保证 DB 中 UserMsg 位于本轮 AssistantMsg 之前。
-        /cancel 等系统级指令不会进这个状态（execute 入口锁外短路了）。
+        通过 WebSocket 停止按钮发出的 turn_cancel 不会进这个状态；它不写历史。
         """
         loop = self._loop
         inbound = turn.inbound
@@ -282,6 +304,9 @@ class TurnExecutor:
         if should_persist and session_id and content:
             stored_content = normalize_stored_user_content(content)
             user_metadata = {"hide": False, "agent_id": agent_id}
+            # request_id 是 mailbox 与聊天历史唯一共享的请求标识，用来阻止重复执行。
+            if inbound.metadata.request_id:
+                user_metadata["request_id"] = inbound.metadata.request_id
             persisted_content = build_user_content(
                 stored_content,
                 attachments,
@@ -306,7 +331,7 @@ class TurnExecutor:
 
         # ── 3. 未命中指令 → 普通消息，继续状态机 ──
         if cmd_def is None:
-            return TurnStatus.COMPACTING
+            return TurnStatus.BUILDING
 
         # ── 4. 命中普通指令 → 执行 handler，按返回值路由 ──
         # RewritePrompt：改写 prompt，继续跑 Agent
@@ -315,16 +340,13 @@ class TurnExecutor:
         # SendMessage：推消息给前端，短路
         result = await loop.command_manager.try_dispatch(turn)
         if result is None:
-            return TurnStatus.COMPACTING  # 不应该发生，安全默认
+            return TurnStatus.BUILDING  # 不应该发生，安全默认
 
         match result:
             case RewritePrompt(content=prompt_content):
-                # 改写发给 LLM 的 prompt（如 skill 展开），DB 存原始 content
-                inbound_data = inbound.data
-                if not isinstance(inbound_data.get("metadata"), dict):
-                    inbound_data["metadata"] = {}
-                inbound_data["metadata"]["prompt_override"] = prompt_content
-                return TurnStatus.COMPACTING    # 继续跑 Agent
+                # 改写发给 LLM 的 prompt（如 skill 展开），DB 始终保存原始 content。
+                turn.prompt_override = prompt_content
+                return TurnStatus.BUILDING    # 继续跑 Agent
             case SendMessage(content=msg, level=level):
                 await self._send_command_message(
                     session_id, inbound.from_channel, msg, level
@@ -333,7 +355,7 @@ class TurnExecutor:
             case Handled():
                 return TurnStatus.COMPLETED        # 短路
             case Passthrough():
-                return TurnStatus.COMPACTING       # 继续跑 Agent
+                return TurnStatus.BUILDING       # 继续跑 Agent
             case ResumeAgent(events=events):
                 if not events:
                     return TurnStatus.COMPLETED
@@ -349,51 +371,14 @@ class TurnExecutor:
                 turn.confirm_event = events[-1]
                 return TurnStatus.BUILDING
             case _:
-                return TurnStatus.COMPACTING
-
-    async def _compact(self, turn: Turn) -> TurnStatus:
-        """[状态 1/4] 判断是否需要压缩上下文。
-
-        只做判断，不真正压缩——把结论写进 turn.need_compact，
-        真正的压缩在 _build 里执行。判断和执行必须共用本 Turn 的有效配置快照，
-        否则 coder 等私有 Agent 会被 default Agent 的 context_window 错误判定。
-
-        只对 user_message 判断（其它类型消息直接进 BUILDING）。
-        should_compact 看历史 token 是否超过阈值。异常不阻断，继续往下走。
-        """
-        loop = self._loop
-        inbound = turn.inbound
-        # 非用户消息不触发压缩判断
-        if inbound.type != "user_message":
-            return TurnStatus.BUILDING
-        session_id = turn.session_id
-        if not session_id:
-            return TurnStatus.BUILDING
-
-        try:
-            config, _ = await self._resolve_turn_config(turn)
-            need = await loop.compact_manager.should_compact(
-                session_id,
-                inbound.from_channel,
-                config,
-                threshold=getattr(config.context, "compact_threshold", 0.8),
-            )
-            if need:
-                turn.need_compact = True  # 传给 _build，让它先压缩再构建消息
-                logger.info(f"[turn-executor] 需要关键路径压缩 session={session_id}")
-        except Exception:
-            # 压缩判断失败不应阻断对话，记日志继续
-            logger.exception(
-                f"[turn-executor] should_compact 异常 session={session_id}"
-            )
-
-        return TurnStatus.BUILDING
+                return TurnStatus.BUILDING
 
     async def _build(self, turn: Turn) -> TurnStatus:
-        """[状态 2/4] 鉴权 + 压缩 + 构建消息 + 创建 Agent + 组装 runtime_context。
+        """[状态 2/4] 鉴权 + 构建消息 + 创建 Agent + 组装 runtime_context。
 
         这一步做完 Agent 就准备好了，下一步 _run 直接驱动它。
-        鉴权失败会直接返回 COMPLETED（turn.agent 保持 None，不会进 _finalize 清理）。
+        校验失败会返回 ERROR（turn.agent 保持 None，不会进 _finalize 清理），
+        由 SessionLane 回传失败 TurnOutcome，避免入口误以为消息已经成功执行。
         """
         loop = self._loop
         inbound = turn.inbound
@@ -407,7 +392,12 @@ class TurnExecutor:
             logger.warning(
                 f"[turn-executor] session 不存在，拒绝执行: session={session_id}"
             )
-            return TurnStatus.COMPLETED  # 短路，不创建 Agent
+            turn.error = {
+                "code": "session_not_found",
+                "message": f"会话不存在: {session_id}",
+                "retryable": False,
+            }
+            return TurnStatus.ERROR  # 拒绝执行必须形成失败结果，不能伪装成功
         # ── 鉴权 2：session 的 channel 必须和消息来源一致（防串台）──
         if session["channel_id"] != inbound.from_channel:
             logger.warning(
@@ -415,21 +405,18 @@ class TurnExecutor:
                 f"session={session_id} (channel={session['channel_id']}), "
                 f"消息来自 {inbound.from_channel}"
             )
-            return TurnStatus.COMPLETED
+            turn.error = {
+                "code": "channel_mismatch",
+                "message": (
+                    f"会话通道为 {session['channel_id']}，消息路由通道为 "
+                    f"{inbound.from_channel}"
+                ),
+                "retryable": False,
+            }
+            return TurnStatus.ERROR
 
         # ── 取得本 Turn 已解析的有效配置（不同 agent 可用不同 LLM）──
-        # _compact 通常已经建立快照；非 user_message 等特殊路径在这里兜底建立。
         config, agent_profile = await self._resolve_turn_config(turn)
-
-        # ── 并发防御：理论上 session lock 已保证串行，这里是兜底 ──
-        # 若发现同 session 已有 Agent 在跑，说明锁逻辑有 bug，强制取消旧的
-        if session_id in loop._active_agents:
-            existing = loop._active_agents[session_id]
-            logger.error(
-                f"[turn-executor] session lock 未能防止并发: "
-                f"session={session_id}, existing_agent={existing!r}"
-            )
-            existing.cancel_nowait()
 
         # ── 权限确认恢复分支：注入历史 Msg 到新 agent，跳过普通消息构建 ──
         if turn.confirm_event is not None:
@@ -437,45 +424,25 @@ class TurnExecutor:
                 turn, session, config, agent_profile
             )
 
-        # ── 关键路径压缩（_compact 判定需要时才做）──
-        if turn.need_compact:
-            # 用户消息已经进入关键路径并正在等待摘要完成，先切换为压缩状态。
-            loop._compacting_sessions.add(session_id)
-            await self._publish_session_status_async(session_id, "compacting")
-            try:
-                await loop.compact_manager.compact(
-                    session_id,
-                    inbound.from_channel,
-                    config=config,
-                    trigger="auto",
-                    preserve_from_message_id=turn.user_message_id,
-                )
-            except Exception:
-                logger.exception(
-                    f"[turn-executor] 关键路径压缩异常 session={session_id}"
-                )
-            finally:
-                loop._compacting_sessions.discard(session_id)
-
         # ── 构建发给 LLM 的消息 ──
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
         # 发送消息时确保当前工作区有 .ftre 扩展目录骨架（工作区级 skill / mcp.json 的落点）
         ensure_workspace_ext_dir(workspace)
-        # prompt_override 来自 RewritePrompt 指令：发给 LLM 用改写后的，DB 存原始
-        prompt_override = (inbound.data.get("metadata") or {}).get("prompt_override")
-        llm_content = prompt_override if prompt_override else content
+        # prompt_override 来自 RewritePrompt 指令：发给 LLM 用改写后的，DB 存原始。
+        llm_content = turn.prompt_override if turn.prompt_override else content
         messages, hook_config = await self._build_messages(
             session_id,
             llm_content,
             attachments,
             config,
             inbound_data=inbound.data,
+            prompt_override=turn.prompt_override,
             channel_id=inbound.from_channel,
             workspace=workspace,
             agent_dir=(agent_profile.agent_dir if agent_profile else ""),
             reply_id=turn.turn_id,
         )
-        # 后续 idle compact 必须继续使用真正创建 Agent 时的配置，而不是重新读取
+        # 轮后压缩屏障必须继续使用真正创建 Agent 时的配置，而不是重新读取
         # 此刻可能已经切换过的 default Agent 配置。
         turn.config = copy.deepcopy(hook_config)
         if agent_profile is not None:
@@ -483,7 +450,7 @@ class TurnExecutor:
             # Agent 完全一致，避免 hook/test double 返回了另一套 llm。
             turn.config.llm = copy.deepcopy(agent_profile.llm)
 
-        # ── 创建 Agent 并注册到 _active_agents（/cancel 时通过它取消）──
+        # ── 创建本轮私有 Agent；取消由 SessionLane 持有的 Turn task 传播 ──
         assert loop.agent_manager is not None, "agent_manager must be provided"
         agent = loop.agent_manager.create_agent(
             profile=agent_profile,
@@ -496,10 +463,6 @@ class TurnExecutor:
             hook_manager=loop.core_hook_manager,
         )
         turn.agent = agent  # 标记：已创建 Agent，execute finally 会走 _finalize
-        loop._active_agents[session_id] = agent
-        # 广播运行态：客户端显示"运行中"
-        await self._publish_session_status_async(session_id, "running")
-
         # ── 组装 runtime_context（工具执行时的共享数据）──
         turn.runtime_context = {
             "session_id": session_id,
@@ -640,8 +603,6 @@ class TurnExecutor:
 
         turn.agent = agent
         turn.config = copy.deepcopy(hook_config)
-        loop._active_agents[session_id] = agent
-        await self._publish_session_status_async(session_id, "running")
 
         reply_id = turn.confirm_event.reply_id
         turn.runtime_context = {
@@ -702,21 +663,6 @@ class TurnExecutor:
                 completed_message = await self.publish_agent_event(turn, event)
                 if completed_message is not None:
                     turn.final_content = completed_message.get_text_content() or ""
-
-                # 每次完整回复后检查是否要调度后台 idle 压缩（自带去重）
-                if (
-                    isinstance(event, ReplyEndEvent)
-                    and turn.inbound.from_channel != SUBAGENT_CHANNEL_ID
-                ):
-                    try:
-                        _cfg, _ = await self._resolve_turn_config(turn)
-                        await self._loop.compact_manager.maybe_schedule_idle_compact(
-                            turn.session_id, turn.inbound.from_channel, _cfg
-                        )
-                    except Exception:
-                        logger.debug(
-                            "[turn-executor] 调度 usage 压缩失败", exc_info=True
-                        )
 
             # AgentState 只保存可持久化的消息上下文；一次 run 的结束原因、
             # 迭代次数、token 用量和错误信息都属于临时 RunState。
@@ -786,7 +732,7 @@ class TurnExecutor:
             return TurnStatus.ERROR
 
     async def _finalize(self, turn: Turn) -> TurnStatus:
-        """[状态 4/4] 收尾：清理 Agent 注册、通知 subagent、调度 idle 压缩。
+        """[状态 4/4] 收尾：清理 Agent 注册并通知 subagent。
 
         在 execute() 的 finally 里统一调用（无论正常/取消/异常都会走），
         所以它是 Turn 的唯一收尾出口，必须幂等且不抛异常。
@@ -796,42 +742,9 @@ class TurnExecutor:
 
         # ── 摘除 _active_agents（仅当还是自己创建的那个）──
         # 若已被后来的 Agent 顶替，不清理（避免误删别人的）
-        if loop._active_agents.get(session_id) is turn.agent:
-            loop._active_agents.pop(session_id, None)
-            should_emit_idle = True
-        else:
-            should_emit_idle = False
-
-        # ── 广播 agent 完成事件（AgentEventHub）──
         # 无条件 emit（不依赖通道推断）：task/team 只对 subagent session wait，
         # 非 subagent 完成时无人订阅，零开销；未来其它功能可订阅同一事件。
-        try:
-            loop.events.emit(
-                session_id,
-                AgentEventHub.AGENT_FINISHED,
-                {
-                    "session_id": session_id,
-                    "channel_id": turn.inbound.from_channel,
-                    "status": turn.subagent_status,
-                    "final_content": turn.final_content,
-                },
-            )
-        except Exception:
-            logger.exception("[turn-executor] 广播 agent_finished 事件异常")
-
-        # ── 广播 idle：客户端恢复空闲态 ──
-        if should_emit_idle:
-            await self._publish_session_status_async(session_id, "idle")
-
-        # ── 本轮结束后调度后台 idle 压缩（非 subagent）──
-        if turn.inbound.from_channel != SUBAGENT_CHANNEL_ID:
-            try:
-                _cfg, _ = await self._resolve_turn_config(turn)
-                await loop.compact_manager.maybe_schedule_idle_compact(
-                    session_id, turn.inbound.from_channel, _cfg
-                )
-            except Exception:
-                logger.debug("[turn-executor] 调度 idle 压缩失败", exc_info=True)
+        # request 完成的等待与通知由 SessionLane 在 Turn 结束后统一处理。
 
         return TurnStatus.COMPLETED
 
@@ -886,23 +799,8 @@ class TurnExecutor:
     async def _publish_session_status_async(
         self, session_id: str, status: str
     ) -> None:
-        """广播 session 运行态变化（idle/running/compacting）到全局频道。
-
-        客户端据此更新 UI 状态（如显示"运行中"/"空闲"）。
-        """
-        loop = self._loop
-        evt = BusMessage(
-            type="global_event",
-            from_channel=GLOBAL_CHANNEL,
-            to_channel=GLOBAL_CHANNEL,
-            from_session=GLOBAL_SESSION,
-            to_session=GLOBAL_SESSION,
-            data={
-                "type": "session_status",
-                "data": {"session_id": session_id, "status": status},
-            },
-        )
-        await loop.bus.publish_outbound(evt)
+        """兼容旧调用点；Session 权威状态仍然只能由 Coordinator 发布。"""
+        await self._loop._publish_session_status_async(session_id, status)
 
     async def _send_command_message(
         self, session_id: str, channel_id: str, content: str, level: str = "info"
@@ -912,18 +810,15 @@ class TurnExecutor:
         用于 /help 这类只需给用户看一段文字、不跑 Agent 的指令。
         """
         loop = self._loop
-        evt = BusMessage(
-            type="session_event",
-            from_channel=channel_id,
-            to_channel=channel_id,
-            from_session=session_id,
-            to_session=session_id,
-            data={
-                "type": "command_message",
-                "data": {"content": content, "level": level},
-            },
+        await loop.bus.publish_outbound(
+            SessionCommandMessage(
+                from_channel=channel_id,
+                to_channel=channel_id,
+                from_session=session_id,
+                to_session=session_id,
+                data=CommandMessagePayload(content=content, level=level),
+            )
         )
-        await loop.bus.publish_outbound(evt)
 
     # ─── 工具方法 ──────────────────────────────────────────
 
@@ -939,12 +834,23 @@ class TurnExecutor:
             return loop._injected_config
         return load_config()
 
+    async def resolve_inbound_config(
+        self, inbound: BusMessage, *, turn_id: str
+    ) -> tuple[AgentConfig, "AgentProfile | None"]:
+        """解析压缩门控和实际执行共同使用的精确配置快照。"""
+        turn = Turn(
+            turn_id=turn_id,
+            inbound=inbound,
+            session_id=self._session_id_of(inbound),
+        )
+        return await self._resolve_turn_config(turn)
+
     async def _resolve_turn_config(
         self, turn: Turn
     ) -> tuple[AgentConfig, "AgentProfile | None"]:
         """取得并缓存本 Turn 真正使用的 Agent 配置。
 
-        context_window、模型调用和回复结束后的 idle compact 必须来自同一份快照。
+        context_window、模型调用和回复结束后的轮后压缩屏障必须来自同一份快照。
         不能在 compact 判断时只读全局/default 配置，再在 _build 阶段才覆盖
         per-agent LLM；否则不同窗口大小的 Agent 会产生错误压缩。
 
@@ -982,6 +888,8 @@ class TurnExecutor:
                 session_metadata = await self._loop.session_manager.get_session_metadata(
                     turn.session_id
                 )
+                if not isinstance(session_metadata, dict):
+                    session_metadata = {}
                 binding = sub_agent_profile.binding_of(session_metadata)
                 if binding is not None:
                     profile = sub_agent_profile.load_member_profile(
@@ -1011,6 +919,7 @@ class TurnExecutor:
         config: AgentConfig,
         *,
         inbound_data: dict | None = None,
+        prompt_override: str | None = None,
         channel_id: str = "",
         workspace: str = "",
         agent_dir: str = "",
@@ -1068,9 +977,6 @@ class TurnExecutor:
             # 不再 append（会导致 LLM 收到两份重复消息）。
             # 只有 RewritePrompt 确实提供 override 时才替换。普通消息已经由
             # Projection 原样落盘；无条件替换会在异常边界下误伤 compact 摘要。
-            prompt_override = (
-                ((inbound_data or {}).get("metadata") or {}).get("prompt_override")
-            )
             if prompt_override is not None:
                 replaced = False
                 # 从尾部找最后一条 user 消息，覆盖其 content

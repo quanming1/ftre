@@ -2,8 +2,7 @@
 CompactManager — 上下文压缩处理器
 
 设计：
-- 70% 水位（precompact_threshold）：每轮 LLM 回复结束后后台异步压缩
-- 80% 水位（compact_threshold）：用户发消息时阻塞式压缩
+- SessionLane 在领取下一条请求前做强制水位检查并等待压缩
 - /compact 手动：立即压缩
 - /compress-fast：零 LLM 成本裁剪旧 ToolResultBlock 输出
 
@@ -15,14 +14,13 @@ compact Msg 开始。CompactManager 不直接写 state、不直接派发 WebSock
 
 并发安全：
 - 每个 session 同一时间最多只有一个真正的压缩 Task。
-- 后来的手动、关键路径或 idle 压缩请求不创建新任务，统一等待已有 Task。
+- 后来的手动或关键路径压缩请求不创建新任务，统一等待已有 Task。
 - 等待者取消不会中断共享压缩；只有 Gateway 关闭时才强制取消。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Literal
 
 from ftre_agent_core.event import CustomEvent
@@ -33,16 +31,11 @@ from .compact_events import CompactEventName
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PRECOMPACT_THRESHOLD = 0.7
 DEFAULT_COMPACT_THRESHOLD = 0.8
 
 # compress-fast 默认保护最近 N 轮对话内的工具输出不被裁剪（0 = 全裁）
 DEFAULT_FAST_KEEP_TURNS = 0
 
-
-# 不可重试的 LLM 错误码 → 触发冷却退避
-COMPACT_UNRETRYABLE_LLM_CODES = {"auth_error", "bad_request", "content_filter"}
-COMPACT_UNRETRYABLE_COOLDOWN_SECONDS = 300
 
 # LLM 摘要的 system prompt
 COMPACT_LLM_SYSTEM_PROMPT = """\
@@ -104,17 +97,21 @@ class CompactManager:
         self.session_manager = session_manager
         self._emit_event = emit_event
         self._threshold = threshold
-        self._last_llm_errors: dict[str, LLMError | None] = {}
 
         # session_id → 真正执行 _do_compact 的共享 Task。
         # 这里只保存压缩本体，不保存后台调度的包装 Task，避免任务取消自己。
         self._compact_tasks: dict[str, asyncio.Task[str | None]] = {}
-        self._compact_retry_after: dict[str, float] = {}
 
     # ─── 只读判断 ──────────────────────────────────────────────────
 
     async def should_compact(
-        self, session_id: str, channel_id: str, config, *, threshold: float | None = None
+        self,
+        session_id: str,
+        channel_id: str,
+        config,
+        *,
+        threshold: float | None = None,
+        extra_tokens: int = 0,
     ) -> bool:
         """水位是否超过 threshold？只读 DB，不调 LLM。
 
@@ -127,11 +124,20 @@ class CompactManager:
         cw = getattr(config.llm, "context_window", None)
         if not cw or cw <= 0:
             return False
+        max_output = max(0, getattr(config.llm, "max_output", None) or 0)
+        safety_buffer = max(
+            0, getattr(config.context, "safety_buffer", 0) or 0
+        )
+        prompt_budget = cw - max_output - safety_buffer
+        if prompt_budget <= 0:
+            # 配置无效或不安全：输出预算和安全余量已经占满上下文窗口，
+            # 任意非空提示词都应视为超过可用预算。
+            return True
         usage = await self.session_manager.get_token_usage(session_id)
-        estimated = usage["total"]
+        estimated = usage["total"] + max(0, extra_tokens)
         if estimated <= 0:
             return False
-        return (estimated / cw) >= threshold
+        return (estimated / prompt_budget) >= threshold
 
     # ─── 异步执行压缩 ──────────────────────────────────────────────
 
@@ -141,8 +147,7 @@ class CompactManager:
         channel_id: str,
         *,
         config,
-        trigger: Literal["auto", "manual", "idle"] = "auto",
-        preserve_from_message_id: str = "",
+        trigger: Literal["auto", "manual"] = "auto",
         focus_hint: str = "",
     ) -> str | None:
         """执行或等待该 session 当前唯一的压缩任务。
@@ -158,7 +163,6 @@ class CompactManager:
             channel_id,
             config=config,
             trigger=trigger,
-            preserve_from_message_id=preserve_from_message_id,
             focus_hint=focus_hint,
         )
         if not created:
@@ -175,8 +179,7 @@ class CompactManager:
         channel_id: str,
         *,
         config,
-        trigger: Literal["auto", "manual", "idle"],
-        preserve_from_message_id: str = "",
+        trigger: Literal["auto", "manual"],
         focus_hint: str = "",
     ) -> tuple[asyncio.Task[str | None], bool]:
         """同步取得或创建共享压缩 Task；返回 ``(task, 是否新建)``。"""
@@ -190,7 +193,6 @@ class CompactManager:
                 channel_id,
                 config=config,
                 trigger=trigger,
-                preserve_from_message_id=preserve_from_message_id,
                 focus_hint=focus_hint,
             )
         )
@@ -313,8 +315,7 @@ class CompactManager:
         channel_id: str,
         *,
         config,
-        trigger: Literal["auto", "manual", "idle"] = "auto",
-        preserve_from_message_id: str = "",
+        trigger: Literal["auto", "manual"] = "auto",
         focus_hint: str = "",
     ) -> str | None:
         """压缩主逻辑：读 Msg → LLM 摘要 → 发 context_compact_done 投影为 Msg。
@@ -338,19 +339,6 @@ class CompactManager:
             previous_summary = Msg.model_validate(first).get_text_content() or None
             head_messages = context_records[1:]
 
-        # 关键路径压缩发生在本轮 UserMsg 已经可靠落盘之后。当前输入必须留在
-        # compact Msg 后面的 tail，不能被摘要吞掉；它之后若有并发新增消息也一并保留。
-        if preserve_from_message_id:
-            preserve_index = next(
-                (
-                    index
-                    for index, record in enumerate(head_messages)
-                    if record.get("id") == preserve_from_message_id
-                ),
-                -1,
-            )
-            if preserve_index >= 0:
-                head_messages = head_messages[:preserve_index]
         if not head_messages:
             logger.info(f"[compact] session={session_id} 摘要游标后无新消息，跳过")
             return None
@@ -442,7 +430,6 @@ class CompactManager:
         2. buildPrompt() 返回多条 user message：对话记录 + 指令/模板
         3. 多条 user message 依次发给 LLM
         """
-        self._last_llm_errors[session_id] = None
         try:
             context = _serialize_messages(head_messages)
             if not context.strip():
@@ -483,7 +470,6 @@ class CompactManager:
                 return None
             return summary
         except LLMError as exc:
-            self._last_llm_errors[session_id] = exc
             logger.warning("[compact] LLM 直调摘要失败 code=%s message=%s", exc.code, exc.message)
             return None
         except Exception:
@@ -502,92 +488,26 @@ class CompactManager:
         except Exception:
             logger.debug(f"[compact] 通知失败失败: {reason}")
 
-    # ─── 后台 idle 压缩调度 ───────────────────────────────────────
-
-    async def maybe_schedule_idle_compact(
-        self, session_id: str, channel_id: str, config,
-    ) -> None:
-        """主事件循环里：水位 ≥ threshold → 后台压缩。
-
-        去重：同一 session 同一时间只允许一个后台 compact task 在飞。
-        如果上一个还没完成就不再派发，避免 cron session 连续触发导致反复压缩。
-        """
-        try:
-            if not getattr(config.context, "idle_compaction", True):
-                return
-
-            retry_after = self._compact_retry_after.get(session_id)
-            now = time.monotonic()
-            if retry_after is not None and now < retry_after:
-                logger.debug(
-                    "[compact] session=%s 后台压缩冷却中，%.0fs 后重试",
-                    session_id,
-                    retry_after - now,
-                )
-                return
-            if retry_after is not None:
-                self._compact_retry_after.pop(session_id, None)
-
-            need = await self.should_compact(
-                session_id,
-                channel_id,
-                config,
-                threshold=getattr(config.context, "precompact_threshold", DEFAULT_PRECOMPACT_THRESHOLD),
-            )
-            if not need:
-                return
-
-            # 同一 session 已有压缩任务时无需再派发后台包装任务。
-            if self.is_compacting(session_id):
-                logger.debug(f"[compact] session={session_id} 已有后台压缩在飞，跳过")
-                return
-
-            # 先同步登记真正的压缩 Task，再返回调度函数。这样消息入口从此刻
-            # 起就能可靠观察到 is_compacting=True，没有包装协程启动窗口。
-            task, created = self._get_or_create_compact_task(
-                session_id,
-                channel_id,
-                config=config,
-                trigger="idle",
-            )
-            if not created:
-                return
-
-            # 后台压缩监视器只负责冷却策略，不参与单任务登记。
-            async def _do_bg_compact():
-                try:
-                    summary = await asyncio.shield(task)
-                    llm_error = self._last_llm_errors.get(session_id)
-                    if summary is not None:
-                        self._compact_retry_after.pop(session_id, None)
-                    elif (
-                        llm_error is not None
-                        and getattr(llm_error, "code", None) in COMPACT_UNRETRYABLE_LLM_CODES
-                    ):
-                        self._compact_retry_after[session_id] = (
-                            time.monotonic() + COMPACT_UNRETRYABLE_COOLDOWN_SECONDS
-                        )
-                        logger.warning(
-                            "[compact] session=%s 后台压缩遇到不可重试 LLM 错误 code=%s，冷却 %ss",
-                            session_id,
-                            llm_error.code,
-                            COMPACT_UNRETRYABLE_COOLDOWN_SECONDS,
-                        )
-                except Exception:
-                    logger.exception(
-                        "[compact] idle 后台压缩异常 session=%s",
-                        session_id,
-                    )
-
-            asyncio.create_task(_do_bg_compact())
-            logger.info(f"[compact] idle 后台压缩已派发 session={session_id}")
-        except Exception:
-            logger.exception(f"[compact] idle 压缩调度异常 session={session_id}")
-
-    def cancel_all_compact_tasks(self) -> None:
-        """stop() 时调用，取消所有在飞的后台压缩 task。"""
-        for task in self._compact_tasks.values():
+    async def cancel_compact(self, session_id: str) -> bool:
+        """取消并等待指定 session 的真实压缩 Task 完全退出。"""
+        task = self._compact_tasks.get(session_id)
+        if task is None:
+            return False
+        if not task.done():
             task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if self._compact_tasks.get(session_id) is task:
+            self._compact_tasks.pop(session_id, None)
+        return True
+
+    async def cancel_all_compact_tasks(self) -> None:
+        """Gateway stop 时取消并等待所有真实压缩 Task。"""
+        tasks = list(self._compact_tasks.values())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._compact_tasks.clear()
 
 

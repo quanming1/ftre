@@ -6,7 +6,7 @@ Bus wire 协议契约（唯一事实源，Pydantic 定死）
 
 Inbound（外部 → Bus → Agent）：
     data     : InboundData      user_message 载荷
-    metadata : InboundMetadata  路由/传输标记（frame_id、agent_id、agent_ref）
+    metadata : InboundMetadata  请求/执行标记（request_id、agent_id、agent_ref）
 
 Outbound（Agent → Bus → 外部）：
     data     : dict             事件 dump（core Event 形状，由 ftre-agent-core 定义）
@@ -14,7 +14,8 @@ Outbound（Agent → Bus → 外部）：
                                 + channel_id/session_id 组成
 
 安全边界：
-    客户端帧只能构造 agent_id（from_client 白名单）。frame_id 由服务端注入，
+    客户端帧只能构造 agent_id（from_client 白名单）。WS frame_id 在边界处
+    转换为 request_id，
     agent_ref 是 team 机制服务端专属标记——外部构造可用来加载他人 session 的
     成员 profile（目录穿越读取），因此在协议层直接封死。
 """
@@ -24,10 +25,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # BusMessage.type 全集。新增消息类型必须先改这里。
 MessageType = Literal[
-    "user_message",   # inbound：用户/系统投递的消息
-    "agent_event",    # outbound：Agent 流式事件 dump（含 external_message 包装）
-    "global_event",   # outbound：全局控制信号（如 session_status）
-    "session_event",  # outbound：session 级非事件消息（如 command_message）
+    "user_message",
+    "agent_event",
+    "global_event",
+    "session_event",
+    "agent_event:stream",
+    "agent_event:complete",
+    "session_event:command_message",
+    "session_event:mailbox_snapshot",
+    "turn_cancel",
 ]
 
 
@@ -43,14 +49,14 @@ class AgentRef(BaseModel):
 class InboundMetadata(BaseModel):
     """Inbound 消息 metadata 契约。
 
-    frame_id  : 传输层帧 id（WS echo 去重），服务端注入
+    request_id: 请求唯一标识；WS 会把客户端 frame_id 转换为该字段
     agent_id  : 客户端选择的全局 agent（多 agent 切换）
     agent_ref : 团队成员定位（仅服务端 team 机制可构造）
     """
 
     model_config = ConfigDict(frozen=True)
 
-    frame_id: str = ""
+    request_id: str = ""
     agent_id: str = ""
     agent_ref: AgentRef | None = None
 
@@ -58,7 +64,7 @@ class InboundMetadata(BaseModel):
     def from_client(cls, raw: Any) -> "InboundMetadata":
         """客户端帧 metadata → InboundMetadata（白名单：只收 agent_id）。
 
-        frame_id / agent_ref 等一律由服务端构造，客户端传了也丢弃。
+        request_id / agent_ref 等一律由服务端构造，客户端传了也丢弃。
         """
         if not isinstance(raw, dict):
             return cls()
@@ -74,14 +80,12 @@ class InboundData(BaseModel):
     不在 wire 协议内——skill part 构造点已随 SkillChip 删除，
     协议不为死代码买单。
 
-    metadata.prompt_override 由斜杠指令 RewritePrompt 注入：
-    发给 LLM 用改写后的 prompt，DB 存原始 content。
+    RewritePrompt 的临时改写内容属于 Turn 内存状态，不进入 Bus data。
     """
 
     content: str = ""
     session_id: str = ""
     attachments: list[dict[str, Any]] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def coerce(cls, raw: Any) -> "InboundData":
@@ -96,7 +100,7 @@ class InboundData(BaseModel):
 class OutboundMetadata(BaseModel):
     """Outbound 帧 metadata 契约（ws payload 的 metadata 字段）。
 
-    前端消费：metadata.frame_id（echo 去重）、metadata.session_id（路由）。
+    前端消费：metadata.frame_id（当前兼容 echo）、metadata.session_id（路由）。
     """
 
     model_config = ConfigDict(frozen=True)
@@ -107,9 +111,10 @@ class OutboundMetadata(BaseModel):
     # 消息目标 session id（= BusMessage.to_session）。前端多会话并存时
     # 用它把事件路由到正确的对话视图。
     session_id: str = ""
-    # 触发本轮的客户端上行帧 id（inbound 透传）。AgentLoop echo 用户消息
-    # 时回填，前端用它去重本地乐观占位；非用户触发的消息为空串。
+    # 下行兼容字段：由 request_id 投影为客户端的原始 frame_id。
+    # AgentLoop/SessionLane 不保存也不读取它。
     frame_id: str = ""
+    request_id: str = ""
     # 本轮使用的全局 agent id（inbound 透传，客户端多 agent 切换时携带）。
     # 未指定时为空串。
     agent_id: str = ""
@@ -130,7 +135,9 @@ class OutboundMetadata(BaseModel):
         return cls(
             channel_id=channel_id,
             session_id=session_id,
-            frame_id=meta.frame_id,
+            frame_id=meta.request_id,
+            # 旧桌面端仍以这个字段合并乐观消息；它只是 frame_id 的输出别名。
+            request_id=meta.request_id,
             agent_id=meta.agent_id,
             agent_ref=meta.agent_ref,
         )
@@ -140,7 +147,7 @@ def coerce_inbound_metadata(raw: Any) -> InboundMetadata:
     """受信任来源（服务端内部、octo/task/team 等）的 metadata 归一。
 
     与 InboundMetadata.from_client 的区别：不做白名单过滤——调用方
-    是服务端代码，允许携带 frame_id/agent_ref。非法形状回退为空实例。
+    是服务端代码，允许携带 request_id/agent_ref。非法形状回退为空实例。
     """
     if isinstance(raw, InboundMetadata):
         return raw
