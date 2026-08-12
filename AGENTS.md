@@ -7,6 +7,11 @@ Octo 插件路径：C:\Users\蒋全明\.ftre\plugins\octo_plugin\
 配置目录：C:\Users\蒋全明\.ftre\
 技术栈：Python 3.12 + TypeScript
 日志：logging（Python）、console（前端）
+
+MANDATORY 首次进入本仓库先读 3 份文档，之后每次 commit 前重读第 1 份：
+1. docs/COMMIT.md — 提交规范唯一完整定义（type/scope/hook 机制）
+2. docs/PROCESS.md — PRD 驱动开发流程（六步闭环）
+3. docs/TODO.yaml — 阶段 id 唯一事实源（commit scope 校验依据）
 </project>
 
 <git_flow MANDATORY>
@@ -37,16 +42,18 @@ master（仅发布，永不直接提交）← develop（默认基底）← featu
 <merge_and_hooks>
 - feature/* → develop 用 --no-ff；develop → master 走 release/*；NEVER rebase 已推送历史
 - 本地强制：.githooks/commit-msg（提交校验）+ .githooks/pre-push（master 保护 + develop merge-only）
-- merge:/revert: 开头系统提交跳过；hook 完整规则见 docs/COMMIT.md
+- merge:/revert: 开头系统提交跳过
+- MANDATORY 首次在本仓库提交前，先完整阅读 docs/COMMIT.md（提交规范唯一完整定义，含 type/scope 规则与常见错误速查）
 - 标准流程：checkout develop → checkout -b feature/&lt;阶段id&gt;-&lt;task&gt; → 开发+测试 → commit → merge --no-ff → push develop
 </merge_and_hooks>
 
 </git_flow>
 
 <prd_driven MANDATORY>
+- MANDATORY 首次在本仓库开工前，先完整阅读 docs/PROCESS.md（PRD 驱动流程六步闭环）
 - ALWAYS 先 PRD 后开发：TODO 阶段开工前先在 docs/prd/ 建 PRD（从 PRD-TEMPLATE.md 复制）并定稿 approved
 - PRD 是唯一依据：需求/实现/测试/验收全部对照 PRD；验收按 PRD「验收标准」逐条核对
-- 流程详见 docs/PROCESS.md；阶段 id 与状态见 docs/TODO.yaml
+- 阶段 id 与状态见 docs/TODO.yaml（commit scope 的唯一事实源）
 </prd_driven>
 
 <architecture>
