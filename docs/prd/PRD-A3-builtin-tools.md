@@ -33,6 +33,7 @@
 - [x] FR7：task 子任务派发——派发提示词到 subagent session 同步执行，返回结果
 - [x] FR8：send_message 跨 session 消息——notify 通知 / invoke 唤起目标 session
 - [x] FR9：team 多 Agent 团队——team_create/team_add_agent/team_say/wait_agent/team_agent_status/team_delete
+- [x] FR10：跨 session 投递语义——invoke、task、team_say 通过 AgentLoop durable admission；notify 明确为“不唤起 Agent”的旁路通知
 
 ### 2.2 非功能需求
 
@@ -70,8 +71,39 @@ ToolResult = tuple[str, dict]
 }
 ```
 
+## 4. 跨 session 工具与消息队列边界
+
+```mermaid
+flowchart LR
+    TOOL["内置工具"] -->|"notify"| NOTIFY["保存 external AssistantMsg + outbound 通知"]
+    TOOL -->|"invoke / task / team_say"| SUBMIT["AgentLoop.submit_inbound"]
+    SUBMIT --> ADMIT["SessionLane durable admission"]
+    ADMIT --> ACK["request_id / queue_position"]
+    ACK --> WAIT["可选：CompletionRegistry 或 quiescent 等待"]
+```
+
+- `send_message(kind=notify)` 只给目标 Session 留下一条外部通知，不运行目标 Agent，也不占用其 mailbox；这是刻意的旁路语义。
+- `send_message(kind=invoke)` 模拟目标 Session 的一条 `user_message`，返回 durable admission 结果；调用方只得到排队确认，不等待目标回复。
+- `task` 使用独立 subagent Session，接纳后按本次 `request_id` 等待 `CompletionRegistry`，不会被同一 Session 的其他 Turn 误唤醒。
+- `team_say` 只负责排队派活；`wait_agent` 等待成员 Session 的 quiescent barrier（当前 Turn、压缩和 pending 全部清空），再读取最后一条完整 Assistant Msg。
+- subagent 不得递归调用 task/send_message；失败必须返回明确错误，不把“已入 Bus”误报为“已完成”。
+
 ## 5. 验收标准
 
 - [x] AC1：每个工具可正确执行——bash 返回命令输出，read 返回文件内容，write 创建文件，edit 修改文件
 - [x] AC2：工具返回 `(result_str, metadata)` 元组——metadata 含 content/before/after 等快照字段
 - [x] AC3：Inspector 可消费 metadata——read 的 content 快照、edit/write 的 before/after diff 可在 Inspector 面板展示
+
+## 6. 测试计划
+
+- `tests/test_session_lane.py`：覆盖 invoke/task/team_say 的 durable admission、FIFO 和 request_id 幂等。
+- `tests/test_session_fork.py`：确认 team/member session 删除与 profile 解绑不影响父 Session 历史。
+- 补充自动化：当前仓库未发现独立的 send_message/team 路由测试，应增加 notify/invoke、拒绝自发消息和队列满错误用例。
+- 手动验收：同一目标 Session 正在运行时分别发送 notify 和 invoke，确认 notify 不改变 Agent 状态，invoke 出现在 pending 并最终执行。
+
+## 7. 变更记录
+
+| 日期 | 变更 | 原因 |
+|---|---|---|
+| 2026-08-13 | 补充 notify/invoke/task/team_say 的真实投递和等待边界，明确哪些路径进入 SessionLane、哪些路径只是外部通知 | 避免所有跨 session 工具都被误认为同一种“消息队列”行为 |
+| 2026-08-13 | 影响复核：FR10/协作边界为文档补充；原 AC1-AC3 不改变，send_message/team 独立自动化测试仍待补 | 诚实标记当前证据范围 |
