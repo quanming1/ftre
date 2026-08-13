@@ -63,8 +63,31 @@ class PluginManager:
     def load_external(self) -> None: ...    # 扫描 ~/.ftre/plugins/
 ```
 
+## 4. 接口与生命周期
+
+- `FtrePluginApi.tool_registry`：插件注册工具；工具由 Agent 构建阶段消费，不直接绕过 AgentLoop 投递消息。
+- `append_system_prompt`：追加全局提示词片段；插件不得修改已持久化的 Session messages。
+- `register_router`：注册 HTTP 路由；路由的 Session 写操作仍须经过 SessionManager/AgentLoop 的边界。
+- `register_hook`：注册异步 Hook；Hook 由 AgentLoop 在固定阶段调用，异常必须有明确日志，不能静默改变 Turn 终态。
+- 加载顺序为内置插件 → 外部插件；同名能力的覆盖规则必须在插件清单中明确，不能依赖导入顺序。
+
 ## 5. 验收标准
 
 - [x] AC1：插件可注册工具和路由——通过 FtrePluginApi 注册的工具和 HTTP 路由在 Gateway 中可用
 - [x] AC2：context_govern AGENTS.md 双注入——`agent_dir/AGENTS.md` 和 `workspace/AGENTS.md` 都注入到 system prompt
 - [x] AC3：title_gen 自动生成标题——首条消息后自动调用 LLM 生成会话标题
+
+## 6. 测试计划
+
+- `tests/test_plugin_tools.py`：工具注册、插件 API 能力和运行时注入。
+- `tests/test_context_govern_stream.py`：Hook 事件配对、重复和悬挂清理。
+- `tests/test_title_gen.py`：首条消息标题生成及失败降级。
+- `tests/test_mcp.py`：MCP 插件路由和连接生命周期（具体双层配置见 C2）。
+- 手动验收：外部插件加载失败不阻断 Gateway 启动，已加载插件的路由/工具可被 Agent 正常发现。
+
+## 7. 变更记录
+
+| 日期 | 变更 | 原因 |
+|---|---|---|
+| 2026-08-13 | 补充插件 API 的接口边界、加载顺序和测试计划 | 使 C1 遵循统一 PRD 模板，并明确插件不能绕过 Session/AgentLoop 改写运行事实 |
+| 2026-08-13 | 影响复核：仅补充文档；AC1-AC3 未改变，插件测试仍按 D1 计划执行 | 记录文档修订不等同于重新验收 |

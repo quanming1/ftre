@@ -161,6 +161,7 @@ stages:
         title: 测试与 CI
         status: done
         date: 2026-08-12
+        prd: docs/prd/PRD-D1-test-ci.md
         prd_status: 已验收
         modules:
           - tests/
