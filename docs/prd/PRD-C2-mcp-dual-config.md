@@ -67,8 +67,29 @@ class McpManager:
 | 公共 MCP | `config.json` 的 `mcp` 段 | 全局 `tool_registry` | 启动时 `start_and_register` + config watcher |
 | 私有 MCP | `agent.config.json` 的 `mcp` 段 | per-agent `agent_tool_registry` | `BEFORE_AGENT_RUN` hook 中 `ensure_connections` |
 
+## 4. 接口与一致性边界
+
+- 公共配置来源是 `config.json`，私有配置来源是对应 agent 目录的 `agent.config.json`；两者不能互相写回。
+- HTTP CRUD 使用 `scope=global|private` 明确目标；缺少 scope 或 scope 与 agent_id 不匹配时拒绝。
+- 连接池以 server name + 有效配置去重；配置变化时旧连接先平滑关闭，再注册新工具。
+- `BEFORE_AGENT_RUN` 按当前 Turn 的 agent profile 建立私有连接；连接失败应让当前 Turn 得到明确错误，不污染其他 agent registry。
+- MCP 工具调用产生的输入、输出和错误仍由 B3 的 SessionProjection/trace 机制记录；MCP 不直接写 `state.json`。
+
 ## 5. 验收标准
 
 - [x] AC1：公共/私有 MCP 工具注册到正确 registry——公共 MCP 工具在全局 registry，私有 MCP 工具在 per-agent registry
 - [x] AC2：连接复用不二次加载——相同 server name + 相同配置的 MCP 连接只建立一次
 - [x] AC3：config 变更热重载——修改 `config.json` 的 MCP 配置后，config watcher 触发重连和工具重新注册
+
+## 6. 测试计划
+
+- `tests/test_mcp.py`：公共/私有 registry、连接复用、配置变化和失败清理。
+- `tests/test_agent_manager.py`：agent profile 与全局 MCP 配置合并。
+- 手动验收：两个 agent 使用同名同配置 MCP server 只建立一个连接；修改公共配置不破坏正在执行的 Turn。
+
+## 7. 变更记录
+
+| 日期 | 变更 | 原因 |
+|---|---|---|
+| 2026-08-13 | 补充 MCP HTTP/config/hook/trace 边界和测试计划 | 使 C2 与 AgentLoop/TurnExecutor 的运行生命周期契约一致 |
+| 2026-08-13 | 影响复核：仅补充文档；AC1-AC3 未改变，现有 MCP 测试作为当前证据 | 记录协议边界修订不引入代码行为变化 |
