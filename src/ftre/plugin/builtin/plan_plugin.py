@@ -8,10 +8,12 @@ plan_plugin — Plan 模式内置插件
 
 Plan 数据存入 session.metadata.plan，前端通过 messages 接口的 metadata 字段读取渲染。
 """
+
 import logging
 
-from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
 from ftre_agent_core.hooks import ON_STOP, HookOutput, StopInput
+
+from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
 from ftre.tools.plan import create_plan_tool
 
 logger = logging.getLogger(__name__)
@@ -30,18 +32,19 @@ class PlanPlugin(Plugin):
 
     name = "plan"
     version = "1.0.0"
+    inject = ("session_manager", "tool_registry", "core_hook_manager")
 
-    def setup(self) -> None:
-        session_manager = self.api.session_manager
+    async def setup(self, ctx, config) -> None:
+        session_manager = ctx.session_manager
 
         # 注册 plan 工具
-        self.api.tool_registry.register(create_plan_tool())
+        ctx.tool_registry.register(create_plan_tool())
 
         # 注册 ON_STOP core hook — 阻止 Agent 在计划未完成时停止
-        self.api.register_core_hook(ON_STOP, self._create_stop_hook(session_manager))
+        ctx.register_core_hook(ON_STOP, self._create_stop_hook(session_manager))
 
         # 注入 system prompt
-        self.api.register_hook(BEFORE_AGENT_RUN, self._inject_prompt)
+        ctx.on(BEFORE_AGENT_RUN, self._inject_prompt)
 
         logger.info("[plan-plugin] 已注册 plan tool + ON_STOP hook")
 
@@ -70,7 +73,9 @@ class PlanPlugin(Plugin):
             if not incomplete:
                 # 全部完成，删除 plan
                 await session_manager.update_session_metadata(session_id, "plan", None)
-                logger.info("[plan-hook] 计划已全部完成，已清除 plan: session=%s", session_id)
+                logger.info(
+                    "[plan-hook] 计划已全部完成，已清除 plan: session=%s", session_id
+                )
                 return None
 
             # 未完成，阻止停止
@@ -84,7 +89,9 @@ class PlanPlugin(Plugin):
                 content = s.get("content", s.get("id", "?"))
                 lines.append(f"  {mark} {content}")
             lines.append("")
-            lines.append("请继续执行计划中的未完成步骤。每完成一个步骤后，使用 plan 工具 action=update 更新步骤状态为 completed。全部完成后调用 action=complete。")
+            lines.append(
+                "请继续执行计划中的未完成步骤。每完成一个步骤后，使用 plan 工具 action=update 更新步骤状态为 completed。全部完成后调用 action=complete。"
+            )
 
             logger.info(
                 "[plan-hook] 阻止停止: session=%s 未完成=%d",

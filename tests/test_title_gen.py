@@ -39,6 +39,7 @@ def test_title_generation_passes_reasoning_effort_to_handler(monkeypatch):
                 yield None
 
     monkeypatch.setattr("ftre_agent_core.llm.LLMHandler", FakeHandler)
+
     class FakeFuture:
         def result(self, timeout):
             return "Title"
@@ -51,9 +52,15 @@ def test_title_generation_passes_reasoning_effort_to_handler(monkeypatch):
     plugin = TitleGenPlugin()
     plugin._system_prompt = "title"
     plugin._max_chars = 40
-    plugin.api = SimpleNamespace(event_loop=object())
+    plugin._ctx = SimpleNamespace(event_loop=object())
     config = SimpleNamespace(
-        llm=SimpleNamespace(model="main", api_key="key", api_base="", api_type="completions", reasoning_effort="high"),
+        llm=SimpleNamespace(
+            model="main",
+            api_key="key",
+            api_base="",
+            api_type="completions",
+            reasoning_effort="high",
+        ),
         title_llm=None,
     )
 

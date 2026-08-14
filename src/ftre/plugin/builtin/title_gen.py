@@ -13,11 +13,14 @@ title_gen — 首条消息自动生成会话标题
 - input_truncate: 用户消息截断长度（默认 1000）
 - max_chars: 标题最大字符数（默认 40）
 """
+
 import asyncio
 import logging
 import threading
 
-from ftre.plugin import Plugin, BEFORE_MESSAGES_BUILD
+from pydantic import BaseModel, ConfigDict
+
+from ftre.plugin import BEFORE_MESSAGES_BUILD, Plugin
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +32,26 @@ DEFAULT_INPUT_TRUNCATE = 1000
 DEFAULT_MAX_CHARS = 40
 
 
+class TitleGenConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    input_truncate: int = DEFAULT_INPUT_TRUNCATE
+    max_chars: int = DEFAULT_MAX_CHARS
+
+
 class TitleGenPlugin(Plugin):
     name = "title_gen"
     version = "1.0.0"
+    inject = ("session_manager", "event_loop")
+    Config = TitleGenConfig
 
-    def setup(self) -> None:
-        cfg = self.api.config or {}
-        self._system_prompt = cfg.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
-        self._input_truncate = cfg.get("input_truncate", DEFAULT_INPUT_TRUNCATE)
-        self._max_chars = cfg.get("max_chars", DEFAULT_MAX_CHARS)
-        self.api.register_hook(BEFORE_MESSAGES_BUILD, self._on_build)
+    async def setup(self, ctx, config: TitleGenConfig) -> None:
+        self._ctx = ctx
+        self._system_prompt = config.system_prompt
+        self._input_truncate = config.input_truncate
+        self._max_chars = config.max_chars
+        ctx.on(BEFORE_MESSAGES_BUILD, self._on_build)
         logger.info(
             "[title_gen] 插件已就绪，已注册 before_messages_build hook "
             f"(input_truncate={self._input_truncate}, max_chars={self._max_chars})"
@@ -58,7 +71,7 @@ class TitleGenPlugin(Plugin):
 
         inbound_data = ctx.inbound_data
         config = ctx.config
-        event_loop = self.api.event_loop
+        event_loop = self._ctx.event_loop
 
         # event_loop 缺失会导致后续 run_coroutine_threadsafe 静默失败，提前显式拦截
         if event_loop is None:
@@ -101,11 +114,13 @@ class TitleGenPlugin(Plugin):
             # run_coroutine_threadsafe(...).result() 可以安全阻塞等待，不会死锁。
             try:
                 session = asyncio.run_coroutine_threadsafe(
-                    self.api.session_manager.get_session(session_id),
+                    self._ctx.session_manager.get_session(session_id),
                     event_loop,
                 ).result(timeout=10)
             except Exception:
-                logger.exception(f"[title_gen] 查询 session 失败，跳过 (session={session_id})")
+                logger.exception(
+                    f"[title_gen] 查询 session 失败，跳过 (session={session_id})"
+                )
                 return
             if session and (session.get("title") or "").strip():
                 logger.debug(
@@ -126,13 +141,15 @@ class TitleGenPlugin(Plugin):
                 return
             try:
                 asyncio.run_coroutine_threadsafe(
-                    self.api.session_manager.update_session(session_id, title=title),
+                    self._ctx.session_manager.update_session(session_id, title=title),
                     event_loop,
                 ).result(timeout=10)
             except Exception:
                 logger.exception(f"[title_gen] 写入标题失败 (session={session_id})")
                 return
-            logger.info(f"[title_gen] 标题生成成功 session={session_id} title={title!r}")
+            logger.info(
+                f"[title_gen] 标题生成成功 session={session_id} title={title!r}"
+            )
 
         threading.Thread(
             target=worker,
@@ -191,9 +208,11 @@ class TitleGenPlugin(Plugin):
                     parts.append(item.text)
             return "".join(parts)
 
-        raw = asyncio.run_coroutine_threadsafe(
-            _collect(), self.api.event_loop
-        ).result(timeout=60).strip()
+        raw = (
+            asyncio.run_coroutine_threadsafe(_collect(), self._ctx.event_loop)
+            .result(timeout=60)
+            .strip()
+        )
         logger.info(f"[title_gen] LLM 原始输出={raw!r}")
         return self._sanitize_title(raw)
 
@@ -206,7 +225,13 @@ class TitleGenPlugin(Plugin):
 
         # 去外层成对引号
         same_pairs = ('"', "'", "`")
-        diff_pairs = (("「", "」"), ("\u201c", "\u201d"), ("\u2018", "\u2019"), ("《", "》"), ("【", "】"))
+        diff_pairs = (
+            ("「", "」"),
+            ("\u201c", "\u201d"),
+            ("\u2018", "\u2019"),
+            ("《", "》"),
+            ("【", "】"),
+        )
         for q in same_pairs:
             if len(s) >= 2 and s.startswith(q) and s.endswith(q):
                 s = s[1:-1].strip()
@@ -220,7 +245,7 @@ class TitleGenPlugin(Plugin):
         # 去常见前缀
         for prefix in ("标题：", "标题:", "Title:", "title:"):
             if s.lower().startswith(prefix.lower()):
-                s = s[len(prefix):].strip()
+                s = s[len(prefix) :].strip()
                 break
 
         # 末尾标点修剪

@@ -16,10 +16,11 @@ context_govern 注入 AGENTS.md）生效。
 
 普通 session（没建过团队）只收到 <team_usage> 决策块，无概览注入。
 """
+
 import logging
 
 from ftre.agent import sub_agent_profile
-from ftre.plugin import Plugin, BEFORE_AGENT_RUN, append_to_first_system
+from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +47,18 @@ NEVER 用团队：
 class TeamPlugin(Plugin):
     name = "team"
     version = "2.1.0"
+    inject = ("session_manager",)
 
-    def setup(self) -> None:
-        self.api.register_hook(BEFORE_AGENT_RUN, self._inject_team_prompt)
+    async def setup(self, ctx, config) -> None:
+        self._ctx = ctx
+        ctx.on(BEFORE_AGENT_RUN, self._inject_team_prompt)
 
     async def _inject_team_prompt(self, ctx):
         """before_agent_run hook：注入 team 使用决策 + 团队概览（leader）。"""
         session_id = getattr(ctx, "session_id", "") or ""
         if not session_id:
             return ctx
-        session_manager = self.api.session_manager
+        session_manager = self._ctx.session_manager
         if session_manager is None:
             return ctx
 
@@ -66,6 +69,7 @@ class TeamPlugin(Plugin):
         try:
             metadata = await session_manager.get_session_metadata(session_id)
         except Exception:
+            logger.debug("[team-plugin] 读取团队元数据失败", exc_info=True)
             return ctx
 
         # 概览是增强信息：任何脏数据都不应杀死整个 turn
@@ -92,9 +96,11 @@ def _render_teams_overview(teams, session_manager, leader_session_id: str) -> st
         return ""
 
     lines = [
-        "<teams desc=\"你（作为 leader）当前已创建的团队及其成员。"
-        "用 team_say(team_id, session_id, ...) 给成员派活，"
-        "team_agent_status 查看成员最新状态，wait_agent 等成员完成。\">",
+        (
+            '<teams desc="你（作为 leader）当前已创建的团队及其成员。'
+            "用 team_say(team_id, session_id, ...) 给成员派活，"
+            'team_agent_status 查看成员最新状态，wait_agent 等成员完成。">'
+        ),
     ]
     for tid, team in teams.items():
         if not isinstance(team, dict):
@@ -112,8 +118,7 @@ def _render_teams_overview(teams, session_manager, leader_session_id: str) -> st
                 session_manager, leader_session_id, msid
             )
             lines.append(
-                f'    <member name="{mname}" session_id="{msid}">'
-                f"{role_brief}</member>"
+                f'    <member name="{mname}" session_id="{msid}">{role_brief}</member>'
             )
         lines.append("  </team>")
     lines.append("</teams>")

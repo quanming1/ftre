@@ -6,18 +6,11 @@
 - 恢复：/allow、/deny 是不持久化的控制指令，指令合成
   UserConfirmResultEvent，TurnExecutor 落盘后驱动 Agent 继续。
 """
+
 import asyncio
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-
-from ftre.agent.session_projection import SessionProjection
-from ftre.agent.loop import AgentLoop
-from ftre.agent.turn_executor import TurnExecutor
-from ftre.bus import BusMessage
-from ftre.command import CommandManager
-from ftre.command.builtin import register_builtin_commands
-from ftre.config import AgentConfig, ContextConfig, LLMConfig
 from ftre_agent_core.agent.runner import RunState, RunStatus
 from ftre_agent_core.event import (
     ReplyFinishedReason,
@@ -31,6 +24,14 @@ from ftre_agent_core.message import (
     ToolCallBlock,
     ToolCallState,
 )
+
+from ftre.agent.loop import AgentLoop
+from ftre.agent.session_projection import SessionProjection
+from ftre.agent.turn_executor import TurnExecutor
+from ftre.bus import BusMessage
+from ftre.command import CommandManager
+from ftre.command.builtin import register_builtin_commands
+from ftre.config import AgentConfig, ContextConfig, LLMConfig
 
 
 class PausingAgent:
@@ -116,9 +117,7 @@ def _make_executor(agent) -> TurnExecutor:
     loop.agent_manager = Mock()
     loop.agent_manager.load = Mock(return_value=None)
     loop.agent_manager.create_agent = Mock(return_value=agent)
-    loop.agent_manager._default_agent_state = Mock(
-        return_value=_FakeState()
-    )
+    loop.agent_manager._default_agent_state = Mock(return_value=_FakeState())
     loop.hook_manager = None
     loop.channel_manager = None
     loop.tool_registry = None
@@ -173,9 +172,7 @@ def _confirm_inbound(*, approved=True, tool_call_id="call-1"):
         data={
             "session_id": "test-session",
             "content": (
-                f"/allow {tool_call_id}"
-                if approved
-                else f"/deny {tool_call_id}"
+                f"/allow {tool_call_id}" if approved else f"/deny {tool_call_id}"
             ),
         },
         metadata={},
@@ -219,17 +216,13 @@ async def test_tool_ask_pauses_turn_with_success_turn_end():
     frames = _outbound_frames(executor)
 
     # 产出了 REQUIRE_USER_CONFIRM 事件（转发给前端）
-    require = next(
-        f for f in frames if f.get("type") == "REQUIRE_USER_CONFIRM"
-    )
+    require = next(f for f in frames if f.get("type") == "REQUIRE_USER_CONFIRM")
     assert require["tool_call_id"] == "call-1"
     assert require["tool_call_name"] == "bash"
 
     # TURN_END 是 success 且 reason=paused，不是 error
     turn_end = next(
-        f
-        for f in frames
-        if f.get("type") == "CUSTOM" and f.get("name") == "TURN_END"
+        f for f in frames if f.get("type") == "CUSTOM" and f.get("name") == "TURN_END"
     )
     assert turn_end["value"]["success"] is True
     assert turn_end["value"]["reason"] == "paused"
@@ -252,13 +245,19 @@ async def test_confirm_command_is_not_persisted_as_user_msg():
     executor = _make_executor(agent)
     _enable_builtin_commands(executor)
     executor._loop.session_manager.get_messages_by_session = AsyncMock(
-        return_value=[AssistantMsg(
-            id="turn_paused",
-            content=[ToolCallBlock(
-                id="call-1", name="bash", arguments={"command": "ls"},
-                state=ToolCallState.ASKING,
-            )],
-        )]
+        return_value=[
+            AssistantMsg(
+                id="turn_paused",
+                content=[
+                    ToolCallBlock(
+                        id="call-1",
+                        name="bash",
+                        arguments={"command": "ls"},
+                        state=ToolCallState.ASKING,
+                    )
+                ],
+            )
+        ]
     )
     executor._loop.session_manager.get_context_messages = AsyncMock(
         return_value=executor._loop.session_manager.get_messages_by_session.return_value
@@ -281,7 +280,9 @@ async def test_confirm_result_injects_history_and_drives_resume():
             id="turn_orig",
             content=[
                 ToolCallBlock(
-                    id="call-1", name="bash", arguments={"command": "ls"},
+                    id="call-1",
+                    name="bash",
+                    arguments={"command": "ls"},
                     state=ToolCallState.ASKING,
                 )
             ],
@@ -297,9 +298,7 @@ async def test_confirm_result_injects_history_and_drives_resume():
         return_value=history
     )
 
-    await executor.execute(
-        _confirm_inbound(approved=True, tool_call_id="call-1")
-    )
+    await executor.execute(_confirm_inbound(approved=True, tool_call_id="call-1"))
 
     # create_agent 收到注入了历史 context 的 state
     create_kwargs = executor._loop.agent_manager.create_agent.call_args.kwargs
@@ -309,9 +308,7 @@ async def test_confirm_result_injects_history_and_drives_resume():
     executor._loop.session_manager.get_context_messages.assert_awaited_once_with(
         "test-session"
     )
-    assert (
-        executor._loop.session_manager.get_messages_by_session.await_count == 2
-    )
+    assert executor._loop.session_manager.get_messages_by_session.await_count == 2
     checkpoint = executor._loop.session_manager.update_message.await_args.args[0]
     assert checkpoint.content[0].state == ToolCallState.ALLOWED
 
@@ -332,13 +329,19 @@ async def test_confirm_result_denied_still_resumes():
     agent = ResumingAgent()
     executor = _make_executor(agent)
     _enable_builtin_commands(executor)
-    history = [AssistantMsg(
-        id="turn_paused",
-        content=[ToolCallBlock(
-            id="call-1", name="bash", arguments={},
-            state=ToolCallState.ASKING,
-        )],
-    )]
+    history = [
+        AssistantMsg(
+            id="turn_paused",
+            content=[
+                ToolCallBlock(
+                    id="call-1",
+                    name="bash",
+                    arguments={},
+                    state=ToolCallState.ASKING,
+                )
+            ],
+        )
+    ]
     executor._loop.session_manager.get_messages_by_session = AsyncMock(
         return_value=history
     )
@@ -359,13 +362,19 @@ async def test_confirm_resume_runs_before_agent_hook_and_applies_system_prompt()
     agent.system_prompt = "base"
     executor = _make_executor(agent)
     _enable_builtin_commands(executor)
-    history = [AssistantMsg(
-        id="turn_paused",
-        content=[ToolCallBlock(
-            id="call-1", name="bash", arguments={},
-            state=ToolCallState.ASKING,
-        )],
-    )]
+    history = [
+        AssistantMsg(
+            id="turn_paused",
+            content=[
+                ToolCallBlock(
+                    id="call-1",
+                    name="bash",
+                    arguments={},
+                    state=ToolCallState.ASKING,
+                )
+            ],
+        )
+    ]
     executor._loop.session_manager.get_messages_by_session = AsyncMock(
         return_value=history
     )
@@ -375,35 +384,41 @@ async def test_confirm_resume_runs_before_agent_hook_and_applies_system_prompt()
     hooks = AsyncMock()
 
     async def inject(point, ctx):
-        if point == "before_agent_run":
+        if point == "agent/before_run":
             ctx.messages[0]["content"] += "\nprivate tools ready"
         return ctx
 
-    hooks.trigger.side_effect = inject
-    executor._loop.hook_manager = hooks
+    hooks.filter.side_effect = inject
+    executor._loop.event_hub = hooks
 
     await executor.execute(_confirm_inbound(approved=True))
 
-    assert hooks.trigger.await_count == 2
+    assert hooks.filter.await_count == 2
     assert agent.system_prompt == "base\nprivate tools ready"
 
 
 @pytest.mark.asyncio
 async def test_batch_confirm_checkpoints_all_before_resuming():
     """批量 /allow 先投影全部决定，再用最后一个事件触发一次恢复。"""
-    history = [AssistantMsg(
-        id="turn_paused",
-        content=[
-            ToolCallBlock(
-                id="call-1", name="bash", arguments={},
-                state=ToolCallState.ASKING,
-            ),
-            ToolCallBlock(
-                id="call-2", name="read", arguments={},
-                state=ToolCallState.ASKING,
-            ),
-        ],
-    )]
+    history = [
+        AssistantMsg(
+            id="turn_paused",
+            content=[
+                ToolCallBlock(
+                    id="call-1",
+                    name="bash",
+                    arguments={},
+                    state=ToolCallState.ASKING,
+                ),
+                ToolCallBlock(
+                    id="call-2",
+                    name="read",
+                    arguments={},
+                    state=ToolCallState.ASKING,
+                ),
+            ],
+        )
+    ]
     agent = ResumingAgent()
     executor = _make_executor(agent)
     _enable_builtin_commands(executor)
@@ -420,6 +435,5 @@ async def test_batch_confirm_checkpoints_all_before_resuming():
     assert agent._captured_run_input.tool_call_id == "call-2"
     checkpoint = executor._loop.session_manager.update_message.await_args.args[0]
     assert [
-        block.state for block in checkpoint.content
-        if isinstance(block, ToolCallBlock)
+        block.state for block in checkpoint.content if isinstance(block, ToolCallBlock)
     ] == [ToolCallState.ALLOWED, ToolCallState.ALLOWED]
