@@ -1,10 +1,12 @@
 """
 ChannelManager - Channel 注册、生命周期、outbound 分发
 """
+
 import asyncio
 import logging
 
-from ftre.bus import EventBus, BusMessage, GLOBAL_CHANNEL
+from ftre.bus import GLOBAL_CHANNEL, EventBus
+
 from .base import Channel
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,10 @@ class ChannelManager:
 
     def register(self, channel: Channel) -> None:
         self._channels[channel.channel_id] = channel
+
+    def unregister(self, channel_id: str) -> bool:
+        """注销一个尚未启动或已自行停止的 Channel。"""
+        return self._channels.pop(channel_id, None) is not None
 
     def get(self, channel_id: str) -> Channel | None:
         return self._channels.get(channel_id)
@@ -69,6 +75,8 @@ class ChannelManager:
                         if ws_channel is not None and ws_channel is not channel:
                             await ws_channel.send(msg)
                 else:
-                    logger.warning(f"[channel-manager] 未知 to_channel: {msg.to_channel}")
+                    logger.warning(
+                        f"[channel-manager] 未知 to_channel: {msg.to_channel}"
+                    )
         except asyncio.CancelledError:
             pass

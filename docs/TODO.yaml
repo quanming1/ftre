@@ -154,6 +154,17 @@ stages:
           - src/ftre/agent/sub_agent_profile.py
         acceptance: 团队创建/派活/等待/解散全流程，agent 配置正确合并，成员 profile 持久化
 
+      - id: C4
+        title: Cordis 风格插件内核
+        status: in_progress
+        date: 2026-08-14
+        prd: docs/prd/PRD-C4-plugin-kernel.md
+        prd_status: 开发中
+        modules:
+          - src/ftre/plugin/kernel/
+          - src/ftre/plugin/builtin/
+        acceptance: 插件依赖按序加载/循环依赖报错，事件 5 模式可用，配置树驱动加载，现有内置插件迁移后行为不变
+
   - id: D
     name: 收尾
     steps:

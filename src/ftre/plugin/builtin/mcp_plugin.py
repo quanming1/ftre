@@ -8,6 +8,7 @@ MCP Plugin — 将 MCP 模块封装为内置插件
 - 注册 MCP CRUD HTTP 路由（通过 register_router）
 - 配置热重载（config watcher）
 """
+
 import asyncio
 import json
 import logging
@@ -17,11 +18,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
-from ftre.mcp.manager import McpManager
-from ftre.mcp.config import McpServerConfig
+from ftre.config import AGENTS_DIR, CONFIG_PATH
 from ftre.mcp.adapter import build_mcp_tools_for_servers
-from ftre.config import CONFIG_PATH, AGENTS_DIR
+from ftre.mcp.config import McpServerConfig
+from ftre.mcp.manager import McpManager
+from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
 
 logger = logging.getLogger(__name__)
 
@@ -77,27 +78,33 @@ def _load_workspace_mcp_configs(cwd: str) -> list["McpServerConfig"]:
 class McpPlugin(Plugin):
     name = "mcp"
     version = "1.0.0"
+    inject = ("tool_registry", "routers", "event_loop")
 
-    def setup(self) -> None:
+    async def setup(self, ctx, config) -> None:
+        self._ctx = ctx
         # MCP 配置在 config.json 顶层 mcp 段，不在 plugins 数组里，直接读文件
         config_data = _read_config_json()
         self._mcp_config = config_data.get("mcp", {})
-        self._manager = McpManager(tool_registry=self.api.tool_registry)
+        self._manager = McpManager(tool_registry=ctx.tool_registry)
 
-        self.api.register_hook(BEFORE_AGENT_RUN, self._inject_system_prompt)
+        ctx.on(BEFORE_AGENT_RUN, self._inject_system_prompt)
 
         # 注册 HTTP 路由
-        self.api.register_router(self._build_router())
+        ctx.register_router(self._build_router())
 
-        # 异步启动连接（延迟到事件循环）
-        loop = self.api.event_loop
-        if loop:
-            loop.call_soon_threadsafe(
-                asyncio.create_task,
-                self._start_connections()
-            )
-        else:
-            logger.warning("[mcp-plugin] 无事件循环，MCP 连接未启动")
+        # MCP 连接在后台启动；task 与 manager 都绑定到插件 effect。
+        start_task = asyncio.create_task(self._start_connections())
+
+        async def cleanup() -> None:
+            if not start_task.done():
+                start_task.cancel()
+                try:
+                    await start_task
+                except asyncio.CancelledError:
+                    pass
+            await self._manager.stop()
+
+        ctx.effect(cleanup)
 
     async def _inject_system_prompt(self, ctx):
         """BEFORE_AGENT_RUN hook：为 agent 注入私有 MCP 工具 + 系统提示词。
@@ -226,7 +233,9 @@ class McpPlugin(Plugin):
             return {"servers": servers}
 
         @router.post("", status_code=201)
-        async def create_mcp_server(request: Request, scope: str = "global", agent_id: str = "default"):
+        async def create_mcp_server(
+            request: Request, scope: str = "global", agent_id: str = "default"
+        ):
             try:
                 payload = await request.json()
             except json.JSONDecodeError as e:
@@ -238,7 +247,9 @@ class McpPlugin(Plugin):
             if not name:
                 raise HTTPException(status_code=400, detail="name 不能为空")
             if not all(c.isalnum() or c in "-_" for c in name):
-                raise HTTPException(status_code=400, detail="name 只允许字母、数字、连字符、下划线")
+                raise HTTPException(
+                    status_code=400, detail="name 只允许字母、数字、连字符、下划线"
+                )
 
             cleaned, err = _validate_mcp_server(payload)
             if err:
@@ -248,23 +259,39 @@ class McpPlugin(Plugin):
                 config_data = _read_agent_config_json(agent_id)
                 mcp = config_data.setdefault("mcp", {})
                 if name in mcp:
-                    raise HTTPException(status_code=409, detail=f"MCP 服务器已存在: {name}")
+                    raise HTTPException(
+                        status_code=409, detail=f"MCP 服务器已存在: {name}"
+                    )
                 mcp[name] = cleaned
                 _write_agent_config_json(agent_id, config_data)
             else:
                 config_data = _read_config_json()
                 mcp = config_data.setdefault("mcp", {})
                 if name in mcp:
-                    raise HTTPException(status_code=409, detail=f"MCP 服务器已存在: {name}")
+                    raise HTTPException(
+                        status_code=409, detail=f"MCP 服务器已存在: {name}"
+                    )
                 mcp[name] = cleaned
                 _write_config_json(config_data)
                 if not cleaned.get("disabled"):
-                    await self._manager.reload_and_register({name: cleaned}, source="api-create")
+                    await self._manager.reload_and_register(
+                        {name: cleaned}, source="api-create"
+                    )
 
-            return {"name": name, **cleaned, "scope": scope, "status": "connected" if not cleaned.get("disabled") else "disabled"}
+            return {
+                "name": name,
+                **cleaned,
+                "scope": scope,
+                "status": "connected" if not cleaned.get("disabled") else "disabled",
+            }
 
         @router.patch("/{name}")
-        async def update_mcp_server(name: str, request: Request, scope: str = "global", agent_id: str = "default"):
+        async def update_mcp_server(
+            name: str,
+            request: Request,
+            scope: str = "global",
+            agent_id: str = "default",
+        ):
             if scope == "private":
                 config_data = _read_agent_config_json(agent_id)
                 mcp = config_data.get("mcp", {})
@@ -298,7 +325,9 @@ class McpPlugin(Plugin):
             return {"name": name, **cleaned, "scope": scope}
 
         @router.delete("/{name}", status_code=204)
-        async def delete_mcp_server(name: str, scope: str = "global", agent_id: str = "default"):
+        async def delete_mcp_server(
+            name: str, scope: str = "global", agent_id: str = "default"
+        ):
             if scope == "private":
                 config_data = _read_agent_config_json(agent_id)
                 mcp = config_data.get("mcp", {})
@@ -317,22 +346,11 @@ class McpPlugin(Plugin):
                 _write_config_json(config_data)
                 await self._manager.reload_and_register(mcp, source="api-delete")
 
-            return None
-
         return router
-
-    def teardown(self) -> None:
-        """清理 MCP 连接"""
-        if self._manager:
-            try:
-                loop = self.api.event_loop
-                if loop and loop.is_running():
-                    asyncio.run_coroutine_threadsafe(self._manager.stop(), loop).result(timeout=5)
-            except Exception as e:
-                logger.warning(f"[mcp-plugin] teardown error: {e}")
 
 
 # ─── 辅助函数（从 routes.py 迁移） ──────────────────────────────
+
 
 def _read_config_json() -> dict:
     """读取 config.json 原始内容"""

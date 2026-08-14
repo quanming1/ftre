@@ -18,25 +18,26 @@ from ftre_agent_core import Tracer
 from ftre_agent_core.hooks import FtreCoreHookManager
 from ftre_agent_core.tool import ToolRegistry
 
-from ftre.bus import BusMessage, EventBus, InboundMetadata
-from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
-from ftre.config import AgentConfig
-from ftre.session import SessionManager
-from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
-
-from .session_projection import SessionProjection
-from .compact_manager import CompactManager
-from .turn_executor import TurnExecutor
-from .completion_registry import CompletionRegistry
-from .context_gate import ContextGate
-from .mailbox_store import MailboxStore
-from .session_lane import AdmissionResult, SessionLaneRegistry
 from ftre.bus import (
+    BusMessage,
+    EventBus,
+    InboundMetadata,
     MailboxItemPayload,
     MailboxPhase,
     SessionMailboxSnapshotMessage,
     SessionMailboxSnapshotPayload,
 )
+from ftre.config import AgentConfig
+from ftre.session import SessionManager
+from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
+
+from .compact_manager import CompactManager
+from .completion_registry import CompletionRegistry
+from .context_gate import ContextGate
+from .mailbox_store import MailboxStore
+from .session_lane import AdmissionResult, SessionLaneRegistry
+from .session_projection import ProjectionResult, SessionProjection
+from .turn_executor import TurnExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class AgentLoop:
         session_manager: SessionManager,
         channel_manager=None,
         config: AgentConfig = None,
-        hook_manager=None,
+        event_hub=None,
         core_hook_manager: FtreCoreHookManager | None = None,
         tool_registry: ToolRegistry | None = None,
         command_manager=None,
@@ -72,7 +73,7 @@ class AgentLoop:
         self.bus = bus
         self.session_manager = session_manager
         self.channel_manager = channel_manager
-        self.hook_manager = hook_manager
+        self.event_hub = event_hub
         self.core_hook_manager = core_hook_manager or FtreCoreHookManager()
         self.tool_registry = tool_registry
         self.command_manager = command_manager
@@ -117,6 +118,7 @@ class AgentLoop:
             cfg = self._load_current_config()
             return cfg.context
         except Exception:
+            logger.debug("[agent-loop] 使用默认 ContextConfig", exc_info=True)
             from ftre.config import ContextConfig
 
             return ContextConfig()
@@ -192,9 +194,7 @@ class AgentLoop:
             await asyncio.sleep(0.02)
         return {"session_id": session_id, "status": "quiescent"}
 
-    async def cancel_queued_message(
-        self, session_id: str, request_id: str
-    ):
+    async def cancel_queued_message(self, session_id: str, request_id: str):
         """取消一条尚未开始执行的队列消息。"""
         return await self.lanes.cancel_pending(session_id, request_id)
 
@@ -209,7 +209,6 @@ class AgentLoop:
         await self.lanes.stop()
         # 覆盖手工 /compact 等不归某个 Lane operation 所有的共享压缩任务。
         await self.compact_manager.cancel_all_compact_tasks()
-
 
     # ─── 消费循环 ────────────────────────────────────────────
 
@@ -228,7 +227,9 @@ class AgentLoop:
                     if msg.type == "turn_cancel":
                         result = AdmissionResult(
                             accepted=True,
-                            session_id=str(msg.data.get("session_id") or msg.from_session),
+                            session_id=str(
+                                msg.data.get("session_id") or msg.from_session
+                            ),
                             created=await self.lanes.cancel_active(
                                 str(msg.data.get("session_id") or msg.from_session),
                                 str(msg.data.get("expected_request_id") or ""),
@@ -261,7 +262,6 @@ class AgentLoop:
         广播 WebSocket"的顺序。dispatch 序列化的是 core Event 本身，不嵌套私有
         {type, data} 协议。
         """
-        from .session_projection import ProjectionResult  # 局部 import 避免循环
 
         result = await self.session_projection.apply(session_id, event)
         await self.bus.publish_outbound(
@@ -323,9 +323,8 @@ class AgentLoop:
             phase=phase,
             pending=pending,
             capacity=self.mailbox_store.capacity,
-            accepting_messages=phase not in {
-                MailboxPhase.COMPACTING, MailboxPhase.BLOCKED
-            },
+            accepting_messages=phase
+            not in {MailboxPhase.COMPACTING, MailboxPhase.BLOCKED},
             can_cancel_active=can_cancel_active,
             blocked_reason=blocked_reason,
         )
