@@ -165,6 +165,14 @@ stages:
           - src/ftre/plugin/builtin/
         acceptance: 插件依赖按序加载/循环依赖报错，事件 5 模式可用，配置树驱动加载，现有内置插件迁移后行为不变
 
+      - id: C5
+        title: 本地文件链接协议
+        status: done
+        date: 2026-08-14
+        modules:
+          - src/ftre/system_prompt.md
+        acceptance: 系统提示词约定 file:// 绝对路径 markdown 链接格式（含行号语法），AI 输出的本地文件引用可被桌面端渲染为可点击链接并在右侧面板打开
+
   - id: D
     name: 收尾
     steps:
