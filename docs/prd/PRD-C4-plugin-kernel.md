@@ -310,10 +310,84 @@ await loader.load()          # 配置树驱动，自动按依赖排序
   4. 首条消息 → 验证标题生成 hook
   5. 验证 octo 插件（若启用）Channel 注册 + before_run 注入
 
-## 7. 变更记录
+## 7. 插件开发指南（引导阅读）
+
+> 本章面向插件开发者，说明如何基于 C4 内核新增一个插件；内核实现细节见第 3 章。
+
+### 7.1 插件放在哪
+
+| 类型 | 位置 | 说明 |
+|---|---|---|
+| 外部插件 | `~/.ftre/plugins/<插件名>/`（需 `__init__.py`） | ftre 启动自动发现，**新增插件推荐此方式**，无需改 ftre 源码 |
+| 内置插件 | `src/ftre/plugin/builtin/` | 随 ftre 代码分发 |
+
+### 7.2 三步加一个外部插件
+
+1. 建目录与入口文件：`~/.ftre/plugins/hello/__init__.py`
+2. 写插件类（见 7.3 最小模板）
+3. 重启 gateway，日志出现 `[plugin] ACTIVE: hello v0.1.0` 即加载成功
+
+### 7.3 最小插件模板
+
+```python
+# ~/.ftre/plugins/hello/__init__.py
+from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
+
+class HelloPlugin(Plugin):
+    name = "hello"            # 唯一名字（loader 用它识别）
+    version = "0.1.0"
+    inject = ()               # 声明依赖的 service，不需要就留空
+
+    async def setup(self, ctx, config):
+        # setup 中注册的能力自动绑定 effect，卸载时倒序清理，无需手写 teardown
+        ctx.on(BEFORE_AGENT_RUN, self._inject)
+
+    async def _inject(self, ctx):
+        append_to_first_system(ctx.messages, "<hello>来自 hello 插件</hello>")
+        return ctx
+```
+
+### 7.4 可 inject 的 service
+
+启动时由 main 注入根 Context，插件在 `inject` 声明后即可通过 ctx 访问：
+`tool_registry` · `bus` · `channel_manager` · `session_manager` · `command_manager` · `core_hook_manager` · `routers` · `event_loop`
+
+> 未在 `inject` 声明的 service 无法访问（抛 `ServiceAccessError`），按需声明。
+
+### 7.5 ctx 便捷方法（均自动 effect 清理）
+
+| 方法 | 用途 | 需 inject |
+|---|---|---|
+| `ctx.on(事件, handler)` / `ctx.once(...)` | 监听事件（hook） | —（events 内置） |
+| `ctx.tool_registry.register(tool)` | 注册工具 | `tool_registry` |
+| `ctx.register_router(router)` | 注册 HTTP 路由 | `routers` |
+| `ctx.register_channel(channel)` | 注册消息通道 | `channel_manager`（+ `bus`/`session_manager`） |
+| `ctx.command_manager.register_def(cmd)` | 注册 /斜杠命令 | `command_manager` |
+| `ctx.provide(name, value)` | 提供服务给其他插件 | 配 `provide=` 类声明 |
+
+### 7.6 主要 hook 事件
+
+| 事件常量 | 触发时机 |
+|---|---|
+| `BEFORE_MESSAGES_BUILD` | events 加载后、转 OpenAI messages 前 |
+| `BEFORE_AGENT_RUN` | Agent 创建后、run() 前（最常用，注入上下文/系统提示词） |
+
+### 7.7 配置与启停
+
+- 传配置：config.json `plugins` 段加 `{"name": "hello", "config": {...}}`，setup 从 `config` 读取；声明 `Config = <pydantic 模型>` 可校验
+- 禁用：`{"name": "hello", "disabled": true}`；未出现在配置中的已发现插件仍以默认配置加载
+
+### 7.8 生命周期要点
+
+- 依赖未就绪 → PENDING（不执行 setup），依赖就绪后自动激活
+- setup 抛错 → FAILED，记录错误，不影响其他插件
+- 卸载 → effect 倒序清理，注册的工具/路由/hook/通道自动撤销
+
+## 8. 变更记录
 
 | 日期 | 变更内容 | 理由 |
 |---|---|---|
 | 2026-08-14 | 初始定稿（评审中）：Cordis 风格插件内核设计，含 FR1-FR10、AC1-AC10 | 基于 DeepSeek Harness Cordis 框架研究（design-plugin-kernel.md），升级 ftre 插件体系以支持依赖声明、生命周期、自动清理、事件 5 模式、配置树 |
 | 2026-08-14 | 补充技术方案概念详解：配置树（3.2）、生命周期状态机（3.3）、插件编写迁移前后对比示例（3.4） | 评审反馈：原文档概念讲解不足，需用 Example 说清配置树、生命周期流程 |
 | 2026-08-14 | FR1-FR10 实现完成，AC1-AC9 通过；后端 314 项测试、Octo 40 项回归及真实配置网关生命周期冒烟通过 | 接管中断开发后完成内核、内置插件、Octo 迁移与验证；补齐遗留 `module` 配置兼容；AC10 仅剩全仓历史 Ruff 基线待处理 |
+| 2026-08-14 | 新增第 7 章插件开发指南（引导阅读）：插件位置、三步新增、最小模板、可 inject service、ctx 便捷方法、hook 事件、配置启停、生命周期要点；原变更记录顺延为第 8 章 | 补齐面向插件开发者的"如何新增插件"引导文档（此前仅内核实现设计，无开发者上手指南） |
