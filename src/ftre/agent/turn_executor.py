@@ -13,6 +13,7 @@ execute() 只负责单个已经由 SessionLane 领取的 Turn。
   /compact：  COMMAND(存消息 + 执行 handler) → COMPLETED（短路）
   RewritePrompt：COMMAND(存消息 + 执行 handler) → BUILDING → RUNNING → FINALIZING → COMPLETED
 """
+
 import asyncio
 import copy
 import logging
@@ -20,24 +21,17 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from ftre_agent_core.agent import ReActAgent, RunStatus
 from ftre_agent_core.event import (
-    EventBase,
-    ReplyStartEvent,
-    ReplyFinishedReason,
     CustomEvent,
-    ToolResultEndEvent,
+    ReplyFinishedReason,
     UserMessageEvent,
 )
 from ftre_agent_core.message import Msg, from_openai_message
 
 from ftre.bus import BusMessage, CommandMessagePayload, SessionCommandMessage
-from ftre.config import AgentConfig, load_config
-from ftre.session.message.multimodal import build_user_content, normalize_stored_user_content
-from ftre.tools._workspace import WorkspaceAccessor, ensure_workspace_ext_dir
-
-
 from ftre.command.types import (
     Handled,
     Passthrough,
@@ -45,10 +39,16 @@ from ftre.command.types import (
     RewritePrompt,
     SendMessage,
 )
-
-from typing import TYPE_CHECKING
+from ftre.config import AgentConfig, load_config
+from ftre.session.message.multimodal import (
+    build_user_content,
+    normalize_stored_user_content,
+)
+from ftre.tools._workspace import WorkspaceAccessor, ensure_workspace_ext_dir
 
 if TYPE_CHECKING:
+    from ftre.command.types import CommandDef
+
     from .agent_manager import AgentProfile
     from .loop import AgentLoop
 
@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 # Turn 数据模型
 # ═══════════════════════════════════════════════════════════════════
 
+
 class TurnStatus(str, Enum):
     """Turn 生命周期的阶段。
 
@@ -66,13 +67,14 @@ class TurnStatus(str, Enum):
         COMMAND → BUILDING → RUNNING → FINALIZING → COMPLETED
     终态：COMPLETED（正常）/ CANCELLED（被取消）/ ERROR（异常）
     """
-    COMMAND = "command"        # 匹配指令 + 存用户消息 + 执行 handler + 路由
-    BUILDING = "building"      # 鉴权 + 构建消息 + 创建 Agent
-    RUNNING = "running"        # 驱动 Agent 执行，逐条投递事件
+
+    COMMAND = "command"  # 匹配指令 + 存用户消息 + 执行 handler + 路由
+    BUILDING = "building"  # 鉴权 + 构建消息 + 创建 Agent
+    RUNNING = "running"  # 驱动 Agent 执行，逐条投递事件
     FINALIZING = "finalizing"  # Turn 已运行完成，等待统一收尾
-    COMPLETED = "completed"    # 正常完成（终态）
-    CANCELLED = "cancelled"    # 被用户取消（终态）
-    ERROR = "error"            # 执行异常（终态）
+    COMPLETED = "completed"  # 正常完成（终态）
+    CANCELLED = "cancelled"  # 被用户取消（终态）
+    ERROR = "error"  # 执行异常（终态）
 
 
 @dataclass
@@ -84,31 +86,32 @@ class Turn:
     - 各状态函数读取上游写入的字段、写入自己的产出给下游
     - 事件从状态转移中产生，reply_id 关联到 turn.turn_id
     """
+
     # ── 身份（execute 入口创建时设置，不可变）──
-    turn_id: str                 # 本 Turn 唯一标识，作为 reply_id 关联事件
-    inbound: BusMessage          # 触发本 Turn 的用户消息
-    session_id: str              # 所属会话
+    turn_id: str  # 本 Turn 唯一标识，作为 reply_id 关联事件
+    inbound: BusMessage  # 触发本 Turn 的用户消息
+    session_id: str  # 所属会话
 
     # ── 当前状态（状态机读写）──
     status: TurnStatus = TurnStatus.COMMAND
 
     # ── 指令匹配结果（execute 入口设置，命中指令时非 None）──
-    command: "CommandDef | None" = None      # 命中的指令定义（含 system / persist_input）
-    command_name: str | None = None          # 指令名（如 "/compact"），PIPELINE_END 会带上
+    command: "CommandDef | None" = None  # 命中的指令定义（含 system / persist_input）
+    command_name: str | None = None  # 指令名（如 "/compact"），PIPELINE_END 会带上
 
-    user_message_id: str = ""    # 本轮持久化后的 UserMsg id
+    user_message_id: str = ""  # 本轮持久化后的 UserMsg id
     # RewritePrompt 只影响本轮构建给 LLM 的内容，不进入 InboundData 的自由 metadata。
     prompt_override: str | None = None
 
     # ── Agent 执行上下文（_build 写入，_run 读取）──
     agent_profile: "AgentProfile | None" = None  # 本轮选定的 Agent 私有配置
-    config: "AgentConfig | None" = None          # 本轮实际使用的有效配置快照
-    agent: "ReActAgent | None" = None        # 创建的 Agent 实例，None 表示未进入执行
-    messages: list = field(default_factory=list)          # 发给 LLM 的消息列表
-    runtime_context: dict = field(default_factory=dict)   # 工具共享的运行时上下文
-    final_content: str = ""                  # 最后一条完整 assistant 回复（task 工具用）
-    subagent_status: str = "completed"       # subagent 完成态：completed/cancelled/error
-    error: dict | None = None                 # 进入 ERROR 时返回给 SessionLane 的结构化原因
+    config: "AgentConfig | None" = None  # 本轮实际使用的有效配置快照
+    agent: "ReActAgent | None" = None  # 创建的 Agent 实例，None 表示未进入执行
+    messages: list = field(default_factory=list)  # 发给 LLM 的消息列表
+    runtime_context: dict = field(default_factory=dict)  # 工具共享的运行时上下文
+    final_content: str = ""  # 最后一条完整 assistant 回复（task 工具用）
+    subagent_status: str = "completed"  # subagent 完成态：completed/cancelled/error
+    error: dict | None = None  # 进入 ERROR 时返回给 SessionLane 的结构化原因
 
     # ── 权限确认恢复（/allow、/deny 指令触发时非 None）──
     # 非 None 表示本 Turn 是恢复请求：跳过普通消息构建，
@@ -133,6 +136,7 @@ class TurnOutcome:
 # ═══════════════════════════════════════════════════════════════════
 # TurnExecutor
 # ═══════════════════════════════════════════════════════════════════
+
 
 class TurnExecutor:
     """单个 Turn 的完整执行：状态机驱动。
@@ -182,9 +186,7 @@ class TurnExecutor:
             # ── 系统级文本指令：匹配后短路执行 ──
             # match_any 只查不执行，系统级 handler 在这里执行。
             cmd_def = (
-                loop.command_manager.match_any(turn)
-                if loop.command_manager
-                else None
+                loop.command_manager.match_any(turn) if loop.command_manager else None
             )
             if cmd_def is not None and cmd_def.system:
                 turn.command = cmd_def
@@ -207,9 +209,7 @@ class TurnExecutor:
             turn.status = TurnStatus.CANCELLED
             turn.subagent_status = "cancelled"
             if turn.agent is not None:
-                await self._persist_open_replies(
-                    turn, ReplyFinishedReason.INTERRUPTED
-                )
+                await self._persist_open_replies(turn, ReplyFinishedReason.INTERRUPTED)
         except Exception:
             logger.exception(
                 f"[turn-executor] 状态机异常 session={turn.session_id} "
@@ -224,7 +224,8 @@ class TurnExecutor:
             if turn.agent is not None:
                 await self._finalize(turn)
             await self._emit_step(
-                turn, "PIPELINE_END",
+                turn,
+                "PIPELINE_END",
                 success=turn.status == TurnStatus.COMPLETED,
                 reason=(
                     "error"
@@ -252,11 +253,11 @@ class TurnExecutor:
         """状态转移：根据当前状态调对应处理函数，返回下一个状态。"""
         match turn.status:
             case TurnStatus.COMMAND:
-                return await self._command(turn)    # → BUILDING 或 COMPLETED
+                return await self._command(turn)  # → BUILDING 或 COMPLETED
             case TurnStatus.BUILDING:
-                return await self._build(turn)      # → RUNNING（或 ERROR 校验失败）
+                return await self._build(turn)  # → RUNNING（或 ERROR 校验失败）
             case TurnStatus.RUNNING:
-                return await self._run(turn)         # → FINALIZING/CANCELLED/ERROR
+                return await self._run(turn)  # → FINALIZING/CANCELLED/ERROR
             case TurnStatus.FINALIZING:
                 return TurnStatus.COMPLETED
             case _:
@@ -286,17 +287,11 @@ class TurnExecutor:
         agent_id = inbound.metadata.agent_id or "default"
 
         # ── 1. 匹配指令（不执行 handler，只判断是否命中）──
-        cmd_def = (
-            loop.command_manager.match_any(turn)
-            if loop.command_manager
-            else None
-        )
+        cmd_def = loop.command_manager.match_any(turn) if loop.command_manager else None
         if cmd_def is not None:
             turn.command = cmd_def
             turn.command_name = cmd_def.command
-            await self._emit_step(
-                turn, "COMMAND_MATCHED", command_name=cmd_def.command
-            )
+            await self._emit_step(turn, "COMMAND_MATCHED", command_name=cmd_def.command)
 
         # ── 2. 存用户消息（persist_input 决定存不存）──
         # 无命令 → 普通消息要存；有命令 → 看 persist_input
@@ -346,16 +341,16 @@ class TurnExecutor:
             case RewritePrompt(content=prompt_content):
                 # 改写发给 LLM 的 prompt（如 skill 展开），DB 始终保存原始 content。
                 turn.prompt_override = prompt_content
-                return TurnStatus.BUILDING    # 继续跑 Agent
+                return TurnStatus.BUILDING  # 继续跑 Agent
             case SendMessage(content=msg, level=level):
                 await self._send_command_message(
                     session_id, inbound.from_channel, msg, level
                 )
-                return TurnStatus.COMPLETED       # 短路
+                return TurnStatus.COMPLETED  # 短路
             case Handled():
-                return TurnStatus.COMPLETED        # 短路
+                return TurnStatus.COMPLETED  # 短路
             case Passthrough():
-                return TurnStatus.BUILDING       # 继续跑 Agent
+                return TurnStatus.BUILDING  # 继续跑 Agent
             case ResumeAgent(events=events):
                 if not events:
                     return TurnStatus.COMPLETED
@@ -420,9 +415,7 @@ class TurnExecutor:
 
         # ── 权限确认恢复分支：注入历史 Msg 到新 agent，跳过普通消息构建 ──
         if turn.confirm_event is not None:
-            return await self._build_resume(
-                turn, session, config, agent_profile
-            )
+            return await self._build_resume(turn, session, config, agent_profile)
 
         # ── 构建发给 LLM 的消息 ──
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
@@ -490,7 +483,7 @@ class TurnExecutor:
         }
 
         # ── before_agent_run hook：插件可注入对话上下文/系统身份 ──
-        if loop.hook_manager is not None:
+        if getattr(loop, "event_hub", None) is not None:
             from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext
 
             ctx = AgentRunContext(
@@ -502,7 +495,7 @@ class TurnExecutor:
                 agent_tool_registry=agent.tool_registry,
                 workspace=workspace,
             )
-            ctx = await loop.hook_manager.trigger(BEFORE_AGENT_RUN, ctx)
+            ctx = await loop.event_hub.filter(BEFORE_AGENT_RUN, ctx)
             turn.messages = ctx.messages  # hook 可能改写了 messages
         else:
             turn.messages = messages
@@ -522,7 +515,6 @@ class TurnExecutor:
         - runtime_context.reply_id 用确认事件携带的原 reply_id，保证恢复产出的
           工具结果/后续事件聚合回原 assistant Msg。
         """
-        from ftre_agent_core.agent import AgentState
         from ftre.session.message.converter import _as_msg
 
         loop = self._loop
@@ -534,7 +526,7 @@ class TurnExecutor:
         # 覆盖的完整 transcript 重新注入。保留 typed Msg 以维持 ToolCallState。
         records = await loop.session_manager.get_context_messages(session_id)
         hook_config = copy.deepcopy(config)
-        if loop.hook_manager is not None:
+        if getattr(loop, "event_hub", None) is not None:
             from ftre.plugin import BEFORE_MESSAGES_BUILD, MessagesBuildContext
 
             messages_ctx = MessagesBuildContext(
@@ -547,7 +539,7 @@ class TurnExecutor:
                 config=hook_config,
                 messages=records,
             )
-            messages_ctx = await loop.hook_manager.trigger(
+            messages_ctx = await loop.event_hub.filter(
                 BEFORE_MESSAGES_BUILD, messages_ctx
             )
             hook_config = messages_ctx.config
@@ -574,9 +566,10 @@ class TurnExecutor:
         # 恢复路径同样必须触发 BEFORE_AGENT_RUN：私有 MCP 工具在这里按需注册，
         # Skill/MCP/Plan 等插件也会扩展 system prompt。typed context 继续作为
         # 权限状态事实源，hook 只修改 provider 视图与 agent 的 system prompt。
-        if loop.hook_manager is not None:
-            from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext
+        if getattr(loop, "event_hub", None) is not None:
             from ftre_agent_core.message_context import MessageContext
+
+            from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext
 
             hook_messages = MessageContext.get_messages(
                 state.context, agent.system_prompt
@@ -590,16 +583,14 @@ class TurnExecutor:
                 agent_tool_registry=agent.tool_registry,
                 workspace=workspace,
             )
-            ctx = await loop.hook_manager.trigger(BEFORE_AGENT_RUN, ctx)
+            ctx = await loop.event_hub.filter(BEFORE_AGENT_RUN, ctx)
             system_parts = [
                 str(message.get("content") or "")
                 for message in ctx.messages
                 if isinstance(message, dict) and message.get("role") == "system"
             ]
             if system_parts:
-                agent.system_prompt = "\n\n".join(
-                    part for part in system_parts if part
-                )
+                agent.system_prompt = "\n\n".join(part for part in system_parts if part)
 
         turn.agent = agent
         turn.config = copy.deepcopy(hook_config)
@@ -701,21 +692,22 @@ class TurnExecutor:
         except asyncio.CancelledError:
             # 被 /cancel 触发的 task.cancel() 中断（在 LLM stream 的 await 处抛出）
             turn.subagent_status = "cancelled"
-            logger.info(f"[turn-executor] Agent 被 cancel 中断 session={turn.session_id}")
-            await self._persist_open_replies(
-                turn, ReplyFinishedReason.INTERRUPTED
+            logger.info(
+                f"[turn-executor] Agent 被 cancel 中断 session={turn.session_id}"
             )
+            await self._persist_open_replies(turn, ReplyFinishedReason.INTERRUPTED)
             # 仍发 TURN_END，让实时客户端立即结束本轮 busy 状态
             await self._emit_step(
-                turn, "TURN_END", success=False, reason=str(ReplyFinishedReason.INTERRUPTED)
+                turn,
+                "TURN_END",
+                success=False,
+                reason=str(ReplyFinishedReason.INTERRUPTED),
             )
             return TurnStatus.CANCELLED
         except Exception:
             # 未预期异常
             turn.subagent_status = "error"
-            logger.exception(
-                f"[turn-executor] _run 异常 (session={turn.session_id})"
-            )
+            logger.exception(f"[turn-executor] _run 异常 (session={turn.session_id})")
             await self._persist_open_replies(
                 turn,
                 ReplyFinishedReason.ERROR,
@@ -737,9 +729,6 @@ class TurnExecutor:
         在 execute() 的 finally 里统一调用（无论正常/取消/异常都会走），
         所以它是 Turn 的唯一收尾出口，必须幂等且不抛异常。
         """
-        loop = self._loop
-        session_id = turn.session_id
-
         # ── 摘除 _active_agents（仅当还是自己创建的那个）──
         # 若已被后来的 Agent 顶替，不清理（避免误删别人的）
         # 无条件 emit（不依赖通道推断）：task/team 只对 subagent session wait，
@@ -765,9 +754,7 @@ class TurnExecutor:
         await self.publish_agent_event(turn, event)
         turn.events.append(event)  # 记入 Turn 的事件序列（供回放/调试）
 
-    async def publish_agent_event(
-        self, turn: Turn, event
-    ) -> Msg | None:
+    async def publish_agent_event(self, turn: Turn, event) -> Msg | None:
         """实时派发 Event，并在 Reply 生命周期内管理 Msg 持久化。
 
         - REPLY_START: 创建 AssistantMsg + save_message + 注册 ActiveReplyRegistry
@@ -796,9 +783,7 @@ class TurnExecutor:
         ):
             turn.final_content = message.get_text_content() or turn.final_content
 
-    async def _publish_session_status_async(
-        self, session_id: str, status: str
-    ) -> None:
+    async def _publish_session_status_async(self, session_id: str, status: str) -> None:
         """兼容旧调用点；Session 权威状态仍然只能由 Coordinator 发布。"""
         await self._loop._publish_session_status_async(session_id, status)
 
@@ -872,10 +857,7 @@ class TurnExecutor:
             # 路径 1：team 工具携带的 agent_ref。一致性校验：sub_agent 必须是
             # 本 session——metadata 外部可构造，不允许借它加载他人的 profile。
             agent_ref = inbound_metadata.agent_ref
-            if (
-                agent_ref is not None
-                and agent_ref.sub_agent == turn.session_id
-            ):
+            if agent_ref is not None and agent_ref.sub_agent == turn.session_id:
                 profile = sub_agent_profile.load_member_profile(
                     self._loop.session_manager,
                     agent_ref.leader_session,
@@ -885,8 +867,10 @@ class TurnExecutor:
             # 路径 2：session 级结构性绑定。WS/HTTP/send_message 等旁路入口
             # 不带 agent_ref，靠成员 session 自己的 team_member 绑定兜底。
             if profile is None:
-                session_metadata = await self._loop.session_manager.get_session_metadata(
-                    turn.session_id
+                session_metadata = (
+                    await self._loop.session_manager.get_session_metadata(
+                        turn.session_id
+                    )
                 )
                 if not isinstance(session_metadata, dict):
                     session_metadata = {}
@@ -941,7 +925,7 @@ class TurnExecutor:
 
         # 触发 before_messages_build hook（插件可裁剪 Msg、生成标题、注入提示词）
         hook_config = copy.deepcopy(config)
-        if loop.hook_manager is not None:
+        if getattr(loop, "event_hub", None) is not None:
             from ftre.plugin import BEFORE_MESSAGES_BUILD, MessagesBuildContext
 
             ctx = MessagesBuildContext(
@@ -954,7 +938,7 @@ class TurnExecutor:
                 config=hook_config,
                 messages=messages,
             )
-            ctx = await loop.hook_manager.trigger(BEFORE_MESSAGES_BUILD, ctx)
+            ctx = await loop.event_hub.filter(BEFORE_MESSAGES_BUILD, ctx)
             hook_config = ctx.config
             messages = ctx.messages
 

@@ -27,7 +27,7 @@ TODO_FILE = "docs/TODO.yaml"
 PRD_DIR = "docs/prd"
 # 其他 type 允许的模块 scope（按项目模块定制）
 MODULE_SCOPES = (
-    "agent", "bus", "channel", "session", "tools", "api", "config", "command", "plugin", "trace", "main", "tests", "docs",
+    "agent", "bus", "channel", "session", "tools", "api", "config", "command", "plugin", "trace", "main", "tests", "docs", "release",
 )
 # prd / todos 专用分支名
 PRD_BRANCH = "prd-update"

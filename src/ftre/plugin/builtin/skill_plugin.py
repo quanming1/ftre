@@ -6,16 +6,20 @@ Skills are local prompt files under ~/.ftre/skills:
 - name/SKILL.md
 - name/skill.md
 """
+
 import json
+import logging
 import os
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, HTTPException, Request
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
-from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
 from ftre.api import skill as skill_store
+from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
+
+logger = logging.getLogger(__name__)
 
 
 def _read_text_safe(path: Path) -> str:
@@ -29,7 +33,9 @@ def _read_text_safe(path: Path) -> str:
             return path.read_text(encoding="utf-8", errors="replace")
 
 
-DEFAULT_SKILLS_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "skills"
+DEFAULT_SKILLS_DIR = (
+    Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "skills"
+)
 
 # 会话工作区扩展目录名：<cwd>/.ftre/skills
 WORKSPACE_EXT_DIR = ".ftre"
@@ -60,6 +66,7 @@ def _workspace_cwd(workspace) -> str:
         try:
             return getter() or ""
         except Exception:
+            logger.debug("[skill] workspace accessor failed", exc_info=True)
             return ""
     return ""
 
@@ -69,16 +76,18 @@ class SkillPlugin(Plugin):
 
     name = "skill"
     version = "1.0.0"
+    inject = ("tool_registry", "routers", "command_manager")
 
-    def setup(self) -> None:
-        cfg = self.api.config or {}
+    async def setup(self, ctx, config) -> None:
+        self._ctx = ctx
+        cfg = config or {}
         self._skills_dir = Path(cfg.get("skills_dir") or DEFAULT_SKILLS_DIR)
         self._disabled_skills = self._load_disabled_skills()
-        self.api.tool_registry.register(
+        ctx.tool_registry.register(
             create_load_skill_tool(self._skills_dir, self._disabled_skills)
         )
-        self.api.register_router(self._build_router())
-        self.api.register_hook(BEFORE_AGENT_RUN, self._inject_system_prompt)
+        ctx.register_router(self._build_router())
+        ctx.on(BEFORE_AGENT_RUN, self._inject_system_prompt)
         self._register_skill_commands()
 
     def _register_skill_commands(self) -> None:
@@ -98,7 +107,7 @@ class SkillPlugin(Plugin):
         """
         from ftre.command.types import CommandDef, RewritePrompt
 
-        cmd_mgr = self.api.command_manager
+        cmd_mgr = self._ctx.command_manager
         if cmd_mgr is None:
             return
 
@@ -110,15 +119,16 @@ class SkillPlugin(Plugin):
                 parts = [
                     f'<selected_skill name="{name}">',
                     f"The user has selected this Skill via /skill:{name}.",
-                    f"Call the loadSkill tool immediately to load its full content",
-                    f"(skip if already loaded in this conversation),",
-                    f"then follow the Skill's instructions to complete the task.",
+                    "Call the loadSkill tool immediately to load its full content",
+                    "(skip if already loaded in this conversation),",
+                    "then follow the Skill's instructions to complete the task.",
                     "</selected_skill>",
                 ]
                 user_input = (ctx.args or "").strip()
                 if user_input:
                     parts.append(f"\n<user_input>\n{user_input}\n</user_input>")
                 return RewritePrompt(content="\n".join(parts))
+
             return handler
 
         cmd_def = CommandDef(
@@ -132,7 +142,7 @@ class SkillPlugin(Plugin):
 
     def _unregister_skill_command(self, skill_name: str) -> None:
         """注销单个 Skill 的 slash command。"""
-        cmd_mgr = self.api.command_manager
+        cmd_mgr = self._ctx.command_manager
         if cmd_mgr is None:
             return
         cmd_mgr.unregister(f"/skill:{skill_name}")
@@ -160,19 +170,21 @@ class SkillPlugin(Plugin):
             else "<当前工作区>/.ftre/skills"
         )
         parts = [
-            "<skill_desc>\n"
-            "动手前 MUST 先扫下方 <skill_list> 每个 description，任务一旦匹配就"
-            "**必须先 loadSkill 加载再执行**——NEVER 在有匹配 Skill 却没加载时凭直觉硬干。"
-            "Skill 不是工具、不能直接用，看到名字不等于掌握内容；同一 Skill 一轮只加载一次。\n"
-            "\n"
-            "Skill 按作用域分三级（同名优先级：工作区 > Agent > 全局）：\n"
-            f"- 全局 Skill：{global_dir}（对所有 Agent、所有工作区生效）\n"
-            f"- Agent 私有 Skill：{agent_dir}（仅当前 Agent 生效）\n"
-            f"- 工作区专属 Skill：{workspace_dir}（仅当前工作区生效，优先级最高）\n"
-            "创建 Skill：先判断作用域再落到对应目录——只服务当前项目/工作区就写工作区级，"
-            "只服务当前 Agent 人设就写 Agent 私有级，通用能力才写全局级；"
-            "写入前用上面对应的绝对路径，Skill 形态为 <目录>/<name>/SKILL.md。"
-            "\n</skill_desc>"
+            (
+                "<skill_desc>\n"
+                "动手前 MUST 先扫下方 <skill_list> 每个 description，任务一旦匹配就"
+                "**必须先 loadSkill 加载再执行**——NEVER 在有匹配 Skill 却没加载时凭直觉硬干。"
+                "Skill 不是工具、不能直接用，看到名字不等于掌握内容；同一 Skill 一轮只加载一次。\n"
+                "\n"
+                "Skill 按作用域分三级（同名优先级：工作区 > Agent > 全局）：\n"
+                f"- 全局 Skill：{global_dir}（对所有 Agent、所有工作区生效）\n"
+                f"- Agent 私有 Skill：{agent_dir}（仅当前 Agent 生效）\n"
+                f"- 工作区专属 Skill：{workspace_dir}（仅当前工作区生效，优先级最高）\n"
+                "创建 Skill：先判断作用域再落到对应目录——只服务当前项目/工作区就写工作区级，"
+                "只服务当前 Agent 人设就写 Agent 私有级，通用能力才写全局级；"
+                "写入前用上面对应的绝对路径，Skill 形态为 <目录>/<name>/SKILL.md。"
+                "\n</skill_desc>"
+            )
         ]
         skill_list = self._build_skill_list_prompt(ctx)
         if skill_list:
@@ -187,6 +199,7 @@ class SkillPlugin(Plugin):
         在 hook 和 loadSkill 工具中通过 agent_profile 覆盖。
         """
         from ftre.config import CONFIG_PATH
+
         try:
             if not CONFIG_PATH.exists():
                 return set()
@@ -194,8 +207,8 @@ class SkillPlugin(Plugin):
             arr = raw.get("disabled_skills", [])
             if isinstance(arr, list):
                 return {str(s) for s in arr}
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError, TypeError):
+            logger.debug("[skill] 无法读取全局 disabled_skills", exc_info=True)
         return set()
 
     def _build_router(self) -> APIRouter:
@@ -208,15 +221,26 @@ class SkillPlugin(Plugin):
             effective_disabled = self._disabled_skills
             if agent_id:
                 from ftre.config import AGENTS_DIR
+
                 agent_cfg_path = AGENTS_DIR / agent_id / "agent.config.json"
                 if agent_cfg_path.exists():
                     try:
-                        agent_cfg = json.loads(agent_cfg_path.read_text(encoding="utf-8"))
+                        agent_cfg = json.loads(
+                            agent_cfg_path.read_text(encoding="utf-8")
+                        )
                         if "disabled_skills" in agent_cfg:
                             arr = agent_cfg.get("disabled_skills", [])
-                            effective_disabled = {str(s) for s in arr} if isinstance(arr, list) else set()
-                    except Exception:
-                        pass
+                            effective_disabled = (
+                                {str(s) for s in arr}
+                                if isinstance(arr, list)
+                                else set()
+                            )
+                    except (OSError, json.JSONDecodeError, TypeError):
+                        logger.debug(
+                            "[skill] 无法读取 agent disabled_skills: %s",
+                            agent_cfg_path,
+                            exc_info=True,
+                        )
 
             skills = skill_store.list_skills()
             # 附加 disabled 状态
@@ -226,6 +250,7 @@ class SkillPlugin(Plugin):
             # 合并 agent 私有 skill（私有同名覆盖全局）
             if agent_id:
                 from ftre.config import AGENTS_DIR
+
                 private_dir = AGENTS_DIR / agent_id / "skills"
                 if private_dir.is_dir():
                     private_descs = list_skill_descriptions(private_dir)
@@ -234,14 +259,16 @@ class SkillPlugin(Plugin):
                     skills = [s for s in skills if s["name"] not in private_names]
                     # 追加私有条目
                     for d in private_descs:
-                        skills.append({
-                            "name": d["name"],
-                            "description": d["description"],
-                            "kind": "dir",
-                            "updated_at": 0.0,
-                            "disabled": d["name"] in effective_disabled,
-                            "scope": "private",
-                        })
+                        skills.append(
+                            {
+                                "name": d["name"],
+                                "description": d["description"],
+                                "kind": "dir",
+                                "updated_at": 0.0,
+                                "disabled": d["name"] in effective_disabled,
+                                "scope": "private",
+                            }
+                        )
                     # 为全局条目标注 scope
                     for s in skills:
                         if "scope" not in s:
@@ -252,7 +279,9 @@ class SkillPlugin(Plugin):
         @router.get("/{name}")
         async def get_skill(name: str):
             if not skill_store.is_valid_name(name):
-                raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name}")
+                raise HTTPException(
+                    status_code=400, detail=f"非法的 Skill 名称: {name}"
+                )
             try:
                 skill = skill_store.read_skill(name)
             except OSError as e:
@@ -272,12 +301,16 @@ class SkillPlugin(Plugin):
 
             name = payload.get("name")
             if not isinstance(name, str) or not skill_store.is_valid_name(name):
-                raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name!r}")
+                raise HTTPException(
+                    status_code=400, detail=f"非法的 Skill 名称: {name!r}"
+                )
             name = name.strip()
 
             kind = payload.get("kind", "dir")
             if kind not in ("dir", "file"):
-                raise HTTPException(status_code=400, detail="kind 仅支持 'dir' / 'file'")
+                raise HTTPException(
+                    status_code=400, detail="kind 仅支持 'dir' / 'file'"
+                )
 
             content = payload.get("content")
             if content is not None and not isinstance(content, str):
@@ -305,7 +338,9 @@ class SkillPlugin(Plugin):
         @router.put("/{name}")
         async def update_skill(name: str, request: Request):
             if not skill_store.is_valid_name(name):
-                raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name}")
+                raise HTTPException(
+                    status_code=400, detail=f"非法的 Skill 名称: {name}"
+                )
 
             try:
                 payload = await request.json()
@@ -334,7 +369,9 @@ class SkillPlugin(Plugin):
         @router.delete("/{name}", status_code=204)
         async def remove_skill(name: str):
             if not skill_store.is_valid_name(name):
-                raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name}")
+                raise HTTPException(
+                    status_code=400, detail=f"非法的 Skill 名称: {name}"
+                )
             try:
                 ok = skill_store.delete_skill(name)
             except OSError as e:
@@ -345,8 +382,6 @@ class SkillPlugin(Plugin):
             # 同步注销 slash command
             self._unregister_skill_command(name)
 
-            return None
-
         @router.patch("/{name}/toggle")
         async def toggle_skill_disabled(name: str, agent_id: str | None = None):
             """切换 Skill 的禁用状态。
@@ -355,23 +390,27 @@ class SkillPlugin(Plugin):
             不传时操作 config.json 的 disabled_skills（全局）。
             """
             if not skill_store.is_valid_name(name):
-                raise HTTPException(status_code=400, detail=f"非法的 Skill 名称: {name}")
+                raise HTTPException(
+                    status_code=400, detail=f"非法的 Skill 名称: {name}"
+                )
 
             if agent_id:
                 from ftre.config import AGENTS_DIR
+
                 config_path = AGENTS_DIR / agent_id / "agent.config.json"
             else:
                 from ftre.config import CONFIG_PATH
+
                 config_path = CONFIG_PATH
 
-            import tempfile
             import os as _os
+            import tempfile
 
             config_data = {}
             if config_path.exists():
                 try:
                     config_data = json.loads(config_path.read_text(encoding="utf-8"))
-                except Exception:
+                except (OSError, json.JSONDecodeError, TypeError):
                     config_data = {}
 
             arr = config_data.get("disabled_skills", [])
@@ -440,19 +479,19 @@ class SkillPlugin(Plugin):
         if agent_profile is not None and agent_profile.disabled_skills:
             disabled = set(agent_profile.disabled_skills)
         if disabled:
-            descriptions = [
-                d for d in descriptions if d["name"] not in disabled
-            ]
+            descriptions = [d for d in descriptions if d["name"] not in disabled]
         if not descriptions:
             return ""
 
         lines = [
-            "<skill_list desc=\"以下是你当前可用的全部 skill（含全局、Agent 私有、工作区专属）。"
-            "开始任务前先对照每个 description 判断是否匹配；匹配就必须先用 loadSkill 加载再动手。\">",
+            (
+                '<skill_list desc="以下是你当前可用的全部 skill（含全局、Agent 私有、工作区专属）。'
+                '开始任务前先对照每个 description 判断是否匹配；匹配就必须先用 loadSkill 加载再动手。">'
+            ),
         ]
         for item in descriptions:
             lines.append(
-                f"<skill name=\"{escape(item['name'])}\">"
+                f'<skill name="{escape(item["name"])}">'
                 f"{escape(item['description'])}</skill>"
             )
         lines.append("</skill_list>")
@@ -460,15 +499,21 @@ class SkillPlugin(Plugin):
         return "\n".join(lines)
 
 
-def create_load_skill_tool(skills_dir: Path, disabled_skills: set[str] | None = None) -> Tool:
+_AGENT_PROFILE_INJECTED = Injected("agent_profile")
+_WORKSPACE_INJECTED = Injected("workspace")
+
+
+def create_load_skill_tool(
+    skills_dir: Path, disabled_skills: set[str] | None = None
+) -> Tool:
     """Create the loadSkill tool."""
 
     _disabled = disabled_skills if disabled_skills is not None else set()
 
     def loadSkill(
         skill: str,
-        agent_profile=Injected("agent_profile"),
-        workspace=Injected("workspace"),
+        agent_profile=_AGENT_PROFILE_INJECTED,
+        workspace=_WORKSPACE_INJECTED,
     ) -> str:
         skill_name = (skill or "").strip()
         if not skill_name:
@@ -550,7 +595,9 @@ def list_skill_descriptions(skills_dir: Path) -> list[dict]:
         skill_file = _find_skill_file(path.name, skills_dir)
         if skill_file is None:
             continue
-        out.append({"name": path.name, "description": extract_skill_description(skill_file)})
+        out.append(
+            {"name": path.name, "description": extract_skill_description(skill_file)}
+        )
         seen.add(path.name)
 
     return out

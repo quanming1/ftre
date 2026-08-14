@@ -5,10 +5,11 @@ context_govern — 上下文治理插件
 
 messages 表存储的是已经聚合、校验过的 Msg，不再对流式工具事件做重放治理。
 """
+
 import logging
 import os
 
-from ftre.plugin import Plugin, BEFORE_MESSAGES_BUILD
+from ftre.plugin import BEFORE_MESSAGES_BUILD, Plugin
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,8 @@ class ContextGovernPlugin(Plugin):
     name = "context_govern"
     version = "1.0.0"
 
-    def setup(self) -> None:
-        self.api.register_hook(BEFORE_MESSAGES_BUILD, self._govern)
+    async def setup(self, ctx, config) -> None:
+        ctx.on(BEFORE_MESSAGES_BUILD, self._govern)
 
     async def _govern(self, ctx):
         """before_messages_build hook：注入 AGENTS.md。"""

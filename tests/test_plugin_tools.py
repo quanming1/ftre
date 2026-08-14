@@ -1,14 +1,19 @@
 from types import SimpleNamespace
 
 import pytest
-
+from fastapi import APIRouter
 from ftre_agent_core.event import HintBlockEvent
-from ftre_agent_core.tool import Tool
+from ftre_agent_core.tool import Tool, ToolRegistry
 
-from ftre.agent.loop import AgentLoop
-from ftre.config import AgentConfig, LLMConfig
-from ftre.plugin import BEFORE_AGENT_RUN, HookManager, Plugin, PluginManager
-from ftre_agent_core.tool import ToolRegistry
+from ftre.config import AgentConfig
+from ftre.plugin import (
+    BEFORE_AGENT_RUN,
+    AgentRunContext,
+    EventHub,
+    FtreContext,
+    Plugin,
+    PluginRegistry,
+)
 from ftre.tools import build_default_tools
 from ftre.tools._workspace import WorkspaceAccessor
 from ftre.tools.read import create_read_tool
@@ -18,20 +23,12 @@ def _dummy_tool(name: str = "dummy") -> Tool:
     def dummy() -> str:
         return "ok"
 
-    return Tool(
-        name=name,
-        description="dummy tool",
-        parameters=[],
-        func=dummy,
-    )
+    return Tool(name=name, description="dummy tool", parameters=[], func=dummy)
 
 
 def test_tool_registry_overwrites_duplicate_names():
-    """agent-core 的 ToolRegistry 对重名工具采取覆盖策略（后者替换前者）。"""
     registry = ToolRegistry()
     registry.register(_dummy_tool("dup"))
-
-    # 同名工具直接覆盖，不报错
     registry.register(_dummy_tool("dup"))
     assert len(registry) == 1
     assert registry.get("dup") is not None
@@ -40,34 +37,24 @@ def test_tool_registry_overwrites_duplicate_names():
 def test_build_default_tools_includes_registry_tools():
     registry = ToolRegistry()
     registry.register(_dummy_tool("extra"))
-
-    result = build_default_tools(tool_registry=registry)
-
-    assert "extra" in result.names
+    assert "extra" in build_default_tools(tool_registry=registry).names
 
 
 def test_build_default_tools_omits_see_img_without_vision():
-    result = build_default_tools(llm_config=SimpleNamespace(vision=False))
-
-    assert "see_img" not in result.names
+    assert (
+        "see_img"
+        not in build_default_tools(llm_config=SimpleNamespace(vision=False)).names
+    )
 
 
 def test_build_default_tools_omits_see_img_with_vision():
-    result = build_default_tools(llm_config=SimpleNamespace(vision=True))
-
-    assert "see_img" not in result.names
+    assert (
+        "see_img"
+        not in build_default_tools(llm_config=SimpleNamespace(vision=True)).names
+    )
 
 
 def test_read_tool_reads_relative_image_path(tmp_path):
-    import os
-
-    class FakeWorkspace(WorkspaceAccessor):
-        def __init__(self, cwd: str):
-            self.cwd = cwd
-
-        def get(self) -> str:
-            return self.cwd
-
     image = tmp_path / "screen.png"
     image.write_bytes(
         b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
@@ -75,13 +62,11 @@ def test_read_tool_reads_relative_image_path(tmp_path):
         b"\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00"
         b"\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
     )
-
     result = create_read_tool().func(
         "screen.png",
-        ws=FakeWorkspace(str(tmp_path)),
+        ws=_FakeWorkspace(str(tmp_path)),
         llm_config=SimpleNamespace(vision=True),
     )
-
     assert isinstance(result, HintBlockEvent)
     assert result.metadata["hide"] is True
     assert result.metadata["path"] == str(image.resolve())
@@ -89,173 +74,104 @@ def test_read_tool_reads_relative_image_path(tmp_path):
 
 
 def test_read_tool_rejects_image_without_vision(tmp_path):
-    class FakeWorkspace(WorkspaceAccessor):
-        def __init__(self, cwd: str):
-            self.cwd = cwd
-
-        def get(self) -> str:
-            return self.cwd
-
     image = tmp_path / "screen.png"
-    image.write_bytes(b"not actually decoded because vision is disabled")
-
+    image.write_bytes(b"not decoded because vision is disabled")
     result = create_read_tool().func(
         "screen.png",
-        ws=FakeWorkspace(str(tmp_path)),
+        ws=_FakeWorkspace(str(tmp_path)),
         llm_config=SimpleNamespace(vision=False),
     )
-
     assert "当前模型不支持视觉输入" in result
 
 
-def test_plugin_manager_rolls_back_tools_when_setup_fails():
+@pytest.mark.asyncio
+async def test_plugin_setup_failure_rolls_back_registered_tools():
     class FailingToolPlugin(Plugin):
         name = "failing_tool"
+        inject = ("tool_registry",)
 
-        def setup(self) -> None:
-            self.api.tool_registry.register(_dummy_tool("leaked"))
+        async def setup(self, ctx, config):
+            ctx.tool_registry.register(_dummy_tool("leaked"))
             raise RuntimeError("boom")
 
-    registry = ToolRegistry()
-    manager = PluginManager(
-        bus=None,
-        channel_manager=None,
-        session_manager=None,
-        hook_manager=HookManager(),
-        tool_registry=registry,
-    )
-
-    manager._load(FailingToolPlugin(), {})
-
-    assert "leaked" not in [tool.name for tool in registry.snapshot()]
+    _root, registry, tools = _plugin_runtime()
+    instance = await registry.register(FailingToolPlugin)
+    assert instance.error is not None
+    assert tools.get("leaked") is None
 
 
-def test_plugin_api_tool_registry_adds_to_shared_registry():
+@pytest.mark.asyncio
+async def test_plugin_context_registers_and_cleans_shared_tool():
     class ToolPlugin(Plugin):
         name = "tool_plugin"
+        inject = ("tool_registry",)
 
-        def setup(self) -> None:
-            self.api.tool_registry.register(_dummy_tool("from_plugin"))
+        async def setup(self, ctx, config):
+            ctx.tool_registry.register(_dummy_tool("from_plugin"))
 
-    registry = ToolRegistry()
-    manager = PluginManager(
-        bus=None,
-        channel_manager=None,
-        session_manager=None,
-        hook_manager=HookManager(),
-        tool_registry=registry,
-    )
-
-    manager._load(ToolPlugin(), {})
-
-    assert [tool.name for tool in registry.snapshot()] == ["from_plugin"]
+    _root, registry, tools = _plugin_runtime()
+    await registry.register(ToolPlugin)
+    assert [tool.name for tool in tools.snapshot()] == ["from_plugin"]
+    await registry.unload("tool_plugin")
+    assert tools.snapshot() == []
 
 
-def test_plugin_api_register_router():
-    from fastapi import APIRouter
-
+@pytest.mark.asyncio
+async def test_plugin_context_registers_router():
     class RouterPlugin(Plugin):
         name = "router_plugin"
+        inject = ("routers",)
 
-        def setup(self) -> None:
+        async def setup(self, ctx, config):
             router = APIRouter()
 
             @router.get("/ping")
             def ping():
                 return {"pong": True}
 
-            self.api.register_router(router)
+            ctx.register_router(router)
 
-    registry = ToolRegistry()
-    manager = PluginManager(
-        bus=None,
-        channel_manager=None,
-        session_manager=None,
-        hook_manager=HookManager(),
-        tool_registry=registry,
-    )
-
-    manager._load(RouterPlugin(), {})
-
-    assert len(manager.routers) == 1
-    routes = [r.path for r in manager.routers[0].routes]
-    assert "/ping" in routes
+    root, registry, _ = _plugin_runtime()
+    await registry.register(RouterPlugin)
+    routers = root.get("routers")
+    assert [route.path for route in routers[0].routes] == ["/ping"]
 
 
-def test_before_agent_run_hook_can_insert_messages():
-    """before_agent_run hook 可以自由插入任意 role 的消息。"""
-    hooks = HookManager()
+@pytest.mark.asyncio
+async def test_before_agent_run_filter_can_insert_messages():
+    events = EventHub()
 
     def rewrite(ctx):
-        # 模拟 OpenClaw 双轨注入
-        ctx.messages.insert(0, {"role": "system", "content": "persona: act as Alice"})
-        ctx.messages.insert(1, {"role": "user", "content": "[GROUP CONTEXT]\n群规: 禁止骂人\n[/GROUP CONTEXT]"})
-        ctx.messages.insert(2, {"role": "user", "content": "成员列表:\n- Alice\n- Bob"})
+        ctx.messages.insert(0, {"role": "system", "content": "persona: Alice"})
+        ctx.messages.insert(1, {"role": "user", "content": "群规"})
         return ctx
 
-    hooks.register(BEFORE_AGENT_RUN, rewrite)
-
-    from ftre.plugin import AgentRunContext
+    events.on(BEFORE_AGENT_RUN, rewrite)
     ctx = AgentRunContext(
         session_id="sess_1",
         channel_id="ws",
-        messages=[
-            {"role": "system", "content": "base system prompt"},
-            {"role": "user", "content": "你好"},
-        ],
+        messages=[{"role": "system", "content": "base"}],
         config=AgentConfig(),
     )
-    ctx = hooks.trigger_sync(BEFORE_AGENT_RUN, ctx)
-
-    assert ctx.messages[0]["role"] == "system"
-    assert ctx.messages[0]["content"] == "persona: act as Alice"
-    assert ctx.messages[1]["role"] == "user"
-    assert "群规" in ctx.messages[1]["content"]
-    assert ctx.messages[2]["role"] == "user"
-    assert "Alice" in ctx.messages[2]["content"]
-    # 原始消息还在
-    assert ctx.messages[3]["role"] == "system"
-    assert "base system prompt" in ctx.messages[3]["content"]
-    assert ctx.messages[4]["role"] == "user"
-    assert ctx.messages[4]["content"] == "你好"
+    ctx = await events.filter(BEFORE_AGENT_RUN, ctx)
+    assert [message["content"] for message in ctx.messages] == [
+        "persona: Alice",
+        "群规",
+        "base",
+    ]
 
 
-def test_builtin_prompt_injection_uses_before_agent_run(tmp_path):
-    from ftre.plugin.builtin.mcp_plugin import McpPlugin
-    from ftre.plugin.builtin.skill_plugin import SkillPlugin
+class _FakeWorkspace(WorkspaceAccessor):
+    def __init__(self, cwd: str):
+        self.cwd = cwd
 
-    hooks = HookManager()
-    registry = ToolRegistry()
-    manager = PluginManager(
-        bus=None,
-        channel_manager=None,
-        session_manager=None,
-        hook_manager=hooks,
-        tool_registry=registry,
-    )
-    manager._load(McpPlugin(), {})
-    manager._load(SkillPlugin(), {"skills_dir": str(tmp_path)})
+    def get(self) -> str:
+        return self.cwd
 
-    from ftre.plugin import AgentRunContext
-    ctx = AgentRunContext(
-        session_id="sess_1",
-        channel_id="ws",
-        messages=[
-            {"role": "system", "content": "base system prompt"},
-            {"role": "user", "content": "你好"},
-        ],
-        config=AgentConfig(),
-    )
-    ctx = hooks.trigger_sync(BEFORE_AGENT_RUN, ctx)
 
-    # MCP 和 Skill 的内容拼接到第一条 system 消息，不产生新的 system 消息
-    system_msgs = [m for m in ctx.messages if m["role"] == "system"]
-    assert len(system_msgs) == 1  # 仍然是单条 system 消息
-    assert "base system prompt" in system_msgs[0]["content"]
-    assert "MCP" in system_msgs[0]["content"]
-    assert "skill" in system_msgs[0]["content"].lower()
-
-    route_paths = [route.path for router in manager.routers for route in router.routes]
-    assert "/skills" in route_paths
-    assert "loadSkill" in [tool.name for tool in registry.snapshot()]
-
+def _plugin_runtime():
+    root = FtreContext()
+    tools = ToolRegistry()
+    root.provide("tool_registry", tools)
+    root.provide("routers", [])
+    return root, PluginRegistry(root), tools

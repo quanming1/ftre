@@ -14,10 +14,9 @@ ftre CLI 入口
 """
 
 import asyncio
-import json
 import logging
-import os
 import sys
+from typing import ClassVar
 
 import typer
 
@@ -31,15 +30,16 @@ import typer
 # 同时强制 stdout/stderr 用 UTF-8 编码，避免 GBK 无法输出 Unicode 字符。
 # ──────────────────────────────────────────────────────────────────────────────
 if sys.platform == "win32":
-    from contextlib import suppress
-
     import ctypes
+    from contextlib import suppress
 
     kernel32 = ctypes.windll.kernel32
     stdout = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE = -11
     mode = ctypes.c_uint32()
     if kernel32.GetConsoleMode(stdout, ctypes.byref(mode)):
-        kernel32.SetConsoleMode(stdout, mode.value | 0x0004)  # VIRTUAL_TERMINAL_PROCESSING
+        kernel32.SetConsoleMode(
+            stdout, mode.value | 0x0004
+        )  # VIRTUAL_TERMINAL_PROCESSING
 
     # 强制 stdout/stderr 用 UTF-8，无论当前编码是什么
     # 后台模式（重定向到文件）时 Windows 默认用 GBK，导致中文乱码
@@ -64,38 +64,38 @@ class ColorFormatter(logging.Formatter):
     """
 
     # ANSI 颜色码常量
-    RESET = "\033[0m"       # 重置所有样式
-    DIM = "\033[2m"        # 暗淡（灰色）
-    SEP = "\033[90m"       # 分隔符颜色（深灰）
-    MESSAGE = "\033[97m"   # 消息正文颜色（亮白）
+    RESET = "\033[0m"  # 重置所有样式
+    DIM = "\033[2m"  # 暗淡（灰色）
+    SEP = "\033[90m"  # 分隔符颜色（深灰）
+    MESSAGE = "\033[97m"  # 消息正文颜色（亮白）
 
     # 日志级别 → ANSI 颜色
-    LEVEL_COLORS = {
-        "DEBUG": "\033[94m",    # 蓝
-        "INFO": "\033[92m",     # 绿
+    LEVEL_COLORS: ClassVar[dict[str, str]] = {
+        "DEBUG": "\033[94m",  # 蓝
+        "INFO": "\033[92m",  # 绿
         "WARNING": "\033[93m",  # 黄
-        "ERROR": "\033[91m",    # 红
+        "ERROR": "\033[91m",  # 红
         "CRITICAL": "\033[95m",  # 亮紫
     }
 
     # 模块命名空间 → ANSI 颜色
     # 不同模块的日志用不同颜色，方便在终端区分
-    NAMESPACE_COLORS = {
-        "ftre.agent": "\033[95m",           # 亮紫 — Agent 循环
-        "ftre.api": "\033[94m",             # 蓝 — HTTP API
-        "ftre.bus": "\033[36m",             # 青 — 消息总线
-        "ftre.channel": "\033[96m",          # 亮青 — 通道
-        "ftre.command": "\033[35m",         # 品红 — 斜杠指令
-        "ftre.config": "\033[92m",          # 绿 — 配置
-        "ftre.mcp": "\033[38;5;208m",      # 橙 — MCP 协议
-        "ftre.plugin": "\033[38;5;141m",    # 紫罗兰 — 插件
-        "ftre.session": "\033[38;5;45m",    # 亮青蓝 — 会话管理
-        "ftre.tools": "\033[38;5;214m",     # 橙黄 — 工具
-        "ftre_agent_core": "\033[38;5;75m", # 浅蓝 — Agent 核心库
-        "__main__": "\033[38;5;203m",       # 暗红 — 主入口
+    NAMESPACE_COLORS: ClassVar[dict[str, str]] = {
+        "ftre.agent": "\033[95m",  # 亮紫 — Agent 循环
+        "ftre.api": "\033[94m",  # 蓝 — HTTP API
+        "ftre.bus": "\033[36m",  # 青 — 消息总线
+        "ftre.channel": "\033[96m",  # 亮青 — 通道
+        "ftre.command": "\033[35m",  # 品红 — 斜杠指令
+        "ftre.config": "\033[92m",  # 绿 — 配置
+        "ftre.mcp": "\033[38;5;208m",  # 橙 — MCP 协议
+        "ftre.plugin": "\033[38;5;141m",  # 紫罗兰 — 插件
+        "ftre.session": "\033[38;5;45m",  # 亮青蓝 — 会话管理
+        "ftre.tools": "\033[38;5;214m",  # 橙黄 — 工具
+        "ftre_agent_core": "\033[38;5;75m",  # 浅蓝 — Agent 核心库
+        "__main__": "\033[38;5;203m",  # 暗红 — 主入口
     }
     DEFAULT_NAME = "\033[96m"  # 未匹配的模块用默认亮青
-    TRACEBACK = "\033[91m"     # 异常堆栈用红色
+    TRACEBACK = "\033[91m"  # 异常堆栈用红色
 
     def format(self, record: logging.LogRecord) -> str:
         """格式化一条日志记录。
@@ -145,10 +145,12 @@ handler = logging.StreamHandler()
 if sys.stderr.isatty():
     handler.setFormatter(ColorFormatter())
 else:
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s - %(levelname)-8s - %(name)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    ))
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s - %(levelname)-8s - %(name)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
 logging.root.addHandler(handler)
 logging.root.setLevel(logging.INFO)
 
@@ -164,15 +166,15 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 # ──────────────────────────────────────────────────────────────────────────────
 # 这些 import 放在日志配置之后，因为某些模块在被 import 时就会创建 logger，
 # 如果日志还没配好，那些模块的日志就不会有颜色。
-from ftre_agent_core.tool import ToolRegistry
 from ftre_agent_core.hooks import FtreCoreHookManager
+from ftre_agent_core.tool import ToolRegistry
 
 from ftre.agent.loop import AgentLoop
 from ftre.bus import EventBus
 from ftre.channel import ChannelManager, SubagentChannel, WebSocketChannel
 from ftre.config import load_config_file, load_gateway_address
 from ftre.gateway.runtime import GatewayRuntime
-from ftre.plugin import HookManager, PluginManager
+from ftre.plugin import FtreContext, PluginLoader, install_core_services
 from ftre.session import SessionManager
 from ftre.tools.cron import CronScheduler
 
@@ -191,9 +193,9 @@ from ftre.tools.cron import CronScheduler
 #       │
 #   AgentLoop（消费消息 → 调 LLM → 执行工具 → 发回消息）
 #       │
-#   PluginManager（加载内置/外部插件，注册 Channel/Hook/Tool/Router）
+#   PluginLoader（加载内置/外部插件，注册 Channel/Event/Tool/Router）
 #       │
-#   HookManager + CoreHookManager（插件挂到生命周期挂点）
+#   EventHub + Core hooks（插件挂到生命周期事件）
 #   ToolRegistry（插件注册工具，Agent 构建工具集时读取）
 #   CommandManager（注册斜杠指令如 /compact）
 #   CronScheduler（扫描 ~/.ftre/cron/ 触发定时任务）
@@ -230,10 +232,6 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
     # 管理所有通信通道（WebSocket、Subagent 等）
     mgr = ChannelManager(bus)
 
-    # ── Hook 管理器 ─────────────────────────────────────────
-    # 让插件能挂到内部生命周期挂点（before_messages_build、before_agent_run 等）
-    hook_manager = HookManager()
-
     # Core Hook 管理器 — 让插件能注册 ON_STOP 等 core 层 hook
     core_hook_manager = FtreCoreHookManager()
 
@@ -247,18 +245,19 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
 
     cmd = CommandManager()
 
-    # ── Plugin 管理器 ───────────────────────────────────────
-    # 加载 ~/.ftre/plugins/ 下的外部插件 + 内置插件（skill、mcp、context_govern、title_gen）
-    # 插件可以注册 Channel / Hook / Tool / HTTP Router / System Prompt
-    plugin_manager = PluginManager(
+    # ── Plugin Context ──────────────────────────────────────
+    # 核心能力显式注册为 service；插件只能访问其 inject 声明的依赖。
+    plugin_context = FtreContext()
+    install_core_services(
+        plugin_context,
         bus=bus,
         channel_manager=mgr,
         session_manager=session_manager,
-        hook_manager=hook_manager,
         core_hook_manager=core_hook_manager,
         tool_registry=tool_registry,
         event_loop=lambda: event_loop,
         command_manager=cmd,
+        routers=[],
     )
 
     # 注入到 HTTP API 路由
@@ -279,8 +278,9 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
     agent_manager.ensure_default()  # 确保至少有一个 default agent
     set_agent_manager(agent_manager)
 
-    # 加载所有插件（注册 Channel / Hook / Tool / Router 等）
-    plugin_manager.load_all(config_data)
+    # 配置树驱动加载内置/外部插件，依赖就绪后自动 ACTIVE。
+    plugin_loader = PluginLoader(plugin_context, config_data)
+    await plugin_loader.load()
 
     # ── WebSocket Channel ──────────────────────────────────
     # 这是客户端连接的入口：Electron 前端通过 WebSocket 和后端通信
@@ -289,7 +289,7 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
     gateway_host = host or config_host
     gateway_port = port or config_port
     ws_channel = WebSocketChannel(
-        bus, host=gateway_host, port=gateway_port, plugin_manager=plugin_manager
+        bus, host=gateway_host, port=gateway_port, plugin_manager=plugin_loader
     )
     mgr.register(ws_channel)
 
@@ -303,11 +303,11 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
         bus=bus,
         session_manager=session_manager,
         channel_manager=mgr,
-        hook_manager=hook_manager,
+        event_hub=plugin_context.events,
         core_hook_manager=core_hook_manager,
         tool_registry=tool_registry,
         command_manager=cmd,
-        plugin_manager=plugin_manager,
+        plugin_manager=plugin_loader,
         agent_manager=agent_manager,
     )
     # 删除级联需要取消运行中 agent：把 loop 反向注入 session 门面
@@ -346,6 +346,7 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
         # 清理：按依赖顺序停止各组件
         await cron_scheduler.stop()
         await agent_loop.stop()
+        await plugin_loader.close()
         await mgr.stop()
         await session_manager.close()
 
@@ -371,14 +372,14 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
 # 主命令组 — 顶层入口
 app = typer.Typer(
     name="ftre",
-    no_args_is_help=True,      # 不带参数时自动打印帮助
+    no_args_is_help=True,  # 不带参数时自动打印帮助
     help="ftre - AI 编程助手",
 )
 
 # gateway 子命令组 — 用 invoke_without_command=True 让 `ftre gateway`（无子命令）也能执行 callback
 gateway_app = typer.Typer(
     invoke_without_command=True,  # `ftre gateway` 不带子命令时也执行 callback
-    no_args_is_help=False,        # `ftre gateway` 不带子命令时不打印帮助，而是执行 callback
+    no_args_is_help=False,  # `ftre gateway` 不带子命令时不打印帮助，而是执行 callback
     help="启动和管理 ftre 网关服务。",
 )
 app.add_typer(gateway_app, name="gateway")  # 注册为 `ftre gateway` 子命令组
@@ -390,7 +391,9 @@ def gateway(
     port: int | None = typer.Option(None, "--port", "-p", help="网关端口"),
     host: str | None = typer.Option(None, "--host", "-H", help="绑定地址"),
     background: bool = typer.Option(False, "--background", "-d", help="后台运行"),
-    foreground: bool = typer.Option(False, "--foreground", help="前台运行（子进程内部用）"),
+    foreground: bool = typer.Option(
+        False, "--foreground", help="前台运行（子进程内部用）"
+    ),
 ):
     """启动 ftre 网关服务。
 
@@ -480,8 +483,12 @@ def gateway_stop(
 
 @gateway_app.command("restart")
 def gateway_restart(
-    port: int | None = typer.Option(None, "--port", "-p", help="新端口（不指定则沿用上次）"),
-    host: str | None = typer.Option(None, "--host", "-H", help="新地址（不指定则沿用上次）"),
+    port: int | None = typer.Option(
+        None, "--port", "-p", help="新端口（不指定则沿用上次）"
+    ),
+    host: str | None = typer.Option(
+        None, "--host", "-H", help="新地址（不指定则沿用上次）"
+    ),
     timeout: int = typer.Option(20, "--timeout", help="停止旧进程的超时（秒）"),
 ):
     """重启后台 gateway 进程。
