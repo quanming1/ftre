@@ -24,9 +24,9 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-if False:  # pragma: no cover - typing-only imports without runtime cycles
+if TYPE_CHECKING:  # typing-only imports, avoid runtime import cycles
     from ftre_agent_core.tool import ToolRegistry
 
     from ftre.agent.agent_manager import AgentProfile
