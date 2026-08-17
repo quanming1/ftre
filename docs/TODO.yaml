@@ -186,3 +186,17 @@ stages:
           - tests/
           - src/ftre/agent/trace_store.py
         acceptance: pytest 测试套件全部通过，trace_store SQLite 可写入和查询
+
+  - id: E
+    name: 会话能力
+    steps:
+      - id: E1
+        title: 会话内容搜索
+        status: in_progress
+        date: 2026-08-17
+        prd: docs/prd/PRD-E1-session-search.md
+        prd_status: 开发中
+        modules:
+          - src/ftre/session/search_index.py
+          - src/ftre/api/routes.py
+        acceptance: FTS5 旁路索引增量构建（不逐查询扫描 state.json），中文两字/三字与标题均可检索，接口毫秒级返回，配套前端高亮筛选
