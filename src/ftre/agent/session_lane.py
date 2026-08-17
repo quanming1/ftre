@@ -220,15 +220,17 @@ class SessionLane:
                 await self._completion.complete(self.session_id, item.request_id, outcome)
                 await self._publish_snapshot(self.session_id)
 
-                # 70% 关口在 Turn 完整结束后；有等待请求时必须 await 压缩再 claim。
-                if await self._mailbox.peek(self.session_id) is not None:
-                    after = await self._context_gate.after_turn(
-                        self.session_id, channel_id, config
-                    )
-                    if after.action == "compact" and not await self._compact_or_block(
-                        channel_id, config, after.reason
-                    ):
-                        return
+                # 70% 关口在 Turn 完整结束后：无论队列中是否还有等待请求都检查。
+                # 队列空也预压缩——空闲会话在收尾时把上下文清干净，下一条消息到达
+                # 时无需同步等待压缩，客户端气泡也在 turn 结束时立即出现（而不是
+                # 等用户再发一条消息触发 before_claim 的 80% 强制水位才压缩）。
+                after = await self._context_gate.after_turn(
+                    self.session_id, channel_id, config
+                )
+                if after.action == "compact" and not await self._compact_or_block(
+                    channel_id, config, after.reason
+                ):
+                    return
         except Exception:
             logger.exception("[session-lane] worker 异常 session=%s", self.session_id)
             self._operation = BlockedOperation("SessionLane 内部错误；请求保留在队列中")

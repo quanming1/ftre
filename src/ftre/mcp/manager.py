@@ -9,7 +9,11 @@ from typing import Any, TYPE_CHECKING
 
 from mcp import ClientSession, Tool as McpToolDef
 from mcp.client.stdio import stdio_client, StdioServerParameters
-from mcp.client.streamable_http import streamablehttp_client
+
+try:  # mcp>=1.x
+    from mcp.client.streamable_http import streamablehttp_client
+except ImportError:  # mcp 2.0 起改名为 streamable_http_client
+    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
 
 from .config import McpServerConfig, parse_mcp_config
 
