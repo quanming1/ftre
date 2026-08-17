@@ -197,6 +197,6 @@ stages:
         prd: docs/prd/PRD-E1-session-search.md
         prd_status: 开发中
         modules:
-          - src/ftre/session/search_index.py
+          - src/ftre/session/search.py
           - src/ftre/api/routes.py
-        acceptance: FTS5 旁路索引增量构建（不逐查询扫描 state.json），中文两字/三字与标题均可检索，接口毫秒级返回，配套前端高亮筛选
+        acceptance: 内存态直接检索（不读盘不解析 state.json、不引入额外存储），中文子串与标题均可检索，大数据量下接口百毫秒级，配套前端高亮筛选
