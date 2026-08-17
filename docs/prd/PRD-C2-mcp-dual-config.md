@@ -93,3 +93,4 @@ class McpManager:
 |---|---|---|
 | 2026-08-13 | 补充 MCP HTTP/config/hook/trace 边界和测试计划 | 使 C2 与 AgentLoop/TurnExecutor 的运行生命周期契约一致 |
 | 2026-08-13 | 影响复核：仅补充文档；AC1-AC3 未改变，现有 MCP 测试作为当前证据 | 记录协议边界修订不引入代码行为变化 |
+| 2026-08-17 | 修复：pyproject 补声明 mcp>=1.0.0,<2.0（此前未声明，CI 按 pyproject 装依赖导致 builtin 插件集成测试 ModuleNotFoundError）；manager.py 兼容 mcp SDK 2.0 的导入名变更（streamablehttp_client → streamable_http_client，try/except 双名导入） | CI 自 0.2.0 发布起连续失败 |
