@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 import shutil
@@ -70,6 +71,18 @@ class SessionManager:
 
     def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
         self._repo = SessionRepository(db_path, sessions_dir=sessions_dir)
+
+    async def search_sessions(
+        self,
+        q: str,
+        limit: int = 30,
+        workspace: str | None = None,
+    ) -> dict[str, Any]:
+        """按关键字检索会话标题与正文（内存态直接扫描，线程池执行不阻塞）。"""
+        from ftre.session.search import search_sessions
+
+        snapshot = self._repo.all_states()
+        return await asyncio.to_thread(search_sessions, snapshot, q, limit, workspace)
 
     async def init(self) -> None:
         """启动：加载全部 JSON 状态、建索引、修复遗留 open reply、清扫孤儿目录。"""
