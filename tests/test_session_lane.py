@@ -318,3 +318,50 @@ async def test_close_fence_rejects_submit_instead_of_creating_a_new_lane(tmp_pat
 
     assert rejected.accepted is False
     assert rejected.error["code"] == "session_closing"
+
+
+@pytest.mark.asyncio
+async def test_after_turn_compacts_even_when_queue_is_empty(tmp_path):
+    """turn 结束后队列已空也必须执行预压缩水位检查。
+
+    回归锁定：此前 after_turn 只在 peek() 非空（还有等待消息）时检查，导致
+    空闲会话的压缩被推迟到下一条消息 before_claim 才发生——客户端气泡
+    「压缩中」直到用户再发消息才出现，新消息被迫排队等压缩。
+    """
+    compact_calls: list[str] = []
+    after_turn_calls = 0
+
+    class _CompactGate(_PassGate):
+        async def after_turn(self, *args):
+            nonlocal after_turn_calls
+            after_turn_calls += 1
+            return ContextDecision("compact", "本轮结束后达到预压缩水位")
+
+        async def compact(self, session_id, *args):
+            compact_calls.append(session_id)
+            return ContextDecision("pass")
+
+    sessions = SessionManager(sessions_dir=str(tmp_path / "sessions"))
+    await sessions.init()
+    session_id = await sessions.create_session("test")
+    mailbox = MailboxStore(sessions)
+    lane = SessionLane(
+        session_id,
+        mailbox=mailbox,
+        context_gate=_CompactGate(),
+        executor=_Executor(),
+        completion=CompletionRegistry(),
+        publish_snapshot=lambda _sid: asyncio.sleep(0),
+    )
+
+    # 单条消息：turn 完成时队列必然已空。
+    await lane.submit(_inbound(session_id, "A", "client-A"))
+    # 等 worker 自然退出（队列空 → after_turn 检查 → peek None → return）。
+    # 不能用 close()：close 会 cancel worker，收尾路径（含 after_turn）不会执行。
+    worker = lane._worker
+    if worker is not None:
+        await worker
+    await lane.close()
+
+    assert after_turn_calls == 1
+    assert compact_calls == [session_id]
