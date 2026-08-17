@@ -166,6 +166,23 @@ async def list_sessions(
     }
 
 
+@router.get("/sessions/search")
+async def search_sessions(
+    q: str = "",
+    limit: int = 30,
+    workspace: str | None = None,
+):
+    """按关键字检索会话标题与消息正文（内存态，百毫秒级）。
+
+    返回 { query, total, results:[{session_id,title,workspace,channel,
+    updated_at,title_matched,hits:[{mid,role,snippet}]}] }。
+    标题命中排前，组内按更新时间倒序；每会话最多 3 条命中摘要。
+    """
+    if _session_manager is None:
+        raise HTTPException(status_code=503, detail="SessionManager 未就绪")
+    return await _session_manager.search_sessions(q, limit=limit, workspace=workspace or None)
+
+
 @router.put("/sessions/{session_id}")
 async def update_session(session_id: str, request: Request):
     """更新 session 字段（title / workspace；任传一项即可）"""
