@@ -31,6 +31,8 @@
 - [x] FR5：共享 Task 去重——同一 session 的压缩请求复用同一个 asyncio.Task，不重复执行
 - [x] FR6：cancel_compact——会话关闭/网关停止时取消正在进行的真实压缩任务；普通 `/cancel` 不取消共享压缩
 - [x] FR7：压缩事件投影——summary/fast 结果通过 `context_compact_done` 进入 SessionProjection，CompactManager 不直接写 state.json 或发送 WebSocket
+- [x] FR8：摘要空结果重试 + fast 兜底——LLM 首次未产出正文（只输出思考等）时自动重试一次；重试仍为空则回退 compress-fast 裁剪工具输出，避免直接放弃导致 SessionLane BLOCKED。
+- [x] FR9：compress-fast 作废 usage 锚点——裁剪成功后清除活跃区间内 `last_call_usage` 锚点，防止水位冻结在裁剪前值、`should_compact` 永远判过线导致死锁。
 
 ### 2.2 非功能需求
 
@@ -105,6 +107,7 @@ flowchart LR
 - [x] AC4：summary 投影——压缩摘要通过 Projection 落入 messages，原始历史不删除，下一轮上下文从最后一条 compact 锚点和 tail 构建
 - [x] AC5：压缩无副作用——无新 tail 或无可裁剪 ToolResultBlock 时 no-op，不生成重复展示消息
 - [x] AC6：失败安全——LLM 失败/摘要过大不写错误摘要；ContextGate 复核后可 fast fallback，仍超硬水位则 blocked
+- [x] AC7：摘要为空时自动重试一次，重试成功则正常落 compact Msg；重试仍为空则回退 compress-fast（发 failed 事件+裁剪工具输出+写 fast 气泡），不产生 compact Msg。compress-fast 裁剪成功后作废 usage 锚点，`get_token_usage` 退化为裁剪后内容估算、不再冻结（自动化测试 3/3：重试成功、重试失败兜底、锚点作废）
 
 ## 6. 测试计划
 
@@ -120,3 +123,4 @@ flowchart LR
 | 2026-08-13 | 补充 ContextGate 的 80% 领取前与 70% 回合后门控，以及 CompactManager 与 SessionLane 的职责边界 | 说明压缩如何嵌入队列流水线，避免误以为 TurnExecutor 或 CompactManager 直接消费队列 |
 | 2026-08-13 | 补充实际 prompt 预算公式、summary/fast/no-op/failure 语义、事件投影和测试计划；修正 CompactManager API 示例 | 将压缩结果、失败处理和上下文锚点变成可验收的契约 |
 | 2026-08-13 | 影响复核：Compact/Context/Lane 定向测试通过，覆盖 summary、fast、no-op、共享 Task 和压缩期间 tail；ContextGate 的失败后 blocked 集成路径仍需补测 | 记录压缩边界和失败语义的验收依据 |
+| 2026-08-18 | 新增 FR8 / FR9 / AC7：LLM 摘要未产出正文时重试一次，重试仍为空回退 compress-fast（发 failed 事件+裁剪工具输出+写 fast 气泡）；compress-fast 裁剪成功同时作废活跃区间内 `last_call_usage` 锚点（否则水位冻结，`should_compact` 永远判过线、SessionLane 永久 BLOCKED）。自动化测试 3/3：重试成功、重试失败兜底、锚点作废 | 生产事故：摘要模型只输出思考未写正文 → fast 兜底裁剪后水位未降 → 会话卡在「压缩后上下文仍超过安全水位」 |

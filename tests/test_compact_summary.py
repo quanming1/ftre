@@ -226,6 +226,108 @@ async def test_llm_failure_writes_no_compact_msg(env, monkeypatch):
     assert not any(m["name"] == MsgName.COMPACT for m in full)
     assert len(full) == 4
     assert "context_compact_failed" in _event_names(emitted)
+    # 重试后仍为空：LLM 被调用两次（首次 + 重试）
+    assert compact._run_compact_llm.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_summary_retries_once_then_succeeds(env, monkeypatch):
+    """首次摘要为空时重试一次；重试产出摘要则正常落 compact Msg。"""
+    manager, emitted, projection, compact = env
+    sid = await manager.create_session("ws")
+    await _seed(manager, sid, 2)
+    llm = AsyncMock(side_effect=[None, "重试后的摘要"])
+    monkeypatch.setattr(compact, "_run_compact_llm", llm)
+
+    result = await compact.compact(sid, "ws", config=_config())
+
+    assert result == "重试后的摘要"
+    assert llm.await_count == 2
+    full = await manager.get_messages_by_session(sid)
+    compact_msgs = [m for m in full if m["name"] == MsgName.COMPACT]
+    assert len(compact_msgs) == 1
+    assert compact_msgs[0]["content"][0]["text"] == "重试后的摘要"
+    # 重试成功不算失败，不发 failed 事件
+    assert "context_compact_failed" not in _event_names(emitted)
+
+
+@pytest.mark.asyncio
+async def test_empty_summary_after_retry_falls_back_to_compress_fast(env, monkeypatch):
+    """重试后摘要仍为空：回退 compress_fast 裁剪工具输出，不写 compact Msg。"""
+    from ftre_agent_core.message import ToolCallBlock, ToolResultBlock
+
+    manager, emitted, projection, compact = env
+    sid = await manager.create_session("ws")
+    user = UserMsg(name=MsgName.DEFAULT, content="请读取文件")
+    assistant = AssistantMsg(
+        name=MsgName.DEFAULT,
+        content=[
+            ToolCallBlock(id="c1", name="read", arguments={}),
+            ToolResultBlock(id="c1", name="read", output="很长的工具输出" * 50, state="success"),
+        ],
+    )
+    await manager.save_message(sid, user)
+    await manager.save_message(sid, assistant)
+    monkeypatch.setattr(compact, "_run_compact_llm", AsyncMock(return_value=None))
+
+    result = await compact.compact(sid, "ws", config=_config())
+
+    assert result is None
+    assert compact._run_compact_llm.await_count == 2
+    full = await manager.get_messages_by_session(sid)
+    # 无 summary 锚点；有 fast 压缩气泡 + 工具输出已被裁剪
+    assert not any(m["name"] == MsgName.COMPACT for m in full)
+    fast_msgs = [m for m in full if m["name"] == MsgName.COMPACT_FAST]
+    assert len(fast_msgs) == 1
+    trimmed = [m for m in full if m["id"] == assistant.id][0]
+    tool_blocks = [b for b in trimmed["content"] if b.get("type") == "tool_result"]
+    assert len(tool_blocks) == 1
+    assert [p.get("text") for p in tool_blocks[0]["output"]] == ["[工具输出已压缩]"]
+    assert "context_compact_failed" in _event_names(emitted)
+
+
+@pytest.mark.asyncio
+async def test_compress_fast_invalidates_stale_usage_anchor(env):
+    """compress_fast 裁剪后作废 last_call_usage 锚点，水位不再冻结在裁剪前的值。
+
+    回归场景：摘要失败 → fast 裁剪成功，但锚点 assistant Msg 上记录的
+    last_call_usage 仍是裁剪前实算值，should_compact 永远判过线 →
+    SessionLane BLOCKED 死锁（"压缩后上下文仍超过安全水位"）。
+    """
+    from ftre_agent_core.message import (
+        MsgToken,
+        ToolCallBlock,
+        ToolResultBlock,
+        TokenUsage,
+    )
+
+    manager, emitted, projection, compact = env
+    sid = await manager.create_session("ws")
+    stale_usage = TokenUsage(
+        prompt_tokens=900_000, completion_tokens=500, total_tokens=900_500,
+    )
+    user = UserMsg(name=MsgName.DEFAULT, content="请读取文件")
+    assistant = AssistantMsg(
+        name=MsgName.DEFAULT,
+        content=[
+            ToolCallBlock(id="c1", name="read", arguments={}),
+            ToolResultBlock(id="c1", name="read", output="很长的工具输出" * 50, state="success"),
+        ],
+        token=MsgToken(usage=stale_usage.model_copy(), last_call_usage=stale_usage),
+    )
+    await manager.save_message(sid, user)
+    await manager.save_message(sid, assistant)
+
+    before = await manager.get_token_usage(sid)
+    assert before["total"] == 900_500  # 锚点生效
+
+    changed = await compact.compress_fast(sid, "ws", config=SimpleNamespace())
+    assert changed is True
+
+    after = await manager.get_token_usage(sid)
+    # 锚点已作废：退化为裁剪后内容的字符估算，远小于冻结值
+    assert after["last_call_usage"] is None
+    assert after["total"] < 1_000
 
 
 @pytest.mark.asyncio
