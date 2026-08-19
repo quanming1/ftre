@@ -99,7 +99,7 @@ flowchart LR
 - [x] AC1：执行 `ftre gateway` 启动后端，日志输出监听端口
 - [x] AC2：WebSocket 客户端可连接到 Gateway 并建立会话
 - [x] AC3：`config.json` 中的 LLM 配置正确加载，agent 可使用配置的 provider/model
-- [ ] AC4：model 条目配置 `"api_type": "responses"` 的模型（如 muse-spark-1.2），`_build_llm_config` 返回的 `LLMConfig.api_type == "responses"` 且传导至 ReActAgent；未配置时回退 provider 级，再回退 `"completions"`（自动化测试断言三级回退 + 真实对话回归见 B2 PRD AC6）
+- [x] AC4：model 条目配置 `"api_type": "responses"` 的模型（如 muse-spark-1.2），`_build_llm_config` 返回的 `LLMConfig.api_type == "responses"` 且传导至 ReActAgent；未配置时回退 provider 级，再回退 `"completions"`（自动化测试断言三级回退 + 真实对话回归见 B2 PRD AC6）
 
 ## 6. 测试计划
 
@@ -115,3 +115,4 @@ flowchart LR
 | 2026-08-13 | 补充 Channel/EventBus/AgentLoop 接口、启动停止顺序和内存 Bus 的可靠性边界；增加测试计划 | 让 A1 成为后续 A2/B1/B3 的稳定基础契约，而不是只描述三件套名称 |
 | 2026-08-13 | 影响复核：仅补充文档，不改变代码和 A1 行为；AC1-AC3 不受影响 | 记录本次 PRD 反推的验收影响 |
 | 2026-08-18 | 新增 FR6 / AC4：config 解析 model 级 `api_type`（优先级 model 条目 > provider 级 > 默认 completions）并传导至 ReActAgent。代码实现随 ftre-agent-core B2（LLM 协议适配层，PRD-B2-llm-adapter）的 Phase 1 管道落地；原 AC1-AC3 不受影响 | OpenCode Go 等混合协议 provider 出现：同一 provider 内 Muse/Luna 走 responses、其余走 completions，reasoning_effort 仅 responses 路径生效（实测），协议必须按模型粒度配置 |
+| 2026-08-19 | AC4 验收通过：config.py 三级回退实现（tests/test_config_api_type.py 5/5）+ compact_manager/title_gen 迁移到 create_llm_handler 工厂（消费 ftre-agent-core B2 的 StreamChunk 协议），ftre 全仓 332 测试通过 | ftre-agent-core PR #7 合入，B2 适配层落地 |

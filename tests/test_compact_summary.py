@@ -59,7 +59,7 @@ async def test_compact_generation_passes_reasoning_effort_to_handler(monkeypatch
             if False:
                 yield None
 
-    monkeypatch.setattr(compact_manager, "LLMHandler", FakeHandler)
+    monkeypatch.setattr(compact_manager, "create_llm_handler", lambda api_type, **kw: FakeHandler(**{"api_type": api_type, **kw}))
     compact = CompactManager(session_manager=None, emit_event=None)
     llm = SimpleNamespace(
         model="summary-model",
@@ -75,6 +75,7 @@ async def test_compact_generation_passes_reasoning_effort_to_handler(monkeypatch
         config=config,
     ) is None
     assert captured["reasoning_effort"] == "none"
+    assert captured["api_type"] == "completions"
 
 
 async def _seed(manager, sid, turns: int) -> list[str]:
