@@ -38,7 +38,7 @@ def test_title_generation_passes_reasoning_effort_to_handler(monkeypatch):
             if False:
                 yield None
 
-    monkeypatch.setattr("ftre_agent_core.llm.LLMHandler", FakeHandler)
+    monkeypatch.setattr("ftre_agent_core.llm.create_llm_handler", lambda api_type, **kw: FakeHandler(**{"api_type": api_type, **kw}))
 
     class FakeFuture:
         def result(self, timeout):

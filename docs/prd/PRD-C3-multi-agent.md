@@ -109,3 +109,4 @@ flowchart LR
 |---|---|---|
 | 2026-08-13 | 补充 team 工具与 SessionLane 的 durable admission、quiescent 等待、成员并行和删除收尾边界 | 将多 Agent 协作从“工具调用流程”提升为可审计的跨 Session 生命周期契约 |
 | 2026-08-13 | 影响复核：新增 FR9/协作测试计划；AC1-AC3 的配置/profile 范围不变，team 队列竞态自动化测试仍待补 | 诚实区分已有证据与待验证行为 |
+| 2026-08-19 | FR7 细化：llm 合并新增 `reasoning_effort` 支持性校验——模型条目既无 `reasoning_effort` 也无 `reasoning_effort_values` 时，丢弃 agent 显式配置的非空 effort（`sanitize_agent_effort`，config.py + agent_manager.py 双端接入） | 切换模型后残留的上一个模型 effort（如 "max"）被拼接进不支持该参数的新模型请求，导致 400「该模型始终思考，不支持关闭思考」；前端切换入口同步清理（AgentBar.resolveEffortOnModelSwitch） |

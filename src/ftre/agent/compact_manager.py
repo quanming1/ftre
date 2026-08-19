@@ -24,7 +24,7 @@ import logging
 from typing import Literal
 
 from ftre_agent_core.event import CustomEvent
-from ftre_agent_core.llm import LLMError, LLMHandler, TextDelta
+from ftre_agent_core.llm import LLMError, TextDeltaChunk, create_llm_handler
 from ftre_agent_core.message import Msg, MsgName, TextBlock, ToolResultBlock
 
 from .compact_events import CompactEventName
@@ -227,6 +227,8 @@ class CompactManager:
         ``keep_turns`` 轮对话，这些轮内的工具输出全部完整保留；更早的
         ToolResultBlock 原位替换成 ``[工具输出已压缩]``，不写入任何流式
         事件或兼容标记。``keep_turns=0`` 表示裁剪活跃区间内的全部工具输出。
+        裁剪同时作废活跃区间内的 token usage 锚点（见函数内注释），防止
+        水位冻结导致 should_compact 永远判过线。
 
         Returns:
             True: 执行了裁剪
@@ -282,6 +284,15 @@ class CompactManager:
         for message, block in tool_results:
             block.output = [TextBlock(text="[工具输出已压缩]")]
             changed_messages[message.id] = message
+        # 作废活跃区间内所有 last_call_usage 锚点：这些 usage 实算时 prompt 还
+        # 包含已被裁掉的工具输出，保留它们会让 get_token_usage 的水位冻结在
+        # 裁剪前的值——should_compact 永远判过线，Lane 直接 BLOCKED 死锁。
+        # 作废后统计退化为对裁剪后上下文的字符估算；下一次真实 LLM 调用会
+        # 写入新的 usage 锚点。
+        for message in messages:
+            if message.token is not None:
+                message.token = None
+                changed_messages[message.id] = message
         tokens_after = estimate_messages_tokens(messages)
 
         try:
@@ -370,8 +381,28 @@ class CompactManager:
             session_id=session_id, focus_hint=focus_hint,
         )
         if not summary:
-            logger.warning(f"[compact] session={session_id} LLM 摘要失败")
-            await self._emit_failed(session_id, channel_id, "LLM 摘要未产出合格结果")
+            # 摘要为空（模型只输出思考、接口异常等）：默认重试一次
+            logger.warning(f"[compact] session={session_id} 摘要为空，重试一次")
+            summary = await self._run_compact_llm(
+                head_messages, config=config, previous_summary=previous_summary,
+                session_id=session_id, focus_hint=focus_hint,
+            )
+        if not summary:
+            # 重试仍失败：回退 compress_fast 兜底，避免直接放弃导致 Lane BLOCKED。
+            # （auto 路径的 ContextGate 也会再跑一次 compress_fast，但那是幂等
+            # 无操作：可裁的工具输出已在这次被裁完。）
+            logger.warning(
+                f"[compact] session={session_id} 重试后摘要仍为空，回退 compress_fast"
+            )
+            await self._emit_failed(
+                session_id, channel_id, "LLM 摘要未产出正文，已回退快速压缩",
+            )
+            try:
+                await self.compress_fast(session_id, channel_id, config=config)
+            except Exception:
+                logger.exception(
+                    f"[compact] session={session_id} compress_fast 回退执行失败"
+                )
             return None
 
         # 6. 估算摘要后 token
@@ -450,19 +481,19 @@ class CompactManager:
 
             # 优先使用 compact_llm，未配置则回退到主 llm
             llm_cfg = getattr(config, "compact_llm", None) or config.llm
-            handler = LLMHandler(
+            adapter = create_llm_handler(
+                llm_cfg.api_type,
                 model=llm_cfg.model,
                 api_key=llm_cfg.api_key,
                 api_base=llm_cfg.api_base,
-                api_type=llm_cfg.api_type,
                 reasoning_effort=llm_cfg.reasoning_effort,
                 temperature=0.0,
             )
 
             collected: list[str] = []
-            async for ev in handler.stream(messages):
-                if isinstance(ev, TextDelta):
-                    collected.append(ev.text)
+            async for chunk in adapter.stream(messages):
+                if isinstance(chunk, TextDeltaChunk):
+                    collected.append(chunk.text)
 
             summary = "".join(collected).strip()
             if not summary:

@@ -27,7 +27,13 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from ftre.config import AgentConfig, LLMConfig, _build_llm_config, load_config_file
+from ftre.config import (
+    AgentConfig,
+    LLMConfig,
+    _build_llm_config,
+    load_config_file,
+    sanitize_agent_effort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +157,8 @@ class AgentManager:
         llm = _build_llm_config(global_data, provider, model)
         if "reasoning_effort" in agent_llm:
             effort = agent_llm["reasoning_effort"]
-            llm.reasoning_effort = effort if isinstance(effort, str) else ""
+            raw_effort = effort if isinstance(effort, str) else ""
+            llm.reasoning_effort = sanitize_agent_effort(raw_effort, llm)
         if not llm.model:
             # agent 指定的 provider/model 在全局找不到 → 回退全局默认
             logger.warning(
