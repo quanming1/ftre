@@ -24,7 +24,7 @@ import logging
 from typing import Literal
 
 from ftre_agent_core.event import CustomEvent
-from ftre_agent_core.llm import LLMError, LLMHandler, TextDelta
+from ftre_agent_core.llm import LLMError, TextDeltaChunk, create_llm_handler
 from ftre_agent_core.message import Msg, MsgName, TextBlock, ToolResultBlock
 
 from .compact_events import CompactEventName
@@ -481,19 +481,19 @@ class CompactManager:
 
             # 优先使用 compact_llm，未配置则回退到主 llm
             llm_cfg = getattr(config, "compact_llm", None) or config.llm
-            handler = LLMHandler(
+            adapter = create_llm_handler(
+                llm_cfg.api_type,
                 model=llm_cfg.model,
                 api_key=llm_cfg.api_key,
                 api_base=llm_cfg.api_base,
-                api_type=llm_cfg.api_type,
                 reasoning_effort=llm_cfg.reasoning_effort,
                 temperature=0.0,
             )
 
             collected: list[str] = []
-            async for ev in handler.stream(messages):
-                if isinstance(ev, TextDelta):
-                    collected.append(ev.text)
+            async for chunk in adapter.stream(messages):
+                if isinstance(chunk, TextDeltaChunk):
+                    collected.append(chunk.text)
 
             summary = "".join(collected).strip()
             if not summary:

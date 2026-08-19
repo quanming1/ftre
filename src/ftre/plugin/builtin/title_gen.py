@@ -184,14 +184,14 @@ class TitleGenPlugin(Plugin):
             )
             return ""
 
-        from ftre_agent_core.llm import LLMHandler, TextDelta
+        from ftre_agent_core.llm import TextDeltaChunk, create_llm_handler
 
         logger.info(f"[title_gen] 调用 LLM 生成标题 (model={llm_cfg.model})")
-        handler = LLMHandler(
+        adapter = create_llm_handler(
+            llm_cfg.api_type,
             model=llm_cfg.model,
             api_key=llm_cfg.api_key,
             api_base=llm_cfg.api_base,
-            api_type=llm_cfg.api_type,
             reasoning_effort=llm_cfg.reasoning_effort,
         )
         messages = [
@@ -199,13 +199,13 @@ class TitleGenPlugin(Plugin):
             {"role": "user", "content": user_text},
         ]
 
-        # LLMHandler.stream 是 async generator，必须在事件循环里消费。
+        # adapter.stream 是 async generator，必须在事件循环里消费。
         # worker 跑在独立线程，这里把"消费整个流"作为一个协程投递到主循环执行。
         async def _collect() -> str:
             parts: list[str] = []
-            async for item in handler.stream(messages, tools=None):
-                if isinstance(item, TextDelta) and item.text:
-                    parts.append(item.text)
+            async for chunk in adapter.stream(messages, tools=None):
+                if isinstance(chunk, TextDeltaChunk) and chunk.text:
+                    parts.append(chunk.text)
             return "".join(parts)
 
         raw = (

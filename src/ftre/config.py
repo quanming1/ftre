@@ -213,9 +213,14 @@ def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfi
 
     cw = model_entry.get("context_window")
     mo = model_entry.get("max_output")
+    # api_type 三级回退（A1 FR6）：model 条目 > provider 级 > 默认 completions。
+    # 同一 provider 内可按模型混合协议（如 OpenCode Go：Muse/Luna 走 responses、
+    # 其余走 chat/completions）。
+    raw_api_type = model_entry.get("api_type") or provider.get("api_type") or "completions"
     return LLMConfig(
         api_key=provider.get("api_key", ""),
         api_base=provider.get("api_base", ""),
+        api_type=raw_api_type if isinstance(raw_api_type, str) else "completions",
         name=model_entry.get("name", ""),
         id=model_id,
         context_window=cw if isinstance(cw, int) else None,
