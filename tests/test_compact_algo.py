@@ -107,8 +107,10 @@ async def test_fast_compact_updates_tool_result_blocks_via_emit_event():
 
     assert changed is True
     session_manager.save_message.assert_not_called()
-    session_manager.update_message.assert_awaited_once()
-    updated = session_manager.update_message.await_args.args[0]
+    session_manager.update_messages.assert_awaited_once()
+    updated_batch = session_manager.update_messages.await_args.args[0]
+    assert len(updated_batch) == 1
+    updated = updated_batch[0]
     results = [
         block for block in updated.content if isinstance(block, ToolResultBlock)
     ]
@@ -125,6 +127,48 @@ async def test_fast_compact_updates_tool_result_blocks_via_emit_event():
         and e.value.get("mode") == "fast"
         for e in emitted
     )
+
+
+@pytest.mark.asyncio
+async def test_fast_compact_batches_multiple_changed_messages():
+    """多条 Msg 被裁剪时只走一次批量更新，避免逐条重写完整 state。"""
+    user = UserMsg(name=MsgName.DEFAULT, content="读取两个文件")
+    assistants = [
+        AssistantMsg(
+            name=MsgName.DEFAULT,
+            content=[
+                ToolCallBlock(id=f"c-{index}", name="read", arguments={}),
+                ToolResultBlock(
+                    id=f"c-{index}",
+                    name="read",
+                    output=f"large output {index}",
+                    state="success",
+                ),
+            ],
+        )
+        for index in range(2)
+    ]
+    records = [_record(user, 1)] + [
+        _record(message, index + 2) for index, message in enumerate(assistants)
+    ]
+    session_manager = AsyncMock()
+    session_manager.get_context_messages.return_value = records
+    manager = CompactManager(
+        session_manager=session_manager,
+        emit_event=AsyncMock(),
+    )
+
+    changed = await manager.compress_fast(
+        "ws::session", "ws", config=SimpleNamespace(), keep_turns=0,
+    )
+
+    assert changed is True
+    session_manager.update_messages.assert_awaited_once()
+    updated_batch = session_manager.update_messages.await_args.args[0]
+    assert [message.id for message in updated_batch] == [
+        message.id for message in assistants
+    ]
+    session_manager.update_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -168,8 +212,10 @@ async def test_fast_compact_keep_turns_protects_recent_turns():
 
     assert changed is True
     # 只更新了 assistant0（含 old 工具结果），assistant1 不动
-    session_manager.update_message.assert_awaited_once()
-    updated = session_manager.update_message.await_args.args[0]
+    session_manager.update_messages.assert_awaited_once()
+    updated_batch = session_manager.update_messages.await_args.args[0]
+    assert len(updated_batch) == 1
+    updated = updated_batch[0]
     results = [b for b in updated.content if isinstance(b, ToolResultBlock)]
     assert results[0].output[0].text == "[工具输出已压缩]"
 
@@ -199,7 +245,7 @@ async def test_fast_compact_keep_turns_covers_all_returns_false():
         "ws::session", "ws", config=SimpleNamespace(), keep_turns=1,
     )
     assert changed is False
-    session_manager.update_message.assert_not_awaited()
+    session_manager.update_messages.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -247,8 +293,10 @@ async def test_fast_compact_ignores_compact_fast_bubble_in_turn_count():
     )
     assert changed is True
     # 只裁了 assistant0 的 old，assistant1 的 recent 保留
-    session_manager.update_message.assert_awaited_once()
-    updated = session_manager.update_message.await_args.args[0]
+    session_manager.update_messages.assert_awaited_once()
+    updated_batch = session_manager.update_messages.await_args.args[0]
+    assert len(updated_batch) == 1
+    updated = updated_batch[0]
     results = [b for b in updated.content if isinstance(b, ToolResultBlock)]
     assert results[0].output[0].text == "[工具输出已压缩]"
 

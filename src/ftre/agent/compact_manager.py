@@ -296,8 +296,7 @@ class CompactManager:
         tokens_after = estimate_messages_tokens(messages)
 
         try:
-            for message in changed_messages.values():
-                await self.session_manager.update_message(message)
+            await self.session_manager.update_messages(list(changed_messages.values()))
         except Exception:
             logger.exception(f"[compact-fast] 更新 Msg 失败 session={session_id}")
             return False
