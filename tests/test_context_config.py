@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from ftre import config as ftre_config
-from ftre.config import AgentConfig, ContextConfig
+from ftre.config import AgentConfig, ContextConfig, LLMConfig, sanitize_agent_effort
 
 
 @pytest.fixture
@@ -45,6 +45,97 @@ def test_default_agent_reasoning_effort_overrides_model_default(monkeypatch):
     monkeypatch.setattr(ftre_config, "_read_default_agent_reasoning_effort", lambda: "")
 
     assert ftre_config.load_config().llm.reasoning_effort == ""
+
+
+def test_sanitize_agent_effort_dropped_when_model_unsupported():
+    """模型完全没声明推理强度（无默认值也无可选值）时丢弃非空 effort。"""
+    llm = LLMConfig(reasoning_effort="", reasoning_effort_values=())
+    assert sanitize_agent_effort("max", llm) == ""
+
+
+def test_sanitize_agent_effort_kept_when_model_has_default():
+    """模型声明了默认 effort（如 high）→ 保留 agent 配置。"""
+    llm = LLMConfig(reasoning_effort="high", reasoning_effort_values=())
+    assert sanitize_agent_effort("max", llm) == "max"
+
+
+def test_sanitize_agent_effort_kept_when_model_has_values():
+    """模型声明了可选值列表 → 保留 agent 配置。"""
+    llm = LLMConfig(
+        reasoning_effort="none",
+        reasoning_effort_values=("none", "low", "medium", "high", "max"),
+    )
+    assert sanitize_agent_effort("high", llm) == "high"
+
+
+def test_sanitize_agent_effort_empty_effort_stays_empty():
+    """空 effort（未设置/已清空）保持为空。"""
+    llm = LLMConfig(reasoning_effort="", reasoning_effort_values=())
+    assert sanitize_agent_effort("", llm) == ""
+
+
+def test_default_agent_effort_dropped_for_model_without_reasoning_config(monkeypatch):
+    """default agent 显式配了 effort，但目标模型未声明推理强度 → 清空，避免请求 400。"""
+    data = {
+        "providers": {
+            "openai": {
+                "models": [{"id": "no-think", "name": "No Think"}],
+            },
+        },
+    }
+    monkeypatch.setattr(ftre_config, "load_config_file", lambda: data)
+    monkeypatch.setattr(ftre_config, "_last_config", None)
+    monkeypatch.setattr(ftre_config, "_last_sig", "")
+    monkeypatch.setattr(ftre_config, "_read_default_agent_llm", lambda: ("openai", "no-think", ""))
+    monkeypatch.setattr(ftre_config, "_read_default_agent_reasoning_effort", lambda: "max")
+
+    assert ftre_config.load_config().llm.reasoning_effort == ""
+
+
+def test_default_agent_effort_kept_for_model_with_reasoning_config(monkeypatch):
+    """目标模型声明了推理强度（有 values）→ default agent 的 effort 保留。"""
+    data = {
+        "providers": {
+            "openai": {
+                "models": [
+                    {
+                        "id": "thinker",
+                        "name": "Thinker",
+                        "reasoning_effort": "none",
+                        "reasoning_effort_values": ["none", "low", "high", "max"],
+                    },
+                ],
+            },
+        },
+    }
+    monkeypatch.setattr(ftre_config, "load_config_file", lambda: data)
+    monkeypatch.setattr(ftre_config, "_last_config", None)
+    monkeypatch.setattr(ftre_config, "_last_sig", "")
+    monkeypatch.setattr(ftre_config, "_read_default_agent_llm", lambda: ("openai", "thinker", ""))
+    monkeypatch.setattr(ftre_config, "_read_default_agent_reasoning_effort", lambda: "max")
+
+    assert ftre_config.load_config().llm.reasoning_effort == "max"
+
+
+def test_build_llm_config_reads_reasoning_effort_values():
+    """_build_llm_config 从模型条目读取 reasoning_effort_values。"""
+    data = {
+        "providers": {
+            "openai": {
+                "api_key": "sk",
+                "api_base": "https://x",
+                "models": [
+                    {"id": "m1", "reasoning_effort_values": ["low", "high"]},
+                    {"id": "m2"},
+                ],
+            },
+        },
+    }
+    assert ftre_config._build_llm_config(data, "openai", "m1").reasoning_effort_values == (
+        "low",
+        "high",
+    )
+    assert ftre_config._build_llm_config(data, "openai", "m2").reasoning_effort_values == ()
 
 
 def test_context_defaults_when_missing(fake_config):

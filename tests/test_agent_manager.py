@@ -231,6 +231,56 @@ def test_agent_reasoning_effort_overrides_model_default_including_empty_value(
     assert mgr.load("coder").llm.reasoning_effort == "none"
 
 
+def test_agent_reasoning_effort_dropped_for_model_without_support(
+    tmp_agents_dir, fake_global_config
+):
+    """模型未声明任何推理强度配置（无默认值/无 values）→ agent 显式 effort 被清空。"""
+    from ftre.agent.agent_manager import AgentManager
+
+    coder_dir = tmp_agents_dir / "coder"
+    coder_dir.mkdir()
+    (coder_dir / "agent.config.json").write_text(
+        json.dumps(
+            {
+                "llm": {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",  # fake_global_config 中该模型无 reasoning 配置
+                    "reasoning_effort": "max",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
+    assert mgr.load("coder").llm.reasoning_effort == ""
+
+
+def test_agent_reasoning_effort_kept_for_model_with_support(
+    tmp_agents_dir, fake_global_config
+):
+    """模型声明了 reasoning_effort（默认 high）→ agent 显式 effort 保留。"""
+    from ftre.agent.agent_manager import AgentManager
+
+    coder_dir = tmp_agents_dir / "coder"
+    coder_dir.mkdir()
+    (coder_dir / "agent.config.json").write_text(
+        json.dumps(
+            {
+                "llm": {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "reasoning_effort": "max",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mgr = AgentManager(agents_dir=tmp_agents_dir)
+    assert mgr.load("coder").llm.reasoning_effort == "max"
+
+
 def test_load_agent_with_mcp_merge(tmp_agents_dir, fake_global_config):
     """Agent MCP config deep-merges with global."""
     from ftre.agent.agent_manager import AgentManager

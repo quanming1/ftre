@@ -99,6 +99,10 @@ class LLMConfig:
     max_output: int | None = None
     vision: bool = False
     reasoning_effort: str = ""
+    # 模型声明支持的推理强度可选值（config.json models[] 的 reasoning_effort_values）。
+    # 空 tuple = 该模型未声明任何推理强度配置（不支持此参数），
+    # agent 显式配置的 effort 应被忽略（见 sanitize_agent_effort）。
+    reasoning_effort_values: tuple[str, ...] = ()
     # 派生：LiteLLM 模型名（含 provider 前缀）
     model: str = ""
 
@@ -213,6 +217,7 @@ def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfi
 
     cw = model_entry.get("context_window")
     mo = model_entry.get("max_output")
+    raw_values = model_entry.get("reasoning_effort_values")
     # api_type 三级回退（A1 FR6）：model 条目 > provider 级 > 默认 completions。
     # 同一 provider 内可按模型混合协议（如 OpenCode Go：Muse/Luna 走 responses、
     # 其余走 chat/completions）。
@@ -227,8 +232,35 @@ def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfi
         max_output=mo if isinstance(mo, int) else None,
         vision=bool(model_entry.get("vision", False)),
         reasoning_effort=model_entry.get("reasoning_effort", "") if isinstance(model_entry.get("reasoning_effort", ""), str) else "",
+        reasoning_effort_values=(
+            tuple(v for v in raw_values if isinstance(v, str))
+            if isinstance(raw_values, list)
+            else ()
+        ),
         model=_build_model_name(model_id, protocol),
     )
+
+
+def sanitize_agent_effort(effort: str, llm: LLMConfig) -> str:
+    """把 agent 显式配置的 reasoning_effort 落到目标模型上，若该模型不支持则清空。
+
+    判断依据：模型条目是否声明了推理强度配置（reasoning_effort 默认值或
+    reasoning_effort_values 可选值）。两者都没有 = 模型不支持此参数，
+    任何显式 effort（如上一个支持推理模型残留的 "max"）都会被上游拒绝
+    （如"该模型始终思考，不支持关闭思考"），必须丢弃，避免请求 400。
+
+    Args:
+        effort: agent 显式配置的 effort（可能为 "" 表示未设置/清空）
+        llm: 目标模型的 LLMConfig（含模型级 reasoning_effort / reasoning_effort_values）
+
+    Returns:
+        落到目标模型的 effort；不支持时返回 ""。
+    """
+    if not isinstance(effort, str) or not effort:
+        return ""
+    if not llm.reasoning_effort and not llm.reasoning_effort_values:
+        return ""
+    return effort
 
 
 def load_config() -> AgentConfig:
@@ -282,7 +314,7 @@ def load_config() -> AgentConfig:
     llm = _build_llm_config(data, provider_name, model_id)
     default_effort = _read_default_agent_reasoning_effort()
     if default_effort is not None:
-        llm.reasoning_effort = default_effort
+        llm.reasoning_effort = sanitize_agent_effort(default_effort, llm)
 
     # 标题生成模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
     title_llm: LLMConfig | None = None
