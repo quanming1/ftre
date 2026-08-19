@@ -341,6 +341,12 @@ class SessionManager:
     async def update_message(self, message: Msg | dict[str, Any]) -> None:
         await self._repo.update_message(message)
 
+    async def update_messages(
+        self, messages: list[Msg | dict[str, Any]]
+    ) -> None:
+        """批量原子更新同一 Session 的多条 Msg。"""
+        await self._repo.update_messages(messages)
+
     async def get_messages_by_session(self, session_id: str) -> list[MessageModel]:
         return await self._repo.get_messages_by_session(session_id)
 

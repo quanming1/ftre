@@ -749,19 +749,55 @@ class SessionRepository:
 
     async def update_message(self, message: Msg | dict[str, Any]) -> None:
         """更新已持久化 Msg 的可变快照字段，不改变数组中的位置。"""
-        msg = message if isinstance(message, Msg) else Msg.model_validate(message)
-        session_id = self._message_sessions.get(msg.id)
-        if session_id is None:
-            raise ValueError(f"message 不存在: {msg.id}")
+        await self.update_messages([message])
+
+    async def update_messages(
+        self, messages: list[Msg | dict[str, Any]]
+    ) -> None:
+        """批量更新同一 Session 的 Msg，一次性原子提交完整 state。
+
+        调用方可以按任意顺序传入消息；磁盘 transcript 始终保持原数组顺序。
+        所有 id 与所属 session 会在写盘前完成校验，任一消息不存在、重复或
+        跨 session 时整体失败，不产生部分更新。
+        """
+        msgs = [
+            message if isinstance(message, Msg) else Msg.model_validate(message)
+            for message in messages
+        ]
+        if not msgs:
+            return
+
+        message_ids = [message.id for message in msgs]
+        if len(set(message_ids)) != len(message_ids):
+            raise ValueError("批量更新含重复 message id")
+
+        owners: set[str] = set()
+        for message_id in message_ids:
+            owner = self._message_sessions.get(message_id)
+            if owner is None:
+                raise ValueError(f"message 不存在: {message_id}")
+            owners.add(owner)
+        if len(owners) != 1:
+            raise ValueError("批量更新的 message 跨 session")
+        session_id = next(iter(owners))
+
         async with self._store.lock_for(session_id):
             state = self._require_state(session_id)
+            indexes = {
+                existing.id: index
+                for index, existing in enumerate(state.messages)
+            }
+            missing = [
+                message_id
+                for message_id in message_ids
+                if message_id not in indexes
+            ]
+            if missing:  # pragma: no cover - 索引与状态不一致的兜底
+                raise ValueError(f"message 不存在: {missing[0]}")
+
             new_state = state.model_copy(deep=True)
-            for index, existing in enumerate(new_state.messages):
-                if existing.id == msg.id:
-                    new_state.messages[index] = msg.model_copy(deep=True)
-                    break
-            else:  # pragma: no cover - 索引与状态不一致的兜底
-                raise ValueError(f"message 不存在: {msg.id}")
+            for message in msgs:
+                new_state.messages[indexes[message.id]] = message.model_copy(deep=True)
             new_state.session.updated_at = _now_iso()
             await self.commit(new_state)
 
