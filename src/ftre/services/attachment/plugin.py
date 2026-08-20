@@ -10,5 +10,5 @@ inject = ()
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("attachments") is not None:
-        return None
+        return
     ctx.provide("attachments", AttachmentService())

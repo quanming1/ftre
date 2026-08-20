@@ -10,5 +10,5 @@ provide = ("tools",)
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("tools") is not None:
-        return None
+        return
     ctx.provide("tools", ToolService())

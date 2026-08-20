@@ -13,6 +13,6 @@ provide = ("config",)
 async def apply(ctx: PluginContext, config: dict[str, Any] | None = None):
     existing = ctx.optional("config")
     if existing is not None:
-        return None
+        return
     service = ConfigService(initial=config if isinstance(config, dict) and config.get("initial") else None)
     ctx.provide("config", service)

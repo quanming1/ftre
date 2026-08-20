@@ -37,6 +37,7 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     """
     from ftre_agent_core.hooks import FtreCoreHookManager
     from ftre_agent_core.tool import ToolRegistry
+
     from ftre.agent.agent_manager import AgentManager
     from ftre.agent.loop import AgentLoop
     from ftre.bus import EventBus
@@ -57,7 +58,6 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     session_manager = None
     agent_loop = None
     cron_scheduler = None
-    manager = None
     channel_manager = None
     composition = None
     try:

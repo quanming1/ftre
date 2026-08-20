@@ -10,6 +10,6 @@ inject = ()
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("message_bus") is not None:
-        return None
+        return
     service = MessageBusService()
     ctx.provide("message_bus", service)

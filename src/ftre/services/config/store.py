@@ -18,7 +18,7 @@ class JsonConfigStore:
             return {}
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
-            raise ValueError("config root must be an object")
+            raise TypeError("config root must be an object")
         return raw
 
     def write_atomic(self, value: dict[str, Any]) -> None:
@@ -36,4 +36,3 @@ class JsonConfigStore:
             except OSError:
                 pass
             raise
-

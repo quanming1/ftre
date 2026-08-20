@@ -12,7 +12,7 @@ inject = ()
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("system_prompt") is not None:
-        return None
+        return
     service = SystemPromptService()
     ctx.provide("system_prompt", service)
     base = Path(__file__).resolve().parent / "base.md"

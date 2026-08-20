@@ -1364,3 +1364,4 @@ PRD 进入 `approved` 前必须逐项确认：
 | 2026-08-20 | PRD 由草稿批准为 `approved`；D1-D8 按用户授权冻结，进入整份 F1 连续开发 | 用户要求直接完成整个 PRD，不在阶段之间停下来请求继续许可 | AC1-AC20 持续重跑 |
 | 2026-08-20 | 完成 F1.2：ConfigService revision/atomic update/watch、Filesystem/Workspace 边界、HttpService route registry/freeze、Composition 路由注册，并移除配置导入副作用 | 将配置、路径和 Host 注册面从模块全局行为收敛为可测试的 Service | AC1、AC2、AC3、AC5、AC6、AC7、AC8、AC12 已由契约/架构测试覆盖；现有回归保持通过 |
 | 2026-08-20 | 完成 F1.3：Gateway 入口委托新 Composition，Session/Bus/Channel/Tool/Command/Profile/Agent 公共 Service 接入现有 AgentLoop/WS 数据面，新增 startup composition 测试 | 让新目录成为实际启动路径，同时保持 SessionLane、MessageBus 和 WebSocket 协议兼容 | AC3、AC4、AC8、AC9、AC10、AC11、AC12、AC20 已重跑；全量回归保持通过 |
+| 2026-08-20 | 完成 F1.4：Tool scoped registry shadow/allow/deny、Skill/MCP/Schedule/Team Service、Plan/ContextGovern/SessionTitle Prompt/Tool behavior，以及新增行为契约测试；新增目录与测试 lint 清零 | 让能力 Plugin 通过公开 Service 注册行为并能在 Fiber dispose 时撤销，不再以空插件或全局副作用占位 | AC5、AC6、AC9、AC12、AC13、AC14、AC16、AC17、AC18、AC19 已重跑；新增文件 ruff 全部通过 |

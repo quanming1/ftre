@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
 from cordis import Context, Fiber, FiberState
 
@@ -31,7 +30,7 @@ class PluginLoader:
                 entry = self.discovery.resolve(manifest)
                 fiber = self.context.plugin(entry, manifest.config, id=manifest.id)
                 self._fibers[manifest.id] = fiber
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - import/setup diagnostics must be retained
                 # Keep an observable failed record even if import itself failed.
                 self._fibers[manifest.id] = _failed_fiber(self.context, manifest.id, exc)
         await self.context.settle()
@@ -86,4 +85,3 @@ def _failed_fiber(context: Context, plugin_id: str, error: BaseException) -> Fib
     fiber.error = error
     fiber.state = FiberState.FAILED
     return fiber
-

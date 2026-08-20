@@ -11,7 +11,7 @@ provide = ("skills",)
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("skills") is not None:
-        return None
+        return
     service = SkillService()
     ctx.provide("skills", service)
     disposer = ctx.tools.register(build_load_skill_tool(service), owner="skill", source="builtin")

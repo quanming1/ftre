@@ -10,7 +10,7 @@ inject = ()
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("traces") is not None:
-        return None
+        return
     service = TraceService()
     ctx.provide("traces", service)
     close = getattr(service.store, "close", None)

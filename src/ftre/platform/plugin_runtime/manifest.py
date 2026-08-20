@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 
@@ -32,7 +33,7 @@ class PluginManifest:
     def entry_text(self) -> str:
         return self.entry if isinstance(self.entry, str) else f"{self.entry.__module__}:{self.entry.__name__}"
 
-    def with_config(self, config: dict[str, Any] | None) -> "PluginManifest":
+    def with_config(self, config: dict[str, Any] | None) -> PluginManifest:
         merged = dict(self.config)
         if config:
             merged.update(config)

@@ -10,5 +10,5 @@ provide = ("teams",)
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("teams") is not None:
-        return None
+        return
     ctx.provide("teams", TeamService())

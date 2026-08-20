@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import APIRouter
+from ftre_agent_core.tool import Tool, ToolRegistry
 
 from ftre.services.config.service import ConfigConflictError, ConfigService
 from ftre.services.filesystem.local import LocalFilesystemService
@@ -11,6 +12,7 @@ from ftre.services.filesystem.policy import PathPolicy, PathViolation
 from ftre.services.http.service import HttpService
 from ftre.services.system_prompt.service import SystemPromptService
 from ftre.services.system_prompt.types import PromptSection
+from ftre.services.tools.service import ToolService
 
 
 @pytest.mark.asyncio
@@ -59,3 +61,17 @@ def test_prompt_receipt_matches_assembly() -> None:
     receipt = service.receipt("worker", "session")
     assert [item["name"] for item in receipt.sections] == ["base", "agent"]
 
+
+def test_tool_scope_shadow_and_restriction() -> None:
+    service = ToolService(ToolRegistry())
+    global_tool = Tool(name="echo", description="global", func=lambda: "global")
+    agent_tool = Tool(name="echo", description="agent", func=lambda: "agent")
+    global_dispose = service.register(global_tool, owner="global", source="builtin")
+    agent_dispose = service.register(agent_tool, owner="agent", scope="agent:worker", source="external:worker")
+    assert service.snapshot("worker")[0].owner == "agent"
+    restriction = service.restrict("worker", owner="policy", allow=["other"])
+    assert service.snapshot("worker") == ()
+    restriction()
+    agent_dispose()
+    assert service.snapshot("worker")[0].owner == "global"
+    global_dispose()

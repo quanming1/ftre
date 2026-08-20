@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import copy
 from typing import Any
 
 from ftre_agent_core.tool import ToolRegistry
@@ -21,7 +20,8 @@ class ToolService:
         name = str(tool.name)
         if any(item.name == name and item.scope == scope for item in self._items):
             raise ValueError(f"tool {name!r} already registered in {scope}")
-        self.registry.register(tool)
+        if scope == "global":
+            self.registry.register(tool)
         contribution = ToolContribution(name, owner, source, scope, tool)
         self._items.append(contribution)
         disposed = False
@@ -35,7 +35,7 @@ class ToolService:
                 self._items.remove(contribution)
             except ValueError:
                 return False
-            if not any(item.name == name for item in self._items):
+            if scope == "global" and not any(item.name == name for item in self._items):
                 self.registry.unregister(name)
             return True
 
@@ -79,7 +79,13 @@ class ToolService:
         return self.registry.execute(name, execution_context, **(arguments or {}))
 
     def _visible(self, agent_id: str | None):
-        items = [item for item in self._items if item.scope == "global" or item.scope == f"agent:{agent_id}"]
+        candidates = [item for item in self._items if item.scope == "global" or item.scope == f"agent:{agent_id}"]
+        by_name: dict[str, ToolContribution] = {}
+        for item in candidates:
+            # A scoped contribution shadows the global one with the same name;
+            # stable registration order remains the tie-breaker.
+            by_name[item.name] = item
+        items = list(by_name.values())
         if agent_id is None:
             return items
         for restriction in reversed(self._restrictions):
@@ -89,4 +95,3 @@ class ToolService:
                 items = [item for item in items if item.name in restriction.allow]
             items = [item for item in items if item.name not in restriction.deny]
         return items
-

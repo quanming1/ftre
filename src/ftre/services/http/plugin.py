@@ -10,6 +10,6 @@ inject = ()
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("http") is not None:
-        return None
+        return
     service = HttpService()
     ctx.provide("http", service)

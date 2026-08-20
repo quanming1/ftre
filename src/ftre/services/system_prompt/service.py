@@ -21,7 +21,6 @@ class SystemPromptService:
             section = PromptSection(**{**section.__dict__, "owner": owner or section.owner, "scope": scope or section.scope})
         self._sections.append(section)
         self._sequence += 1
-        sequence = self._sequence
         disposed = False
 
         def dispose() -> bool:
@@ -69,4 +68,3 @@ class SystemPromptService:
 
     def snapshot(self) -> tuple[PromptSection, ...]:
         return tuple(self._sections)
-

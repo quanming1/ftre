@@ -10,5 +10,5 @@ provide = ("mcp",)
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("mcp") is not None:
-        return None
+        return
     ctx.provide("mcp", McpService())

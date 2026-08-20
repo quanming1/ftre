@@ -10,5 +10,5 @@ inject = ()
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("filesystem") is not None:
-        return None
+        return
     ctx.provide("filesystem", LocalFilesystemService())

@@ -10,5 +10,5 @@ provide = ("workspaces",)
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("workspaces") is not None:
-        return None
+        return
     ctx.provide("workspaces", WorkspaceService(ctx.sessions))

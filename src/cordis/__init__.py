@@ -12,15 +12,14 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Self
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
 Cleanup = Callable[[], Any]
 
 
@@ -40,7 +39,7 @@ class Inject(tuple[str, ...]):
     so normal plugin declarations such as ``inject = ("config",)`` work too.
     """
 
-    def __new__(cls, *names: str) -> "Inject":
+    def __new__(cls, *names: str) -> Self:
         return tuple.__new__(cls, tuple(str(name) for name in names))
 
 
@@ -55,7 +54,7 @@ class Effect:
         return self.cleanup()
 
 
-class Service(Generic[T]):
+class Service:
     """Optional base class for stateful providers.
 
     ftre providers may use ``ctx.provide`` directly; this class exists for
@@ -64,7 +63,7 @@ class Service(Generic[T]):
 
     name: ClassVar[str] = ""
 
-    def __init__(self, ctx: "Context", name: str | None = None) -> None:
+    def __init__(self, ctx: Context, name: str | None = None) -> None:
         self.ctx = ctx
         if name is not None:
             self.name = name
@@ -76,19 +75,19 @@ class ServiceAccessError(PermissionError):
 
 @dataclass
 class _FiberRecord:
-    fiber: "Fiber"
+    fiber: Fiber
     order: int
 
 
 class PluginContext:
     """A context view bound to one Fiber."""
 
-    def __init__(self, root: "Context", fiber: "Fiber") -> None:
+    def __init__(self, root: Context, fiber: Fiber) -> None:
         self._root = root
         self._fiber = fiber
 
     @property
-    def fiber(self) -> "Fiber":
+    def fiber(self) -> Fiber:
         return self._fiber
 
     def get(self, name: str, strict: bool = True) -> Any:
@@ -135,10 +134,10 @@ class PluginContext:
     def emit(self, event: str, *args: Any, **kwargs: Any) -> None:
         self._root.emit(event, *args, **kwargs)
 
-    def plugin(self, plugin: Any, config: Any = None, *, id: str | None = None) -> "Fiber":
+    def plugin(self, plugin: Any, config: Any = None, *, id: str | None = None) -> Fiber:
         return self._root.plugin(plugin, config, id=id, parent=self._fiber)
 
-    def inject(self, names: Iterable[str], callback: Callable[..., Any]) -> "Fiber":
+    def inject(self, names: Iterable[str], callback: Callable[..., Any]) -> Fiber:
         names = tuple(names)
         class _Injected:
             inject = tuple(names)
@@ -176,12 +175,12 @@ class Fiber:
 
     def __init__(
         self,
-        root: "Context",
+        root: Context,
         plugin: Any,
         config: Any,
         plugin_id: str,
         order: int,
-        parent: "Fiber | None" = None,
+        parent: Fiber | None = None,
     ) -> None:
         self.root = root
         self.plugin = plugin
@@ -210,8 +209,8 @@ class Fiber:
     def __await__(self):
         return self.wait().__await__()
 
-    async def wait(self, timeout: float | None = None) -> "Fiber":
-        async def _wait() -> "Fiber":
+    async def wait(self, timeout: float | None = None) -> Fiber:
+        async def _wait() -> Fiber:
             while self.state in {FiberState.PENDING, FiberState.LOADING}:
                 await asyncio.sleep(0)
             return self
@@ -241,7 +240,7 @@ class Fiber:
                 self.add_effect(Effect(result, "plugin-return"))
             self.state = FiberState.ACTIVE
             self._done.set()
-        except BaseException as exc:
+        except Exception as exc:
             self.error = exc
             self.state = FiberState.FAILED
             self._done.set()
@@ -257,7 +256,7 @@ class Fiber:
                 result = effect()
                 if inspect.isawaitable(result):
                     await result
-            except BaseException as exc:
+            except Exception as exc:
                 errors.append(exc)
                 logger.exception("cordis effect failed: %s (%s)", self.plugin_id, effect.label)
         self.effects.clear()
@@ -311,7 +310,7 @@ def _invoke_plugin(plugin: Any, ctx: PluginContext, config: Any) -> Any:
 class Context:
     """Root service registry and reversible plugin runtime."""
 
-    def __init__(self, *, parent: "Context | None" = None) -> None:
+    def __init__(self, *, parent: Context | None = None) -> None:
         self.parent = parent
         self._services: dict[str, Any] = {}
         self._owners: dict[str, Fiber] = {}
@@ -327,7 +326,7 @@ class Context:
         return tuple(record.fiber for record in self._records)
 
     @property
-    def events(self) -> "Context":
+    def events(self) -> Context:
         """Compatibility event facade; lifecycle events stay on this Context."""
         return self
 
@@ -523,7 +522,7 @@ class Context:
         for record in reversed(self._records):
             try:
                 await record.fiber.dispose()
-            except BaseException as exc:
+            except Exception as exc:  # noqa: BLE001 - aggregate all cleanup failures
                 errors.append(exc)
         self._records.clear()
         self._services.clear()

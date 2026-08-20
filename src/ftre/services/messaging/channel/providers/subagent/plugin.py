@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from cordis import PluginContext
-
 from ftre.channel.subagent_channel import SubagentChannel
 
 inject = ("message_bus", "channels")

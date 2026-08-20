@@ -10,7 +10,7 @@ provide = ("channels",)
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("channels") is not None:
-        return None
+        return
     from ftre.channel.manager import ChannelManager
 
     service = ChannelService(ChannelManager(ctx.message_bus.bus))

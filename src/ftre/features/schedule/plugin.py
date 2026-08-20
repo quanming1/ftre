@@ -10,6 +10,6 @@ provide = ("schedule",)
 
 def apply(ctx: PluginContext, config=None):
     if ctx.optional("schedule") is not None:
-        return None
+        return
     options = config if isinstance(config, dict) else {}
     ctx.provide("schedule", ScheduleService(options.get("root")))

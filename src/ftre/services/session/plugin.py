@@ -10,7 +10,7 @@ provide = ("sessions",)
 
 async def apply(ctx: PluginContext, config=None):
     if ctx.optional("sessions") is not None:
-        return None
+        return
     options = config if isinstance(config, dict) else {}
     service = SessionService(sessions_dir=options.get("sessions_dir"))
     await service.init()

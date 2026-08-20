@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from cordis import PluginContext
-
 from ftre.channel.ws_channel import WebSocketChannel
 
 inject = ("message_bus", "channels")

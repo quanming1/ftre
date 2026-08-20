@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from ftre.trace_store import SQLiteTraceExporter, get_trace, get_trace_run, list_trace_summaries
+from ftre.trace_store import (
+    SQLiteTraceExporter,
+    get_trace,
+    get_trace_run,
+    list_trace_summaries,
+)
 
 
 class TraceService:
