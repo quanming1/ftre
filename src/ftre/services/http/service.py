@@ -54,6 +54,12 @@ class HttpService:
 
         return dispose
 
+    def register_health(self, owner: str = "gateway") -> Callable[[], bool]:
+        async def health():
+            return {"status": "ok"}
+
+        return self.register_route("GET", "/api/health", health, owner)
+
     def register_route(self, method: str, path: str, handler: Callable[..., Any], owner: str, kind: str = "exact") -> Callable[[], bool]:
         addition = RouteContribution(method=method.upper(), path=path, owner=owner, kind=kind, handler=handler)
         self._check_conflicts([addition])
@@ -92,8 +98,13 @@ class HttpService:
         from fastapi import FastAPI
 
         app = FastAPI(title=title, version=version)
+        included: set[int] = set()
         for route in self._routes:
             if route.router is not None:
+                identity = id(route.router)
+                if identity in included:
+                    continue
+                included.add(identity)
                 app.include_router(route.router, prefix="/api")
             elif route.handler is not None:
                 app.add_api_route(route.path, route.handler, methods=[route.method])

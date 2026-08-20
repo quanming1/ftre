@@ -392,4 +392,7 @@ def load_config() -> AgentConfig:
     return result
 
 
-DEFAULT_CONFIG = load_config()
+# Configuration is now owned by ``ftre.services.config.ConfigService``.  Keep
+# ``load_config`` as a compatibility read facade for the Agent runtime, but do
+# not evaluate it at import time: importing a module must never read disk or
+# create a second configuration fact source.

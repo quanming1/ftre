@@ -1362,3 +1362,4 @@ PRD 进入 `approved` 前必须逐项确认：
 | 2026-08-20 | 基于代码审查和 DSH/cordis-py 研究补全目标、FR、技术方案、迁移阶段、接口和 AC | 将访谈结论收敛成可评审、可执行的第一版 PRD；状态仍为草稿，尚未定稿 |
 | 2026-08-20 | 详细化四层文件树、Service 方法、scope/provenance、Plugin 类型、Composition、失败矩阵、HTTP 所有权、迁移门禁和 FR→AC 追踪 | 根据用户要求将架构纲要扩展为可直接指导实现和评审的详细规格；三个外部审计项目仍只作为验证样本，不进入实现范围 |
 | 2026-08-20 | PRD 由草稿批准为 `approved`；D1-D8 按用户授权冻结，进入整份 F1 连续开发 | 用户要求直接完成整个 PRD，不在阶段之间停下来请求继续许可 | AC1-AC20 持续重跑 |
+| 2026-08-20 | 完成 F1.2：ConfigService revision/atomic update/watch、Filesystem/Workspace 边界、HttpService route registry/freeze、Composition 路由注册，并移除配置导入副作用 | 将配置、路径和 Host 注册面从模块全局行为收敛为可测试的 Service | AC1、AC2、AC3、AC5、AC6、AC7、AC8、AC12 已由契约/架构测试覆盖；现有回归保持通过 |

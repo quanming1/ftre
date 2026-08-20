@@ -222,10 +222,10 @@ stages:
         tasks:
           - id: F1.1
             title: Cordis 基座与 Composition Root
-            status: in_progress
+            status: done
           - id: F1.2
             title: Config、Filesystem、HTTP 与诊断 Service
-            status: todo
+            status: in_progress
           - id: F1.3
             title: Session、Workspace、Agent、Bus 与 Channel Service
             status: todo

@@ -51,6 +51,33 @@ class Composition:
     async def close(self) -> None:
         await self.plugins.close()
 
+    def register_default_routes(self) -> None:
+        """Register startup-time routes from their owning Service/Feature."""
+        http = self.context.get("http", strict=False)
+        if http is None:
+            return
+        http.register_health()
+        config = self.context.get("config", strict=False)
+        if config is not None:
+            from ftre.services.config.router import build_router
+
+            http.register_router(build_router(config), owner="config")
+        skills = self.context.get("skills", strict=False)
+        if skills is not None:
+            from ftre.features.skill.router import build_router
+
+            http.register_router(build_router(skills), owner="skill")
+        mcp = self.context.get("mcp", strict=False)
+        if mcp is not None:
+            from ftre.features.mcp.router import build_router
+
+            http.register_router(build_router(mcp), owner="mcp")
+        schedule = self.context.get("schedule", strict=False)
+        if schedule is not None:
+            from ftre.features.schedule.router import build_router
+
+            http.register_router(build_router(schedule), owner="schedule")
+
 
 async def build_composition(
     config_data: dict[str, Any] | None = None,
@@ -65,4 +92,6 @@ async def build_composition(
             context.provide(name, value)
     manager = PluginManager(context, plugins_dir=plugins_dir)
     await manager.load(default_manifests(), config)
-    return Composition(context=context, plugins=manager, config=config)
+    composition = Composition(context=context, plugins=manager, config=config)
+    composition.register_default_routes()
+    return composition
