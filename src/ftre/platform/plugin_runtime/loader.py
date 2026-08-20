@@ -32,7 +32,7 @@ class PluginLoader:
                 self._fibers[manifest.id] = fiber
             except Exception as exc:  # noqa: BLE001 - import/setup diagnostics must be retained
                 # Keep an observable failed record even if import itself failed.
-                self._fibers[manifest.id] = _failed_fiber(self.context, manifest.id, exc)
+                self._fibers[manifest.id] = _failed_fiber(self.context, manifest.id, exc, "entry_import_failed")
         await self.context.settle()
         statuses = self.statuses()
         required_failures = [
@@ -40,6 +40,7 @@ class PluginLoader:
             if status.required and status.state not in {FiberState.ACTIVE, "ACTIVE"}
         ]
         if required_failures:
+            await self.context.dispose()
             raise PluginStartupError("required plugin startup failed", statuses)
         return statuses
 
@@ -61,7 +62,9 @@ class PluginLoader:
             fiber = self._fibers.get(plugin_id)
             state = fiber.state if fiber else FiberState.FAILED
             error = str(fiber.error) if fiber and fiber.error else None
-            error_code = "apply_failed" if state is FiberState.FAILED else None
+            error_code = getattr(fiber, "error_code", None) if fiber else None
+            if error_code is None and state is FiberState.FAILED:
+                error_code = "apply_failed"
             result.append(
                 PluginStatus(
                     id=plugin_id,
@@ -79,9 +82,10 @@ class PluginLoader:
         return tuple(result)
 
 
-def _failed_fiber(context: Context, plugin_id: str, error: BaseException) -> Fiber:
+def _failed_fiber(context: Context, plugin_id: str, error: BaseException, error_code: str) -> Fiber:
     # A real Fiber is preferable to a second ad-hoc state machine in diagnostics.
     fiber = Fiber(context, lambda _ctx: None, {}, plugin_id, len(context.fibers))
     fiber.error = error
+    fiber.error_code = error_code
     fiber.state = FiberState.FAILED
     return fiber

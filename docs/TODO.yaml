@@ -231,10 +231,10 @@ stages:
             status: done
           - id: F1.4
             title: Tool、Skill、Prompt、MCP、Schedule、Team 行为 Plugin
-            status: in_progress
+            status: done
           - id: F1.5
             title: 外部插件兼容、Octo 边界与合成审计插件
-            status: todo
+            status: in_progress
           - id: F1.6
             title: 全量验收、回归、提交与执行报告
             status: todo
