@@ -200,3 +200,41 @@ stages:
           - src/ftre/session/search.py
           - src/ftre/api/routes.py
         acceptance: 内存态直接检索（不读盘不解析 state.json、不引入额外存储），中文子串与标题均可检索，大数据量下接口百毫秒级，配套前端高亮筛选
+
+  - id: F
+    name: 后端架构重构
+    steps:
+      - id: F1
+        title: 基于 cordis-py 的后端插件化重构
+        status: in_progress
+        date: 2026-08-20
+        prd: docs/prd/PRD-F1-backend-plugin-refactor.md
+        prd_status: approved
+        modules:
+          - pyproject.toml
+          - src/ftre/main.py
+          - src/ftre/app/
+          - src/ftre/platform/
+          - src/ftre/services/
+          - src/ftre/features/
+          - tests/
+        acceptance: cordis-py 成为唯一插件内核，四层目录与唯一 Composition Root 落地，生命周期可逆，现有 Session/Agent/HTTP/WS/插件行为通过 PRD-F1 全部验收标准
+        tasks:
+          - id: F1.1
+            title: Cordis 基座与 Composition Root
+            status: in_progress
+          - id: F1.2
+            title: Config、Filesystem、HTTP 与诊断 Service
+            status: todo
+          - id: F1.3
+            title: Session、Workspace、Agent、Bus 与 Channel Service
+            status: todo
+          - id: F1.4
+            title: Tool、Skill、Prompt、MCP、Schedule、Team 行为 Plugin
+            status: todo
+          - id: F1.5
+            title: 外部插件兼容、Octo 边界与合成审计插件
+            status: todo
+          - id: F1.6
+            title: 全量验收、回归、提交与执行报告
+            status: todo

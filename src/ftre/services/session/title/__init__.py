@@ -1,0 +1,2 @@
+"""Session title behavior namespace."""
+
