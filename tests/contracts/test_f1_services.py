@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from ftre.services.http.service import HttpService
 from ftre.services.system_prompt.service import SystemPromptService
 from ftre.services.system_prompt.types import PromptSection
 from ftre.services.tools.service import ToolService
+from ftre.services.workspace import WorkspaceService
 
 
 @pytest.mark.asyncio
@@ -36,6 +38,48 @@ def test_filesystem_policy_and_atomic_write(tmp_path: Path) -> None:
     assert service.read_text(target) == "hello"
     with pytest.raises(PathViolation):
         service.resolve("..", tmp_path, policy)
+    assert service.read_text(target, limit=3) == "hel"
+
+    original = target.path.read_text(encoding="utf-8")
+    replace = os.replace
+    try:
+        os.replace = lambda *_args: (_ for _ in ()).throw(OSError("simulated replace failure"))
+        with pytest.raises(OSError):
+            service.write_text_atomic(target, "new")
+    finally:
+        os.replace = replace
+    assert target.path.read_text(encoding="utf-8") == original
+
+    link = tmp_path / "link.txt"
+    try:
+        link.symlink_to(target.path)
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        with pytest.raises(PathViolation):
+            service.resolve(link, tmp_path, PathPolicy(root=tmp_path / "nested"))
+
+
+@pytest.mark.asyncio
+async def test_workspace_service_persists_session_workspace(tmp_path: Path) -> None:
+    class Sessions:
+        def __init__(self):
+            self.workspace = str(tmp_path)
+
+        async def get_session(self, _session_id):
+            return {"workspace": self.workspace}
+
+        async def update_session(self, _session_id, title=None, workspace=None):
+            if workspace is not None:
+                self.workspace = workspace
+
+    sessions = Sessions()
+    service = WorkspaceService(sessions)
+    before = await service.get("session")
+    changed = await service.set("session", str(tmp_path))
+    assert changed == {"before": before, "after": str(tmp_path.resolve())}
+    policy = await service.policy("session")
+    assert policy.root == tmp_path.resolve()
 
 
 def test_http_registry_freeze_marks_restart_required() -> None:

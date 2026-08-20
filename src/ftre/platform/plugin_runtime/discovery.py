@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,7 +14,8 @@ from .manifest import PluginManifest
 
 class PluginDiscovery:
     def __init__(self, *, plugins_dir: Path | None = None) -> None:
-        self.plugins_dir = Path(plugins_dir) if plugins_dir else None
+        default_root = Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "plugins"
+        self.plugins_dir = Path(plugins_dir) if plugins_dir else default_root
 
     def catalog(self, builtins: list[PluginManifest], config: dict[str, Any] | None = None) -> PluginCatalog:
         catalog = PluginCatalog(builtins)
@@ -38,7 +39,13 @@ class PluginDiscovery:
                 continue
             entry = item.get("entry") or item.get("module")
             if not entry:
-                raise ValueError(f"external plugin {plugin_id!r} requires entry/module")
+                # Existing ftre installs used a name-only Octo entry; resolve
+                # the known independent repository shim without importing it
+                # during discovery.
+                if plugin_id == "octo_channel" and self.plugins_dir is not None and (self.plugins_dir / "octo_plugin").is_dir():
+                    entry = "octo_plugin._plugin:OctoChannelPlugin"
+                else:
+                    raise ValueError(f"external plugin {plugin_id!r} requires entry/module")
             source = f"external:{plugin_id}"
             catalog.add(
                 PluginManifest(
@@ -71,6 +78,10 @@ class PluginDiscovery:
                 raise ValueError(f"plugin entry escapes plugins root: {entry!r}")
             if root.exists() and str(root) not in sys.path:
                 sys.path.insert(0, str(root))
+            if candidate.is_dir() and str(candidate) not in sys.path:
+                # A few legacy standalone plugins use sibling absolute imports
+                # (e.g. ``_channel``) inside their package directory.
+                sys.path.insert(0, str(candidate))
         module = importlib.import_module(module_name)
         try:
             target = getattr(module, attribute)
@@ -80,6 +91,10 @@ class PluginDiscovery:
             for key in ("inject", "provide"):
                 if hasattr(module, key) and not hasattr(target, key):
                     setattr(target, key, getattr(module, key))
+            inject = tuple(getattr(target, "inject", ()) or ())
+            aliases = {"bus": "message_bus", "session_manager": "sessions", "channel_manager": "channels", "tool_registry": "tools", "command_manager": "commands"}
+            if inject:
+                target.inject = tuple(aliases.get(name, name) for name in inject)
             return target
         except AttributeError as exc:
             raise LookupError(f"plugin attribute not found: {entry!r}") from exc

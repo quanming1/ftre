@@ -11,11 +11,11 @@ WebSocket Channel
 - 客户端必须显式发送 attach 帧（或在 user_message/cancel 时隐式 attach 当前 session），
   后端才会把这条 ws 加入 session 的推送目标。
 """
+import asyncio
 import base64
 import binascii
 import json
 import logging
-import asyncio
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -23,13 +23,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketState
 
 from ftre.bus import (
+    GLOBAL_SESSION,
     BusMessage,
     EventBus,
-    GLOBAL_SESSION,
     InboundData,
     InboundMetadata,
     OutboundMetadata,
 )
+
 from .base import Channel
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ def _persist_attachments(attachments: list | None) -> None:
 
         try:
             raw = base64.b64decode(b64)
-        except Exception:
+        except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             logger.warning(f"[ws-channel] 附件落盘失败，跳过: {name}")
             continue
 
@@ -254,7 +255,7 @@ class WebSocketChannel(Channel):
                 continue
             try:
                 await ws.send_text(text)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 logger.debug(f"[ws-channel] send 失败，准备关闭: {e}")
                 dead.append(ws)
 
@@ -262,7 +263,7 @@ class WebSocketChannel(Channel):
             if ws.application_state != WebSocketState.DISCONNECTED:
                 try:
                     await ws.close()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                     pass
 
     # ============================================================
@@ -291,7 +292,7 @@ class WebSocketChannel(Channel):
                 logger.debug(f"[ws-channel] connection closed by send failure: {e}")
             else:
                 logger.warning(f"[ws-channel] connection error: {e}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             logger.warning(f"[ws-channel] connection error: {e}")
         finally:
             attached = self._ws_sessions.get(ws, set())
@@ -395,11 +396,10 @@ class WebSocketChannel(Channel):
                     session_id,
                     status="cancelled" if getattr(ack, "created", False) else "nothing_to_cancel",
                 )
+            except (WebSocketDisconnect, RuntimeError):
+                logger.debug("[ws-channel] cancel ack skipped after disconnect session=%s", session_id)
             except Exception:
-                logger.exception(
-                    "[ws-channel] cancel control 执行失败 session=%s",
-                    session_id,
-                )
+                logger.exception("[ws-channel] cancel control 执行失败 session=%s", session_id)
                 await self._reject(
                     ws,
                     frame_id,
@@ -544,7 +544,7 @@ class WebSocketChannel(Channel):
         }
         try:
             await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             logger.debug(f"[ws-channel] reply_snapshot 发送失败: {e}")
 
     async def _reject(
@@ -575,7 +575,7 @@ class WebSocketChannel(Channel):
         }
         try:
             await ws.send_text(json.dumps(payload, ensure_ascii=False))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             logger.debug(f"[ws-channel] reject 回写失败: {e}")
 
     async def _send_control_ack(

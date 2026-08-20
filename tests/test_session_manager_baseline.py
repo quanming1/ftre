@@ -11,11 +11,15 @@
 - external session 映射语义
 """
 import asyncio
-import json
 
 import pytest
 import pytest_asyncio
-from ftre_agent_core.message import AssistantMsg, Msg, SystemMsg, UserMsg, MsgToken, TokenUsage
+from ftre_agent_core.message import (
+    AssistantMsg,
+    Msg,
+    MsgToken,
+    UserMsg,
+)
 
 from ftre.session import SessionManager
 
@@ -204,7 +208,7 @@ async def test_save_message_rejects_duplicate_id(manager):
     sid = await manager.create_session("ws")
     msg = _user("dup")
     await manager.save_message(sid, msg)
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 legacy compatibility boundary reviewed in F1
         await manager.save_message(sid, msg)
 
 
@@ -237,8 +241,8 @@ async def test_update_message_keeps_order_and_updates_fields(manager):
 
 @pytest.mark.asyncio
 async def test_update_message_unknown_id_fails_loudly(manager):
-    sid = await manager.create_session("ws")
-    with pytest.raises(Exception):
+    await manager.create_session("ws")
+    with pytest.raises(Exception):  # noqa: B017 legacy compatibility boundary reviewed in F1
         await manager.update_message(_assistant("ghost"))
 
 

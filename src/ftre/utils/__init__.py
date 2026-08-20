@@ -1,3 +1,3 @@
-from .image_store import save_image, load_as_data_url
+from .image_store import load_as_data_url, save_image
 
-__all__ = ["save_image", "load_as_data_url"]
+__all__ = ["load_as_data_url", "save_image"]

@@ -80,6 +80,17 @@ class ConfigService:
             raise TypeError("config must be an object")
         return await self._commit(value, expected_revision)
 
+    def replace_sync(self, value: dict[str, Any], expected_revision: int | None = None) -> ConfigSnapshot:
+        """Synchronous compatibility entry for legacy async-route helpers."""
+        if not isinstance(value, dict):
+            raise TypeError("config must be an object")
+        if expected_revision is not None and expected_revision != self._revision:
+            raise ConfigConflictError(f"expected revision {expected_revision}, current {self._revision}")
+        self._store.write_atomic(value)
+        self._value = copy.deepcopy(value)
+        self._revision += 1
+        return self.snapshot()
+
     async def _commit(self, candidate: dict[str, Any], expected_revision: int | None) -> ConfigSnapshot:
         if expected_revision is not None and expected_revision != self._revision:
             raise ConfigConflictError(f"expected revision {expected_revision}, current {self._revision}")
@@ -105,4 +116,3 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
         else:
             result[key] = copy.deepcopy(value)
     return result
-

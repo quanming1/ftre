@@ -2,14 +2,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
-from ftre.agent.compact_manager import (
-    CompactManager,
-    _build_prompt,
-    _estimate_body_chars,
-    _serialize_messages,
-)
-from ftre.session.message.converter import to_openai
 from ftre_agent_core.event import CustomEvent
 from ftre_agent_core.message import (
     AssistantMsg,
@@ -19,6 +11,14 @@ from ftre_agent_core.message import (
     ToolResultBlock,
     UserMsg,
 )
+
+from ftre.agent.compact_manager import (
+    CompactManager,
+    _build_prompt,
+    _estimate_body_chars,
+    _serialize_messages,
+)
+from ftre.session.message.converter import to_openai
 
 
 def _record(message, timestamp=1.0):

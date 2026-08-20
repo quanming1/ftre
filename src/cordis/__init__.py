@@ -170,6 +170,85 @@ class PluginContext:
             )
 
 
+class LegacyPluginContext:
+    """Bridge for pre-F1 ``setup(ctx, config)`` plugins.
+
+    This adapter is intentionally narrow and only exists so installed Octo and
+    other old plugins can migrate without a flag day.  New plugins receive
+    PluginContext and must use public Service keys directly.
+    """
+
+    _ALIASES: ClassVar[dict[str, str]] = {
+        "bus": "message_bus",
+        "session_manager": "sessions",
+        "channel_manager": "channels",
+        "tool_registry": "tools",
+        "command_manager": "commands",
+    }
+
+    def __init__(self, root: Context, fiber: Fiber) -> None:
+        self._root = root
+        self._fiber = fiber
+
+    def _value(self, name: str) -> Any:
+        key = self._ALIASES.get(name, name)
+        value = self._root.get(key, strict=False)
+        if key == "message_bus" and value is not None:
+            return getattr(value, "bus", value)
+        if key == "channels" and value is not None:
+            return getattr(value, "manager", value)
+        if key == "tools" and value is not None:
+            return getattr(value, "registry", value)
+        if key == "commands" and value is not None:
+            return getattr(value, "manager", value)
+        if key == "event_loop" and callable(value):
+            return value()
+        return value
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        value = self._value(name)
+        if value is None:
+            raise AttributeError(name)
+        return value
+
+    def effect(self, cleanup: Cleanup, *, label: str = "legacy-effect") -> Cleanup:
+        self._fiber.add_effect(Effect(cleanup, label))
+        return cleanup
+
+    def on(self, event: str, callback: Callable[..., Any]) -> Cleanup:
+        return self.effect(self._root.on(event, callback), label=f"event:{event}")
+
+    def register_router(self, router: Any) -> None:
+        http = self._root.get("http", strict=False)
+        if http is None:
+            return
+        self.effect(http.register_router(router, owner=self._fiber.plugin_id), label="router:legacy")
+
+    def register_channel(self, channel: Any) -> None:
+        manager = self._value("channels")
+        if manager is None:
+            return
+        manager.register(channel)
+
+        async def cleanup() -> None:
+            stop = getattr(channel, "stop", None)
+            if callable(stop):
+                result = stop()
+                if inspect.isawaitable(result):
+                    await result
+            manager.unregister(channel.channel_id)
+
+        self.effect(cleanup, label=f"channel:{channel.channel_id}")
+
+    def register_core_hook(self, point: str, callback: Callable[..., Any]) -> None:
+        manager = self._root.get("core_hook_manager", strict=False)
+        if manager is not None:
+            manager.register(point, callback)
+            self.effect(lambda: manager.unregister(point, callback), label=f"hook:{point}")
+
+
 class Fiber:
     """Lifecycle record for one plugin registration."""
 
@@ -233,7 +312,7 @@ class Fiber:
             return
         self.state = FiberState.LOADING
         try:
-            result = _invoke_plugin(self.plugin, self.context, self.config)
+            result = _invoke_plugin(self.plugin, self.context, self.config, self)
             if inspect.isawaitable(result):
                 result = await result
             if callable(result):
@@ -282,7 +361,7 @@ class Fiber:
         self._done.clear()
 
 
-def _invoke_plugin(plugin: Any, ctx: PluginContext, config: Any) -> Any:
+def _invoke_plugin(plugin: Any, ctx: PluginContext, config: Any, fiber: Fiber | None = None) -> Any:
     target = plugin
     if isinstance(plugin, type):
         # Instantiate class plugins so normal ``def apply(self, ctx, config)``
@@ -294,6 +373,9 @@ def _invoke_plugin(plugin: Any, ctx: PluginContext, config: Any) -> Any:
         except TypeError:
             target = plugin
     apply = getattr(target, "apply", None)
+    setup = getattr(target, "setup", None)
+    if setup is not None and fiber is not None:
+        return setup(LegacyPluginContext(ctx._root, fiber), config)
     if apply is not None:
         try:
             return apply(ctx, config)

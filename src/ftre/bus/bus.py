@@ -6,7 +6,7 @@ EventBus - 消息网关
 """
 import asyncio
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from .message import BusMessage, TypedBusMessage
 

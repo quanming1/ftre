@@ -5,15 +5,15 @@ wire 协议契约（data/metadata 形状）在 protocol.py，本文件只定义 
 """
 import time
 import uuid
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .protocol import InboundMetadata, MessageType, coerce_inbound_metadata
 from .payloads import (
     CommandMessagePayload,
     SessionMailboxSnapshotPayload,
 )
+from .protocol import InboundMetadata, MessageType, coerce_inbound_metadata
 
 # 全局事件标记：to_channel / to_session 设为这个硬编码值时，
 # 表示这是一条不针对单一 channel/session 的全局广播消息。
@@ -59,7 +59,7 @@ class BusMessage(BaseModel):
 PayloadT = TypeVar("PayloadT", bound=BaseModel)
 
 
-class TypedBusMessage(BusMessage, Generic[PayloadT]):
+class TypedBusMessage[PayloadT: BaseModel](BusMessage):
     """带强类型 Payload 的 Bus 信封。
 
     旧的 ``BusMessage`` 暂时保留给 inbound/core agent event；Gateway 自有

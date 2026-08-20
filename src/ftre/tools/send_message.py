@@ -41,10 +41,10 @@ def create_send_message_tool(channel_manager) -> Tool:
         kind: str = "notify",
         caller_channel: str = Injected("channel_id"),
         caller_session: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),
-        bus=Injected("bus"),
-        session_manager=Injected("session_manager"),
-        agent_loop=Injected("agent_loop"),
+        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        bus=Injected("bus"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str:
         # ── 通用前置校验 ────────────────────────────────────
         if caller_channel == SUBAGENT_CHANNEL_ID:
@@ -98,7 +98,7 @@ def create_send_message_tool(channel_manager) -> Tool:
                 f"已排队 {channel_id}:{session_id} "
                 f"(request_id={ack.request_id}, position={ack.queue_position})"
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 发送失败: {type(e).__name__}: {e}"
 
     return Tool(

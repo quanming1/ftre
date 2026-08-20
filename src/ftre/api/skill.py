@@ -110,7 +110,7 @@ def extract_description(text: str) -> str:
             if paragraph:
                 break
             continue
-        if stripped.startswith("#") or stripped.startswith("---"):
+        if stripped.startswith(("#", "---")):
             continue
         paragraph.append(stripped)
     return " ".join(paragraph).strip()

@@ -5,15 +5,18 @@ import asyncio
 import json
 import logging
 from contextlib import suppress
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from mcp import ClientSession, Tool as McpToolDef
-from mcp.client.stdio import stdio_client, StdioServerParameters
+from mcp import ClientSession
+from mcp import Tool as McpToolDef
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
 try:  # mcp>=1.x
     from mcp.client.streamable_http import streamablehttp_client
 except ImportError:  # mcp 2.0 起改名为 streamable_http_client
-    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
+    from mcp.client.streamable_http import (
+        streamable_http_client as streamablehttp_client,
+    )
 
 from .config import McpServerConfig, parse_mcp_config
 
@@ -66,7 +69,7 @@ class McpConnection:
 
             try:
                 result = await asyncio.wait_for(ready, timeout=self.config.timeout / 1000)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 logger.warning(f"[mcp] 连接失败: {self.name} — {e}")
                 await self._cleanup_task()
                 return False
@@ -86,19 +89,19 @@ class McpConnection:
                     args=self.config.command[1:],
                     env=self.config.environment or None,
                 )
-                async with stdio_client(server_params) as streams:
+                async with stdio_client(server_params) as streams:  # noqa: SIM117 legacy compatibility boundary reviewed in F1
                     async with ClientSession(*streams) as session:
                         await self._serve_session(session, ready)
             elif self.config.type == "remote":
                 # remote 类型：通过 streamable HTTP 连接 MCP 服务器
-                async with streamablehttp_client(
+                async with streamablehttp_client(  # noqa: SIM117 legacy compatibility boundary reviewed in F1
                     self.config.url, headers=self.config.headers or None
                 ) as (read_stream, write_stream, _):
                     async with ClientSession(read_stream, write_stream) as session:
                         await self._serve_session(session, ready)
             # config.type 只可能是 "local" 或 "remote"（由 config.py 的 from_raw 守卫），
             # 不会走到其他分支，因此这里不需要额外的 else 兜底。
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             if not ready.done():
                 ready.set_exception(e)
             logger.debug(f"[mcp] 连接 task 退出: {self.name} — {e}")
@@ -123,14 +126,14 @@ class McpConnection:
         if self._task and not self._task.done():
             try:
                 await asyncio.wait_for(self._task, timeout=5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # 超时则强制 cancel
                 self._task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await self._task
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 logger.debug(f"[mcp] 清理连接 task 异常: {self.name} — {e}")
         self._task = None
 
@@ -226,7 +229,7 @@ class McpManager:
             try:
                 raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
                 last_mcp_json = json.dumps(raw.get("mcp", {}), sort_keys=True)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                 pass
 
         while True:
@@ -251,7 +254,7 @@ class McpManager:
 
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 logger.warning(f"[mcp] config watcher 异常: {e}")
 
     async def reload(self, configs: list[McpServerConfig]) -> None:

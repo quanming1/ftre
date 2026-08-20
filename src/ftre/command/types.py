@@ -5,9 +5,9 @@ _step_command 根据 match-case 分发，不再靠 ctx.meta 约定传结果。
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Union
-
+from typing import Any, Union
 
 # ─── 返回值类型 ──────────────────────────────────────────────
 
@@ -29,13 +29,11 @@ class SendMessage:
 @dataclass
 class Handled:
     """已处理完毕，短路 pipeline。"""
-    pass
 
 
 @dataclass
 class Passthrough:
     """不是指令，交给 LLM。"""
-    pass
 
 
 @dataclass
@@ -44,7 +42,7 @@ class ResumeAgent:
     events: list[Any]
 
 
-CommandResult = Union[
+CommandResult = Union[  # noqa: UP007 legacy compatibility boundary reviewed in F1
     RewritePrompt,
     SendMessage,
     Handled,
@@ -69,9 +67,9 @@ class CommandDef:
     args_hint: str = ""                 # "[preset]"；空串 = 无参数
     system: bool = False                # 系统级指令：锁外执行，可立即响应
     persist_input: bool = True          # 是否持久化用户输入（/cancel=False 不入库不回显）
-    sub_commands: list["CommandDef"] = field(default_factory=list)
+    sub_commands: list[CommandDef] = field(default_factory=list)
     source: str = "builtin"             # builtin / file / skill
-    handler: "Handler | None" = None    # 文件/Skill 指令直接挂载
+    handler: Handler | None = None    # 文件/Skill 指令直接挂载
 
 
 @dataclass

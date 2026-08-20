@@ -35,6 +35,7 @@ async def test_default_composition_has_required_public_services(tmp_path) -> Non
         assert {"config", "filesystem", "http", "message_bus", "tools"}.issubset(composition.context.services)
         routes = composition.context.get("http").snapshot()
         assert any(route["path"] == "/api/health" for route in routes)
+        paths = {route["path"] for route in routes}
+        assert {"/", "/api/traces", "/api/sessions", "/api/config", "/api/cron", "/api/commands", "/api/images/{filename}", "/api/agents", "/api/skills", "/api/mcp"}.issubset(paths)
     finally:
         await composition.close()
-

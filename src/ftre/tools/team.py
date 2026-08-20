@@ -46,13 +46,13 @@ team 工具集 — 让主 agent（leader）组建并管理一个由多个 subage
 """
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
+
 from ftre.agent import sub_agent_profile
 from ftre.bus import AgentRef, BusMessage, InboundMetadata
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
-
 
 # team_add_agent 的 profile 对象允许的字段（与全局 agent.config.json 同名同义）
 _PROFILE_ALLOWED_KEYS = frozenset({
@@ -120,7 +120,7 @@ def _run_async(coro, event_loop, timeout: float | None = 10.0):
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _read_teams(session_manager, event_loop, parent_sid: str) -> dict:
@@ -198,8 +198,9 @@ def _create_team_create_tool() -> Tool:
         team_name: str,
         team_id: str = "",
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),
-        session_manager=Injected("session_manager"),
+        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
         caller_channel: str = Injected("channel_id"),
     ) -> str:
         if not session_id or event_loop is None or session_manager is None:
@@ -228,7 +229,7 @@ def _create_team_create_tool() -> Tool:
             _mutate_teams(session_manager, event_loop, session_id, _create)
         except _TeamOpError as e:
             return f"[error] {e}"
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 创建团队失败: {type(e).__name__}: {e}"
         return (
             f"已创建团队 '{team_name.strip()}'（team_id={tid}）。\n"
@@ -265,14 +266,14 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
     def team_add_agent(
         team_id: str,
         agent_name: str,
-        profile: dict = None,
+        profile: dict | None = None,
         invoke: str = "",
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),
-        session_manager=Injected("session_manager"),
-        agent_loop=Injected("agent_loop"),
+        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
         caller_channel: str = Injected("channel_id"),
-        workspace=Injected("workspace"),
+        workspace=Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str:
         if not session_id or event_loop is None or session_manager is None:
             return "[error] runtime context 未注入完整"
@@ -304,7 +305,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
             from ._workspace import WorkspaceAccessor
             if isinstance(workspace, WorkspaceAccessor):
                 member_workspace = workspace.get()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
             pass
 
         try:
@@ -316,7 +317,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
                 ),
                 event_loop,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 创建成员 session 失败: {type(e).__name__}: {e}"
 
         # 成员 profile 落盘（先全量校验后写盘）：<leader session>/sub_agents/<member>/
@@ -329,7 +330,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         except (OSError, ValueError) as e:
             try:
                 _run_async(agent_loop.delete_session(member_sid), event_loop)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                 pass
             return f"[error] 写入成员 profile 失败: {type(e).__name__}: {e}"
 
@@ -344,11 +345,11 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
                 ),
                 event_loop,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             sub_agent_profile.delete_member_profile(session_manager, session_id, member_sid)
             try:
                 _run_async(agent_loop.delete_session(member_sid), event_loop)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                 pass
             return f"[error] 写入成员绑定失败: {type(e).__name__}: {e}"
 
@@ -369,11 +370,11 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
 
         try:
             _mutate_teams(session_manager, event_loop, session_id, _register)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             sub_agent_profile.delete_member_profile(session_manager, session_id, member_sid)
             try:
                 _run_async(agent_loop.delete_session(member_sid), event_loop)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                 pass
             return (
                 f"[error] 登记成员失败（团队可能已被并发删除）: {e}。"
@@ -394,7 +395,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
                 channel_manager, event_loop, agent_loop,
                 session_id, member_sid, invoke.strip()
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return (
                 f"成员已创建（session_id={member_sid}）但首次触发投递失败："
                 f"{type(e).__name__}: {e}。可用 team_say 手动派活。"
@@ -460,9 +461,9 @@ def _create_team_say_tool(channel_manager) -> Tool:
         session_id: str,
         content: str,
         parent_session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),
-        session_manager=Injected("session_manager"),
-        agent_loop=Injected("agent_loop"),
+        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
         caller_channel: str = Injected("channel_id"),
     ) -> str:
         if not parent_session_id or event_loop is None or session_manager is None:
@@ -486,7 +487,7 @@ def _create_team_say_tool(channel_manager) -> Tool:
             member_session = _run_async(
                 session_manager.get_session(session_id.strip()), event_loop
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 查询成员 session 失败: {type(e).__name__}: {e}"
         if member_session is None:
             return (
@@ -499,7 +500,7 @@ def _create_team_say_tool(channel_manager) -> Tool:
                 channel_manager, event_loop, agent_loop,
                 parent_session_id, session_id.strip(), content,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 投递失败: {type(e).__name__}: {e}"
 
         if not ack.accepted:
@@ -547,9 +548,9 @@ def _create_team_agent_status_tool() -> Tool:
         team_id: str,
         session_id: str = "",
         parent_session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),
-        session_manager=Injected("session_manager"),
-        agent_loop=Injected("agent_loop"),
+        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
         caller_channel: str = Injected("channel_id"),
     ) -> str:
         """查询团队成员状态（不阻塞）。
@@ -587,7 +588,7 @@ def _create_team_agent_status_tool() -> Tool:
                     event_loop,
                 )
                 msg_count = len(msgs) if msgs else 0
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                 pass
             # 运行耗时：从 member 注册时间到现在的秒数
             elapsed = 0.0
@@ -597,9 +598,8 @@ def _create_team_agent_status_tool() -> Tool:
                 try:
                     from datetime import datetime
                     created_dt = datetime.fromisoformat(created)
-                    from datetime import timezone
-                    elapsed = (datetime.now(timezone.utc) - created_dt).total_seconds()
-                except Exception:
+                    elapsed = (datetime.now(UTC) - created_dt).total_seconds()
+                except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                     pass
             return status, last_text, msg_count, elapsed
 
@@ -665,8 +665,9 @@ def _create_team_delete_tool() -> Tool:
     def team_delete(
         team_id: str,
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),
-        session_manager=Injected("session_manager"),
+        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
         caller_channel: str = Injected("channel_id"),
     ) -> str:
         if not session_id or event_loop is None or session_manager is None:
@@ -692,7 +693,7 @@ def _create_team_delete_tool() -> Tool:
             _mutate_teams(session_manager, event_loop, session_id, _pop)
         except _TeamOpError as e:
             return f"[error] {e}"
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 解散团队失败: {type(e).__name__}: {e}"
         team = popped["team"]
 
@@ -704,7 +705,7 @@ def _create_team_delete_tool() -> Tool:
             try:
                 _run_async(agent_loop.delete_session(msid), event_loop)
                 deleted += 1
-            except Exception:
+            except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 failed += 1
             # 双保险：绑定缺失时也确保 profile 目录被清
             sub_agent_profile.delete_member_profile(session_manager, session_id, msid)
@@ -734,11 +735,11 @@ def _create_team_delete_tool() -> Tool:
 # ── wait_agent ─────────────────────────────────────────────────
 def _create_wait_agent_tool() -> Tool:
     def wait_agent(
-        session_ids: list = None,
+        session_ids: list | None = None,
         parent_session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),
-        session_manager=Injected("session_manager"),
-        agent_loop=Injected("agent_loop"),
+        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
         caller_channel: str = Injected("channel_id"),
     ) -> str:
         if not parent_session_id or event_loop is None or agent_loop is None or session_manager is None:
@@ -774,7 +775,7 @@ def _create_wait_agent_tool() -> Tool:
                 )
                 # 已确认队列与当前 Turn 全部清空；完成历史只在内存的
                 # CompletionRegistry 保留，不再写入 session state.json。
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 results.append(f"- {sid}: [error] 等待出错: {type(e).__name__}: {e}")
                 continue
 

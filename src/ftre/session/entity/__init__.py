@@ -3,8 +3,8 @@
 本层只有 Pydantic 数据结构与版本校验，不含任何存储/业务逻辑。
 """
 from .state import (
-    AgentStateFile,
     CURRENT_SCHEMA_VERSION,
+    AgentStateFile,
     MailboxState,
     QueueItem,
     SessionState,
@@ -14,8 +14,8 @@ from .state import (
 )
 
 __all__ = [
-    "AgentStateFile",
     "CURRENT_SCHEMA_VERSION",
+    "AgentStateFile",
     "MailboxState",
     "QueueItem",
     "SessionState",

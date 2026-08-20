@@ -67,7 +67,7 @@ class ContextGate:
             await self._compact.compact(
                 session_id, channel_id, config=config, trigger="auto"
             )
-        except Exception as exc:  # Lane 决定是否进入 BLOCKED，而非吞掉错误。
+        except Exception as exc:  # Lane 决定是否进入 BLOCKED，而非吞掉错误。  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return ContextDecision("block", f"上下文压缩失败: {exc}")
         hard_threshold = float(getattr(config.context, "compact_threshold", 0.8))
         still_over = await self._compact.should_compact(
@@ -77,7 +77,7 @@ class ContextGate:
             return ContextDecision("pass")
         try:
             await self._compact.compress_fast(session_id, channel_id, config=config)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return ContextDecision("block", f"快速裁剪失败: {exc}")
         if await self._compact.should_compact(
             session_id, channel_id, config, threshold=hard_threshold

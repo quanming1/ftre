@@ -20,6 +20,7 @@ from ftre_agent_core.message import (
 )
 
 from ftre.session.entity.models import MessageModel
+
 from .multimodal import IMAGE_OMITTED_NOTICE
 
 

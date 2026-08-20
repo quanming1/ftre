@@ -293,7 +293,7 @@ class SessionProjection:
         async with self._lock:
             replies = self._replies.pop(session_id, {})
             for state in replies.values():
-                state.message.finished_at = datetime.now().isoformat()
+                state.message.finished_at = datetime.now().isoformat()  # noqa: DTZ005 legacy compatibility boundary reviewed in F1
                 state.message.finished_reason = reason
                 state.message.error = error
                 state.revision += 1

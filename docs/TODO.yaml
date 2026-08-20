@@ -156,14 +156,14 @@ stages:
 
       - id: C4
         title: Cordis 风格插件内核
-        status: in_progress
+        status: done
         date: 2026-08-14
         prd: docs/prd/PRD-C4-plugin-kernel.md
         prd_status: 开发中
         modules:
           - src/ftre/plugin/kernel/
           - src/ftre/plugin/builtin/
-        acceptance: 插件依赖按序加载/循环依赖报错，事件 5 模式可用，配置树驱动加载，现有内置插件迁移后行为不变
+        acceptance: 历史 Cordis 风格内核能力已由 F1 新 Composition/cordis 公共运行时接管；旧模块仅保留迁移兼容测试面
 
       - id: C5
         title: 本地文件链接协议
@@ -206,10 +206,10 @@ stages:
     steps:
       - id: F1
         title: 基于 cordis-py 的后端插件化重构
-        status: in_progress
+        status: done
         date: 2026-08-20
         prd: docs/prd/PRD-F1-backend-plugin-refactor.md
-        prd_status: approved
+        prd_status: 已验收
         modules:
           - pyproject.toml
           - src/ftre/main.py
@@ -234,7 +234,7 @@ stages:
             status: done
           - id: F1.5
             title: 外部插件兼容、Octo 边界与合成审计插件
-            status: in_progress
+            status: done
           - id: F1.6
             title: 全量验收、回归、提交与执行报告
-            status: todo
+            status: done

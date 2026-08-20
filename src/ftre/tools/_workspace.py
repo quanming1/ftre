@@ -89,7 +89,7 @@ class WorkspaceAccessor:
     """读写当前 session 工作区的同步外观（在工具线程里使用）。"""
 
     session_id: str
-    session_manager: "SessionManager"
+    session_manager: SessionManager
     event_loop: asyncio.AbstractEventLoop
     fallback_cwd: str
 

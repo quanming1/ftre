@@ -49,6 +49,7 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     from ftre.services.agent.profile import AgentProfileService
     from ftre.services.command import CommandService
     from ftre.services.config import ConfigService
+    from ftre.services.http.legacy import bind_legacy_api
     from ftre.services.messaging.bus import MessageBusService
     from ftre.services.messaging.channel import ChannelService
     from ftre.services.tools import ToolService
@@ -108,6 +109,13 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
             agent_manager=agent_manager,
         )
         agent_service.bind(agent_loop, profile_service)
+        bind_legacy_api(
+            sessions=session_manager,
+            agents=agent_service,
+            agent_profiles=profile_service,
+            commands=command_service,
+            agent_loop=agent_loop,
+        )
         register_builtin_commands(command_manager, agent_loop)
         ws_channel = WebSocketChannel(bus, host=gateway_host, port=gateway_port, plugin_manager=composition.plugins)
         channel_manager.register(ws_channel)

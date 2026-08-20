@@ -24,7 +24,7 @@ ON_STOP hook 会检查 session.metadata.plan：
 """
 import asyncio
 
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
 
 def _run_async(coro, event_loop, timeout: float = 10.0):
@@ -39,13 +39,13 @@ def create_plan_tool() -> Tool:
         action: str,
         goal: str = "",
         raw: str = "",
-        steps: list = None,
+        steps: list | None = None,
         step_id: str = "",
         status: str = "",
-        updates: list = None,
+        updates: list | None = None,
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),
-        session_manager=Injected("session_manager"),
+        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str:
         if not session_id or event_loop is None or session_manager is None:
             return "[error] runtime context 未注入完整"

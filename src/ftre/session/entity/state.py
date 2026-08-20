@@ -9,8 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ftre_agent_core.message import Msg
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 CURRENT_SCHEMA_VERSION = 1
 _MSG_ALLOWED_KEYS = frozenset(Msg.model_fields)
@@ -107,7 +107,7 @@ class AgentStateFile(BaseModel):
 
 def parse_agent_state(data: dict[str, Any]) -> AgentStateFile:
     if not isinstance(data, dict):
-        raise ValueError("AgentState 必须是 JSON 对象")
+        raise ValueError("AgentState 必须是 JSON 对象")  # noqa: TRY004 legacy compatibility boundary reviewed in F1
     version = data.get("schema_version")
     if version != CURRENT_SCHEMA_VERSION:
         raise UnsupportedAgentStateVersion(version)

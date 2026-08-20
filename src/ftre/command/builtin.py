@@ -11,13 +11,13 @@ from typing import TYPE_CHECKING
 from ftre.command.types import Handled, ResumeAgent, SendMessage
 
 if TYPE_CHECKING:
-    from ftre.command.manager import CommandManager
     from ftre.agent.loop import AgentLoop
+    from ftre.command.manager import CommandManager
 
 logger = logging.getLogger(__name__)
 
 
-def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
+def register_builtin_commands(mgr: CommandManager, loop: AgentLoop) -> None:
     """注册内置斜杠指令到 CommandManager。
 
     :param mgr: CommandManager 实例
@@ -47,9 +47,10 @@ def register_builtin_commands(mgr: "CommandManager", loop: "AgentLoop") -> None:
                 level="error",
             )
 
-        from ftre.session.message.converter import _as_msg
         from ftre_agent_core.event import UserConfirmResultEvent
         from ftre_agent_core.message import ToolCallBlock, ToolCallState
+
+        from ftre.session.message.converter import _as_msg
 
         inbound = ctx.meta.inbound
         session_id = inbound.from_session or inbound.data.get("session_id", "")

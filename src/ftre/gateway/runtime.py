@@ -293,7 +293,7 @@ class GatewayRuntime:
 
         # 2. 停止旧进程
         old_pid = state.get("pid")
-        if isinstance(old_pid, int) and self._is_pid_running(old_pid):
+        if isinstance(old_pid, int) and self._is_pid_running(old_pid):  # noqa: SIM102 legacy compatibility boundary reviewed in F1
             if not self._terminate(old_pid, timeout_s=timeout_s):
                 return False, "gateway_stop_timeout", self.status()
 
@@ -541,7 +541,7 @@ class GatewayRuntime:
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
         return self._wait_for_exit(pid, 2)
 
-    def _wait_for_exit(self, pid: int, timeout_s: int | float) -> bool:
+    def _wait_for_exit(self, pid: int, timeout_s: float) -> bool:
         """轮询等待进程退出，每 0.1 秒检查一次。
 
         Args:

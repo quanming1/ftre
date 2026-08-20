@@ -18,10 +18,10 @@ AgentManager — 加载和管理 ~/.ftre/agents/ 下的 per-agent 配置。
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
-import copy
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -624,6 +624,7 @@ class AgentManager:
         历史 context 的 state。
         """
         from ftre_agent_core.agent import ReActAgent
+
         from ftre.tools import build_default_tools, filter_tools
 
         c = copy.deepcopy(config)
@@ -678,14 +679,14 @@ class AgentManager:
             PermissionRule,
         )
 
-        bash_safe = PermissionRule(
+        PermissionRule(
             id="default-bash-safe",
             tool_name="bash",
             argument_regex={"command": _SAFE_BASH_COMMAND_REGEX},
             behavior=PermissionBehavior.ALLOW,
             priority=10,
         )
-        bash_ask = PermissionRule(
+        PermissionRule(
             id="default-bash-ask",
             tool_name="bash",
             behavior=PermissionBehavior.ASK,
@@ -742,7 +743,7 @@ class AgentManager:
             f"channel_id={channel_id or ''}",
             f"session_id={session_id or ''}",
             f"os={os.name}",
-            f"date={date.today().isoformat()}",
+            f"date={date.today().isoformat()}",  # noqa: DTZ011 legacy compatibility boundary reviewed in F1
         ]
         if os.name == "nt":
             env_lines.append(

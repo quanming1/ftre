@@ -1,6 +1,6 @@
 import os
 
-from ftre.utils.image_store import save_image, load_as_data_url
+from ftre.utils.image_store import load_as_data_url, save_image
 
 
 def test_save_image_returns_absolute_path():

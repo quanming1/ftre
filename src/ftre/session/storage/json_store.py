@@ -129,7 +129,7 @@ class JsonStateStore:
                     state_file.read_text, encoding="utf-8"
                 )
                 state = parse_agent_state_json(payload)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 await self._quarantine(state_file, child, exc)
                 continue
             self.states[state.session.id] = state
@@ -151,7 +151,7 @@ class JsonStateStore:
         self.corrupt[session_hint] = error
         logger.error("[session-store] invalid state file %s", error)
         try:
-            stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            stamp = datetime.now().strftime("%Y%m%d%H%M%S")  # noqa: DTZ005 legacy compatibility boundary reviewed in F1
             await asyncio.to_thread(
                 os.replace, state_file, state_file.with_name(
                     f"{STATE_FILE_NAME}.corrupt-{stamp}"
@@ -170,7 +170,7 @@ class JsonStateStore:
             session_id = data.get("session", {}).get("id")
             if isinstance(session_id, str) and session_id:
                 return session_id
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
             pass
         return session_dir.name
 

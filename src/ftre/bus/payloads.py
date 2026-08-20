@@ -11,7 +11,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt
 
-
 _STRICT = ConfigDict(extra="forbid", frozen=True)
 
 

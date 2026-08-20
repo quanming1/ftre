@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import time
-import uuid
 import logging
 import re
+import time
+import uuid
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ftre_agent_core.message import Msg, MsgName
 
@@ -34,6 +35,7 @@ from ftre.session.entity.state import (
     QueueItem,
     SessionState,
 )
+
 from .json_store import JsonStateStore, validate_session_id
 
 logger = logging.getLogger(__name__)
@@ -459,19 +461,18 @@ class SessionRepository:
 
     async def delete_session(self, session_id: str) -> None:
         """删除 session 及其所有 messages（只删除精确目标文件）"""
-        async with self._store.global_lock:
-            async with self._store.lock_for(session_id):
-                state = self._states.pop(session_id, None)
-                if state is not None:
-                    for message in state.messages:
-                        self._message_sessions.pop(message.id, None)
-                    stale = [
-                        k for k, v in self._external_sessions.items() if v == session_id
-                    ]
-                    for key in stale:
-                        self._external_sessions.pop(key, None)
-                await self._store.delete(session_id)
-                self._store.locks.pop(session_id, None)
+        async with self._store.global_lock, self._store.lock_for(session_id):
+            state = self._states.pop(session_id, None)
+            if state is not None:
+                for message in state.messages:
+                    self._message_sessions.pop(message.id, None)
+                stale = [
+                    k for k, v in self._external_sessions.items() if v == session_id
+                ]
+                for key in stale:
+                    self._external_sessions.pop(key, None)
+            await self._store.delete(session_id)
+            self._store.locks.pop(session_id, None)
 
     async def list_sessions(
         self,

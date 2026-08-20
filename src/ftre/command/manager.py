@@ -56,7 +56,7 @@ class CommandManager:
         persist_input: bool = True,
         source: str = "builtin",
         sub_commands: list[CommandDef] | None = None,
-    ) -> "CommandManager":
+    ) -> CommandManager:
         """注册一条指令。
 
         system=True → 系统级指令，在 _dispatch 的 session lock 之外执行，
@@ -86,7 +86,7 @@ class CommandManager:
             self._entries.sort(key=lambda e: -len(e[0].command))
         return self
 
-    def register_def(self, cmd_def: CommandDef) -> "CommandManager":
+    def register_def(self, cmd_def: CommandDef) -> CommandManager:
         """直接注册一个 CommandDef（handler 在 cmd_def.handler 上）。
 
         供 file_loader / skill_plugin 使用。

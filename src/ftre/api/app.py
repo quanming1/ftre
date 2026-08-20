@@ -2,6 +2,7 @@
 FastAPI 应用
 """
 from fastapi import FastAPI
+
 from .routes import router
 
 

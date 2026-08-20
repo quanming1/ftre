@@ -24,7 +24,8 @@ import uuid
 from pathlib import Path
 
 from croniter import croniter
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
+
 from ftre.channel import Channel
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ class CronScheduler:
         self.session_manager = session_manager
         self.default_channel = default_channel
         self.scan_interval = scan_interval
-        self._task: 'asyncio.Task | None' = None
+        self._task: asyncio.Task | None = None
         # 注册静默 cron channel 让 outbound 分发不报 unknown channel
         if channel_manager is not None:
             channel_manager.register(CronChannel(bus))
@@ -141,7 +142,7 @@ class CronScheduler:
             while True:
                 try:
                     await self._tick()
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                     logger.error(f"[cron] tick 出错: {e}")
                 await asyncio.sleep(self.scan_interval)
         except asyncio.CancelledError:
@@ -163,7 +164,7 @@ class CronScheduler:
             base = last_run(job)
             try:
                 next_ts = croniter(cron_expr, base).get_next(ret_type=float)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 logger.warning(f"[cron] {job['id']} 解析失败: {e}")
                 continue
 

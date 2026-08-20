@@ -211,7 +211,7 @@ def test_context_invalid_payload_falls_back_to_defaults(fake_config):
 
 
 def test_load_config_with_no_data_returns_default_agent_config(monkeypatch):
-    monkeypatch.setattr(ftre_config, "load_config_file", lambda: {})
+    monkeypatch.setattr(ftre_config, "load_config_file", dict)
     cfg = ftre_config.load_config()
     assert isinstance(cfg, AgentConfig)
     assert isinstance(cfg.context, ContextConfig)

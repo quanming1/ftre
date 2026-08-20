@@ -368,7 +368,7 @@ class CompactManager:
             return None
         usage = await self.session_manager.get_token_usage(session_id)
         tokens_before = usage["total"]
-        current_ratio = tokens_before / cw
+        tokens_before / cw
 
         # 4. 通知前端开始（CustomEvent，不持久化）。模型必须显式随事件传递，
         #    不能让客户端从上一条 assistant 回复推断压缩实际使用的模型。
@@ -505,7 +505,7 @@ class CompactManager:
 
             summary = "".join(collected).strip()
             if not summary:
-                logger.warning(f"[compact] LLM 摘要为空")
+                logger.warning("[compact] LLM 摘要为空")
                 return None
             return summary
         except LLMError as exc:
@@ -523,7 +523,7 @@ class CompactManager:
                 name=CompactEventName.FAILED,
                 value={"reason": reason},
             ))
-        except Exception:
+        except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             logger.debug(f"[compact] 通知失败失败: {reason}")
 
     async def cancel_compact(self, session_id: str) -> bool:
@@ -640,7 +640,7 @@ def _estimate_body_chars(context_text: str) -> int:
         no_md,
     )
     body = body.strip()
-    return int(len(body))
+    return len(body)
 
 
 def _build_prompt(

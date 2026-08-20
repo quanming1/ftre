@@ -18,9 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ftre.agent.agent_manager import AgentProfile
@@ -47,7 +47,7 @@ _BINDING_KEYS = ("leader_session", "team_id", "name", "created_at")
 # ── 路径 ──────────────────────────────────────────────────────
 
 def profile_dir_of(
-    session_manager: "SessionManager",
+    session_manager: SessionManager,
     leader_session_id: str,
     member_session_id: str,
 ) -> Path:
@@ -105,7 +105,7 @@ def validate_profile_overrides(profile: dict) -> dict:
 
 
 def write_member_profile(
-    session_manager: "SessionManager",
+    session_manager: SessionManager,
     leader_session_id: str,
     member_session_id: str,
     role: str,
@@ -131,10 +131,10 @@ def write_member_profile(
 # ── 加载 ──────────────────────────────────────────────────────
 
 def load_member_profile(
-    session_manager: "SessionManager",
+    session_manager: SessionManager,
     leader_session_id: str,
     member_session_id: str,
-) -> "AgentProfile | None":
+) -> AgentProfile | None:
     """加载成员 AgentProfile，走与全局 agent 相同的 AgentManager 管线。
 
     成员目录不存在（团队已解散/目录被清理）时返回 None，由调用方退回
@@ -166,7 +166,7 @@ def load_member_profile(
 # ── 摘要（team_plugin 概览用）────────────────────────────────
 
 def role_brief(
-    session_manager: "SessionManager",
+    session_manager: SessionManager,
     leader_session_id: str,
     member_session_id: str,
     limit: int = 60,
@@ -185,7 +185,7 @@ def role_brief(
 # ── 删除 ──────────────────────────────────────────────────────
 
 def delete_member_profile(
-    session_manager: "SessionManager",
+    session_manager: SessionManager,
     leader_session_id: str,
     member_session_id: str,
 ) -> bool:
@@ -200,7 +200,7 @@ def delete_member_profile(
     return True
 
 
-def delete_all_profiles(session_manager: "SessionManager", leader_session_id: str) -> bool:
+def delete_all_profiles(session_manager: SessionManager, leader_session_id: str) -> bool:
     """删除 leader 的整棵 sub_agents 树；返回目录原先是否存在。"""
     try:
         root = session_manager.session_dir(leader_session_id) / SUB_AGENTS_DIRNAME
@@ -220,7 +220,7 @@ def build_team_member_binding(leader_session_id: str, team_id: str, name: str) -
         "leader_session": leader_session_id,
         "team_id": team_id,
         "name": name,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
     }
 
 

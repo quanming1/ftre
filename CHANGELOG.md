@@ -1,5 +1,15 @@
 # Changelog
 
+## [未发布]
+
+### F1 后端插件化架构重构
+
+- 基于 `cordis` 公共 Context/Fiber/Service/Inject/Effect 建立唯一新 Composition Root。
+- 新增 `app / platform / services / features` 四层后端目录与显式 Plugin Manifest/Discovery/Manager。
+- Config、Filesystem、Workspace、HTTP、Session、Agent、Tool、Prompt、MCP、Skill、Schedule、Team 等能力改为公开 Service/Plugin 边界。
+- Gateway CLI 改为薄转发；保留既有 SessionLane、MessageBus、WebSocket 与 Octo 兼容表面。
+- 新增 scoped registry、生命周期、外部插件启用隔离、路由基线和合成第三方 Plugin 契约测试。
+
 ## [0.2.4] - 2026-08-20
 
 ### 修复

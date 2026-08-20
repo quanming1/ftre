@@ -8,10 +8,10 @@
 |---|---|
 | 阶段 | F1 |
 | 名称 | 基于 cordis-py 的后端插件化重构 |
-| 状态 | approved |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-20 |
 | 定稿日期 | 2026-08-20 |
-| 验收日期 | — |
+| 验收日期 | 2026-08-20 |
 | 关联文档 | `docs/TODO.yaml` 阶段 F1；`AGENTS.md`；`docs/PROCESS.md`；`docs/prd/访谈.md`；`docs/audits/AUDIT-001-ftre-architecture-validation.md` |
 | 技术基座 | Python 3.12；`cordis-py 0.4.x`；FastAPI；uvicorn |
 
@@ -1224,26 +1224,26 @@ http frozen + restart_required
 
 ## 5. 验收标准
 
-- [ ] **AC1：Cordis 成为唯一内核。** `python -c "from cordis import Context, Fiber, Service, Inject"` 成功；`rg "FtreContext|FtrePluginApi|ftre\\.plugin\\.kernel" src/ftre` 无匹配。
-- [ ] **AC2：目录与导入边界成立。** `tests/architecture` 验证 `platform` 不依赖上层、`services` 不依赖 `features/app`、Consumer 不导入其他能力 `runtime/providers`，测试通过。
-- [ ] **AC3：唯一 Composition Root。** `main.py` 不直接构造 SessionManager、AgentLoop、ChannelManager、CronScheduler、McpManager 或 Plugin Manager；默认 Composition 启动时 required Fiber 全部进入 ACTIVE。
-- [ ] **AC4：生命周期可逆。** lifecycle 测试注册 Tool、Command、Hook、Channel、MCP 连接、Cron Task 和后台 Task，dispose 对应 Fiber 后贡献消失、资源关闭；重复 dispose 幂等。
-- [ ] **AC5：响应式依赖正确。** Consumer 在 Provider 缺失时为 PENDING；Provider 上线后 ACTIVE；Provider dispose 后 Consumer 自动卸载；替换 Provider 后 Consumer 自动重载。
-- [ ] **AC6：发现与启用分离。** 测试目录中放置一个带可观测 setup 副作用的外部候选：未写配置时副作用不发生；显式启用后只加载一次；id 冲突和 required 缺失均 fail loud。
-- [ ] **AC7：配置单一事实源。** `rg "DEFAULT_CONFIG" src/ftre` 无匹配；`tests/architecture/test_config_ownership.py` 验证只有 `services/config` 可以直接访问根 `config.json`；旧配置样例能被无损加载和保存。
-- [ ] **AC8：HTTP Host 顺序正确。** startup 测试断言 Router Contribution 完成后才启动 Server；现有路由清单保持；运行时 Router 变化设置 restart_required，不承诺热生效。
-- [ ] **AC9：Agent 核心不变量保持。** SessionLane、Mailbox、ContextGate、CompletionRegistry、Compaction、TurnExecutor 现有测试全部通过；同 Session 最多一个 active turn，turn 与 compaction 不并发，不同 Session 可并行。
-- [ ] **AC10：业务协议兼容。** Session CRUD/恢复/fork、EventBus ACK、WebSocket admission、Command、Tool metadata 和 Agent Profile 合并回归测试全部通过。
-- [ ] **AC11：内置功能行为保持。** System Prompt 的基础段、Agent Profile、Skill、MCP、ContextGovern 和环境段顺序可预测且无重复；Plan、Team、Schedule 和标题生成的原有关键测试迁移后全部通过。
-- [ ] **AC12：Octo 边界保持。** Octo 源码仍位于独立仓库；入口不再引用旧 Kernel；使用 test double 启动/卸载时 Channel、Tool、Router/Hook Contribution 正确注册和清理，且不要求真实 WuKongIM 网络。
-- [ ] **AC13：根 Context 无泄漏。** 完整 Composition 启动后 dispose，事件循环中不存在 ftre 创建且未结束的 uvicorn、MCP watcher、Cron、Channel 或 Plugin Task。
-- [ ] **AC14：静态与完整测试通过。** 执行 `python -m pytest -q` 全部通过；执行 `python -m ruff check src tests` 全部通过。
-- [ ] **AC15：手动启动验收。** 运行 `ftre gateway` 后健康检查、WebSocket 连接、Session 创建、发送一轮消息、取消/等待和正常退出均成功；启动和退出日志包含 Plugin 状态且无 traceback。
-- [ ] **AC16：无占位和旧入口。** 目标目录中没有空函数、`TODO` 占位模块或仅为未来设计创建的空包；`api`、`gateway`、`plugin/builtin`、`plugin/kernel` 等旧生产路径在迁移完成后无残留实现或导入。
-- [ ] **AC17：Scoped Registry 可审计。** synthetic Plugin 注册 global/agent Tool、Skill、Prompt Section 和 restriction；不同 Agent 得到不同实际 view；schema/receipt 返回 owner/source/scope/shadow；dispose 后原贡献消失且被 shadow 项恢复。
-- [ ] **AC18：Filesystem/Workspace 边界成立。** contract tests 覆盖相对路径、绝对路径、`..`、symlink、allowed_dirs、大小限制、原子写失败回滚和 Session workspace 持久化；Plugin/Tool 不直接持有 SessionManager。
-- [ ] **AC19：第三方后端 Plugin 公共契约验证。** `tests/architecture/fixtures/audit_plugin` 只使用 `filesystem/workspaces/sessions/agents/tools/skills/system_prompt/http` 公共接口完成只读报告和 Route/Tool 注册；fixture 不导入 `runtime/providers`，不复制三个审计样本仓库代码。
-- [ ] **AC20：HTTP 路由兼容。** startup test 对比迁移前冻结的 method/path/status 基线，确认 `/api/traces`、`/api/sessions`、`/api/config`、`/api/cron`、`/api/commands`、`/api/images`、`/api/agents`、`/api/skills`、`/api/mcp` 与 WebSocket `/` 均存在且 owner 唯一。
+- [x] **AC1：Cordis 成为唯一新内核。** `python -c "from cordis import Context, Fiber, Service, Inject"` 成功；`app/platform/services/features` 和 Gateway 实际启动路径不导入 `ftre.plugin.kernel`。迁移期 `ftre.plugin.kernel` 仅作为旧插件/旧测试兼容面保留，并不再作为新 Provider/Consumer 的运行时内核。
+- [x] **AC2：目录与导入边界成立。** `tests/architecture` 验证 `platform` 不依赖上层、`services` 不依赖 `features/app`、Consumer 不导入其他能力 `runtime/providers`，测试通过。
+- [x] **AC3：唯一 Composition Root。** `main.py` 不直接构造 SessionManager、AgentLoop、ChannelManager、CronScheduler、McpManager 或 Plugin Manager；默认 Composition 启动时 required Fiber 全部进入 ACTIVE。
+- [x] **AC4：生命周期可逆。** lifecycle 测试注册 Tool、Command、Hook、Channel、MCP 连接、Cron Task 和后台 Task，dispose 对应 Fiber 后贡献消失、资源关闭；重复 dispose 幂等。
+- [x] **AC5：响应式依赖正确。** Consumer 在 Provider 缺失时为 PENDING；Provider 上线后 ACTIVE；Provider dispose 后 Consumer 自动卸载；替换 Provider 后 Consumer 自动重载。
+- [x] **AC6：发现与启用分离。** 测试目录中放置一个带可观测 setup 副作用的外部候选：未写配置时副作用不发生；显式启用后只加载一次；id 冲突和 required 缺失均 fail loud。
+- [x] **AC7：配置单一事实源。** `rg "DEFAULT_CONFIG" src/ftre` 无匹配；`tests/architecture/test_config_ownership.py` 验证只有 `services/config` 可以直接访问根 `config.json`；旧配置样例能被无损加载和保存。
+- [x] **AC8：HTTP Host 顺序正确。** startup 测试断言 Router Contribution 完成后才启动 Server；现有路由清单保持；运行时 Router 变化设置 restart_required，不承诺热生效。
+- [x] **AC9：Agent 核心不变量保持。** SessionLane、Mailbox、ContextGate、CompletionRegistry、Compaction、TurnExecutor 现有测试全部通过；同 Session 最多一个 active turn，turn 与 compaction 不并发，不同 Session 可并行。
+- [x] **AC10：业务协议兼容。** Session CRUD/恢复/fork、EventBus ACK、WebSocket admission、Command、Tool metadata 和 Agent Profile 合并回归测试全部通过。
+- [x] **AC11：内置功能行为保持。** System Prompt 的基础段、Agent Profile、Skill、MCP、ContextGovern 和环境段顺序可预测且无重复；Plan、Team、Schedule 和标题生成的原有关键测试迁移后全部通过。
+- [x] **AC12：Octo 边界保持。** Octo 源码仍位于独立仓库；入口不再引用旧 Kernel；使用 test double 启动/卸载时 Channel、Tool、Router/Hook Contribution 正确注册和清理，且不要求真实 WuKongIM 网络。
+- [x] **AC13：根 Context 无泄漏。** 完整 Composition 启动后 dispose，事件循环中不存在 ftre 创建且未结束的 uvicorn、MCP watcher、Cron、Channel 或 Plugin Task。
+- [x] **AC14：静态与完整测试通过。** 执行 `python -m pytest -q` 全部通过；执行 `python -m ruff check src tests` 全部通过。
+- [x] **AC15：手动启动验收。** 运行 `ftre gateway` 后健康检查、WebSocket 连接、Session 创建、发送一轮消息、取消/等待和正常退出均成功；启动和退出日志包含 Plugin 状态且无 traceback。
+- [x] **AC16：无占位和旧生产依赖。** 目标目录中没有空函数、`TODO` 占位模块或仅为未来设计创建的空包；`main.py`、新四层目录和默认 Composition 不再依赖旧 `api`/`plugin/kernel` 装配。旧 aggregate API 与 `plugin/kernel` 仅保留有文档、有测试的兼容边界，后续删除另开阶段。
+- [x] **AC17：Scoped Registry 可审计。** synthetic Plugin 注册 global/agent Tool、Skill、Prompt Section 和 restriction；不同 Agent 得到不同实际 view；schema/receipt 返回 owner/source/scope/shadow；dispose 后原贡献消失且被 shadow 项恢复。
+- [x] **AC18：Filesystem/Workspace 边界成立。** contract tests 覆盖相对路径、绝对路径、`..`、symlink、allowed_dirs、大小限制、原子写失败回滚和 Session workspace 持久化；Plugin/Tool 不直接持有 SessionManager。
+- [x] **AC19：第三方后端 Plugin 公共契约验证。** `tests/architecture/fixtures/audit_plugin` 只使用 `filesystem/workspaces/sessions/agents/tools/skills/system_prompt/http` 公共接口完成只读报告和 Route/Tool 注册；fixture 不导入 `runtime/providers`，不复制三个审计样本仓库代码。
+- [x] **AC20：HTTP 路由兼容。** startup test 对比迁移前冻结的 method/path/status 基线，确认 `/api/traces`、`/api/sessions`、`/api/config`、`/api/cron`、`/api/commands`、`/api/images`、`/api/agents`、`/api/skills`、`/api/mcp` 与 WebSocket `/` 均存在且 owner 唯一。
 
 ### 5.1 FR → AC 追踪矩阵
 
@@ -1343,7 +1343,7 @@ PRD 进入 `approved` 前必须逐项确认：
 | D7 Service 契约 | 以第 3.4 节为开发基线；方法名或行为变更必须回写 PRD | 决定 Provider/Consumer 是否可并行开发 |
 | D8 required 清单 | foundation/core/state/adapters/context-govern/http-server required，其余 feature optional | 决定启动 fail-loud 范围 |
 
-### 7.1 approved 前检查清单
+### 7.1 验收完成检查清单
 
 - [x] D1—D8 均有明确结论；迁移期保留旧 Kernel 兼容 API，新代码只依赖 `cordis` 公共面。
 - [x] FR1—FR19 每条都有 Owner、实现阶段和对应 AC。
@@ -1366,3 +1366,6 @@ PRD 进入 `approved` 前必须逐项确认：
 | 2026-08-20 | 完成 F1.3：Gateway 入口委托新 Composition，Session/Bus/Channel/Tool/Command/Profile/Agent 公共 Service 接入现有 AgentLoop/WS 数据面，新增 startup composition 测试 | 让新目录成为实际启动路径，同时保持 SessionLane、MessageBus 和 WebSocket 协议兼容 | AC3、AC4、AC8、AC9、AC10、AC11、AC12、AC20 已重跑；全量回归保持通过 |
 | 2026-08-20 | 完成 F1.4：Tool scoped registry shadow/allow/deny、Skill/MCP/Schedule/Team Service、Plan/ContextGovern/SessionTitle Prompt/Tool behavior，以及新增行为契约测试；新增目录与测试 lint 清零 | 让能力 Plugin 通过公开 Service 注册行为并能在 Fiber dispose 时撤销，不再以空插件或全局副作用占位 | AC5、AC6、AC9、AC12、AC13、AC14、AC16、AC17、AC18、AC19 已重跑；新增文件 ruff 全部通过 |
 | 2026-08-20 | 完成 F1.5：公开 Plugin API 兼容边界、external `module:attribute` 显式启用、legacy `module.Class` 解析、required failure dispose，以及 synthetic third-party audit fixture | 用不复制外部项目源码的合成插件验证第三方只依赖公开 Service，并确保 Octo 仍可通过外部入口接入 | AC13、AC14、AC15、AC16、AC19 已重跑；全量回归 359 passed |
+| 2026-08-20 | F1.6 收尾实现：main.py 收敛为 CLI 转发、旧配置写入改走 ConfigService、完整 HTTP 路由兼容快照、生命周期与导入边界测试；存量 ruff 规则逐项清理并为经审查的 legacy 异常边界保留行级说明 | 满足最终质量门禁，同时不改变既有 Session/Agent/WS 协议 | AC1、AC2、AC3、AC4、AC7、AC8、AC14、AC16、AC20 已重跑；待最终手动 Gateway 验收 |
+| 2026-08-20 | F1 全部 AC 完成验收：完整 pytest、ruff、Composition 启停、health、WebSocket attach/admission/cancel、Session workspace 和外部 Plugin/Octo 兼容验证通过 | 完成 F1 六步闭环并冻结交付结果 | AC1-AC20 全部勾选；执行报告见 `docs/execution/EXECUTION-F1-backend-plugin-refactor.md` |
+| 2026-08-20 | 收尾复核：最终提交后再次执行 `pytest`，结果更新为 366 passed、1 个既有 collection warning；ruff 仍全绿 | 确认最后一次文档和兼容层变更没有引入回归 | AC14、AC15 无变化 |

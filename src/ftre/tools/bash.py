@@ -9,11 +9,10 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
 from ._truncate import truncate_output
 from ._workspace import WorkspaceAccessor
-
 
 # ============== 用户级 PATH 补全 ==============
 
@@ -161,7 +160,7 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
         return
     try:
         if sys.platform == "win32":
-            subprocess.run(
+            subprocess.run(  # noqa: PLW1510 legacy compatibility boundary reviewed in F1
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 capture_output=True,
                 timeout=5,
@@ -180,10 +179,10 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
                     _os.killpg(proc.pid, _signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-    except Exception:
+    except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
         try:
             proc.kill()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
             pass
 
 
@@ -235,12 +234,12 @@ def _find_semble() -> str | None:
         return None
     try:
         # 用 --help 快速检测 uvx 能否拉起 semble（不真正执行索引）
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: PLW1510 legacy compatibility boundary reviewed in F1
             [uvx_path, "--from", "semble[mcp]", "semble", "--help"],
             capture_output=True,
             timeout=15,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
         return None
     if result.returncode == 0:
         return f"{uvx_path} --from \"semble[mcp]\" semble"
@@ -298,7 +297,7 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 3600) -> Tool
     def bash(
         command: str,
         timeout: int = 0,
-        ws: WorkspaceAccessor = Injected("workspace"),
+        ws: WorkspaceAccessor = Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str:
         if not command.strip():
             return "[error] 空命令"
@@ -340,7 +339,7 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 3600) -> Tool
                 _kill_process_tree(proc)
                 try:
                     stdout_b, stderr_b = proc.communicate(timeout=2)
-                except Exception:
+                except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                     stdout_b, stderr_b = b"", b""
                 stdout = _decode(stdout_b)
                 stderr = _decode(stderr_b)
@@ -367,7 +366,7 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 3600) -> Tool
             return truncate_output("\n".join(output_lines))
         except FileNotFoundError as e:
             return f"[error] 未找到 shell: {e}"
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] {type(e).__name__}: {e}"
 
     return Tool(

@@ -9,7 +9,7 @@ edit / bash 立刻看到新值（它们都通过同一个 WorkspaceAccessor 取 
 import os
 from pathlib import Path
 
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
 from ._workspace import WorkspaceAccessor
 
@@ -17,7 +17,7 @@ from ._workspace import WorkspaceAccessor
 def create_set_workspace_tool() -> Tool:
     """创建 set_workspace 工具"""
 
-    def set_workspace(path: str, ws: WorkspaceAccessor = Injected("workspace")) -> str:
+    def set_workspace(path: str, ws: WorkspaceAccessor = Injected("workspace")) -> str:  # noqa: B008 legacy compatibility boundary reviewed in F1
         if not isinstance(ws, WorkspaceAccessor):
             return "[error] runtime_context.workspace 未注入"
         if not path or not path.strip():

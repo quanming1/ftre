@@ -15,10 +15,10 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 """
 import asyncio
 
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
+
 from ftre.bus import BusMessage
 from ftre.channel.subagent_channel import SUBAGENT_CHANNEL_ID
-
 
 _SUBAGENT_PREAMBLE = """\
 [Subagent 上下文]
@@ -58,10 +58,10 @@ def create_task_tool(channel_manager) -> Tool:
         session_id: str = "",
         working_dir: str = "",
         caller_channel: str = Injected("channel_id"),
-        event_loop=Injected("event_loop"),
-        session_manager=Injected("session_manager"),
-        agent_loop=Injected("agent_loop"),
-        workspace=Injected("workspace"),
+        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        workspace=Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str:
         if not prompt or not prompt.strip():
             return "[error] prompt 不能为空"
@@ -92,7 +92,7 @@ def create_task_tool(channel_manager) -> Tool:
                         from ._workspace import WorkspaceAccessor
                         if isinstance(workspace, WorkspaceAccessor):
                             caller_workspace = workspace.get()
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                         pass
                 sid = _run_async(
                     session_manager.create_session(
@@ -121,7 +121,7 @@ def create_task_tool(channel_manager) -> Tool:
             )
             if not ack.accepted:
                 return f"[error] subagent 消息接纳失败: {ack.error}"
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 派发失败: {type(e).__name__}: {e}"
 
         # 按本次 request 精确等待。CompletionRegistry 有有限内存缓存，
@@ -133,7 +133,7 @@ def create_task_tool(channel_manager) -> Tool:
                 event_loop,
                 timeout=None,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 等待 subagent 完成时出错: {type(e).__name__}: {e}"
 
         # agent 已结束，使用 AgentLoop 回传的最后一条完整 assistant Msg。

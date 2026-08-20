@@ -3,13 +3,12 @@ edit 工具 - 修改已有文件，支持精确字符串替换与按行号替换
 """
 import threading
 
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
-from .read import _resolve
-from ._io import read_text, write_text_preserving, _NEWLINE_LABEL
-from ._workspace import WorkspaceAccessor
 from ._diff import build_diff_metadata
-
+from ._io import _NEWLINE_LABEL, read_text, write_text_preserving
+from ._workspace import WorkspaceAccessor
+from .read import _resolve
 
 # per-file 锁：确保同一文件的多个 edit 串行执行（读-改-写原子），
 # 避免并行 edit 基于同一快照导致后写覆盖先写。
@@ -187,7 +186,7 @@ def create_edit_tool() -> Tool:
         old_str: str = "",
         start_line: int = 0,
         end_line: int = 0,
-        ws: WorkspaceAccessor = Injected("workspace"),
+        ws: WorkspaceAccessor = Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str | tuple[str, dict]:
         try:
             if not isinstance(ws, WorkspaceAccessor):
@@ -217,7 +216,7 @@ def create_edit_tool() -> Tool:
 
                 # 字符串模式：old_str 必须唯一匹配。
                 return _edit_by_string(p, content, old_str, new_norm, tf)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] {type(e).__name__}: {e}"
 
     return Tool(

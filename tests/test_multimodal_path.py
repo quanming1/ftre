@@ -1,7 +1,6 @@
-import os
 
+from ftre.session.message.multimodal import build_user_content, normalize_user_content
 from ftre.utils.image_store import save_image
-from ftre.session.message.multimodal import normalize_user_content, build_user_content
 
 
 def test_normalize_user_content_image_file_with_vision():

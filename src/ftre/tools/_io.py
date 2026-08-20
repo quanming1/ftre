@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-
 # 候选编码顺序：先严格再宽松
 _ENCODING_CANDIDATES = ("utf-8-sig", "utf-8", "gbk", "cp936", "shift-jis")
 
@@ -46,7 +45,6 @@ def read_text(path: Path) -> TextFile:
 
     # 候选编码顺序：先严格再宽松
     # 注意：把 utf-8-sig 放第一只用于"剥离 BOM"，是否真带 BOM 由 had_bom 决定
-    last_error: Exception | None = None
     raw: str | None = None
     enc_used: str = ""
     for enc in _ENCODING_CANDIDATES:
@@ -54,8 +52,7 @@ def read_text(path: Path) -> TextFile:
             raw = data.decode(enc)
             enc_used = enc
             break
-        except UnicodeDecodeError as e:
-            last_error = e
+        except UnicodeDecodeError:
             continue
 
     if raw is None:

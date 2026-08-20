@@ -18,11 +18,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ftre.config import AGENTS_DIR, CONFIG_PATH
+from ftre.config import AGENTS_DIR
 from ftre.mcp.adapter import build_mcp_tools_for_servers
 from ftre.mcp.config import McpServerConfig
 from ftre.mcp.manager import McpManager
 from ftre.plugin import BEFORE_AGENT_RUN, Plugin, append_to_first_system
+from ftre.services.config.service import ConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -354,27 +355,12 @@ class McpPlugin(Plugin):
 
 def _read_config_json() -> dict:
     """读取 config.json 原始内容"""
-    if not CONFIG_PATH.exists():
-        return {}
-    return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    return ConfigService().snapshot().value
 
 
 def _write_config_json(data: dict) -> None:
     """原子写入 config.json"""
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=".config.", suffix=".tmp", dir=str(CONFIG_PATH.parent)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, CONFIG_PATH)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    ConfigService().replace_sync(data)
 
 
 def _agent_config_path(agent_id: str) -> Path:

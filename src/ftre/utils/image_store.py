@@ -101,6 +101,6 @@ def load_as_data_url(path: str, mime: str = "") -> str | None:
 
         b64 = base64.b64encode(raw).decode("ascii")
         return f"data:{mime};base64,{b64}"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
         logger.warning(f"[image_store] failed to load {path}: {e}")
         return None

@@ -12,6 +12,7 @@ unknown channel；不真的把任何东西推给外部。
 import logging
 
 from ftre.bus import BusMessage, EventBus
+
 from .base import Channel
 
 logger = logging.getLogger(__name__)

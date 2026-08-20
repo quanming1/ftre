@@ -125,7 +125,7 @@ def test_start_exits_during_startup(tmp_path: Path):
 def test_stop_not_running(tmp_path: Path):
     """没有后台进程时 stop 返回 gateway_not_running。"""
     runtime = _make_runtime(tmp_path)
-    ok, msg, status = runtime.stop()
+    ok, msg, _status = runtime.stop()
     assert not ok
     assert msg == "gateway_not_running"
 
@@ -140,7 +140,7 @@ def test_stop_success(tmp_path: Path):
         patch.object(runtime, "_is_pid_running", side_effect=[True, False]),
         patch.object(runtime, "_terminate", return_value=True),
     ):
-        ok, msg, status = runtime.stop()
+        ok, msg, _status = runtime.stop()
 
     assert ok
     assert msg == "gateway_stopped"
@@ -167,7 +167,7 @@ def test_read_log_tail_no_file(tmp_path: Path):
 def test_restart_no_state(tmp_path: Path):
     """没有状态文件时 restart 返回 gateway_not_running。"""
     runtime = _make_runtime(tmp_path)
-    ok, msg, status = runtime.restart()
+    ok, msg, _status = runtime.restart()
     assert not ok
     assert msg == "gateway_not_running"
 
@@ -208,7 +208,7 @@ def test_restart_with_new_port(tmp_path: Path):
         patch.object(runtime, "_is_pid_running", return_value=True),
         patch.object(runtime, "_terminate", return_value=True),
     ):
-        ok, msg, status = runtime.restart(port=9000)
+        ok, _msg, status = runtime.restart(port=9000)
 
     assert ok
     assert status.port == 9000  # 用新端口
@@ -224,7 +224,7 @@ def test_restart_stop_timeout(tmp_path: Path):
         patch.object(runtime, "_is_pid_running", return_value=True),
         patch.object(runtime, "_terminate", return_value=False),
     ):
-        ok, msg, status = runtime.restart()
+        ok, msg, _status = runtime.restart()
 
     assert not ok
     assert msg == "gateway_stop_timeout"

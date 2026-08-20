@@ -14,7 +14,7 @@ import logging
 import shutil
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,20 +22,19 @@ from ftre_agent_core.message import Msg, MsgName
 from ftre_agent_core.types import ReplyFinishedReason
 
 from ftre.bus import BusMessage
-
 from ftre.session.entity.models import (
     ExternalSessionModel,
     MessageModel,
     SessionModel,
     StatePageModel,
 )
-from ftre.session.storage.repository import SessionRepository
 from ftre.session.entity.state import (
     AgentStateFile,
     MailboxState,
     QueueItem,
     SessionState,
 )
+from ftre.session.storage.repository import SessionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +93,7 @@ class SessionManager:
     async def close(self) -> None:
         """安全幂等：JSON Store 无长连接，仅清理内存状态。"""
         # 幂等 no-op：保留磁盘状态，重复调用安全
-        return None
+        return
 
     # ============================================================
     # Session CRUD（委托 storage）
@@ -649,7 +648,7 @@ class SessionManager:
         # ── 阶段 2：锁外组装完整 state（全新构建，绝不 model_copy 父 state——
         # 否则会连带继承 mailbox/external/teams/id/时间戳）──
         fork_metadata["forked_from"] = parent_session_id
-        fork_metadata["forked_at"] = datetime.now(timezone.utc).isoformat()
+        fork_metadata["forked_at"] = datetime.now(UTC).isoformat()
         new_state = AgentStateFile(
             session=SessionState(
                 id=fork_id,
@@ -721,8 +720,8 @@ def _truncate_large_strings(value: Any, *, max_chars: int) -> tuple[Any, bool]:
             return value, False
         omitted = len(value) - max_chars
         return (
-            f"{value[:max_chars]}\n"
-            f"… <省略 {omitted} 个字符，展开后可加载完整消息>",
+            (f"{value[:max_chars]}\n"
+            f"… <省略 {omitted} 个字符，展开后可加载完整消息>"),
             True,
         )
     if isinstance(value, list):

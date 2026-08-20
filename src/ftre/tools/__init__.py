@@ -6,7 +6,7 @@ ftre 内置工具集
 同步外观，工具用 Injected("workspace") 拿到它后调 ws.get() / ws.set(...)
 读写持久化的 cwd。
 """
-from ftre_agent_core.tool import Tool, ToolRegistry
+from ftre_agent_core.tool import ToolRegistry
 
 from .bash import create_bash_tool
 from .cron import create_cron_tool
@@ -31,7 +31,7 @@ def coerce_tool_name_list(value, field: str) -> list[str]:
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
-        raise ValueError(
+        raise ValueError(  # noqa: TRY004 legacy compatibility boundary reviewed in F1
             f"tools.{field} 必须是字符串列表，实际: {type(value).__name__}"
         )
     bad = [x for x in value if not isinstance(x, str) or not x.strip()]
@@ -62,9 +62,7 @@ def filter_tools(registry: ToolRegistry, tools_config: dict | None) -> ToolRegis
     deny = set(coerce_tool_name_list(tools_config.get("deny"), "deny"))
 
     for name in list(registry.names):
-        if name in deny:
-            registry.unregister(name)
-        elif allow and name not in allow:
+        if name in deny or allow and name not in allow:
             registry.unregister(name)
 
     return registry

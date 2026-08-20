@@ -20,12 +20,10 @@ MCP tool schema → ftre ToolParameter 映射：
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import uuid
-from typing import Any
 
-from ftre_agent_core.event import HintBlockEvent, EventBase
+from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Tool, ToolParameter
 from mcp import Tool as McpToolDef
 
@@ -191,7 +189,7 @@ def create_mcp_tool(
                                 "size": len(image_bytes),
                             },
                         )
-                    except Exception as image_error:
+                    except Exception as image_error:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                         logger.warning(f"[mcp] 图片内容处理失败: {tool_id} — {image_error}")
                         text_parts.append("[image]")
                     continue
@@ -212,7 +210,7 @@ def create_mcp_tool(
                             text_parts.append(
                                 f"[resource 二进制内容已保存到本地，请读取该路径获取完整内容: {stored_path}]"
                             )
-                        except Exception as blob_error:
+                        except Exception as blob_error:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                             logger.warning(f"[mcp] resource blob 处理失败: {tool_id} — {blob_error}")
                             text_parts.append("[resource blob]")
                     else:
@@ -234,7 +232,7 @@ def create_mcp_tool(
 
             return text_output
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             logger.error(f"[mcp] call_tool 失败: {tool_id} — {e}")
             return f"[MCP 错误] {type(e).__name__}: {e}"
 
@@ -269,7 +267,7 @@ async def build_mcp_tools_for_servers(
             tool = create_mcp_tool(server_name, mcp_tool, manager)
             tools.append(tool)
             logger.info(f"[mcp] 构建工具: {tool.name} (来自 {server_name})")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             logger.warning(f"[mcp] 工具转换失败: {server_name}/{mcp_tool.name} — {e}")
 
     return tools

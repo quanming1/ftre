@@ -28,7 +28,11 @@ class PluginLoader:
             self._started_at[manifest.id] = time.perf_counter()
             try:
                 entry = self.discovery.resolve(manifest)
-                fiber = self.context.plugin(entry, manifest.config, id=manifest.id)
+                plugin_config = manifest.config
+                validate = getattr(entry, "validate_config", None)
+                if callable(validate):
+                    plugin_config = validate(plugin_config)
+                fiber = self.context.plugin(entry, plugin_config, id=manifest.id)
                 self._fibers[manifest.id] = fiber
             except Exception as exc:  # noqa: BLE001 - import/setup diagnostics must be retained
                 # Keep an observable failed record even if import itself failed.

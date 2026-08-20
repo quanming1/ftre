@@ -67,7 +67,7 @@ def _estimate_message(message: dict[str, Any]) -> int:
         if not isinstance(args, str):
             try:
                 args = json.dumps(args, ensure_ascii=False)
-            except Exception:
+            except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 args = str(args)
         tokens += estimate_text_tokens(args)
 

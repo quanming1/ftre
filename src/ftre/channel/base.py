@@ -5,8 +5,8 @@ Channel 负责：
 1. 收：从外部接收输入 → BusMessage → bus.publish_inbound()
 2. 发：ChannelManager 调 send() 推给外部
 """
-from abc import ABC, abstractmethod
 import logging
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from ftre.bus import BusMessage

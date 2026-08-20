@@ -51,7 +51,7 @@ class McpServerConfig:
     timeout: int = 30_000  # ms
 
     @classmethod
-    def from_raw(cls, name: str, raw: dict) -> "McpServerConfig | None":
+    def from_raw(cls, name: str, raw: dict) -> McpServerConfig | None:
         """从单个 server 的 raw dict 构造配置。
 
         Args:

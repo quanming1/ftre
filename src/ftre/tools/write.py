@@ -1,12 +1,12 @@
 """
 write 工具 - 写入/覆盖文件
 """
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
-from .read import _resolve
-from ._io import read_text, write_text_new, write_text_preserving, _NEWLINE_LABEL
-from ._workspace import WorkspaceAccessor
 from ._diff import build_diff_metadata
+from ._io import _NEWLINE_LABEL, read_text, write_text_new, write_text_preserving
+from ._workspace import WorkspaceAccessor
+from .read import _resolve
 
 
 def create_write_tool() -> Tool:
@@ -17,7 +17,7 @@ def create_write_tool() -> Tool:
     - 新文件：utf-8 + LF
     """
 
-    def write(path: str, content: str, ws: WorkspaceAccessor = Injected("workspace")) -> str | tuple[str, dict]:
+    def write(path: str, content: str, ws: WorkspaceAccessor = Injected("workspace")) -> str | tuple[str, dict]:  # noqa: B008 legacy compatibility boundary reviewed in F1
         try:
             if not isinstance(ws, WorkspaceAccessor):
                 return "[error] runtime_context.workspace 未注入"
@@ -51,7 +51,7 @@ def create_write_tool() -> Tool:
             )
             diff_meta = build_diff_metadata(str(p), content_old, normalized)
             return result, diff_meta
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] {type(e).__name__}: {e}"
 
     return Tool(

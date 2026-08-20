@@ -3,11 +3,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from ftre_agent_core.message import AssistantMsg, ToolCallBlock, ToolCallState
 
 from ftre.command import CommandManager
 from ftre.command.builtin import register_builtin_commands
 from ftre.command.types import ResumeAgent, SendMessage
-from ftre_agent_core.message import AssistantMsg, ToolCallBlock, ToolCallState
 
 
 def _context(text: str):

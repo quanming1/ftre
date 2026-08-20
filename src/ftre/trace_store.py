@@ -9,7 +9,7 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -46,14 +46,14 @@ class SQLiteTraceExporter:
         self._last_purge_ts: float = 0.0
         self._maybe_purge(force=True)
 
-    def on_run_start(self, run: "TraceRun") -> None:
+    def on_run_start(self, run: TraceRun) -> None:
         self._maybe_purge()
         self._write(run)
 
-    def on_run_end(self, run: "TraceRun") -> None:
+    def on_run_end(self, run: TraceRun) -> None:
         self._write(run)
 
-    def _write(self, run: "TraceRun") -> None:
+    def _write(self, run: TraceRun) -> None:
         try:
             with self._lock:
                 conn = _connect(self.path)
@@ -95,7 +95,7 @@ def purge_old_traces(
     conn = _connect(path)
     try:
         _ensure_schema(conn)
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=max_age_days)).isoformat()
         cur = conn.execute(
             "DELETE FROM trace_runs WHERE start_time < ?", (cutoff,)
         )
@@ -150,14 +150,14 @@ def list_trace_summaries(
         )
         # Step 1: Get root runs with pagination (fast, uses index)
         roots = conn.execute(
-            """
+            f"""
             SELECT trace_id, name, status, start_time, end_time, duration_ms,
                    metadata_json, tags_json, outputs_json
             FROM trace_runs
             WHERE {where_sql}
             ORDER BY start_time DESC, id DESC
             LIMIT ? OFFSET ?
-            """.format(where_sql=where_sql),
+            """,
             (*where_params, limit, offset),
         ).fetchall()
         if not roots:

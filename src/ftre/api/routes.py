@@ -6,24 +6,28 @@ import json
 import logging
 import mimetypes
 import os
-import tempfile
 import time
 import uuid
 
+from croniter import croniter
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from ftre.agent.loop import AgentLoop
+from ftre.services.config.service import ConfigService
 from ftre.session import SessionManager
-from ftre.config import CONFIG_PATH
 from ftre.tools.cron import (
+    _job_path,
+    delete_job,
     load_all_jobs,
     save_job,
-    delete_job,
-    _job_path,
 )
-from ftre.trace_store import TRACE_DB_PATH, get_trace, get_trace_run, list_trace_summaries
-from croniter import croniter
+from ftre.trace_store import (
+    TRACE_DB_PATH,
+    get_trace,
+    get_trace_run,
+    list_trace_summaries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,10 +147,8 @@ async def list_sessions(
     """
     if limit <= 0:
         limit = 50
-    if limit > 500:
-        limit = 500
-    if offset < 0:
-        offset = 0
+    limit = min(limit, 500)
+    offset = max(offset, 0)
     sessions = await _session_manager.list_sessions(
         limit=limit, offset=offset, channel_id=channel_id, workspace=workspace
     )
@@ -359,12 +361,10 @@ async def get_token_usage(session_id: str):
 
 @router.get("/config")
 async def get_config():
-    """读取 ~/.ftre/config.json 全文。文件不存在时返回空对象。"""
-    if not CONFIG_PATH.exists():
-        return {}
+    """Read the root config through ConfigService (compatibility route)."""
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+        return ConfigService().snapshot().value
+    except (OSError, ValueError) as e:
         logger.error(f"[config] 读取失败: {e}")
         raise HTTPException(status_code=500, detail=f"读取配置失败: {e}")
 
@@ -384,27 +384,12 @@ async def put_config(request: Request):
         raise HTTPException(status_code=400, detail="config 必须是 JSON 对象")
 
     try:
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        # 同目录写临时文件再 rename，保证写入原子性，避免半截内容
-        fd, tmp_path = tempfile.mkstemp(
-            prefix=".config.", suffix=".tmp", dir=str(CONFIG_PATH.parent)
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, CONFIG_PATH)
-        except Exception:
-            # 写失败时清理临时文件
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except OSError as e:
+        snapshot = await ConfigService().replace(payload)
+    except (OSError, ValueError, TypeError) as e:
         logger.error(f"[config] 写入失败: {e}")
         raise HTTPException(status_code=500, detail=f"写入配置失败: {e}")
 
-    return {"status": "ok"}
+    return {"status": "ok", "revision": snapshot.revision}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -566,7 +551,6 @@ async def remove_cron_job(job_id: str):
     """删除 cron 任务"""
     if not delete_job(job_id):
         raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
-    return None
 
 
 @router.get("/health")
@@ -636,7 +620,7 @@ async def update_agent(agent_id: str, request: Request):
 
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="请求体必须是 JSON")
 
     if not isinstance(body, dict):
@@ -649,7 +633,7 @@ async def update_agent(agent_id: str, request: Request):
         return {"ok": True, "config": updated}
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"agent '{agent_id}' 不存在")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - map provider failures to stable HTTP error
         logger.error(f"[api] 更新 agent 失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -670,7 +654,7 @@ async def update_agent_prompt(agent_id: str, filename: str, request: Request):
 
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="请求体必须是 JSON")
 
     if not isinstance(body, dict) or "content" not in body:
@@ -687,7 +671,7 @@ async def update_agent_prompt(agent_id: str, filename: str, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - map provider failures to stable HTTP error
         logger.error(f"[api] 写入 prompt 文件失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -700,7 +684,7 @@ async def create_agent_endpoint(request: Request):
 
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="请求体必须是 JSON")
 
     agent_id = body.get("id", "")
@@ -718,7 +702,7 @@ async def create_agent_endpoint(request: Request):
         return {"ok": True, "config": cfg}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - map provider failures to stable HTTP error
         logger.error(f"[api] 创建 agent 失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -736,6 +720,6 @@ async def delete_agent_endpoint(agent_id: str):
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - map provider failures to stable HTTP error
         logger.error(f"[api] 删除 agent 失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))

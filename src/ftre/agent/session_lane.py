@@ -9,8 +9,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Literal
+from typing import Literal
 
 from ftre.bus import BusMessage, InboundMetadata
 from ftre.session.entity.state import MailboxState, QueueItem

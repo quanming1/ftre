@@ -28,7 +28,7 @@ def _load_system_prompt() -> str:
         if SYSTEM_PROMPT_PATH.exists():
             content = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
             return f'<SYSTEM_PROMPT desc="系统提示词基座，定义运行时行为规范" path="{SYSTEM_PROMPT_PATH}">\n{content}\n</SYSTEM_PROMPT>'
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
         logger.warning(f"[config] 读取 system_prompt.md 失败: {e}")
     return f'<SYSTEM_PROMPT desc="系统提示词基座，定义运行时行为规范" path="{SYSTEM_PROMPT_PATH}">\n- 你是一个 AI 助手。\n</SYSTEM_PROMPT>'
 

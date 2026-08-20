@@ -7,11 +7,12 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from ftre_agent_core.event import HintBlockEvent, EventBase
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.event import HintBlockEvent
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
 from ftre.utils.image_store import save_image
-from ._io import read_text, file_meta_header
+
+from ._io import file_meta_header, read_text
 from ._truncate import truncate_output
 from ._workspace import WorkspaceAccessor
 
@@ -126,7 +127,7 @@ def _image_to_event(path: str, cwd: str) -> HintBlockEvent | str:
     """
     try:
         data, mime, display_path = _load_image(path, cwd)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
         return f"[error] 图片读取失败: {e}"
 
     # 防御 URL 场景：响应头声称的类型可能不是图片（如错填了网页链接）。
@@ -135,7 +136,7 @@ def _image_to_event(path: str, cwd: str) -> HintBlockEvent | str:
 
     try:
         data, mime = _compress_image(data, mime)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
         return f"[error] 图片压缩失败: {type(e).__name__}: {e}"
 
     # 落盘到 temp 目录，事件链路只携带路径；base64 转换在 SessionManager 出口完成。
@@ -169,8 +170,8 @@ def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> To
         path: str,
         start_line: int = 0,
         end_line: int = 0,
-        ws: WorkspaceAccessor = Injected("workspace"),
-        llm_config=Injected("llm_config"),
+        ws: WorkspaceAccessor = Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        llm_config=Injected("llm_config"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str | HintBlockEvent | tuple[str, dict]:
         try:
             if not isinstance(ws, WorkspaceAccessor):
@@ -236,7 +237,7 @@ def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> To
                 "end_line": actual_end,
             }
             return result_str, snapshot_meta
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] {type(e).__name__}: {e}"
 
     # 根据当前模型是否支持识图，动态拼接图片相关说明，避免对纯文本模型误导其可以读图。

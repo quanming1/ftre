@@ -56,6 +56,14 @@ class Composition:
         if http is None:
             return
         http.register_health()
+        http.register_compat_path("WS", "/", "websocket-channel")
+        try:
+            from ftre.api.routes import router as legacy_router
+
+            http.register_compat_snapshot(legacy_router)
+        except ImportError:
+            # The compatibility aggregate is optional for embedded consumers.
+            pass
         config = self.context.get("config", strict=False)
         if config is not None:
             from ftre.services.config.router import build_router
