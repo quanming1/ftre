@@ -171,8 +171,9 @@ async def search_sessions(
     q: str = "",
     limit: int = 30,
     workspace: str | None = None,
+    offset: int = 0,
 ):
-    """按关键字检索会话标题与消息正文（内存态，百毫秒级）。
+    """按关键字检索会话标题与可见消息文本（内存态，百毫秒级）。
 
     返回 { query, total, results:[{session_id,title,workspace,channel,
     updated_at,title_matched,hits:[{mid,role,snippet}]}] }。
@@ -180,7 +181,9 @@ async def search_sessions(
     """
     if _session_manager is None:
         raise HTTPException(status_code=503, detail="SessionManager 未就绪")
-    return await _session_manager.search_sessions(q, limit=limit, workspace=workspace or None)
+    return await _session_manager.search_sessions(
+        q, limit=limit, workspace=workspace or None, offset=offset,
+    )
 
 
 @router.put("/sessions/{session_id}")

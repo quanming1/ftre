@@ -4,10 +4,10 @@ from __future__ import annotations
 import time
 
 import pytest
+from ftre_agent_core.message import Msg
 
 from ftre.session.entity.state import AgentStateFile, SessionState
 from ftre.session.search import MAX_HITS_PER_SESSION, search_sessions
-from ftre_agent_core.message import Msg
 
 
 def _msg(mid: str, role: str, content, created: str = "2026-08-17T00:00:00+08:00") -> Msg:
@@ -113,6 +113,49 @@ def test_multimodal_content_searchable():
     ]
     states = [("s1", _state("s1", messages=[_msg("m1", "user", content)]))]
     assert search_sessions(states, "目标物体")["total"] == 1
+
+
+def test_reasoning_and_tool_content_searchable():
+    """聊天界面可见的推理、工具参数和工具输出都参与检索。"""
+    message = _msg("m1", "assistant", [
+        {"type": "thinking", "thinking": "推理专有锚点"},
+        {
+            "type": "tool_call",
+            "id": "call-1",
+            "name": "bash",
+            "arguments": {"command": "rg 工具参数锚点"},
+        },
+        {
+            "type": "tool_result",
+            "id": "call-1",
+            "name": "bash",
+            "output": "工具输出专有锚点",
+        },
+    ])
+    states = [("s1", _state("s1", messages=[message]))]
+
+    assert search_sessions(states, "推理专有锚点")["total"] == 1
+    assert search_sessions(states, "工具参数锚点")["total"] == 1
+    assert search_sessions(states, "工具输出专有锚点")["total"] == 1
+
+
+def test_offset_pagination_does_not_silently_drop_older_matches():
+    states = [
+        (f"s{i}", _state(f"s{i}", messages=[_msg(f"m{i}", "user", "共同关键字")]))
+        for i in range(5)
+    ]
+
+    first = search_sessions(states, "共同关键字", limit=2)
+    second = search_sessions(states, "共同关键字", limit=2, offset=2)
+    third = search_sessions(states, "共同关键字", limit=2, offset=4)
+
+    assert first["total"] == 5
+    assert first["has_more"] is True
+    assert [result["session_id"] for result in first["results"]] == ["s0", "s1"]
+    assert [result["session_id"] for result in second["results"]] == ["s2", "s3"]
+    assert second["has_more"] is True
+    assert [result["session_id"] for result in third["results"]] == ["s4"]
+    assert third["has_more"] is False
 
 
 def test_non_indexable_roles_skipped():
