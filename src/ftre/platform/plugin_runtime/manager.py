@@ -60,6 +60,12 @@ class PluginManager:
     def statuses(self) -> tuple[PluginStatus, ...]:
         return self.loader.statuses() or self._statuses
 
+    @property
+    def routers(self) -> list[Any]:
+        """Legacy read-only router view; new Host uses HttpService registry."""
+        service = self.context.get("http", strict=False)
+        return list(service.router_objects()) if service is not None else []
+
     def diagnostics(self) -> list[dict[str, Any]]:
         return [status.as_dict() for status in self.statuses()]
 
@@ -68,4 +74,3 @@ class PluginManager:
 
     async def close(self) -> None:
         await self.loader.dispose()
-

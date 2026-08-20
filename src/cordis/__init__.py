@@ -327,6 +327,11 @@ class Context:
         return tuple(record.fiber for record in self._records)
 
     @property
+    def events(self) -> "Context":
+        """Compatibility event facade; lifecycle events stay on this Context."""
+        return self
+
+    @property
     def services(self) -> MappingProxyType:
         return MappingProxyType(dict(self._services))
 
@@ -401,6 +406,48 @@ class Context:
                     asyncio.create_task(result)
                 except RuntimeError:
                     pass
+
+    async def filter(self, event: str, value: Any) -> Any:
+        current = value
+        for callback in tuple(self._events.get(event, ())):
+            result = callback(current)
+            if inspect.isawaitable(result):
+                result = await result
+            if result is not None and result is not False:
+                current = result
+        return current
+
+    async def parallel(self, event: str, *args: Any, **kwargs: Any) -> None:
+        results = []
+        for callback in tuple(self._events.get(event, ())):
+            result = callback(*args, **kwargs)
+            results.append(result)
+        await asyncio.gather(*(item for item in results if inspect.isawaitable(item)))
+
+    async def serial(self, event: str, *args: Any, **kwargs: Any) -> Any:
+        result = None
+        for callback in tuple(self._events.get(event, ())):
+            result = callback(*args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+        return result
+
+    async def waterfall(self, event: str, value: Any, *args: Any, **kwargs: Any) -> Any:
+        current = value
+        for callback in tuple(self._events.get(event, ())):
+            result = callback(current, *args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            if result is not None:
+                current = result
+        return current
+
+    def bail(self, event: str, *args: Any, **kwargs: Any) -> Any:
+        for callback in tuple(self._events.get(event, ())):
+            result = callback(*args, **kwargs)
+            if result is not None and result is not False:
+                return result
+        return None
 
     def plugin(
         self,

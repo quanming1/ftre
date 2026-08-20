@@ -160,23 +160,8 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 # httpx 默认 INFO（每个 LLM API 调用一条日志），提到 WARNING
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ftre 组件导入
-# ──────────────────────────────────────────────────────────────────────────────
-# 这些 import 放在日志配置之后，因为某些模块在被 import 时就会创建 logger，
-# 如果日志还没配好，那些模块的日志就不会有颜色。
-from ftre_agent_core.hooks import FtreCoreHookManager
-from ftre_agent_core.tool import ToolRegistry
-
-from ftre.agent.loop import AgentLoop
-from ftre.bus import EventBus
-from ftre.channel import ChannelManager, SubagentChannel, WebSocketChannel
-from ftre.config import load_config_file, load_gateway_address
+from ftre.config import load_gateway_address
 from ftre.gateway.runtime import GatewayRuntime
-from ftre.plugin import FtreContext, PluginLoader, install_core_services
-from ftre.session import SessionManager
-from ftre.tools.cron import CronScheduler
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -201,7 +186,7 @@ from ftre.tools.cron import CronScheduler
 #   CronScheduler（扫描 ~/.ftre/cron/ 触发定时任务）
 #
 # ──────────────────────────────────────────────────────────────────────────────
-async def run_gateway(*, port: int | None = None, host: str | None = None):
+async def _legacy_run_gateway(*, port: int | None = None, host: str | None = None):
     """前台启动 ftre 网关服务。
 
     这个函数被两种方式调用：
@@ -349,6 +334,15 @@ async def run_gateway(*, port: int | None = None, host: str | None = None):
         await plugin_loader.close()
         await mgr.stop()
         await session_manager.close()
+
+
+# The public Gateway entry delegates composition and lifecycle ownership to the
+# new app layer.  The legacy implementation above remains only as a rollback
+# reference during this migration and is not called by the CLI.
+async def run_gateway(*, port: int | None = None, host: str | None = None):
+    from ftre.app.gateway.bootstrap import run_gateway_runtime
+
+    await run_gateway_runtime(port=port, host=host)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

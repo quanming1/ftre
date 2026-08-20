@@ -94,6 +94,15 @@ class HttpService:
     def snapshot(self) -> tuple[dict[str, Any], ...]:
         return tuple({"method": r.method, "path": r.path, "kind": r.kind, "owner": r.owner} for r in self._routes)
 
+    def router_objects(self) -> tuple[APIRouter, ...]:
+        result: list[APIRouter] = []
+        seen: set[int] = set()
+        for route in self._routes:
+            if route.router is not None and id(route.router) not in seen:
+                seen.add(id(route.router))
+                result.append(route.router)
+        return tuple(result)
+
     def build_app(self, *, title: str = "ftre", version: str = "0.2.4"):
         from fastapi import FastAPI
 
