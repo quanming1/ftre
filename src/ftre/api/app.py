@@ -6,6 +6,6 @@ from .routes import router
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="ftre", version="0.2.2")
+    app = FastAPI(title="ftre", version="0.2.4")
     app.include_router(router)
     return app
