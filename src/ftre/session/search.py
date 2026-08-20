@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ftre.session.entity.state import AgentStateFile
@@ -42,18 +43,70 @@ def _single_text(msg) -> str | None:
     return None
 
 
+def _structured_text(value: Any) -> str:
+    """从工具结果/Hint 的嵌套文本载体中取可展示文本，跳过二进制数据。"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(part for item in value if (part := _structured_text(item)))
+    if not isinstance(value, dict):
+        return ""
+
+    # 图片、音频等数据块的 base64 既不可读，也不应复制到搜索文本。
+    if value.get("type") == "data":
+        return str(value.get("name") or "")
+
+    parts: list[str] = []
+    for key in ("text", "thinking", "hint", "output", "content", "message", "name", "path"):
+        if key in value:
+            text = _structured_text(value[key])
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _message_text(msg) -> str:
+    """提取聊天界面可见的文字：正文、推理、工具调用与工具结果。"""
+    single = _single_text(msg)
+    if single is not None:
+        return single
+
+    parts: list[str] = []
+    for block in msg.content:
+        block_type = block.type
+        if block_type == "text":
+            parts.append(block.text)
+        elif block_type == "thinking":
+            parts.append(block.thinking)
+        elif block_type == "hint":
+            text = _structured_text(block.hint)
+            if text:
+                parts.append(text)
+        elif block_type == "tool_call":
+            parts.append(block.name)
+            parts.append(json.dumps(block.arguments, ensure_ascii=False, default=str))
+        elif block_type == "tool_result":
+            parts.append(block.name)
+            text = _structured_text(block.output)
+            if text:
+                parts.append(text)
+    return "\n".join(part for part in parts if part)
+
+
 def search_sessions(
     states: list[tuple[str, AgentStateFile]],
     q: str,
     limit: int = 30,
     workspace: str | None = None,
+    offset: int = 0,
 ) -> dict[str, Any]:
-    """在内存快照上按子串检索会话（标题 + user/assistant 正文）。
+    """在内存快照上按子串检索会话（标题 + 可见消息文本）。
 
     - 大小写不敏感（ASCII lower；中文不受影响）；
     - 标题命中排前，组内按 session.updated_at 倒序（两次稳定排序）；
     - 每会话最多 MAX_HITS_PER_SESSION 条摘要（消息序倒序取最近）；
-    - workspace 传值时精确过滤（空串匹配"未设置工作区"）。
+    - workspace 传值时精确过滤（空串匹配"未设置工作区"）；
+    - limit / offset 分页，避免常用词命中超过首屏上限时静默漏会话。
     """
     q = q.strip()
     if not q:
@@ -78,11 +131,9 @@ def search_sessions(
                 break
             if msg.role != "user" and msg.role != "assistant":
                 continue
-            text = _single_text(msg)
-            if text is None:
-                text = msg.get_text_content() or ""
-                if not text:
-                    continue
+            text = _message_text(msg)
+            if not text:
+                continue
             if fold_case:
                 if q_lower not in text.lower():
                     continue
@@ -107,4 +158,14 @@ def search_sessions(
     results.sort(key=lambda r: r["updated_at"], reverse=True)
     results.sort(key=lambda r: r["title_matched"], reverse=True)
     total = len(results)
-    return {"query": q, "total": total, "results": results[: max(1, min(limit, 100))]}
+    page_limit = max(1, min(limit, 100))
+    page_offset = max(0, offset)
+    page = results[page_offset: page_offset + page_limit]
+    return {
+        "query": q,
+        "total": total,
+        "limit": page_limit,
+        "offset": page_offset,
+        "has_more": page_offset + len(page) < total,
+        "results": page,
+    }

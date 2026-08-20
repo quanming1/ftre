@@ -77,12 +77,13 @@ class SessionManager:
         q: str,
         limit: int = 30,
         workspace: str | None = None,
+        offset: int = 0,
     ) -> dict[str, Any]:
         """按关键字检索会话标题与正文（内存态直接扫描，线程池执行不阻塞）。"""
         from ftre.session.search import search_sessions
 
         snapshot = self._repo.all_states()
-        return await asyncio.to_thread(search_sessions, snapshot, q, limit, workspace)
+        return await asyncio.to_thread(search_sessions, snapshot, q, limit, workspace, offset)
 
     async def init(self) -> None:
         """启动：加载全部 JSON 状态、建索引、修复遗留 open reply、清扫孤儿目录。"""
@@ -340,6 +341,12 @@ class SessionManager:
 
     async def update_message(self, message: Msg | dict[str, Any]) -> None:
         await self._repo.update_message(message)
+
+    async def update_messages(
+        self, messages: list[Msg | dict[str, Any]]
+    ) -> None:
+        """批量原子更新同一 Session 的多条 Msg。"""
+        await self._repo.update_messages(messages)
 
     async def get_messages_by_session(self, session_id: str) -> list[MessageModel]:
         return await self._repo.get_messages_by_session(session_id)

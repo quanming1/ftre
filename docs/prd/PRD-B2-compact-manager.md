@@ -11,7 +11,7 @@
 | 状态 | 已验收 |
 | 创建日期 | 2026-08-12 |
 | 定稿日期 | 2026-08-12 |
-| 验收日期 | 2026-08-12 |
+| 验收日期 | 2026-08-12；复验 2026-08-19 |
 | 关联文档 | docs/TODO.yaml 阶段 B2；AGENTS.md |
 
 ## 1. 背景与目标
@@ -33,10 +33,12 @@
 - [x] FR7：压缩事件投影——summary/fast 结果通过 `context_compact_done` 进入 SessionProjection，CompactManager 不直接写 state.json 或发送 WebSocket
 - [x] FR8：摘要空结果重试 + fast 兜底——LLM 首次未产出正文（只输出思考等）时自动重试一次；重试仍为空则回退 compress-fast 裁剪工具输出，避免直接放弃导致 SessionLane BLOCKED。
 - [x] FR9：compress-fast 作废 usage 锚点——裁剪成功后清除活跃区间内 `last_call_usage` 锚点，防止水位冻结在裁剪前值、`should_compact` 永远判过线导致死锁。
+- [x] FR10：compress-fast 批量原子持久化——同一次快速压缩影响多条 Msg 时，必须在一个 session 锁内一次性应用全部更新，并且只提交一次完整 state；持久化次数不得随变更消息数线性增长。
+- [x] FR11：压缩启动模型可观测——`context_compact_start` 必须携带实际采用的摘要模型（优先 `compact_llm`，未配置时回退主 `llm`），供客户端准确展示；不得以最近一条普通回复的模型推断。
 
 ### 2.2 非功能需求
 
-- 性能：compress-fast 耗时 < 100ms（无 LLM 调用）
+- 性能：compress-fast 不调用 LLM；裁剪算法在常规小会话中耗时 < 100ms；大体积 state 的消息更新必须批量提交，避免逐条全量重写导致 O(变更消息数 × state 大小) 的写放大
 - 安全：压缩不丢失 UserMessage 和最近 N 轮 AssistantMessage
 - 兼容性：压缩后的摘要消息标记 `compressed: true`，可被识别
 
@@ -108,10 +110,13 @@ flowchart LR
 - [x] AC5：压缩无副作用——无新 tail 或无可裁剪 ToolResultBlock 时 no-op，不生成重复展示消息
 - [x] AC6：失败安全——LLM 失败/摘要过大不写错误摘要；ContextGate 复核后可 fast fallback，仍超硬水位则 blocked
 - [x] AC7：摘要为空时自动重试一次，重试成功则正常落 compact Msg；重试仍为空则回退 compress-fast（发 failed 事件+裁剪工具输出+写 fast 气泡），不产生 compact Msg。compress-fast 裁剪成功后作废 usage 锚点，`get_token_usage` 退化为裁剪后内容估算、不再冻结（自动化测试 3/3：重试成功、重试失败兜底、锚点作废）
+- [x] AC8：一次 compress-fast 即使改动多条 Msg，也只调用一次批量消息更新并产生一次 state commit；全部消息保持原顺序，任一消息不存在或跨 session 时整体失败且不产生部分更新。以 2026-08-19 的 23.6 MB 生产会话样本为基线，275 个 ToolResultBlock / 8 条 Msg 的主执行段由约 1.93s 降至 1s 内。
+- [x] AC9：摘要压缩开始事件带有 `model` 字段，值等于此次摘要调用实际选择的模型；配置独立 `compact_llm` 时不得误报主 `llm`。
 
 ## 6. 测试计划
 
 - `tests/test_compact_algo.py`：ToolResultBlock 裁剪、keep_turns、无可裁剪内容。
+- `tests/test_session_repository_batch.py`：批量更新单次 commit、消息顺序、跨 session / 未知 id 原子失败。
 - `tests/test_compact_summary.py`：summary/fast Projection、through_message_id、压缩期间到达的消息留在 tail、共享 Task 去重和失败不写摘要。
 - `tests/test_context_config.py`：precompact_threshold、compact_threshold、safety_buffer 和 legacy 配置映射。
 - `tests/test_session_lane.py`：before_claim 80%、after_turn 70% 门控与 pending 保留。
@@ -124,3 +129,6 @@ flowchart LR
 | 2026-08-13 | 补充实际 prompt 预算公式、summary/fast/no-op/failure 语义、事件投影和测试计划；修正 CompactManager API 示例 | 将压缩结果、失败处理和上下文锚点变成可验收的契约 |
 | 2026-08-13 | 影响复核：Compact/Context/Lane 定向测试通过，覆盖 summary、fast、no-op、共享 Task 和压缩期间 tail；ContextGate 的失败后 blocked 集成路径仍需补测 | 记录压缩边界和失败语义的验收依据 |
 | 2026-08-18 | 新增 FR8 / FR9 / AC7：LLM 摘要未产出正文时重试一次，重试仍为空回退 compress-fast（发 failed 事件+裁剪工具输出+写 fast 气泡）；compress-fast 裁剪成功同时作废活跃区间内 `last_call_usage` 锚点（否则水位冻结，`should_compact` 永远判过线、SessionLane 永久 BLOCKED）。自动化测试 3/3：重试成功、重试失败兜底、锚点作废 | 生产事故：摘要模型只输出思考未写正文 → fast 兜底裁剪后水位未降 → 会话卡在「压缩后上下文仍超过安全水位」 |
+| 2026-08-19 | 新增 FR10 / AC8：compress-fast 多 Msg 更新改为单次批量原子提交；立项基线为 23.6 MB state、275 个 ToolResultBlock / 8 条 Msg，主执行段约 1.93s | 逐条 `update_message` 每条都会深拷贝、序列化、fsync 并替换完整 state，形成明显写放大 |
+| 2026-08-19 | FR10 / AC8 复验通过：批量更新保持原顺序，未知 id / 跨 session 整体失败；相关测试 56/56、全量测试 345/345。24 MB 生产会话临时副本对照由 979.0ms / 5 次 state 写降至 453.7ms / 2 次 state 写，提速约 54% | 验证批量提交消除随变更 Msg 数增长的全量写放大，且未改变 fast 气泡投影语义 |
+| 2026-08-20 | 新增 FR11 / AC9：`context_compact_start` 增加实际摘要模型 `model` 字段，取 `compact_llm`（未配置时回退主 `llm`） | 客户端此前把最近 assistant 回复的模型显示在压缩横幅，可能把普通对话模型误显示为压缩模型 |

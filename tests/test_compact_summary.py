@@ -23,7 +23,8 @@ from ftre.session import SessionManager
 
 def _config() -> SimpleNamespace:
     return SimpleNamespace(
-        llm=SimpleNamespace(context_window=100000),
+        llm=SimpleNamespace(context_window=100000, model="main-model"),
+        compact_llm=SimpleNamespace(model="summary-model"),
         context=SimpleNamespace(compact_threshold=0.7),
     )
 
@@ -144,6 +145,23 @@ async def test_first_compact_writes_compact_msg(env, monkeypatch):
     names = _event_names(emitted)
     assert "context_compact_start" in names
     assert "context_compact_done" in names
+    start = next(event for event in emitted if event.name == "context_compact_start")
+    assert start.value["model"] == "summary-model"
+
+
+@pytest.mark.asyncio
+async def test_compact_start_uses_main_model_without_compact_override(env, monkeypatch):
+    manager, emitted, _, compact = env
+    sid = await manager.create_session("ws")
+    await _seed(manager, sid, 1)
+    monkeypatch.setattr(compact, "_run_compact_llm", AsyncMock(return_value="摘要"))
+    config = _config()
+    config.compact_llm = None
+
+    await compact.compact(sid, "ws", config=config)
+
+    start = next(event for event in emitted if event.name == "context_compact_start")
+    assert start.value["model"] == "main-model"
 
 
 @pytest.mark.asyncio

@@ -84,6 +84,11 @@ COMPACT_LLM_SYSTEM_PROMPT = """\
 </state_snapshot>"""
 
 
+def _select_compact_llm(config):
+    """返回本次摘要真实使用的 LLM 配置。"""
+    return getattr(config, "compact_llm", None) or config.llm
+
+
 class CompactManager:
     """上下文压缩处理器（全异步）。"""
 
@@ -296,8 +301,7 @@ class CompactManager:
         tokens_after = estimate_messages_tokens(messages)
 
         try:
-            for message in changed_messages.values():
-                await self.session_manager.update_message(message)
+            await self.session_manager.update_messages(list(changed_messages.values()))
         except Exception:
             logger.exception(f"[compact-fast] 更新 Msg 失败 session={session_id}")
             return False
@@ -366,12 +370,15 @@ class CompactManager:
         tokens_before = usage["total"]
         current_ratio = tokens_before / cw
 
-        # 4. 通知前端开始（CustomEvent，不持久化）
+        # 4. 通知前端开始（CustomEvent，不持久化）。模型必须显式随事件传递，
+        #    不能让客户端从上一条 assistant 回复推断压缩实际使用的模型。
+        compact_llm = _select_compact_llm(config)
         await self._emit_event(session_id, channel_id, CustomEvent(
             name=CompactEventName.START,
             value={
                 "messages": len(head_messages),
                 "tokens": tokens_before,
+                "model": compact_llm.model,
             },
         ))
 
@@ -479,8 +486,9 @@ class CompactManager:
                 *[{"role": "user", "content": p} for p in prompt_parts],
             ]
 
-            # 优先使用 compact_llm，未配置则回退到主 llm
-            llm_cfg = getattr(config, "compact_llm", None) or config.llm
+            # 优先使用 compact_llm，未配置则回退到主 llm。
+            # 与 START 事件使用同一选择函数，确保展示模型与真实调用一致。
+            llm_cfg = _select_compact_llm(config)
             adapter = create_llm_handler(
                 llm_cfg.api_type,
                 model=llm_cfg.model,
@@ -506,7 +514,6 @@ class CompactManager:
         except Exception:
             logger.exception("[compact] LLM 直调摘要异常")
             return None
-
     # ─── 工具方法 ──────────────────────────────────────────────────
 
     async def _emit_failed(self, session_id: str, channel_id: str, reason: str) -> None:
