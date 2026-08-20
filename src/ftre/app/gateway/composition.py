@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from cordis import Context
-
 from ftre.config import load_config_file
 from ftre.platform.plugin_runtime import PluginManager, PluginManifest
 
