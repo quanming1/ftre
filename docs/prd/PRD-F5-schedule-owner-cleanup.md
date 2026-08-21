@@ -11,10 +11,10 @@
 |---|---|
 | 阶段 | F5 |
 | 名称 | Schedule Owner 收敛与调度生命周期治理 |
-| 状态 | approved |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-21 |
 | 定稿日期 | 2026-08-21 |
-| 验收日期 | — |
+| 验收日期 | 2026-08-21 |
 | 关联文档 | `docs/TODO.yaml` 阶段 F5；`AGENTS.md`；F4 PRD 与执行报告；`docs/PROCESS.md` |
 
 ## 1. 背景与目标
@@ -45,36 +45,36 @@
 
 ### 2.1 功能需求
 
-- [ ] **FR1：Schedule 公共契约冻结。** 明确 `ScheduleService` 的 Job CRUD、`CronScheduler` 的
+- [x] **FR1：Schedule 公共契约冻结。** 明确 `ScheduleService` 的 Job CRUD、`CronScheduler` 的
   start/stop、`CronChannel` 的 Channel Contract 和 cron Tool 的注册接口；Router 不得访问
   文件系统或 Service 私有字段。
-- [ ] **FR2：CronStore 单一持久化 Owner。** 将 `cron` JSON 的路径解析、读取、原子写入、删除、
+- [x] **FR2：CronStore 单一持久化 Owner。** 将 `cron` JSON 的路径解析、读取、原子写入、删除、
   run_history 更新归入 `features/schedule/store.py` 的实际实现；`ScheduleService` 只编排
   Domain/Store，不再重复 `root.glob` 或直接写 JSON。
-- [ ] **FR3：ScheduleService 完整 CRUD。** 提供 `list/get/create/update/delete/append_run` 等
+- [x] **FR3：ScheduleService 完整 CRUD。** 提供 `list/get/create/update/delete/append_run` 等
   窄接口，校验 Job ID 和字段；Router、Tool、Scheduler 全部通过 Service 调用。
-- [ ] **FR4：CronScheduler 迁入 Feature。** 将调度循环迁入 `features/schedule/scheduler.py`，
+- [x] **FR4：CronScheduler 迁入 Feature。** 将调度循环迁入 `features/schedule/scheduler.py`，
   只依赖 `ScheduleService`、`SessionService`、`MessageBusService`；不再依赖
   `services.tools.builtin.cron` 的全局 `CRON_DIR` 和函数。
-- [ ] **FR5：CronChannel 迁入 Feature。** 将静默 Channel 的真实实现放入
+- [x] **FR5：CronChannel 迁入 Feature。** 将静默 Channel 的真实实现放入
   `features/schedule/channel.py`，通过 `ChannelService` 注册；停止时必须可逆注销，不能留
   `services/tools` 的反向依赖。
-- [ ] **FR6：cron Tool 迁入 Feature。** 将 cron Tool 的参数定义、校验和执行逻辑放入
+- [x] **FR6：cron Tool 迁入 Feature。** 将 cron Tool 的参数定义、校验和执行逻辑放入
   `features/schedule/tool.py`，由 Schedule Plugin 通过 `ToolService.register(..., owner="schedule")`
   注册，并在 unload 时移除。
-- [ ] **FR7：Schedule Plugin 接管生命周期。** Plugin 注入 `message_bus/sessions/channels/tools`
+- [x] **FR7：Schedule Plugin 接管生命周期。** Plugin 注入 `message_bus/sessions/channels/tools`
   和必要的 Config，创建 Service/Channel/Scheduler，按“提供 Service → 注册 Channel/Tool →
   启动 Scheduler”的顺序装配；所有资源绑定 `ctx.effect`，重复 close 幂等。
-- [ ] **FR8：Bootstrap 解耦。** 从 `app/gateway/bootstrap.py` 删除 `CronScheduler` import、手工
+- [x] **FR8：Bootstrap 解耦。** 从 `app/gateway/bootstrap.py` 删除 `CronScheduler` import、手工
   构造、`start()` 和 `stop()`；Gateway 只通过 Composition 加载 Schedule Plugin。
-- [ ] **FR9：Router Service-only。** `features/schedule/router.py` 只调用 Service 公共方法，
+- [x] **FR9：Router Service-only。** `features/schedule/router.py` 只调用 Service 公共方法，
   不访问 `service.root`、`Path`、`json.loads` 或 JSON 文件。
-- [ ] **FR10：旧实现与空壳删除。** 删除 `src/ftre/services/tools/builtin/cron.py`，并确保
+- [x] **FR10：旧实现与空壳删除。** 删除 `src/ftre/services/tools/builtin/cron.py`，并确保
   `features/schedule/channel.py`、`store.py`、`tool.py` 都是有实际职责的 Feature 模块，不得
   出现单行 re-export 或 `import *`。
-- [ ] **FR11：并发与重复启动保护。** Scheduler 同一实例最多一个后台 Task；Plugin 重复激活、
+- [x] **FR11：并发与重复启动保护。** Scheduler 同一实例最多一个后台 Task；Plugin 重复激活、
   reload、unload 和 close 不产生重复 Channel、重复 Tool 或悬挂 Task。
-- [ ] **FR12：测试与架构门禁。** 新增 Schedule Owner、生命周期、Store 安全、Router Service-only
+- [x] **FR12：测试与架构门禁。** 新增 Schedule Owner、生命周期、Store 安全、Router Service-only
   和 Bootstrap 无手工装配测试；禁止新代码从 `services.tools.builtin.cron` 导入 Schedule 实现。
 
 ### 2.2 非功能需求
@@ -157,25 +157,25 @@ class CronScheduler:
 
 ## 5. 验收标准
 
-- [ ] **AC1：Owner 清晰。** `features/schedule/channel.py`、`store.py`、`tool.py` 均包含实际
+- [x] **AC1：Owner 清晰。** `features/schedule/channel.py`、`store.py`、`tool.py` 均包含实际
   实现；不存在单行 re-export、`import *` 或对 `services.tools.builtin.cron` 的导入。
-- [ ] **AC2：旧实现删除。** `src/ftre/services/tools/builtin/cron.py` 不存在；生产代码和
+- [x] **AC2：旧实现删除。** `src/ftre/services/tools/builtin/cron.py` 不存在；生产代码和
   测试不再导入该路径。
-- [ ] **AC3：Store/Service 行为。** Job list/get/create/update/delete、run_history、非法 ID
+- [x] **AC3：Store/Service 行为。** Job list/get/create/update/delete、run_history、非法 ID
   和 JSON 损坏处理测试通过，文件格式保持兼容。
-- [ ] **AC4：Scheduler 行为。** 到期 Job 只触发一次、disabled Job 跳过、无效 cron 跳过、
+- [x] **AC4：Scheduler 行为。** 到期 Job 只触发一次、disabled Job 跳过、无效 cron 跳过、
   session/message bus 投递正确、stop 能结束后台 Task。
-- [ ] **AC5：Channel/Tool 生命周期。** Schedule Plugin 激活后存在 cron Channel 和 cron Tool，
+- [x] **AC5：Channel/Tool 生命周期。** Schedule Plugin 激活后存在 cron Channel 和 cron Tool，
   unload 后两者均消失且无重复注册。
-- [ ] **AC6：Router 边界。** Router 测试通过 AST/Mock 证明只调用 ScheduleService，不读文件或
+- [x] **AC6：Router 边界。** Router 测试通过 AST/Mock 证明只调用 ScheduleService，不读文件或
   私有 root。
-- [ ] **AC7：Bootstrap 解耦。** `bootstrap.py` 不导入或构造 `CronScheduler`；Composition 默认
+- [x] **AC7：Bootstrap 解耦。** `bootstrap.py` 不导入或构造 `CronScheduler`；Composition 默认
   Schedule Plugin 可激活并负责启动/停止。
-- [ ] **AC8：并发安全。** 重复 start/stop、重复 Plugin settle/close、并发 tick 不创建重复
+- [x] **AC8：并发安全。** 重复 start/stop、重复 Plugin settle/close、并发 tick 不创建重复
   Task 或重复 Job 触发。
-- [ ] **AC9：完整质量。** `python -m pytest -q`、`python -m ruff check src tests`、
+- [x] **AC9：完整质量。** `python -m pytest -q`、`python -m ruff check src tests`、
   `git diff --check`、Gateway health、WebSocket attach 和正常 dispose 全部通过。
-- [ ] **AC10：收尾。** F5 分片提交，PRD/TODO/CHANGELOG/执行报告同步，分支干净。
+- [x] **AC10：收尾。** F5 分片提交，PRD/TODO/CHANGELOG/执行报告同步，分支干净。
 
 ## 6. 测试计划
 
@@ -193,3 +193,4 @@ class CronScheduler:
 |---|---|---|
 | 2026-08-21 | 初始草案：将 Schedule 的 Store、Scheduler、Channel、Tool 和 Plugin 生命周期收敛到 Feature | F4 后发现 Schedule 仍存在跨层实现和空转发壳 |
 | 2026-08-21 | 评审定稿：冻结 FR1-FR12、AC1-AC10、目标文件树与 Plugin 生命周期顺序；本阶段只处理 Schedule Owner，不扩大到其他 Service | 明确 F5 开工边界，允许按六步流程进入开发 |
+| 2026-08-21 | 完成实现与验收：迁移 CronStore/ScheduleService/CronScheduler/CronChannel/cron Tool，Bootstrap 移除手工调度，新增 15 项专项测试；全量 327 项 pytest、ruff 与 diff check 通过 | 对照 FR1-FR12、AC1-AC10 完成 Schedule Owner 收敛 |

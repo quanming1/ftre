@@ -30,6 +30,15 @@
 - 生产代码与测试统一使用新四层导入路径，新增 F4 架构门禁。
 - Cordis Plugin apply 失败时自动回滚已注册 Effect，避免启动半成品泄漏。
 
+### F5 Schedule Owner 收敛与调度生命周期治理
+
+- 将 CronStore、ScheduleService、CronScheduler、CronChannel 和 cron Tool 收敛到
+  `features/schedule`，删除 `services/tools/builtin/cron.py` 与 Schedule 空壳。
+- Schedule Plugin 接管 Channel/Tool 注册、Scheduler 启停和 Effect 清理，Bootstrap 不再手工
+  装配 CronScheduler。
+- 新增 Store 安全、Service CRUD、Scheduler 并发、Plugin 生命周期、Router 边界和旧实现删除
+  架构测试；全量 327 项测试通过。
+
 ## [0.2.4] - 2026-08-20
 
 ### 修复
