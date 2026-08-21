@@ -32,6 +32,12 @@ from ftre_agent_core.event import (
 from ftre_agent_core.message import Msg, from_openai_message
 
 from ftre.config import AgentConfig, load_config
+from ftre.services.agent.runtime.hooks import (
+    BEFORE_AGENT_RUN,
+    BEFORE_MESSAGES_BUILD,
+    AgentRunContext,
+    MessagesBuildContext,
+)
 from ftre.services.command.types import (
     Handled,
     Passthrough,
@@ -491,8 +497,6 @@ class TurnExecutor:
 
         # ── before_agent_run hook：插件可注入对话上下文/系统身份 ──
         if getattr(loop, "event_hub", None) is not None:
-            from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext
-
             ctx = AgentRunContext(
                 session_id=session_id,
                 channel_id=inbound.from_channel,
@@ -534,8 +538,6 @@ class TurnExecutor:
         records = await loop.session_manager.get_context_messages(session_id)
         hook_config = copy.deepcopy(config)
         if getattr(loop, "event_hub", None) is not None:
-            from ftre.plugin import BEFORE_MESSAGES_BUILD, MessagesBuildContext
-
             messages_ctx = MessagesBuildContext(
                 session_id=session_id,
                 channel_id=inbound.from_channel,
@@ -575,8 +577,6 @@ class TurnExecutor:
         # 权限状态事实源，hook 只修改 provider 视图与 agent 的 system prompt。
         if getattr(loop, "event_hub", None) is not None:
             from ftre_agent_core.message_context import MessageContext
-
-            from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext
 
             hook_messages = MessageContext.get_messages(
                 state.context, agent.system_prompt
@@ -933,8 +933,6 @@ class TurnExecutor:
         # 触发 before_messages_build hook（插件可裁剪 Msg、生成标题、注入提示词）
         hook_config = copy.deepcopy(config)
         if getattr(loop, "event_hub", None) is not None:
-            from ftre.plugin import BEFORE_MESSAGES_BUILD, MessagesBuildContext
-
             ctx = MessagesBuildContext(
                 session_id=session_id,
                 channel_id=channel_id,

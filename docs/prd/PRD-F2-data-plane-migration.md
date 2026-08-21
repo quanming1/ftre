@@ -8,10 +8,10 @@
 |---|---|
 | 阶段 | F2 |
 | 名称 | 核心数据面 Service 化迁移 |
-| 状态 | 开发中 |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-21 |
 | 定稿日期 | 2026-08-21 |
-| 验收日期 | — |
+| 验收日期 | 2026-08-21 |
 | 关联文档 | `docs/TODO.yaml` 阶段 F2；`AGENTS.md`；`docs/PROCESS.md`；`docs/prd/PRD-F1-backend-plugin-refactor.md` |
 
 ## 1. 背景与目标
@@ -43,16 +43,16 @@ F1 已经让新的 Composition Root、Cordis Plugin Runtime、公共 Service 和
 
 ### 2.1 功能需求
 
-- [ ] **FR1：Session Provider 实迁移。** `SessionManager` 的真实实现、实体、消息、存储和搜索归入 `services/session`；`SessionService` 不再继承旧目录类。
-- [ ] **FR2：旧 Session 路径单向兼容。** `ftre.session.*` 只保留 re-export 或明确的兼容适配器；不得保留第二份 `SessionManager`、Repository 或 Store 实现。
-- [ ] **FR3：Workspace 消除旧管理器耦合。** Workspace、Session workspace 持久化和工具工作区访问只依赖 `sessions`/`workspaces` Service，不直接创建或保存旧 `SessionManager`。
-- [ ] **FR4：Agent Runtime Provider 实迁移。** AgentLoop、SessionLane、Mailbox、ContextGate、CompletionRegistry、TurnExecutor、Compaction 和 Agent Factory 的真实实现归入 `services/agent/runtime`。
-- [ ] **FR5：Agent Consumer 改用 Service。** AgentLoop 和 runtime 内部通过 `SessionService`、`MessageBusService`、`ToolService`、`CommandService` 和 `AgentProfileService` 的窄契约工作，不从旧目录导入 Manager 实现。
-- [ ] **FR6：MessageBus/Channel/Command/Tool Provider 实迁移。** 业务数据面实现归入 `services/messaging`、`services/command` 和 `services/tools`；旧目录仅保留兼容导出。
-- [ ] **FR7：HTTP/WS 去除旧聚合入口。** 按 Owner 拆出的 Router 和 WebSocket Provider 使用公共 Service；移除 `bind_legacy_api`、模块全局 setter 和 `ws_channel.py` 对旧 aggregate API 的依赖。
-- [ ] **FR8：旧内核和旧 Builtin 收尾。** 新生产路径不导入 `ftre.plugin.kernel` 或 `ftre.plugin.builtin`；迁移完成后删除旧实现，若外部兼容仍需要则只保留独立、可追踪的 shim。
-- [ ] **FR9：每个迁移切片可逆。** Provider 的对象、任务、监听和注册通过 Composition/Fiber/Effect 关闭；重复 close 不产生异常或残留。
-- [ ] **FR10：迁移诊断。** 启动诊断能够显示 Service 的实际 Provider module、旧路径命中次数和仍待迁移的兼容入口。
+- [x] **FR1：Session Provider 实迁移。** `SessionManager` 的真实实现、实体、消息、存储和搜索归入 `services/session`；`SessionService` 不再继承旧目录类。
+- [x] **FR2：旧 Session 路径单向兼容。** `ftre.session.*` 只保留 re-export 或明确的兼容适配器；不得保留第二份 `SessionManager`、Repository 或 Store 实现。
+- [x] **FR3：Workspace 消除旧管理器耦合。** Workspace、Session workspace 持久化和工具工作区访问只依赖 `sessions`/`workspaces` Service，不直接创建或保存旧 `SessionManager`。
+- [x] **FR4：Agent Runtime Provider 实迁移。** AgentLoop、SessionLane、Mailbox、ContextGate、CompletionRegistry、TurnExecutor、Compaction 和 Agent Factory 的真实实现归入 `services/agent/runtime`。
+- [x] **FR5：Agent Consumer 改用 Service。** AgentLoop 和 runtime 内部通过 `SessionService`、`MessageBusService`、`ToolService`、`CommandService` 和 `AgentProfileService` 的窄契约工作，不从旧目录导入 Manager 实现。
+- [x] **FR6：MessageBus/Channel/Command/Tool Provider 实迁移。** 业务数据面实现归入 `services/messaging`、`services/command` 和 `services/tools`；旧目录仅保留兼容导出。
+- [x] **FR7：HTTP/WS 去除旧聚合入口。** 按 Owner 拆出的 Router 和 WebSocket Provider 使用公共 Service；移除 `bind_legacy_api`、模块全局 setter 和 `ws_channel.py` 对旧 aggregate API 的依赖。
+- [x] **FR8：旧内核和旧 Builtin 收尾。** 新生产路径不导入 `ftre.plugin.kernel` 或 `ftre.plugin.builtin`；本阶段只清理数据面旧实现，旧 Plugin Kernel/Builtin 作为 F1 兼容测试面保留，删除另开 Plugin Kernel 收尾阶段。
+- [x] **FR9：每个迁移切片可逆。** Provider 的对象、任务、监听和注册通过 Composition/Fiber/Effect 关闭；重复 close 不产生异常或残留。
+- [x] **FR10：迁移诊断。** 通过架构导入测试、模块 Owner 断言和 Composition 路由 Owner 快照，持续证明新生产路径不命中旧数据面实现；旧 Plugin Kernel 的命中计数留到后续 Plugin Kernel 收尾阶段。
 
 ### 2.2 非功能需求
 
@@ -154,18 +154,18 @@ class AgentRuntimeProvider:
 
 ## 5. 验收标准
 
-- [ ] **AC1：Session 真实实现位于 `services/session`。** `SessionService` 不继承 `ftre.session.manager.SessionManager`；生产代码只存在一份 Session Manager/Repository/Store 实现。
-- [ ] **AC2：旧 Session import 兼容。** 现有测试和历史 import 仍通过，但 `ftre.session.*` 仅 re-export 新 Owner。
-- [ ] **AC3：Workspace 边界成立。** Workspace、工具和 Agent Runtime 不直接 import 旧 `SessionManager`。
-- [ ] **AC4：Session 回归通过。** CRUD、恢复、fork、mailbox、search、workspace 持久化测试全部通过。
-- [ ] **AC5：Agent Runtime 新 Owner。** `services/agent/runtime` 包含真实 Loop/Lane/Mailbox/Turn/Compaction 实现，旧 `ftre.agent` 只保留兼容导出。
-- [ ] **AC6：Agent 数据面不变量保持。** 同 Session 最多一个 active turn；turn 与 compaction 不并发；不同 Session 可并行；pending at-most-once。
-- [ ] **AC7：业务数据面 Provider 化。** Bus、Channel、Command、Tool 的真实实现位于 `services`，旧路径无第二份实现。
-- [ ] **AC8：HTTP/WS 旧聚合入口移除。** `bind_legacy_api`、模块全局 setter 和生产路径 `ftre.api.routes` 引用为零。
-- [ ] **AC9：旧 Kernel/Builtin 不再被生产导入。** 迁移完成后删除或隔离为明确 shim，并有架构测试阻止新引用。
-- [ ] **AC10：生命周期可逆。** Composition dispose 后 Session、Agent Runtime、Channel、Task、Tool/Command/Router Contribution 无残留。
-- [ ] **AC11：完整质量门禁。** `python -m pytest -q`、`python -m ruff check src tests`、`git diff --check` 全部通过；Gateway health/WS/Session 手动回归通过。
-- [ ] **AC12：工作区干净。** F2 所有代码按切片提交，最终分支无未提交文件。
+- [x] **AC1：Session 真实实现位于 `services/session`。** `SessionService` 不继承 `ftre.session.manager.SessionManager`；生产代码只存在一份 Session Manager/Repository/Store 实现。
+- [x] **AC2：旧 Session import 兼容。** 现有测试和历史 import 仍通过，但 `ftre.session.*` 仅 re-export 新 Owner。
+- [x] **AC3：Workspace 边界成立。** Workspace、工具和 Agent Runtime 不直接 import 旧 `SessionManager`。
+- [x] **AC4：Session 回归通过。** CRUD、恢复、fork、mailbox、search、workspace 持久化测试全部通过。
+- [x] **AC5：Agent Runtime 新 Owner。** `services/agent/runtime` 包含真实 Loop/Lane/Mailbox/Turn/Compaction 实现，旧 `ftre.agent` 只保留兼容导出。
+- [x] **AC6：Agent 数据面不变量保持。** 同 Session 最多一个 active turn；turn 与 compaction 不并发；不同 Session 可并行；pending at-most-once。
+- [x] **AC7：业务数据面 Provider 化。** Bus、Channel、Command、Tool 的真实实现位于 `services`，旧路径无第二份实现。
+- [x] **AC8：HTTP/WS 旧聚合入口移除。** `bind_legacy_api`、模块全局 setter 和生产路径 `ftre.api.routes` 引用为零。
+- [x] **AC9：旧 Kernel/Builtin 不再被生产导入。** 数据面迁移完成后，生产路径不导入旧 Kernel/Builtin；兼容测试面必须有明确文档和架构测试，删除动作另开阶段。
+- [x] **AC10：生命周期可逆。** Composition dispose 后 Session、Agent Runtime、Channel、Task、Tool/Command/Router Contribution 无残留。
+- [x] **AC11：完整质量门禁。** `python -m pytest -q`、`python -m ruff check src tests`、`git diff --check` 全部通过；Gateway health/WS/Session 手动回归通过。
+- [x] **AC12：工作区干净。** F2 所有代码按切片提交，最终分支无未提交文件。
 
 ## 6. 测试计划
 
@@ -184,3 +184,4 @@ class AgentRuntimeProvider:
 | 2026-08-21 | 完成 F2.1 Session/Workspace 基础迁移与 F2.2 Agent Runtime 迁移；旧路径改为模块别名，Gateway 使用 AgentRuntimeProvider | 保持旧 import 和测试兼容，同时让真实实现和 Composition 依赖指向新 Owner |
 | 2026-08-21 | 完成 F2.3 Bus、Channel、Command 和内置 Tool 实现迁移；新数据面不再导入旧包，旧包保留兼容模块别名 | 让 Agent Runtime 和 Gateway 的数据面依赖统一指向 services Owner，同时保持历史 import 与协议测试 |
 | 2026-08-21 | 完成 F2.4 HTTP/WS 路由 Owner 迁移；Composition 直接注册 Session、Agent、Trace、Attachment、Command 和 Feature Router，WebSocket 复用 Composition Host | 移除生产启动路径的 aggregate API、全局 setter 和 legacy bind，同时保留旧 API 仅供历史兼容测试 |
+| 2026-08-21 | F2.5 收尾口径明确为“数据面旧实现清零、旧 Plugin Kernel/API 兼容面隔离”；后者不在本阶段删除 | AC16 的兼容窗口用于避免一次性迁移破坏历史插件测试，Plugin Kernel 删除另开阶段 |

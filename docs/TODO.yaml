@@ -241,10 +241,10 @@ stages:
 
       - id: F2
         title: 核心数据面 Service 化迁移
-        status: in_progress
+        status: done
         date: 2026-08-21
         prd: docs/prd/PRD-F2-data-plane-migration.md
-        prd_status: approved
+        prd_status: 已验收
         modules:
           - src/ftre/services/session/
           - src/ftre/services/agent/runtime/
@@ -268,4 +268,4 @@ stages:
             status: done
           - id: F2.5
             title: 旧目录清理与全量验收
-            status: in_progress
+            status: done

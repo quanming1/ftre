@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from cordis import PluginContext
 from ftre.services.system_prompt.types import PromptSection
-from ftre.tools.plan import create_plan_tool
+from ftre.services.tools.builtin.plan import create_plan_tool
 
 inject = ("tools", "system_prompt")
 provide = ()

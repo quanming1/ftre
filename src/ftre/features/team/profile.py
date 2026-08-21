@@ -1,1 +1,1 @@
-from ftre.agent.sub_agent_profile import *
+from ftre.services.agent.profile.sub_agent import *

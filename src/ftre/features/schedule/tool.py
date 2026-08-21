@@ -1,3 +1,3 @@
 """Compatibility export for the Schedule Feature's cron tool."""
 
-from ftre.tools.cron import *
+from ftre.services.tools.builtin.cron import *

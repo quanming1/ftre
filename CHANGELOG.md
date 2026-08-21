@@ -10,6 +10,12 @@
 - Gateway CLI 改为薄转发；保留既有 SessionLane、MessageBus、WebSocket 与 Octo 兼容表面。
 - 新增 scoped registry、生命周期、外部插件启用隔离、路由基线和合成第三方 Plugin 契约测试。
 
+### F2 核心数据面 Service 化迁移
+
+- Session、Agent Runtime、Bus、Channel、Command 和内置 Tool 的真实实现迁入 `services` Owner，旧路径降级为兼容 shim。
+- 新增 AgentRuntimeProvider、Session/Agent/Trace/Attachment/Command Router，WebSocket 复用 Composition Host。
+- 生产启动路径移除 aggregate API、全局 setter 和 `bind_legacy_api`；保留旧 Plugin Kernel/API 仅作为兼容测试面。
+
 ## [0.2.4] - 2026-08-20
 
 ### 修复

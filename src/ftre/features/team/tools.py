@@ -1,1 +1,1 @@
-from ftre.tools.team import *
+from ftre.services.tools.builtin.team import *
