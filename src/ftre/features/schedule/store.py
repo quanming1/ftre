@@ -49,7 +49,13 @@ class CronStore:
                 jobs.append(value)
             else:
                 logger.warning("[schedule-store] 忽略非对象任务: %s", path.name)
-        return sorted(jobs, key=lambda item: item.get("created_at", 0), reverse=True)
+        def created_at(item: dict[str, Any]) -> float:
+            try:
+                return float(item.get("created_at", 0))
+            except (TypeError, ValueError):
+                return 0.0
+
+        return sorted(jobs, key=created_at, reverse=True)
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         """Read one job or return ``None`` when it does not exist."""

@@ -39,12 +39,20 @@ class ScheduleService:
         if illegal:
             raise ValueError(f"不允许的字段: {sorted(illegal)}")
         values = self._validate_fields(payload, require_all=True)
+        job_id = payload.get("id") or f"job_{uuid.uuid4().hex[:10]}"
+        if not isinstance(job_id, str):
+            raise TypeError("id 必须是字符串")
+        if self._store.get(job_id) is not None:
+            raise ValueError(f"任务已存在: {job_id}")
+        history = payload.get("run_history") or []
+        if not isinstance(history, list):
+            raise TypeError("run_history 必须是列表")
         job = {
-            "id": payload.get("id") or f"job_{uuid.uuid4().hex[:10]}",
+            "id": job_id,
             **values,
             "disabled": bool(values.get("disabled", False)),
             "created_at": float(payload.get("created_at", time.time())),
-            "run_history": list(payload.get("run_history") or []),
+            "run_history": list(history),
         }
         self._store.save(job)
         return job
