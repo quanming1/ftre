@@ -11,9 +11,9 @@
 |---|---|
 | 阶段 | F5 |
 | 名称 | Schedule Owner 收敛与调度生命周期治理 |
-| 状态 | 草稿 |
+| 状态 | approved |
 | 创建日期 | 2026-08-21 |
-| 定稿日期 | — |
+| 定稿日期 | 2026-08-21 |
 | 验收日期 | — |
 | 关联文档 | `docs/TODO.yaml` 阶段 F5；`AGENTS.md`；F4 PRD 与执行报告；`docs/PROCESS.md` |
 
@@ -192,3 +192,4 @@ class CronScheduler:
 | 日期 | 变更内容 | 理由 |
 |---|---|---|
 | 2026-08-21 | 初始草案：将 Schedule 的 Store、Scheduler、Channel、Tool 和 Plugin 生命周期收敛到 Feature | F4 后发现 Schedule 仍存在跨层实现和空转发壳 |
+| 2026-08-21 | 评审定稿：冻结 FR1-FR12、AC1-AC10、目标文件树与 Plugin 生命周期顺序；本阶段只处理 Schedule Owner，不扩大到其他 Service | 明确 F5 开工边界，允许按六步流程进入开发 |
