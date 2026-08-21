@@ -290,10 +290,10 @@ stages:
         tasks:
           - id: F3.1
             title: Hook/Event 契约迁移
-            status: todo
+            status: done
           - id: F3.2
             title: Builtin Plugin 测试与实现迁移
-            status: todo
+            status: in_progress
           - id: F3.3
             title: Aggregate API 路由清理
             status: todo

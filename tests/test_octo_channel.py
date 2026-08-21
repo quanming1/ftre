@@ -449,7 +449,8 @@ class TestOctoChannelPlugin:
     @pytest.mark.asyncio
     async def test_hook_injects_octo_hint_into_system_message(self):
         """BEFORE_AGENT_RUN hook 应在 system 消息中注入 Octo 提示"""
-        from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext, EventHub
+        from cordis import Context as EventHub
+        from ftre.services.agent.runtime.hooks import AgentRunContext, BEFORE_AGENT_RUN
 
         hooks = EventHub()
         from _plugin import OctoChannelPlugin
@@ -477,7 +478,8 @@ class TestOctoChannelPlugin:
     @pytest.mark.asyncio
     async def test_hook_inserts_system_message_when_none_exists(self):
         """如果没有 system 消息，应插入一条新的"""
-        from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext, EventHub
+        from cordis import Context as EventHub
+        from ftre.services.agent.runtime.hooks import AgentRunContext, BEFORE_AGENT_RUN
 
         hooks = EventHub()
         from _plugin import OctoChannelPlugin
@@ -503,7 +505,8 @@ class TestOctoChannelPlugin:
     @pytest.mark.asyncio
     async def test_hook_skips_non_octo_channels(self):
         """非 octo channel 的消息不应注入提示"""
-        from ftre.plugin import BEFORE_AGENT_RUN, AgentRunContext, EventHub
+        from cordis import Context as EventHub
+        from ftre.services.agent.runtime.hooks import AgentRunContext, BEFORE_AGENT_RUN
 
         hooks = EventHub()
         from _plugin import OctoChannelPlugin
