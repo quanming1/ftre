@@ -105,7 +105,7 @@ def _persist_attachments(attachments: list | None) -> None:
     if not attachments:
         return
 
-    from ftre.utils.image_store import save_image
+    from ftre.services.attachment.store import save_image
 
     for att in attachments:
         if not isinstance(att, dict):

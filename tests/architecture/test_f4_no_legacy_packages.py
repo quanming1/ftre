@@ -29,6 +29,10 @@ def test_root_owners_are_removed_after_migration() -> None:
     assert not (SOURCE / "ftre" / "config.py").exists()
     assert not (SOURCE / "ftre" / "trace_store.py").exists()
     assert not tuple(_python_files(SOURCE / "ftre" / "mcp"))
+    assert not tuple(_python_files(SOURCE / "ftre" / "gateway"))
+    assert not tuple(_python_files(SOURCE / "ftre" / "utils"))
+    assert (SOURCE / "ftre" / "app" / "gateway" / "process.py").is_file()
+    assert (SOURCE / "ftre" / "services" / "attachment" / "store.py").is_file()
 
 
 def test_new_layers_do_not_import_retired_data_plane_namespaces() -> None:

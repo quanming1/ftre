@@ -10,7 +10,7 @@ from pathlib import Path
 from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
-from ftre.utils.image_store import save_image
+from ftre.services.attachment.store import save_image
 
 from ._io import file_meta_header, read_text
 from ._truncate import truncate_output

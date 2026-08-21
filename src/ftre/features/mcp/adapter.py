@@ -27,7 +27,7 @@ from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Tool, ToolParameter
 from mcp import Tool as McpToolDef
 
-from ftre.utils.image_store import save_image
+from ftre.services.attachment.store import save_image
 
 from .connection import McpManager
 

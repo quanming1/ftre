@@ -14,7 +14,7 @@ from typing import ClassVar
 
 import typer
 
-from ftre.gateway.runtime import GatewayRuntime
+from ftre.app.gateway.process import GatewayRuntime
 from ftre.services.config.loader import load_gateway_address
 
 

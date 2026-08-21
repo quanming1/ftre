@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from ftre.gateway.runtime import GatewayRuntime
+from ftre.app.gateway.process import GatewayRuntime
 
 
 def _make_runtime(tmp_path: Path) -> GatewayRuntime:
@@ -85,7 +85,7 @@ def test_start_success(tmp_path: Path):
     fake_process.pid = 4242
 
     with (
-        patch("ftre.gateway.runtime.subprocess.Popen", return_value=fake_process),
+        patch("ftre.app.gateway.process.subprocess.Popen", return_value=fake_process),
         patch.object(runtime, "_is_pid_running", return_value=True),
     ):
         ok, msg, status = runtime.start(port=8000, host="0.0.0.0")
@@ -112,7 +112,7 @@ def test_start_exits_during_startup(tmp_path: Path):
     fake_process.pid = 9999
 
     with (
-        patch("ftre.gateway.runtime.subprocess.Popen", return_value=fake_process),
+        patch("ftre.app.gateway.process.subprocess.Popen", return_value=fake_process),
         patch.object(runtime, "_is_pid_running", return_value=False),
     ):
         ok, msg, status = runtime.start(port=8000)
@@ -182,7 +182,7 @@ def test_restart_success(tmp_path: Path):
     fake_process.pid = 9999
 
     with (
-        patch("ftre.gateway.runtime.subprocess.Popen", return_value=fake_process),
+        patch("ftre.app.gateway.process.subprocess.Popen", return_value=fake_process),
         patch.object(runtime, "_is_pid_running", return_value=True),
         patch.object(runtime, "_terminate", return_value=True),
     ):
@@ -204,7 +204,7 @@ def test_restart_with_new_port(tmp_path: Path):
     fake_process.pid = 8888
 
     with (
-        patch("ftre.gateway.runtime.subprocess.Popen", return_value=fake_process),
+        patch("ftre.app.gateway.process.subprocess.Popen", return_value=fake_process),
         patch.object(runtime, "_is_pid_running", return_value=True),
         patch.object(runtime, "_terminate", return_value=True),
     ):
