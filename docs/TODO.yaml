@@ -302,3 +302,47 @@ stages:
           - id: F3.5
             title: 全量验收与执行报告
             status: done
+
+      - id: F4
+        title: 架构债务清理与单一 Owner 收敛
+        status: todo
+        date: 2026-08-21
+        prd: docs/prd/PRD-F4-architecture-debt-cleanup.md
+        prd_status: 草稿
+        modules:
+          - src/ftre/agent/
+          - src/ftre/session/
+          - src/ftre/bus/
+          - src/ftre/channel/
+          - src/ftre/command/
+          - src/ftre/tools/
+          - src/ftre/config.py
+          - src/ftre/trace_store.py
+          - src/ftre/mcp/
+          - src/ftre/services/http/
+          - src/ftre/features/
+          - src/ftre/gateway/
+          - src/ftre/utils/image_store.py
+        acceptance: 删除迁移兼容壳与重复 Owner；Config、Trace、MCP、Attachment、Gateway Process 归位；生产/测试只使用新路径；全量质量与 Gateway 回归通过
+        tasks:
+          - id: F4.1
+            title: 债务基线与架构门禁
+            status: todo
+          - id: F4.2
+            title: Agent 与数据面旧壳删除
+            status: todo
+          - id: F4.3
+            title: Config 与 Trace Owner 收敛
+            status: todo
+          - id: F4.4
+            title: MCP Feature Owner 收敛
+            status: todo
+          - id: F4.5
+            title: HTTP、Feature 空壳与兼容 API 清理
+            status: todo
+          - id: F4.6
+            title: Gateway Process 与 Attachment 基础设施归位
+            status: todo
+          - id: F4.7
+            title: 全量验收与执行报告
+            status: todo
