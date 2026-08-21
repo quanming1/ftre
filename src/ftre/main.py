@@ -33,14 +33,8 @@ class ColorFormatter(logging.Formatter):
         "CRITICAL": "\033[95m",
     }
     NAMESPACE_COLORS: ClassVar[dict[str, str]] = {
-        "ftre.agent": "\033[95m",
-        "ftre.bus": "\033[36m",
-        "ftre.channel": "\033[96m",
-        "ftre.command": "\033[35m",
-        "ftre.config": "\033[92m",
-        "ftre.mcp": "\033[38;5;208m",
-        "ftre.session": "\033[38;5;45m",
-        "ftre.tools": "\033[38;5;214m",
+        "ftre.services": "\033[38;5;214m",
+        "ftre.features": "\033[38;5;208m",
         "ftre_agent_core": "\033[38;5;75m",
         "__main__": "\033[38;5;203m",
     }

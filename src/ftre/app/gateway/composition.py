@@ -60,7 +60,7 @@ class Composition:
         if http is None:
             return
         http.register_health()
-        http.register_compat_path("WS", "/", "websocket-channel")
+        http.register_websocket_path("/", "websocket-channel")
         config = self.context.get("config", strict=False)
         if config is not None:
             from ftre.services.config.router import build_router

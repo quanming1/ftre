@@ -61,25 +61,10 @@ class HttpService:
 
         return self.register_route("GET", "/api/health", health, owner)
 
-    def register_compat_snapshot(self, router: APIRouter, owner: str = "legacy-api", prefix: str = "/api") -> None:
-        """Record a legacy surface without mounting it into the new FastAPI app.
-
-        The WebSocket Host still mounts the legacy router during migration; the
-        snapshot lets startup diagnostics compare the complete path baseline
-        without creating duplicate handlers in the new Host.
-        """
-        existing = {(item.method, item.path) for item in self._routes}
-        for route in router.routes:
-            for method in sorted(route.methods or {"GET"}):
-                key = (method, f"{prefix}{route.path}")
-                if key in existing:
-                    continue
-                self._routes.append(RouteContribution(method=method, path=key[1], owner=owner, kind="compat"))
-                existing.add(key)
-
-    def register_compat_path(self, method: str, path: str, owner: str) -> None:
-        if not any(item.method == method.upper() and item.path == path for item in self._routes):
-            self._routes.append(RouteContribution(method=method.upper(), path=path, owner=owner, kind="compat"))
+    def register_websocket_path(self, path: str, owner: str) -> None:
+        """Register the WebSocket protocol path as a first-class Host surface."""
+        if not any(item.method == "WS" and item.path == path for item in self._routes):
+            self._routes.append(RouteContribution(method="WS", path=path, owner=owner, kind="websocket"))
 
     def register_route(self, method: str, path: str, handler: Callable[..., Any], owner: str, kind: str = "exact") -> Callable[[], bool]:
         """Register one exact handler while rejecting owner conflicts."""
