@@ -238,3 +238,34 @@ stages:
           - id: F1.6
             title: 全量验收、回归、提交与执行报告
             status: done
+
+      - id: F2
+        title: 核心数据面 Service 化迁移
+        status: in_progress
+        date: 2026-08-21
+        prd: docs/prd/PRD-F2-data-plane-migration.md
+        prd_status: approved
+        modules:
+          - src/ftre/services/session/
+          - src/ftre/services/agent/runtime/
+          - src/ftre/services/messaging/
+          - src/ftre/services/command/
+          - src/ftre/services/tools/
+          - src/ftre/app/gateway/
+        acceptance: 旧数据面按切片迁入新 Service Owner；旧路径只保留单向兼容导出；Session/Agent/Bus/Channel/HTTP 生产引用逐步清零；全量测试、lint 和 Gateway 回归通过
+        tasks:
+          - id: F2.1
+            title: Session 与 Workspace 真实实现迁移
+            status: todo
+          - id: F2.2
+            title: Agent Runtime 真实实现迁移
+            status: todo
+          - id: F2.3
+            title: MessageBus、Channel、Command、Tool Provider 迁移
+            status: todo
+          - id: F2.4
+            title: HTTP/WS legacy 入口移除
+            status: todo
+          - id: F2.5
+            title: 旧目录清理与全量验收
+            status: todo
