@@ -2,6 +2,8 @@
 
 ## [未发布]
 
+## [0.2.5] - 2026-08-22
+
 ### Gateway CORS 修复
 
 - 默认允许 `localhost`/`127.0.0.1` 的桌面开发端口跨域访问 Gateway API；自定义 CORS origins 仍按精确值匹配。
@@ -20,7 +22,7 @@
 - CommandRuntime 收敛为 `CommandContext + CommandResult(success/error)`，记录配对的
   `command/run` 与 `command/done` 生命周期事件。
 - 普通 Command 在 SessionLane 内直接执行，不再进入 Mailbox/TurnExecutor；`/compact`、
-  `/compress-fast`、`/fork` 改用 CompactionPort/SessionService，`/allow`、`/deny` 复用
+  `/compress-fast`、`/fork` 改用 CompactionService/SessionService，`/allow`、`/deny` 复用
   既有确认事件恢复 Agent。
 - 删除 TurnExecutor 的 Command 状态机、混合结果类型、完整 AgentLoop 闭包和重复命令适配器。
 
@@ -82,7 +84,7 @@
 ### F6.9 Command 解耦与旧 Hook 删除
 
 - CommandService 在 Bus 接入边界完成解析；普通命令由 SessionLane 串行执行，命令文本不进入 Inbox 或模型上下文。
-- `/compact` 与 `/compress-fast` 只通过公开 CompactionPort；TurnExecutor 不再匹配或派发 Command。
+- `/compact` 与 `/compress-fast` 只通过公开 CompactionService；TurnExecutor 不再匹配或派发 Command。
 - 删除 `before_run`、`before_messages_build`、可变 Filter 兼容路径和 `runtime/hooks.py`，统一使用结构化 Prompt Hook。
 - 新增 Command ingress 契约与架构门禁；全量 375 项测试、Hook/契约/架构/生命周期专项通过。
 
