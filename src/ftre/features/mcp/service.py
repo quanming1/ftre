@@ -18,9 +18,25 @@ class McpService:
     """Track global/private MCP servers without coupling to a transport adapter."""
     key = "mcp"
 
-    def __init__(self) -> None:
+    def __init__(self, connection_manager=None) -> None:
         self._servers: dict[tuple[str, str], McpServerState] = {}
         self._connections: dict[tuple[str, str], Any] = {}
+        self.connection_manager = connection_manager
+
+    async def start_and_register(self, raw_config: dict[str, Any]) -> None:
+        """Start the Feature-owned MCP connection pool for the raw config."""
+        if self.connection_manager is not None:
+            await self.connection_manager.start_and_register(raw_config)
+
+    async def reload_and_register(self, raw_config: dict[str, Any], source: str = "feature") -> None:
+        """Reload the Feature-owned connection pool under its own lock."""
+        if self.connection_manager is not None:
+            await self.connection_manager.reload_and_register(raw_config, source=source)
+
+    async def stop(self) -> None:
+        """Stop connections and watchers before the Feature Fiber is disposed."""
+        if self.connection_manager is not None:
+            await self.connection_manager.stop()
 
     def register_server(self, name: str, config: dict[str, Any], scope: str = "global", owner: str = "mcp"):
         """Reserve a scoped server name and return a disposer for Plugin unload."""

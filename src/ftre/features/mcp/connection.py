@@ -195,6 +195,10 @@ class McpManager:
             return_exceptions=True,
         )
         self._connections.clear()
+        if self._tool_registry is not None:
+            for name in list(self._tool_registry.names):
+                if name.startswith("mcp__"):
+                    self._tool_registry.unregister(name)
         logger.info("[mcp] 所有连接已断开")
 
     async def reload_and_register(self, raw_mcp: dict, source: str = "unknown") -> None:
