@@ -51,7 +51,6 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     from ftre.services.command import CommandManager, CommandService
     from ftre.services.command.builtin import register_builtin_commands
     from ftre.services.config import ConfigService
-    from ftre.services.http.legacy import bind_legacy_api
     from ftre.services.messaging.bus import EventBus, MessageBusService
     from ftre.services.messaging.channel import ChannelService
     from ftre.services.messaging.channel.manager import ChannelManager
@@ -62,7 +61,7 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         WebSocketChannel,
     )
     from ftre.services.tools import ToolService
-    from ftre.tools.cron import CronScheduler
+    from ftre.services.tools.builtin.cron import CronScheduler
 
     config_data = config if config is not None else load_config_file()
     session_manager = None
@@ -121,15 +120,13 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         )
         agent_loop = runtime_provider.build_loop()
         agent_service.bind(agent_loop, profile_service)
-        bind_legacy_api(
-            sessions=session_manager,
-            agents=agent_service,
-            agent_profiles=profile_service,
-            commands=command_service,
-            agent_loop=agent_loop,
-        )
         register_builtin_commands(command_manager, agent_loop)
-        ws_channel = WebSocketChannel(bus, host=gateway_host, port=gateway_port, plugin_manager=composition.plugins)
+        ws_channel = WebSocketChannel(
+            bus,
+            host=gateway_host,
+            port=gateway_port,
+            app=composition.http_app,
+        )
         channel_manager.register(ws_channel)
         channel_manager.register(SubagentChannel(bus))
         agent_loop.start()

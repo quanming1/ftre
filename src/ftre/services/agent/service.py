@@ -48,6 +48,26 @@ class AgentService:
     def is_busy(self, session_id: str) -> bool:
         return self.status(session_id) in {"running", "processing", "compacting"}
 
+    def get_session_status(self, session_id: str) -> Any:
+        """Return the runtime status needed by Session HTTP projections."""
+        return self.status(session_id)
+
+    def is_session_busy(self, session_id: str) -> bool:
+        """Return whether the data plane currently owns work for a Session."""
+        return self.is_busy(session_id)
+
+    async def delete_session(self, session_id: str) -> Any:
+        """Delete one Session through the runtime's coordinated path."""
+        return await self._call("delete_session", session_id)
+
+    async def cancel_queued_message(self, session_id: str, request_id: str) -> Any:
+        """Cancel pending work without reaching into SessionLane internals."""
+        return await self._call("cancel_queued_message", session_id, request_id)
+
+    async def get_mailbox_snapshot(self, session_id: str) -> Any:
+        """Read the public attach snapshot for one Session."""
+        return await self._call("get_mailbox_snapshot", session_id)
+
     def list(self) -> list[dict[str, Any]]:
         return [{"id": "default", "state": "ready"}] if self._loop is not None else []
 

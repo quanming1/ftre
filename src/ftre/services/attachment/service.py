@@ -32,3 +32,13 @@ class AttachmentService:
 
     def read(self, filename: str, limit: int = 10_000_000) -> bytes:
         return self.resolve(filename).read_bytes()[:limit]
+
+    def resolve_local_image(self, path: str) -> tuple[Path, str]:
+        """Resolve a renderer preview path while preserving the old image contract."""
+        candidate = Path(os.path.abspath(os.path.expanduser(path)))
+        if not candidate.is_file():
+            raise FileNotFoundError(path)
+        mime = mimetypes.guess_type(candidate.name)[0]
+        if not mime or not mime.startswith("image/"):
+            raise ValueError("not an image file")
+        return candidate, mime

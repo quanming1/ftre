@@ -61,18 +61,37 @@ class Composition:
             return
         http.register_health()
         http.register_compat_path("WS", "/", "websocket-channel")
-        try:
-            from ftre.api.routes import router as legacy_router
-
-            http.register_compat_snapshot(legacy_router)
-        except ImportError:
-            # The compatibility aggregate is optional for embedded consumers.
-            pass
         config = self.context.get("config", strict=False)
         if config is not None:
             from ftre.services.config.router import build_router
 
             http.register_router(build_router(config), owner="config")
+        sessions = self.context.get("sessions", strict=False)
+        agents = self.context.get("agents", strict=False)
+        if sessions is not None and agents is not None:
+            from ftre.services.session.router import build_router
+
+            http.register_router(build_router(sessions, agents), owner="sessions")
+        profiles = self.context.get("agent_profiles", strict=False)
+        if profiles is not None:
+            from ftre.services.agent.router import build_router
+
+            http.register_router(build_router(profiles), owner="agent-profiles")
+        commands = self.context.get("commands", strict=False)
+        if commands is not None:
+            from ftre.services.command.router import build_router
+
+            http.register_router(build_router(commands), owner="commands")
+        traces = self.context.get("traces", strict=False)
+        if traces is not None:
+            from ftre.services.observability.trace.router import build_router
+
+            http.register_router(build_router(traces), owner="traces")
+        attachments = self.context.get("attachments", strict=False)
+        if attachments is not None:
+            from ftre.services.attachment.router import build_router
+
+            http.register_router(build_router(attachments), owner="attachments")
         skills = self.context.get("skills", strict=False)
         if skills is not None:
             from ftre.features.skill.router import build_router

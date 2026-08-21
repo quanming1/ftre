@@ -130,18 +130,26 @@ def _persist_attachments(attachments: list | None) -> None:
 
 class WebSocketChannel(Channel):
 
-    def __init__(self, bus: EventBus, host: str = "0.0.0.0", port: int = 48650, plugin_manager=None):
+    def __init__(
+        self,
+        bus: EventBus,
+        host: str = "0.0.0.0",
+        port: int = 48650,
+        plugin_manager=None,
+        app: FastAPI | None = None,
+    ):
         super().__init__(channel_id="ws", name="WebSocket Channel", bus=bus)
         self.host = host
         self.port = port
-        self.app = FastAPI(title="ftre-gateway")
-        self.app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+        self.app = app or FastAPI(title="ftre-gateway")
+        if app is None:
+            self.app.add_middleware(
+                CORSMiddleware,
+                allow_origins=["*"],
+                allow_credentials=True,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
         # session_id → 关注该 session 的 ws 连接集合
         self._connections: dict[str, set[WebSocket]] = {}
         # 反向索引：ws → 它 attach 过的所有 session_id（断开时清理用）
@@ -159,14 +167,8 @@ class WebSocketChannel(Channel):
         # 注册路由
         self.app.websocket("/")(self._ws_endpoint)
 
-        # 挂载 HTTP API 路由
-        from ftre.api.routes import router as api_router
-        self.app.include_router(api_router, prefix="/api")
-
-        # 挂载插件注册的路由
-        if plugin_manager:
-            for router in plugin_manager.routers:
-                self.app.include_router(router, prefix="/api")
+        # HTTP routes are materialized by HttpService before this Channel is
+        # created.  The Channel contributes only the WebSocket protocol path.
 
     def set_session_projection(self, projection) -> None:
         """注入 SessionProjection（由 main.py 在 AgentLoop 创建后调用）。"""

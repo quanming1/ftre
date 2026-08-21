@@ -32,3 +32,11 @@ class AgentProfileService:
 
     def resolve(self, agent_id: str, session_id: str | None = None) -> EffectiveProfile:
         return EffectiveProfile(agent_id, self.manager.load(agent_id))
+
+    def list_prompts(self, agent_id: str) -> dict[str, str]:
+        """Read prompt files through the profile owner."""
+        return self.manager.read_prompts(agent_id)
+
+    def update_prompt(self, agent_id: str, filename: str, content: str) -> None:
+        """Write one allow-listed prompt file through the profile owner."""
+        self.manager.write_prompt(agent_id, filename, content)
