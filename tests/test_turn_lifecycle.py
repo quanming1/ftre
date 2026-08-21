@@ -15,6 +15,7 @@ from ftre_agent_core.event import (
 from ftre_agent_core.message import Msg
 
 from ftre.services.agent.config import AgentConfig, ContextConfig, LLMConfig
+from ftre.services.agent.registry import AgentRegistry
 from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
 from ftre.services.agent_loop.runtime.loop.turn_executor import TurnExecutor
 from ftre.services.messaging.bus import BusMessage, InboundMetadata
@@ -75,12 +76,16 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     config.context = ContextConfig()
     loop._injected_config = config
     loop._event_loop = asyncio.get_running_loop()
+    loop.hooks = None
+    loop.agent_registry = AgentRegistry()
     loop.session_manager = AsyncMock()
     loop.session_manager.get_session = AsyncMock(
         return_value={"channel_id": "ws", "workspace": "/tmp"}
     )
     loop.bus = AsyncMock()
     loop.agent_manager = Mock()
+    loop.agent_service = None
+    loop._agent_created_emitted = set()
     loop.agent_manager.load = Mock(return_value=None)
     loop.agent_manager.create_agent = Mock(return_value=agent)
     loop.channel_manager = None
@@ -97,7 +102,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
 
     loop.session_projection = SessionProjection(loop.session_manager)
 
-    executor = TurnExecutor(loop)
+    executor = TurnExecutor(loop, sessions=loop.session_manager)
     executor._build_messages = AsyncMock(
         return_value=([{"role": "user", "content": "hi"}], config)
     )

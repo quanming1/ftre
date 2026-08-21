@@ -42,6 +42,7 @@ def apply(ctx: Context, config=None):
         lambda: receipt.dispose,
         label="hook:system-prompt:session-title",
     )
+    ctx.effect(generator.close, label="session-title:close")
     disposer = ctx.system_prompt.register_section(
         PromptSection(
             name="title-generation",

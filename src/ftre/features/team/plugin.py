@@ -6,7 +6,7 @@ from cordis import Context
 
 from .service import TeamService
 
-inject = ("sessions",)
+inject = ()
 provide = ("teams",)
 
 

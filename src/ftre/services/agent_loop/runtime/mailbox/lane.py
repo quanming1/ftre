@@ -12,7 +12,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from ftre.platform.hooks import HookRuntime, HookSpec
 from ftre.services.agent.hooks import (
@@ -32,6 +32,8 @@ from ftre.services.agent.hooks import (
     RejectStep,
 )
 from ftre.services.agent.registry import AgentRegistry
+from ftre.services.command import CommandService
+from ftre.services.command.types import CommandResult
 from ftre.services.messaging.bus import BusMessage, InboundMetadata
 from ftre.services.session.entity.state import MailboxState, QueueItem
 from ftre.services.session.service import RequestAdmission
@@ -44,6 +46,8 @@ from .store import MailboxStore
 logger = logging.getLogger(__name__)
 
 SnapshotPublisher = Callable[[str], Awaitable[None]]
+CommandResultPublisher = Callable[[BusMessage, CommandResult], Awaitable[None]]
+SessionEventEmitter = Callable[..., Awaitable[Any]]
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,8 @@ class SessionLane:
         executor: TurnExecutor,
         completion: CompletionRegistry,
         publish_snapshot: SnapshotPublisher,
+        publish_command_result: CommandResultPublisher | None = None,
+        emit_session_event: SessionEventEmitter | None = None,
         hooks: HookRuntime | None = None,
         agent_registry: AgentRegistry | None = None,
     ) -> None:
@@ -105,6 +111,8 @@ class SessionLane:
         self._executor = executor
         self._completion = completion
         self._publish_snapshot = publish_snapshot
+        self._publish_command_result = publish_command_result
+        self._emit_session_event = emit_session_event
         self._hooks = hooks
         self._agent_registry = agent_registry or AgentRegistry()
         self._worker: asyncio.Task | None = None
@@ -179,14 +187,14 @@ class SessionLane:
         self,
         inbound: BusMessage,
         command,
-        command_service,
+        command_service: CommandService,
     ) -> AdmissionResult:
         """Run an already parsed ordinary command at the session ingress boundary.
 
         The admission lock makes a command observe all previously admitted pending
         requests before it runs and prevents newer requests from overtaking it.
-        Commands never enter ``MailboxStore``; only their explicitly persisted user
-        input (for example ``/compact``) is projected by ``TurnExecutor``.
+        Commands never enter ``MailboxStore`` or ``TurnExecutor``. Their direct result
+        is published by the injected Command response sink.
         """
         async with self._admission_lock:
             if self._closed:
@@ -213,8 +221,28 @@ class SessionLane:
                         "retryable": False,
                     },
                 )
-            result = await command_service.dispatch_inbound(inbound)
-            outcome = await self._executor.execute_command(inbound, command, result)
+            try:
+                result = await command_service.dispatch_inbound(
+                    inbound,
+                    definition=command,
+                )
+            except Exception as exc:
+                logger.exception("[session-lane] command failed session=%s", self.session_id)
+                result = CommandResult.error(str(exc) or "Command 执行失败")
+            if result is None:
+                result = CommandResult.error("命令未执行")
+            if self._publish_command_result is not None:
+                await self._publish_command_result(inbound, result)
+            outcome = TurnOutcome(
+                turn_id="",
+                status="command",
+                final_content=result.text,
+                error=(
+                    {"code": "command_error", "message": result.text, "retryable": False}
+                    if result.kind == "error"
+                    else None
+                ),
+            )
             request_id = inbound.metadata.request_id or ""
             if request_id:
                 await self._completion.complete(
@@ -228,6 +256,92 @@ class SessionLane:
                 request_id=request_id,
                 created=True,
             )
+
+    async def resume_confirmation(
+        self,
+        inbound: BusMessage,
+        events: list[Any],
+    ) -> TurnOutcome:
+        """Apply existing confirmation events and resume one Agent turn.
+
+        This is a Session Event path, not a CommandResult variant. The command
+        caller owns only validation; the Lane owns event projection and the
+        resumed Agent execution so the same-session lock remains authoritative.
+        """
+        async with self._admission_lock:
+            if self._closed:
+                return TurnOutcome(turn_id="", status="error", error={
+                    "code": "session_closing",
+                    "message": "会话正在关闭",
+                    "retryable": False,
+                })
+            self._ensure_worker()
+            worker = self._worker
+            if worker is not None and worker is not asyncio.current_task():
+                await asyncio.gather(worker, return_exceptions=True)
+            if self._operation is not None:
+                return TurnOutcome(turn_id="", status="error", error={
+                    "code": "session_busy",
+                    "message": "会话当前仍在执行",
+                    "retryable": True,
+                })
+            if not events or self._emit_session_event is None:
+                return TurnOutcome(turn_id="", status="error", error={
+                    "code": "confirmation_events_required",
+                    "message": "缺少确认事件",
+                    "retryable": False,
+                })
+            for event in events:
+                await self._emit_session_event(
+                    self.session_id,
+                    inbound.from_channel,
+                    event,
+                    metadata=inbound.metadata,
+                )
+            config, profile = await self._executor.resolve_inbound_config(
+                inbound,
+                turn_id=f"confirm_config_{inbound.metadata.request_id or uuid.uuid4().hex[:8]}",
+            )
+            turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+            request_id = inbound.metadata.request_id or f"confirm_{uuid.uuid4().hex}"
+            item = QueueItem(
+                request_id=request_id,
+                sequence=0,
+                content="",
+                attachments=[],
+                agent_id=inbound.metadata.agent_id or "default",
+            )
+            cancellation = asyncio.Event()
+            operation = TurnOperation(
+                item=item,
+                turn_id=turn_id,
+                task=None,
+                cancellation=cancellation,
+            )
+            self._operation = operation
+            execute_kwargs = {
+                "turn_id": turn_id,
+                "config": config,
+                "agent_profile": profile,
+                "cancellation": cancellation,
+                "confirm_event": events[-1],
+                "persist_input": False,
+            }
+            task = asyncio.create_task(
+                self._executor.execute(inbound, **execute_kwargs),
+                name=f"confirmation:{self.session_id}:{turn_id}",
+            )
+            operation.task = task
+            try:
+                outcome = await task
+            except asyncio.CancelledError:
+                outcome = TurnOutcome(turn_id=turn_id, status="cancelled")
+            finally:
+                if self._operation is operation:
+                    self._operation = None
+            await self._mailbox.advance_revision(self.session_id)
+            await self._publish_snapshot(self.session_id)
+            return outcome
 
     @staticmethod
     def _admission_result(admission: RequestAdmission) -> AdmissionResult:
@@ -645,6 +759,8 @@ class SessionLaneRegistry:
         executor: TurnExecutor,
         completion: CompletionRegistry,
         publish_snapshot: SnapshotPublisher,
+        publish_command_result: CommandResultPublisher | None = None,
+        emit_session_event: SessionEventEmitter | None = None,
         hooks: HookRuntime | None = None,
         agent_registry: AgentRegistry | None = None,
     ) -> None:
@@ -653,6 +769,8 @@ class SessionLaneRegistry:
         self._executor = executor
         self._completion = completion
         self._publish_snapshot = publish_snapshot
+        self._publish_command_result = publish_command_result
+        self._emit_session_event = emit_session_event
         self._hooks = hooks
         self._agent_registry = agent_registry or AgentRegistry()
         self._lanes: dict[str, SessionLane] = {}
@@ -681,7 +799,12 @@ class SessionLaneRegistry:
         result = await lane.submit(inbound)
         return result if result.session_id else AdmissionResult(**{**result.__dict__, "session_id": session_id})
 
-    async def dispatch_command(self, inbound: BusMessage, command, command_service) -> AdmissionResult:
+    async def dispatch_command(
+        self,
+        inbound: BusMessage,
+        command,
+        command_service: CommandService,
+    ) -> AdmissionResult:
         """Dispatch a parsed ordinary command through its session Lane."""
         session_id = str(inbound.data.get("session_id") or inbound.from_session or "")
         if not session_id:
@@ -699,6 +822,27 @@ class SessionLaneRegistry:
             )
         return await lane.dispatch_command(inbound, command, command_service)
 
+    async def resume_confirmation(
+        self,
+        inbound: BusMessage,
+        events: list[Any],
+    ) -> TurnOutcome:
+        session_id = str(inbound.data.get("session_id") or inbound.from_session or "")
+        if not session_id:
+            return TurnOutcome(
+                turn_id="",
+                status="error",
+                error={"code": "session_required", "message": "缺少 session_id", "retryable": False},
+            )
+        lane = await self.lane_for(session_id)
+        if lane is None:
+            return TurnOutcome(
+                turn_id="",
+                status="error",
+                error={"code": "gateway_stopping", "message": "Gateway 正在停止", "retryable": True},
+            )
+        return await lane.resume_confirmation(inbound, events)
+
     def _new_lane(self, session_id: str) -> SessionLane:
         return SessionLane(
             session_id,
@@ -707,6 +851,8 @@ class SessionLaneRegistry:
             executor=self._executor,
             completion=self._completion,
             publish_snapshot=self._publish_snapshot,
+            publish_command_result=self._publish_command_result,
+            emit_session_event=self._emit_session_event,
             hooks=self._hooks,
             agent_registry=self._agent_registry,
         )

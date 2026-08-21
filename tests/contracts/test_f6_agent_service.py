@@ -38,6 +38,13 @@ class FakeDriver:
         self.calls.append(("get_mailbox_snapshot", (session_id,), {}))
         return {"session_id": session_id}
 
+    async def resume_confirmation(self, session_id, channel_id, events, metadata):
+        self.calls.append(("resume_confirmation", (session_id, channel_id, events, metadata), {}))
+        return "resumed"
+
+    async def wait_session_quiescent(self, session_id):
+        self.calls.append(("wait_session_quiescent", (session_id,), {}))
+
 
 @pytest.mark.asyncio
 async def test_agent_service_uses_explicit_driver_port_and_detaches_cleanly():

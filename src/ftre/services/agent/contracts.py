@@ -33,6 +33,16 @@ class AgentDriver(Protocol):
 
     def get_mailbox_snapshot(self, session_id: str) -> Awaitable[Any]: ...
 
+    def resume_confirmation(
+        self,
+        session_id: str,
+        channel_id: str,
+        events: list[Any],
+        metadata: Any,
+    ) -> Awaitable[Any]: ...
+
+    def wait_session_quiescent(self, session_id: str) -> Awaitable[Any]: ...
+
 
 @runtime_checkable
 class AgentRegistryProtocol(Protocol):

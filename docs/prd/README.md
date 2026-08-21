@@ -174,3 +174,63 @@ flowchart LR
 - 同阶段范围内的职责澄清、字段修正、验收细化：修改原 PRD 正文，并在末尾追加日期、内容、理由和受影响 AC 复核结果。
 - 新增跨阶段协议或改变持久化语义：先修改本文，再同步 A4/B1/A2 等事实源；如果超出现有阶段范围，新增 TODO 阶段 PRD。
 - 不把临时兼容字段写成长期契约；协议字段必须说明生产方、消费方、持久化与生命周期。
+
+## 11. Command Plane 与 Agent Plane 边界（F8）
+
+F8 将 Command 与 Agent 明确分成两条执行平面。此处是跨阶段架构契约，
+具体迁移任务和验收条目见 [PRD-F8](./PRD-F8-command-plane-agent-plane.md)。
+
+```text
+Channel / EventBus
+        │
+        ▼
+CommandIngress → CommandRuntime → Domain Service
+        │                  │
+        │                  ├─ command/run + command/done
+        │                  ├─ CommandResult → 客户端
+        │                  └─ Domain Event
+        │
+        └─ 已有 Session Event → 现有 Agent/Session 恢复流程
+```
+
+不可违反的规则：
+
+- `CommandResult` 只表示 Command 成功或失败，不是 Agent 输入；
+- 纯 Command 不创建 Turn、不进入 Mailbox、不产生 LLM request；
+- `/allow`、`/deny` 等需要恢复 Agent 的命令复用已有 Session Event，不新增
+  `AgentEffect`、`AgentControlPort` 或 `AgentResumeRequest`；
+- Agent 原始输入必须经过 Mailbox 的 `peek → policy → claim`，再进入 Agent Hook 和
+  `TurnExecutor`；
+- `TurnExecutor` 不依赖 Command 类型，也不负责解析或解释 Command；
+- `persist_input` 只描述命令审计/历史策略，不能作为创建 Agent Turn 的隐式开关；
+- Command Handler 直接依赖公开 `CompactionPort`、`SessionService` 等真实 Service Owner，
+  不得通过 `AgentLoop.compaction` 或 `AgentLoop.session_manager` 间接取 Service；
+- `command_id`、`request_id`、`turn_id` 各自独立，不能相互替代。
+
+## 12. Service 依赖注入与架构债务边界（F9）
+
+F9 负责清理 Service 之间通过 Loop 字段、手工构造、动态查找和具体实现 import
+形成的隐藏耦合。详细任务和验收见 [PRD-F9](./PRD-F9-service-injection-and-debt-cleanup.md)。
+
+```text
+Plugin
+  → inject 公开 Service key
+  → ctx.<service_key>
+  → 创建自己的实现
+  → provide 自己的 Service key
+
+Service
+  → 只持有由 Plugin/Provider 注入的公开依赖
+  → 不从 AgentLoop、全局单例或 Context 深处反查 Service
+```
+
+不可违反的规则：
+
+- `AgentLoop` 是数据面运行时，不是 Service Locator；禁止通过
+  `loop.session_manager`、`loop.compaction` 等字段获取公共 Service；
+- Service 的唯一实现由自己的 Plugin、Composition Root 或明确 Provider 创建；
+- 必选依赖必须在 `inject` 或类型化 Provider 参数中声明，不能用宽松 `ctx.get` 静默替代；
+- Feature/Service 跨能力协作使用 Service key、公开 Contract 或 Hook/Event，不 import
+  其他 Feature 私有实现；
+- `AgentLoopProvider` 可以装配内部 runtime，但业务 Handler 不得反向依赖 Loop；
+- unload/restart 后注入的 Listener、Task、Router、闭包和旧 Service 实例必须全部可逆清理。

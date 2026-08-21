@@ -7,7 +7,9 @@ from ftre_agent_core.tool import ToolRegistry
 from ftre.app.gateway.composition import build_composition
 from ftre.services.command import CommandService
 from ftre.services.config import ConfigService
-from ftre.services.messaging.bus import MessageBusService
+from ftre.services.messaging.bus import EventBus, MessageBusService
+from ftre.services.messaging.channel import ChannelService
+from ftre.services.messaging.channel.manager import ChannelManager
 from ftre.services.tools import ToolService
 
 
@@ -20,7 +22,7 @@ async def test_default_composition_has_required_public_services(tmp_path) -> Non
             "config": config,
             "sessions": object(),
             "message_bus": MessageBusService(),
-            "channels": object(),
+            "channels": ChannelService(ChannelManager(EventBus())),
             "tools": ToolService(ToolRegistry()),
             "commands": CommandService(),
             "agent_profiles": object(),

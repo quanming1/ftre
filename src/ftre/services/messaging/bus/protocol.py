@@ -80,7 +80,7 @@ class InboundData(BaseModel):
     不在 wire 协议内——skill part 构造点已随 SkillChip 删除，
     协议不为死代码买单。
 
-    RewritePrompt 的临时改写内容属于 Turn 内存状态，不进入 Bus data。
+    Command 结果不直接修改 Prompt；Agent Prompt 由 Agent 数据面和 Hook 管线组装。
     """
 
     content: str = ""

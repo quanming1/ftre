@@ -44,8 +44,8 @@ def create_plan_tool() -> Tool:
         status: str = "",
         updates: list | None = None,
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
     ) -> str:
         if not session_id or event_loop is None or session_manager is None:
             return "[error] runtime context 未注入完整"

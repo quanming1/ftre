@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from .store import (
     SQLiteTraceExporter,
     get_trace,
@@ -27,6 +25,3 @@ class TraceService:
 
     def get_run(self, trace_id: str, run_id: str):
         return get_trace_run(trace_id, run_id, path=self.store.path)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.store, name)

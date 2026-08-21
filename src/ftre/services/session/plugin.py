@@ -31,10 +31,10 @@ async def apply(ctx: Context, config=None):
             SessionLifecyclePayload(session_id, channel_id),
         )
 
-    bind = getattr(service, "bind_lifecycle_dispatcher", None)
-    if callable(bind):
-        unbind = bind(dispatch)
+    # Composition tests and embedders may provide a narrow Session contract
+    # instead of the default implementation; only the owned implementation
+    # participates in these lifecycle hooks.
+    if isinstance(service, SessionService):
+        unbind = service.bind_lifecycle_dispatcher(dispatch)
         ctx.effect(lambda: unbind, label="hook:session:lifecycle")
-    close = getattr(service, "close", None)
-    if callable(close):
-        ctx.effect(lambda: close, label="sessions:close")
+        ctx.effect(service.close, label="sessions:close")

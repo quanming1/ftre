@@ -23,7 +23,8 @@ def test_agent_loop_and_command_use_public_compaction_port_only():
         assert "CompactManager" not in source
         assert "services.agent_loop.runtime.compaction" not in source
     assert "CompactionPort" in gate
-    assert "loop.compaction.compact_now" in command
+    assert "CompactionPort" in command
+    assert "loop.compaction" not in command
 
 
 def test_composition_declares_compaction_feature():

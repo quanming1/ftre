@@ -90,6 +90,26 @@ class AgentService:
     async def get_mailbox_snapshot(self, session_id: str) -> Any:
         return await self._await(self.driver.get_mailbox_snapshot(session_id))
 
+    async def resume_confirmation(
+        self,
+        session_id: str,
+        channel_id: str,
+        events: list[Any],
+        metadata: Any,
+    ) -> Any:
+        """Apply existing confirmation events and resume the paused Agent turn."""
+        return await self._await(
+            self.driver.resume_confirmation(
+                session_id,
+                channel_id,
+                events,
+                metadata,
+            )
+        )
+
+    async def wait_session_quiescent(self, session_id: str) -> Any:
+        return await self._await(self.driver.wait_session_quiescent(session_id))
+
     def list(self) -> list[dict[str, Any]]:
         return self.registry.list()
 

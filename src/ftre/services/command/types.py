@@ -1,98 +1,76 @@
-"""指令系统类型定义。
+"""Command Service 的最小公开协议。
 
-CommandResult 联合类型让 handler 有明确的返回契约，
-_step_command 根据 match-case 分发，不再靠 ctx.meta 约定传结果。
+Command 只描述命令本身的输入和结果；Agent 恢复、Prompt 改写等数据面行为不属于
+CommandResult，必须复用已有 Session Event/Agent 数据面流程。
 """
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Union
+from typing import TYPE_CHECKING, Literal
 
-# ─── 返回值类型 ──────────────────────────────────────────────
-
-
-@dataclass
-class RewritePrompt:
-    """重写发给 LLM 的 prompt，原始用户输入保留入库，继续 pipeline。"""
-    content: str | list[dict]
-    model_override: str | None = None
+if TYPE_CHECKING:
+    from ftre.services.messaging.bus import BusMessage
 
 
-@dataclass
-class SendMessage:
-    """给用户显示一条消息，短路 pipeline。"""
-    content: str
-    level: str = "info"  # info / warning / error
+@dataclass(frozen=True)
+class CommandResult:
+    """一次命令的直接结果，不携带 Agent 调度指令。"""
 
+    kind: Literal["success", "error"] = "success"
+    text: str = ""
+    source_event_seq: int | None = None
 
-@dataclass
-class Handled:
-    """已处理完毕，短路 pipeline。"""
+    @classmethod
+    def success(cls, text: str = "", *, source_event_seq: int | None = None) -> CommandResult:
+        return cls("success", text, source_event_seq)
 
-
-@dataclass
-class Passthrough:
-    """不是指令，交给 LLM。"""
-
-
-@dataclass
-class ResumeAgent:
-    """用一组已构造的输入事件恢复暂停中的 Agent。"""
-    events: list[Any]
-
-
-CommandResult = Union[  # noqa: UP007 legacy compatibility boundary reviewed in F1
-    RewritePrompt,
-    SendMessage,
-    Handled,
-    Passthrough,
-    ResumeAgent,
-]
-"""handler 返回值联合类型。None 视为 Handled（兼容旧 handler）。"""
-
-
-# ─── 指令定义 ────────────────────────────────────────────────
+    @classmethod
+    def error(cls, text: str) -> CommandResult:
+        if not text.strip():
+            raise ValueError("command error text must not be empty")
+        return cls("error", text)
 
 
 @dataclass
 class CommandDef:
-    """指令定义：注册、匹配、命令面板渲染用元信息。
+    """命令注册元数据和 Handler。"""
 
-    handler 可选：内置指令通过 register() 传 handler；
-    文件指令 / Skill 指令直接挂在 CommandDef 上。
-    """
-    command: str                        # "/model"
-    description: str = ""               # "切换模型预设"
-    args_hint: str = ""                 # "[preset]"；空串 = 无参数
-    system: bool = False                # 系统级指令：锁外执行，可立即响应
-    persist_input: bool = True          # 是否持久化用户输入（/cancel=False 不入库不回显）
+    command: str
+    description: str = ""
+    args_hint: str = ""
+    system: bool = False
+    persist_input: bool = True
     sub_commands: list[CommandDef] = field(default_factory=list)
-    source: str = "builtin"             # builtin / file / skill
-    handler: Handler | None = None    # 文件/Skill 指令直接挂载
+    source: str = "builtin"
+    handler: Handler | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class CommandContext:
-    """dispatch 匹配到指令后传给 handler 的上下文。"""
-    raw: str                            # 原始输入 "/model gpt-5"
-    command: str                        # 命中的指令 "/model"
-    args: str | None                    # "gpt-5"；无则为 None
-    meta: Any = None                    # pipeline data（PipelineData 或 dict），handler 可访问 .inbound 等
+    """Handler 的显式输入；不再通过 ``meta: Any`` 反查 BusMessage。"""
+
+    raw: str
+    command: str
+    args: str | None
+    inbound: BusMessage
+
+    @property
+    def session_id(self) -> str:
+        return self.inbound.data.get("session_id") or self.inbound.from_session
+
+    @property
+    def channel_id(self) -> str:
+        return self.inbound.from_channel
+
+    @property
+    def request_id(self) -> str:
+        return self.inbound.metadata.request_id
 
 
-# ─── Handler 签名 ────────────────────────────────────────────
+Handler = Callable[
+    [CommandContext],
+    CommandResult | Awaitable[CommandResult] | None,
+]
 
-Handler = Callable[[CommandContext], CommandResult | Awaitable[CommandResult] | None]
-"""指令处理函数。
-
-返回 CommandResult 决定 pipeline 走向：
-- RewritePrompt → 重写发给 LLM 的 prompt，原始输入保留入库，继续 → LLM
-- SendMessage  → 推消息给前端，短路
-- Handled      → 短路
-- Passthrough  → 继续 → LLM
-- ResumeAgent  → 持久化输入事件并恢复暂停中的 Agent
-- None         → 视为 Handled（兼容旧 handler）
-
-同步或 async def 均可，dispatch 会统一 await。
-"""
+__all__ = ["CommandContext", "CommandDef", "CommandResult", "Handler"]

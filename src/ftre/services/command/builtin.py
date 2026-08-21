@@ -1,78 +1,62 @@
-"""内置指令注册。
+"""内置 Command 注册。
 
-把 loop.py 里硬编码的 3 条指令抽出来，loop.py 只需调用 register_builtin_commands()。
-handler 通过闭包捕获 loop 实例，不需要往 ctx.meta 里塞 _loop。
+Handler 只依赖公开 Service，不捕获数据面运行时。需要恢复 Agent 的确认命令通过
+AgentService 复用已有 Session Event 管线，不把 Agent 控制对象塞进 CommandResult。
 """
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
-from .manager import CommandManager
-from .types import Handled, ResumeAgent, SendMessage
+from ftre_agent_core.event import UserConfirmResultEvent
+from ftre_agent_core.message import ToolCallBlock, ToolCallState
+
+from ftre.services.agent import AgentService
+from ftre.services.agent.config import AgentConfig, load_config
+from ftre.services.compaction import CompactionPort
+from ftre.services.session import SessionService
+from ftre.services.session.message.converter import _as_msg
+
+from .manager import CommandRuntime
+from .types import CommandContext, CommandResult
 
 logger = logging.getLogger(__name__)
 
 
-def register_builtin_commands(mgr: CommandManager, loop) -> None:
-    """注册内置斜杠指令到 CommandManager。
+def register_builtin_commands(
+    runtime: CommandRuntime,
+    *,
+    agents: AgentService,
+    sessions: SessionService,
+    compaction: CompactionPort,
+    load_runtime_config: Callable[[], AgentConfig] = load_config,
+) -> list[Callable[[], bool]]:
+    """注册内置命令并返回所有 disposer。"""
 
-    :param mgr: CommandManager 实例
-    :param loop: AgentLoop 实例（handler 通过闭包捕获）
-    """
+    async def on_cancel(ctx: CommandContext) -> CommandResult:
+        await agents.cancel(ctx.session_id)
+        return CommandResult.success()
 
-    def _inbound(ctx):
-        """Read the ingress envelope from the public CommandContext metadata."""
-        meta = ctx.meta
-        return meta.get("inbound") if isinstance(meta, dict) else meta.inbound
-
-    # 文本 /cancel 仍保留为兼容入口；WS 的停止按钮会发送 turn_cancel，
-    # 不经过这条用户指令，也不会写入聊天历史。
-    async def _on_cancel(ctx) -> Handled:
-        inbound = _inbound(ctx)
-        sid = inbound.from_session or inbound.data.get(
-            "session_id", ""
-        )
-        if await loop.cancel_session(sid):
-            logger.info(f"[command] cancel 已取消 session={sid}")
-        return Handled()
-
-    async def _confirm_tools(ctx, *, approved: bool):
-        """把 /allow、/deny 参数解析为核心确认事件。
-
-        tool_call_id 是客户端唯一需要提交的身份；reply_id 从当前会话
-        已持久化的 AssistantMsg 反查，避免让传输层维护核心事件字段。
-        """
+    async def confirm(ctx: CommandContext, *, approved: bool) -> CommandResult:
         tool_call_ids = list(dict.fromkeys((ctx.args or "").split()))
         if not tool_call_ids:
-            return SendMessage(
-                f"用法：{ctx.command} <tool_id> [tool_id...]",
-                level="error",
+            return CommandResult.error(
+                f"用法：{ctx.command} <tool_id> [tool_id...]"
             )
 
-        from ftre_agent_core.event import UserConfirmResultEvent
-        from ftre_agent_core.message import ToolCallBlock, ToolCallState
-
-        from ftre.services.session.message.converter import _as_msg
-
-        inbound = _inbound(ctx)
-        session_id = inbound.from_session or inbound.data.get("session_id", "")
-        records = await loop.session_manager.get_messages_by_session(session_id)
+        records = await sessions.get_messages_by_session(ctx.session_id)
         targets: dict[str, tuple[str, ToolCallBlock]] = {}
         wanted = set(tool_call_ids)
         for record in records:
             message = _as_msg(record)
             for block in message.content:
-                if (
-                    isinstance(block, ToolCallBlock)
-                    and block.id in wanted
-                ):
+                if isinstance(block, ToolCallBlock) and block.id in wanted:
                     targets[block.id] = (message.id, block)
 
         missing = [tool_id for tool_id in tool_call_ids if tool_id not in targets]
         if missing:
-            return SendMessage(
-                f"找不到待确认的工具调用：{', '.join(missing)}",
-                level="error",
+            return CommandResult.error(
+                f"找不到待确认的工具调用：{', '.join(missing)}"
             )
 
         not_asking = [
@@ -81,134 +65,129 @@ def register_builtin_commands(mgr: CommandManager, loop) -> None:
             if targets[tool_id][1].state != ToolCallState.ASKING
         ]
         if not_asking:
-            return SendMessage(
-                f"工具调用已不在待确认状态：{', '.join(not_asking)}",
-                level="warning",
+            return CommandResult.error(
+                f"工具调用已不在待确认状态：{', '.join(not_asking)}"
             )
 
         reply_ids = {targets[tool_id][0] for tool_id in tool_call_ids}
         if len(reply_ids) != 1:
-            return SendMessage(
-                "一次确认只能处理同一条回复中的工具调用",
-                level="error",
-            )
+            return CommandResult.error("一次确认只能处理同一条回复中的工具调用")
+
         reply_id = next(iter(reply_ids))
-        return ResumeAgent(events=[
+        events = [
             UserConfirmResultEvent(
                 reply_id=reply_id,
                 tool_call_id=tool_id,
                 approved=approved,
             )
             for tool_id in tool_call_ids
-        ])
-
-    async def _on_allow(ctx):
-        return await _confirm_tools(ctx, approved=True)
-
-    async def _on_deny(ctx):
-        return await _confirm_tools(ctx, approved=False)
-
-    # /compact [提示词]：普通指令，在锁内执行，串行安全
-    # 可选参数是自然语言提示词，透传给摘要 LLM，强调优先保留的上下文。
-    async def _on_compact(ctx) -> Handled:
-        inbound = _inbound(ctx)
-        session_id = inbound.from_session
-        channel_id = inbound.from_channel
-        focus_hint = (ctx.args or "").strip()
-
-        await loop.set_session_compacting(session_id, True)
-
+        ]
         try:
-            config = loop._load_current_config()
-            await loop.compaction.compact_now(
-                session_id,
-                channel_id,
-                config=config,
-                focus_hint=focus_hint,
+            await agents.resume_confirmation(
+                ctx.session_id,
+                ctx.channel_id,
+                events,
+                ctx.inbound.metadata,
             )
-        except Exception:
-            logger.exception(f"[command] /compact 执行异常 session={session_id}")
-        finally:
-            await loop.set_session_compacting(session_id, False)
-        return Handled()
+        except Exception as exc:
+            logger.exception("[command] confirmation resume failed session=%s", ctx.session_id)
+            return CommandResult.error(f"确认处理失败：{exc}")
+        return CommandResult.success()
 
-    # /compress-fast [轮数]：零 LLM 成本的快速压缩
-    # 可选整数参数 = 保护最近 N 轮对话内的工具输出不被裁剪（默认 0=全裁）。
-    async def _on_compress_fast(ctx) -> Handled:
-        inbound = _inbound(ctx)
-        session_id = inbound.from_session
-        channel_id = inbound.from_channel
+    async def on_allow(ctx: CommandContext) -> CommandResult:
+        return await confirm(ctx, approved=True)
 
+    async def on_deny(ctx: CommandContext) -> CommandResult:
+        return await confirm(ctx, approved=False)
+
+    async def on_compact(ctx: CommandContext) -> CommandResult:
+        try:
+            await compaction.compact_now(
+                ctx.session_id,
+                ctx.channel_id,
+                config=load_runtime_config(),
+                focus_hint=(ctx.args or "").strip(),
+            )
+        except Exception as exc:
+            logger.exception("[command] /compact failed session=%s", ctx.session_id)
+            return CommandResult.error(f"压缩失败：{exc}")
+        return CommandResult.success()
+
+    async def on_compress_fast(ctx: CommandContext) -> CommandResult:
         arg = (ctx.args or "").strip()
         keep_turns = int(arg) if arg.isdigit() else 0
-
         try:
-            config = loop._load_current_config()
-            await loop.compaction.compress_fast(
-                session_id,
-                channel_id,
-                config=config,
+            await compaction.compress_fast(
+                ctx.session_id,
+                ctx.channel_id,
+                config=load_runtime_config(),
                 keep_turns=keep_turns,
             )
-        except Exception:
-            logger.exception(f"[command] /compress-fast 执行异常 session={session_id}")
-        return Handled()
+        except Exception as exc:
+            logger.exception(
+                "[command] /compress-fast failed session=%s", ctx.session_id
+            )
+            return CommandResult.error(f"快速压缩失败：{exc}")
+        return CommandResult.success()
 
-    # /fork：把当前会话复制成一个独立的新会话（沿用 channel/workspace，复制
-    # 消息与 metadata，追加 forked_from 溯源）。不入库对话本身。
-    async def _on_fork(ctx) -> SendMessage:
-        inbound = _inbound(ctx)
-        session_id = inbound.from_session or inbound.data.get("session_id", "")
-        if not session_id:
-            return SendMessage("无法确定当前会话", level="error")
+    async def on_fork(ctx: CommandContext) -> CommandResult:
+        if not ctx.session_id:
+            return CommandResult.error("无法确定当前会话")
         try:
-            result = await loop.session_manager.fork_session(session_id)
-        except ValueError as e:
-            return SendMessage(f"fork 失败：{e}", level="error")
+            result = await sessions.fork_session(ctx.session_id)
+        except ValueError as exc:
+            return CommandResult.error(f"fork 失败：{exc}")
         except Exception:
-            logger.exception(f"[command] /fork 执行异常 session={session_id}")
-            return SendMessage("fork 失败，请查看日志", level="error")
-        return SendMessage(
-            f"已 fork 当前会话到新会话「{result.title}」：{result.fork_session_id}",
-            level="info",
+            logger.exception("[command] /fork failed session=%s", ctx.session_id)
+            return CommandResult.error("fork 失败，请查看日志")
+        return CommandResult.success(
+            f"已 fork 当前会话到新会话「{result.title}」：{result.fork_session_id}"
         )
 
-    mgr.register(
-        "/cancel",
-        _on_cancel,
-        description="取消当前会话执行",
-        system=True,
-        persist_input=False,
-    )
-    mgr.register(
-        "/allow",
-        _on_allow,
-        description="允许一个或多个待确认工具调用",
-        args_hint="<tool_id> [tool_id...]",
-        persist_input=False,
-    )
-    mgr.register(
-        "/deny",
-        _on_deny,
-        description="拒绝一个或多个待确认工具调用",
-        args_hint="<tool_id> [tool_id...]",
-        persist_input=False,
-    )
-    mgr.register(
-        "/compact",
-        _on_compact,
-        description="压缩当前会话上下文（可附提示词强调优先保留的内容）",
-        args_hint="[强调保留的内容]",
-    )
-    mgr.register(
-        "/compress-fast",
-        _on_compress_fast,
-        description="快速压缩：裁剪旧工具输出，不调 LLM（可附轮数保护最近 N 轮）",
-        args_hint="[保护最近轮数]",
-    )
-    mgr.register(
-        "/fork",
-        _on_fork,
-        description="复制当前会话为一个独立的新会话",
-        persist_input=False,
-    )
+    disposers = [
+        runtime.register(
+            "/cancel",
+            on_cancel,
+            description="取消当前会话执行",
+            system=True,
+            persist_input=False,
+        ),
+        runtime.register(
+            "/allow",
+            on_allow,
+            description="允许一个或多个待确认工具调用",
+            args_hint="<tool_id> [tool_id...]",
+            persist_input=False,
+        ),
+        runtime.register(
+            "/deny",
+            on_deny,
+            description="拒绝一个或多个待确认工具调用",
+            args_hint="<tool_id> [tool_id...]",
+            persist_input=False,
+        ),
+        runtime.register(
+            "/compact",
+            on_compact,
+            description="压缩当前会话上下文（可附提示词强调优先保留的内容）",
+            args_hint="[强调保留的内容]",
+            persist_input=False,
+        ),
+        runtime.register(
+            "/compress-fast",
+            on_compress_fast,
+            description="快速压缩：裁剪旧工具输出，不调 LLM（可附轮数保护最近 N 轮）",
+            args_hint="[保护最近轮数]",
+            persist_input=False,
+        ),
+        runtime.register(
+            "/fork",
+            on_fork,
+            description="复制当前会话为一个独立的新会话",
+            persist_input=False,
+        ),
+    ]
+    return disposers
+
+
+__all__ = ["register_builtin_commands"]

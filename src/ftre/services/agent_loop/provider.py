@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
+from cordis import Context
+
+from ftre.platform.hooks import HookRuntime
+from ftre.platform.plugin_runtime.manager import PluginManager
+from ftre.services.agent import AgentService
+from ftre.services.agent.profile import AgentProfileService
 from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
+from ftre.services.attachment import AttachmentService
+from ftre.services.command import CommandService
+from ftre.services.compaction import CompactionPort
+from ftre.services.messaging.bus import MessageBusService
+from ftre.services.messaging.channel import ChannelService
+from ftre.services.session import SessionService
+from ftre.services.system_prompt import SystemPromptService
+from ftre.services.tools import ToolService
 
 from .driver import AgentLoopDriver
 
@@ -14,18 +27,19 @@ from .driver import AgentLoopDriver
 class AgentRuntimeServices:
     """构造 AgentLoop 所需的公开 Service 句柄。"""
 
-    sessions: Any
-    message_bus: Any
-    channels: Any
-    tools: Any
-    commands: Any
-    agent_profiles: Any
-    event_hub: Any
-    plugin_manager: Any
-    agents: Any | None = None
-    system_prompt: Any | None = None
-    hook_runtime: Any | None = None
-    compaction: Any | None = None
+    sessions: SessionService
+    message_bus: MessageBusService
+    channels: ChannelService
+    tools: ToolService
+    commands: CommandService
+    agent_profiles: AgentProfileService
+    event_hub: Context
+    plugin_manager: PluginManager
+    agents: AgentService | None = None
+    attachments: AttachmentService | None = None
+    system_prompt: SystemPromptService | None = None
+    hook_runtime: HookRuntime | None = None
+    compaction: CompactionPort | None = None
 
 
 @dataclass
@@ -53,6 +67,8 @@ class AgentLoopProvider:
             "command_service": self.services.commands,
             "plugin_manager": self.services.plugin_manager,
             "agent_manager": self.services.agent_profiles.manager,
+            "agent_service": self.services.agents,
+            "attachments": self.services.attachments,
             "agent_registry": (
                 self.services.agents.registry if self.services.agents is not None else None
             ),
@@ -64,9 +80,8 @@ class AgentLoopProvider:
         if self.services.compaction is not None:
             kwargs["compaction"] = self.services.compaction
         loop = AgentLoop(**kwargs)
-        bind_events = getattr(self.services.compaction, "bind_event_emitter", None)
-        if callable(bind_events):
-            bind_events(loop.emit_session_event)
+        if self.services.compaction is not None:
+            self.services.compaction.bind_event_emitter(loop.emit_session_event)
         return AgentLoopRuntime(loop=loop, driver=AgentLoopDriver(loop))
 
 

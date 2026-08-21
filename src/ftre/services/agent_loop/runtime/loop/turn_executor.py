@@ -3,16 +3,14 @@ TurnExecutor — 单个 Turn 的完整执行。
 
 Turn 是一等公民：一个有状态的生命周期对象，从收到用户消息到响应完成。
 
-状态机驱动：COMMAND → BUILDING → RUNNING → FINALIZING → COMPLETED。
-execute() 只负责单个已经由 SessionLane 领取的普通 Turn。
-Command 在 AgentLoop 接入层完成匹配与派发；本执行器只负责执行已经路由到
-这里的普通消息或 CommandResult。
+状态机驱动：BUILDING → RUNNING → FINALIZING → COMPLETED。
+execute() 只负责单个已经由 SessionLane 领取的 Agent Work Item。
+Command 在接入层完成并不会进入本执行器。
 
 处理路径：
-  普通消息：  COMMAND(存消息) → BUILDING → RUNNING → FINALIZING → COMPLETED
+  普通消息：  持久化用户消息 → BUILDING → RUNNING → FINALIZING → COMPLETED
   turn_cancel：由 SessionLane 在控制面取消当前 task，不进入本执行器
-  /compact：  COMMAND(存消息 + 执行 handler) → COMPLETED（短路）
-  RewritePrompt：COMMAND(存消息 + 执行 handler) → BUILDING → RUNNING → FINALIZING → COMPLETED
+  确认恢复：已有 Session Event → BUILDING → RUNNING → FINALIZING → COMPLETED
 """
 
 import asyncio
@@ -42,18 +40,7 @@ from ftre.services.agent.hooks import (
     RetryRequest,
     TurnStoppedPayload,
 )
-from ftre.services.command.types import (
-    Handled,
-    Passthrough,
-    ResumeAgent,
-    RewritePrompt,
-    SendMessage,
-)
-from ftre.services.messaging.bus import (
-    BusMessage,
-    CommandMessagePayload,
-    SessionCommandMessage,
-)
+from ftre.services.messaging.bus import BusMessage
 from ftre.services.session.message.multimodal import (
     build_user_content,
     normalize_stored_user_content,
@@ -70,7 +57,7 @@ from ftre.services.tools.builtin._workspace import (
 
 if TYPE_CHECKING:
     from ftre.services.agent.profile.manager import AgentProfile
-    from ftre.services.command.types import CommandDef
+    from ftre.services.session import SessionService
 
     from .engine import AgentLoop
 
@@ -86,11 +73,10 @@ class TurnStatus(str, Enum):
     """Turn 生命周期的阶段。
 
     状态流转（正常路径）：
-        COMMAND → BUILDING → RUNNING → FINALIZING → COMPLETED
+        BUILDING → RUNNING → FINALIZING → COMPLETED
     终态：COMPLETED（正常）/ CANCELLED（被取消）/ ERROR（异常）
     """
 
-    COMMAND = "command"  # 普通 Turn 的持久化边界；Command 已在接入层路由
     BUILDING = "building"  # 鉴权 + 构建消息 + 创建 Agent
     RUNNING = "running"  # 驱动 Agent 执行，逐条投递事件
     FINALIZING = "finalizing"  # Turn 已运行完成，等待统一收尾
@@ -104,7 +90,7 @@ class Turn:
     """一个完整的用户交互周期（从收到消息到响应完成）。
 
     Turn 是贯穿整个处理流程的状态容器：
-    - execute() 入口设置 turn_id / command / command_name
+    - execute() 入口设置 turn_id 和可选的确认事件
     - 各状态函数读取上游写入的字段、写入自己的产出给下游
     - 事件从状态转移中产生，reply_id 关联到 turn.turn_id
     """
@@ -115,15 +101,9 @@ class Turn:
     session_id: str  # 所属会话
 
     # ── 当前状态（状态机读写）──
-    status: TurnStatus = TurnStatus.COMMAND
-
-    # ── 接入层命令元数据（execute_command 入口设置）──
-    command: "CommandDef | None" = None  # 命中的指令定义（含 system / persist_input）
-    command_name: str | None = None  # 指令名（如 "/compact"），PIPELINE_END 会带上
+    status: TurnStatus = TurnStatus.BUILDING
 
     user_message_id: str = ""  # 本轮持久化后的 UserMsg id
-    # RewritePrompt 只影响本轮构建给 LLM 的内容，不进入 InboundData 的自由 metadata。
-    prompt_override: str | None = None
     input_persisted: bool = False
 
     # ── Agent 执行上下文（_build 写入，_run 读取）──
@@ -175,8 +155,26 @@ class TurnExecutor:
     TurnExecutor 负责消息进来后的全部处理逻辑。
     """
 
-    def __init__(self, loop: "AgentLoop") -> None:
+    def __init__(
+        self,
+        loop: "AgentLoop",
+        *,
+        sessions: "SessionService",
+        agents=None,
+        attachments=None,
+        system_prompt=None,
+        hooks=None,
+        agent_registry=None,
+    ) -> None:
         self._loop = loop
+        self._sessions = sessions
+        # These are explicit Provider dependencies.  Keeping them here avoids
+        # using AgentLoop as a Service Locator from the turn data plane.
+        self._agents = agents
+        self._attachments = attachments
+        self._system_prompt = system_prompt
+        self._hooks = hooks
+        self._agent_registry = agent_registry
 
     # ─── 驱动入口 ────────────────────────────────────────────
 
@@ -188,8 +186,10 @@ class TurnExecutor:
         config: AgentConfig | None = None,
         agent_profile: "AgentProfile | None" = None,
         cancellation: asyncio.Event | None = None,
+        confirm_event: object | None = None,
+        persist_input: bool = True,
     ) -> TurnOutcome:
-        """执行一条已经由 SessionLane 领取的普通消息。"""
+        """执行一条已经由 SessionLane 领取的 Agent Work Item。"""
         session_id = self._session_id_of(inbound)
 
         turn = Turn(
@@ -199,96 +199,12 @@ class TurnExecutor:
             config=config,
             agent_profile=agent_profile,
             cancellation=(cancellation if cancellation is not None else asyncio.Event()),
+            confirm_event=confirm_event,
         )
+        if persist_input:
+            await self._persist_user_message(turn)
         await self._emit_step(turn, "PIPELINE_START")
         return await self._drive(turn)
-
-    async def execute_command(
-        self,
-        inbound: BusMessage,
-        command: "CommandDef",
-        result,
-        *,
-        turn_id: str | None = None,
-    ) -> TurnOutcome:
-        """执行接入层已经解析出的 CommandResult。
-
-        这里不再匹配或调用 CommandManager；接入层负责解析，SessionLane 负责
-        与同会话 Turn 串行化，本方法只把结果映射为短路、普通 Agent Turn 或
-        权限恢复 Turn。
-        """
-        session_id = self._session_id_of(inbound)
-        turn = Turn(
-            turn_id=turn_id or f"turn_{uuid.uuid4().hex[:12]}",
-            inbound=inbound,
-            session_id=session_id,
-        )
-        turn.command = command
-        turn.command_name = command.command
-        await self._emit_step(turn, "PIPELINE_START")
-        await self._emit_step(turn, "COMMAND_MATCHED", command_name=command.command)
-        try:
-            if command.persist_input:
-                await self._persist_user_message(turn)
-            match result:
-                case RewritePrompt(content=prompt_content):
-                    turn.prompt_override = prompt_content
-                    turn.status = TurnStatus.BUILDING
-                case Passthrough():
-                    turn.status = TurnStatus.BUILDING
-                case ResumeAgent(events=events):
-                    if not events:
-                        turn.status = TurnStatus.COMPLETED
-                    else:
-                        for event in events:
-                            await self._loop.emit_session_event(
-                                session_id,
-                                inbound.from_channel,
-                                event,
-                                metadata=inbound.metadata,
-                            )
-                        turn.confirm_event = events[-1]
-                        turn.status = TurnStatus.BUILDING
-                case SendMessage(content=msg, level=level):
-                    await self._send_command_message(
-                        session_id, inbound.from_channel, msg, level
-                    )
-                    turn.status = TurnStatus.COMPLETED
-                case Handled() | None:
-                    turn.status = TurnStatus.COMPLETED
-                case _:
-                    turn.status = TurnStatus.COMPLETED
-            return await self._drive(turn)
-        except asyncio.CancelledError:
-            turn.status = TurnStatus.CANCELLED
-            turn.subagent_status = "cancelled"
-            if turn.agent is not None:
-                await self._persist_open_replies(turn, ReplyFinishedReason.INTERRUPTED)
-        except Exception:
-            logger.exception(
-                f"[turn-executor] 状态机异常 session={turn.session_id} "
-                f"status={turn.status}"
-            )
-            turn.status = TurnStatus.ERROR
-            turn.subagent_status = "error"
-        # If the command prelude failed before _drive, run the same stopping and
-        # pipeline-end barrier with the already terminal state.
-        if turn.status not in (TurnStatus.COMPLETED, TurnStatus.CANCELLED, TurnStatus.ERROR):
-            turn.status = TurnStatus.ERROR
-            turn.error = {
-                "code": "command_error",
-                "message": "Command 执行失败",
-                "retryable": True,
-            }
-        if turn.events and not any(event.name == "PIPELINE_END" for event in turn.events):
-            return await self._drive(turn)
-        return TurnOutcome(
-            turn_id=turn.turn_id,
-            status=turn.status.value,
-            user_message_id=turn.user_message_id,
-            final_content=turn.final_content,
-            error=turn.error,
-        )
 
     async def _drive(self, turn: Turn) -> TurnOutcome:
         """推进一个已准备好的 Turn，并统一负责 stopping/finalize 边界。"""
@@ -331,7 +247,6 @@ class TurnExecutor:
                     if turn.status == TurnStatus.CANCELLED
                     else ""
                 ),
-                command_name=turn.command_name,
             )
         return TurnOutcome(
             turn_id=turn.turn_id,
@@ -349,8 +264,6 @@ class TurnExecutor:
     async def _advance(self, turn: Turn) -> TurnStatus:
         """状态转移：根据当前状态调对应处理函数，返回下一个状态。"""
         match turn.status:
-            case TurnStatus.COMMAND:
-                return await self._command(turn)  # → BUILDING 或 COMPLETED
             case TurnStatus.BUILDING:
                 return await self._build(turn)  # → RUNNING（或 ERROR 校验失败）
             case TurnStatus.RUNNING:
@@ -362,14 +275,8 @@ class TurnExecutor:
 
     # ─── 状态处理函数 ────────────────────────────────────────
 
-    async def _command(self, turn: Turn) -> TurnStatus:
-        """[状态 0] 普通消息的持久化边界；命令已在接入层处理。"""
-        if not turn.input_persisted:
-            await self._persist_user_message(turn)
-        return TurnStatus.BUILDING
-
     async def _persist_user_message(self, turn: Turn) -> None:
-        """将普通消息或需留痕的命令写入 SessionProjection 一次。"""
+        """将已被 Agent 接纳的普通消息写入 SessionProjection 一次。"""
         if turn.input_persisted:
             return
         inbound = turn.inbound
@@ -419,7 +326,7 @@ class TurnExecutor:
         attachments = inbound.data.get("attachments") or []
 
         # ── 鉴权 1：session 必须存在 ──
-        session = await loop.session_manager.get_session(session_id)
+        session = await self._sessions.get_session(session_id)
         if session is None:
             logger.warning(
                 f"[turn-executor] session 不存在，拒绝执行: session={session_id}"
@@ -458,15 +365,13 @@ class TurnExecutor:
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
         # 发送消息时确保当前工作区有 .ftre 扩展目录骨架（工作区级 skill / mcp.json 的落点）
         ensure_workspace_ext_dir(workspace)
-        # prompt_override 来自 RewritePrompt 指令：发给 LLM 用改写后的，DB 存原始。
-        llm_content = turn.prompt_override if turn.prompt_override else content
+        llm_content = content
         messages, hook_config = await self._build_messages(
             session_id,
             llm_content,
             attachments,
             config,
             inbound_data=inbound.data,
-            prompt_override=turn.prompt_override,
             channel_id=inbound.from_channel,
             workspace=workspace,
             agent_dir=(agent_profile.agent_dir if agent_profile else ""),
@@ -512,14 +417,15 @@ class TurnExecutor:
             "agent_subject": loop.agent_subject(inbound.metadata.agent_id or "default"),
             "channel_id": inbound.from_channel,
             "event_loop": loop._event_loop,
-            "session_manager": loop.session_manager,
+            "sessions": self._sessions,
             "bus": loop.bus,
-            "agent_loop": loop,
+            "agent": self._agents,
+            "attachments": self._attachments,
             "llm_config": hook_config.llm,
             "agent_profile": agent_profile,
             "workspace": WorkspaceAccessor(
                 session_id=session_id,
-                session_manager=loop.session_manager,
+                session_manager=self._sessions,
                 event_loop=loop._event_loop,  # type: ignore[arg-type]
                 fallback_cwd=workspace,
             ),
@@ -564,7 +470,7 @@ class TurnExecutor:
 
         # 只读 LLM 有效上下文（最后一条 compact 摘要 + tail），避免把已经被摘要
         # 覆盖的完整 transcript 重新注入。保留 typed Msg 以维持 ToolCallState。
-        records = await loop.session_manager.get_context_messages(session_id)
+        records = await self._sessions.get_context_messages(session_id)
         hook_config = copy.deepcopy(config)
         hook_config, assembly = await self._assemble_prompt(
             turn,
@@ -606,14 +512,15 @@ class TurnExecutor:
             "agent_subject": loop.agent_subject(inbound.metadata.agent_id or "default"),
             "channel_id": inbound.from_channel,
             "event_loop": loop._event_loop,
-            "session_manager": loop.session_manager,
+            "sessions": self._sessions,
             "bus": loop.bus,
-            "agent_loop": loop,
+            "agent": self._agents,
+            "attachments": self._attachments,
             "llm_config": hook_config.llm,
             "agent_profile": agent_profile,
             "workspace": WorkspaceAccessor(
                 session_id=session_id,
-                session_manager=loop.session_manager,
+                session_manager=self._sessions,
                 event_loop=loop._event_loop,  # type: ignore[arg-type]
                 fallback_cwd=workspace,
             ),
@@ -761,7 +668,7 @@ class TurnExecutor:
     async def _emit_step(self, turn: Turn, phase: str, **kwargs) -> None:
         """构造 CustomEvent 并实时推送。
 
-        所有 Turn 边界事件（PIPELINE_START/END、COMMAND_MATCHED、
+        所有 Turn 边界事件（PIPELINE_START/END、
         TURN_START/END）都走这里，用 CustomEvent 携带 phase 信息。
         reply_id 关联到 turn.turn_id（通过 metadata 传递，CustomEvent 无 reply_id 字段）。
         """
@@ -806,24 +713,6 @@ class TurnExecutor:
         """兼容旧调用点；Session 权威状态仍然只能由 Coordinator 发布。"""
         await self._loop._publish_session_status_async(session_id, status)
 
-    async def _send_command_message(
-        self, session_id: str, channel_id: str, content: str, level: str = "info"
-    ) -> None:
-        """指令 handler 返回 SendMessage 时，推一条 info/error 消息给前端。
-
-        用于 /help 这类只需给用户看一段文字、不跑 Agent 的指令。
-        """
-        loop = self._loop
-        await loop.bus.publish_outbound(
-            SessionCommandMessage(
-                from_channel=channel_id,
-                to_channel=channel_id,
-                from_session=session_id,
-                to_session=session_id,
-                data=CommandMessagePayload(content=content, level=level),
-            )
-        )
-
     async def _request_config(self, turn: Turn, config: AgentConfig) -> AgentConfig:
         """Run the typed request waterfall before creating/running ReActAgent."""
         loop = self._loop
@@ -855,9 +744,8 @@ class TurnExecutor:
         """Render structured sections, then run the typed assembly waterfall."""
         loop = self._loop
         agent_id = turn.inbound.metadata.agent_id or "default"
-        service = getattr(loop, "system_prompt", None)
-        if service is not None and hasattr(service, "assemble_result"):
-            assembly = service.assemble_result(
+        if self._system_prompt is not None:
+            assembly = self._system_prompt.assemble_result(
                 agent_id,
                 turn.session_id,
                 workspace=workspace,
@@ -880,7 +768,7 @@ class TurnExecutor:
             messages=tuple(messages),
             inbound_data=dict(turn.inbound.data),
             config=copy.deepcopy(config),
-            event_loop=getattr(loop, "_event_loop", None),
+            event_loop=loop._event_loop,
             cancellation=turn.cancellation,
         )
         result = await loop.dispatch_agent_hook(
@@ -896,9 +784,8 @@ class TurnExecutor:
 
     def _core_hook_binding(self, turn: Turn):
         """Return the host Dispatcher and Cordis scope for this Agent/Turn."""
-        loop = self._loop
-        hooks = getattr(loop, "hooks", None)
-        registry = getattr(loop, "agent_registry", None)
+        hooks = self._hooks
+        registry = self._agent_registry
         agent_id = turn.inbound.metadata.agent_id or "default"
         if hooks is None or registry is None:
             return None, None
@@ -1016,7 +903,7 @@ class TurnExecutor:
             agent_ref = inbound_metadata.agent_ref
             if agent_ref is not None and agent_ref.sub_agent == turn.session_id:
                 profile = sub_agent.load_member_profile(
-                    self._loop.session_manager,
+                    self._sessions,
                     agent_ref.leader_session,
                     turn.session_id,
                 )
@@ -1025,7 +912,7 @@ class TurnExecutor:
             # 不带 agent_ref，靠成员 session 自己的 team_member 绑定兜底。
             if profile is None:
                 session_metadata = (
-                    await self._loop.session_manager.get_session_metadata(
+                    await self._sessions.get_session_metadata(
                         turn.session_id
                     )
                 )
@@ -1034,7 +921,7 @@ class TurnExecutor:
                 binding = sub_agent.binding_of(session_metadata)
                 if binding is not None:
                     profile = sub_agent.load_member_profile(
-                        self._loop.session_manager,
+                        self._sessions,
                         binding["leader_session"],
                         turn.session_id,
                     )
@@ -1060,7 +947,6 @@ class TurnExecutor:
         config: AgentConfig,
         *,
         inbound_data: dict | None = None,
-        prompt_override: str | None = None,
         channel_id: str = "",
         workspace: str = "",
         agent_dir: str = "",
@@ -1068,17 +954,14 @@ class TurnExecutor:
     ) -> tuple[list[dict], AgentConfig]:
         """构建发给 LLM 的消息列表。
 
-        关键点：用户消息已在 _command 状态提前存到存储层，这里读
+        关键点：用户消息已在 Agent Work Item 接纳后持久化，这里读
         get_context_messages()（summary + tail，已含本轮用户消息）。
         所以【不能再 append】当前用户输入，否则 LLM 会收到两份重复消息。
         完整 transcript 只服务 Desktop 历史展示，不进入 LLM 上下文。
 
-        prompt_override（RewritePrompt 指令改写）通过覆盖最后一条 user 消息
-        的 content 实现——存储层存原始，发给 LLM 用改写后的。
         """
-        loop = self._loop
-        # 读模型上下文（summary + tail，已含本轮用户消息，因为 _command 先存了）
-        messages = await loop.session_manager.get_context_messages(session_id)
+        # 读模型上下文（summary + tail，已含本轮用户消息）。
+        messages = await self._sessions.get_context_messages(session_id)
 
         hook_config = copy.deepcopy(config)
 
@@ -1097,21 +980,6 @@ class TurnExecutor:
                 messages,
                 config={"llm": {"vision": hook_config.llm.vision}},
             )
-            # 用户消息已在 _command 中提前持久化到 DB，to_openai 已包含它。
-            # 不再 append（会导致 LLM 收到两份重复消息）。
-            # 只有 RewritePrompt 确实提供 override 时才替换。普通消息已经由
-            # Projection 原样落盘；无条件替换会在异常边界下误伤 compact 摘要。
-            if prompt_override is not None:
-                replaced = False
-                # 从尾部找最后一条 user 消息，覆盖其 content
-                for i in range(len(history) - 1, -1, -1):
-                    if history[i].get("role") == "user":
-                        history[i] = {**history[i], "content": user_content}
-                        replaced = True
-                        break
-                # 兜底：DB 里居然没有 user 消息（异常情况），append 一条
-                if not replaced:
-                    history.append({"role": "user", "content": user_content})
             return history, hook_config
 
         # 无历史（首条消息）：直接用当前输入

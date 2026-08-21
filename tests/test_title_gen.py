@@ -66,3 +66,10 @@ def test_title_generation_passes_reasoning_effort_to_handler(monkeypatch):
 
     assert plugin._generate_title("test", config) == "Title"
     assert captured["reasoning_effort"] == "high"
+
+
+def test_title_generation_close_prevents_new_workers():
+    plugin = TitleGenPlugin()
+    plugin.close()
+    plugin._spawn_title_generation("session-1", "hello", SimpleNamespace(), object())
+    assert plugin._threads == set()

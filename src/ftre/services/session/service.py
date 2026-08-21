@@ -212,6 +212,32 @@ class SessionService:
         """原子读-改-写 metadata 的单个 key（updater(旧值) -> 新值，全程在锁内）。"""
         return await self._repo.mutate_session_metadata(session_id, key, updater)
 
+    async def append_command_event(
+        self,
+        session_id: str,
+        event: dict[str, Any],
+    ) -> int:
+        """Persist one Command lifecycle record without projecting it as chat content."""
+        if not isinstance(event, dict) or not event.get("type"):
+            raise ValueError("command event must contain a type")
+        def append(old):
+            records = list(old) if isinstance(old, list) else []
+            records.append(copy.deepcopy(event))
+            return records
+
+        metadata = await self.mutate_session_metadata(
+            session_id,
+            "_command_events",
+            append,
+        )
+        return len(metadata.get("_command_events") or [])
+
+    async def get_command_events(self, session_id: str) -> list[dict[str, Any]]:
+        """Return the durable Command lifecycle log for diagnostics/replay."""
+        metadata = await self.get_session_metadata(session_id)
+        events = metadata.get("_command_events")
+        return copy.deepcopy(events) if isinstance(events, list) else []
+
     async def delete_session(self, session_id: str) -> None:
         """删除 session。
 

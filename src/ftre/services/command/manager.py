@@ -1,49 +1,48 @@
-"""CommandManager — 指令注册 & 匹配 & 派发。
+"""CommandRuntime：注册、匹配和执行命令。
 
-支持两级指令：
-- 系统级（system=True）：在 AgentLoop control lane 立即执行，
-  用于需要立即响应的指令（如 /cancel），不受 session mailbox 阻塞。
-- 普通级（默认）：由 SessionLane 在同会话 admission lock 内执行，
-  用于需要串行执行的指令（如 /compact）。
-
-调用方只需：
-    if await cmd.try_dispatch_system(data): return   # 接入层 control lane
-    result = await cmd.try_dispatch(data)             # SessionLane 内
-    if result is not None:                            # 匹配到
-        match result:
-            case RewritePrompt(...): ...  # 继续 pipeline
-            case Handled(): ...          # 短路
-
-内部自动判断 inbound.type、提取文本、前缀匹配，调用方无需关心细节。
+Runtime 只负责 Command Plane。它不会创建 Turn，也不会解释 Agent 数据面结果。
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
+from collections.abc import Callable
 from typing import Any
 
-from .types import (
-    CommandContext,
-    CommandDef,
-    CommandResult,
-    Handled,
-    Handler,
-)
+from .types import CommandContext, CommandDef, CommandResult, Handler
 
 logger = logging.getLogger(__name__)
 
 
-class CommandManager:
-    """指令注册 & 前缀匹配 & 派发。
-
-    两级指令：
-    - 系统级（system=True）：在 control lane 执行
-    - 普通级：在目标 SessionLane 的 admission lock 内执行
-    """
+class CommandRuntime:
+    """命令注册与执行的唯一 Owner。"""
 
     def __init__(self) -> None:
         self._system_entries: list[tuple[CommandDef, Handler]] = []
         self._entries: list[tuple[CommandDef, Handler]] = []
+        self._lifecycle: Callable[[str, dict[str, Any]], Any] | None = None
+        self._sequence = 0
+        self._request_results: dict[str, CommandResult] = {}
+
+    def bind_lifecycle(
+        self, callback: Callable[[str, dict[str, Any]], Any] | None
+    ) -> Callable[[], bool]:
+        """绑定命令生命周期观察者；返回幂等解绑函数。"""
+        previous = self._lifecycle
+        self._lifecycle = callback
+        disposed = False
+
+        def dispose() -> bool:
+            nonlocal disposed
+            if disposed:
+                return False
+            disposed = True
+            if self._lifecycle is callback:
+                self._lifecycle = previous
+            return True
+
+        return dispose
 
     def register(
         self,
@@ -56,19 +55,9 @@ class CommandManager:
         persist_input: bool = True,
         source: str = "builtin",
         sub_commands: list[CommandDef] | None = None,
-    ) -> CommandManager:
-        """注册一条指令。
-
-        system=True → 系统级指令，在 _dispatch 的 session lock 之外执行，
-        适合需要立即响应的指令（如 /cancel）。
-        默认 system=False → 普通指令，在 _step_command 的 lock 内执行。
-
-        persist_input=False → 不持久化用户输入（/cancel 等纯控制指令用），
-        接入层在入库前根据 parse() 结果决定是否跳过持久化。
-
-        按 command 长度降序排列，长的优先匹配。
-        """
-        cmd_def = CommandDef(
+    ) -> Callable[[], bool]:
+        """注册命令并返回可逆、幂等的注销函数。"""
+        definition = CommandDef(
             command=command,
             description=description,
             args_hint=args_hint,
@@ -76,214 +65,205 @@ class CommandManager:
             persist_input=persist_input,
             source=source,
             sub_commands=sub_commands or [],
+            handler=handler,
         )
-        entry = (cmd_def, handler)
-        if system:
-            self._system_entries.append(entry)
-            self._system_entries.sort(key=lambda e: -len(e[0].command))
-        else:
-            self._entries.append(entry)
-            self._entries.sort(key=lambda e: -len(e[0].command))
-        return self
+        self.register_def(definition)
+        return lambda: self.unregister(command)
 
-    def register_def(self, cmd_def: CommandDef) -> CommandManager:
-        """直接注册一个 CommandDef（handler 在 cmd_def.handler 上）。
-
-        供 file_loader / skill_plugin 使用。
-        """
-        if cmd_def.handler is None:
-            raise ValueError(f"CommandDef.handler is None for {cmd_def.command!r}")
-        entry = (cmd_def, cmd_def.handler)
-        if cmd_def.system:
-            self._system_entries.append(entry)
-            self._system_entries.sort(key=lambda e: -len(e[0].command))
-        else:
-            self._entries.append(entry)
-            self._entries.sort(key=lambda e: -len(e[0].command))
-        return self
+    def register_def(self, definition: CommandDef) -> Callable[[], bool]:
+        if definition.handler is None:
+            raise ValueError(f"CommandDef.handler is None for {definition.command!r}")
+        entries = self._system_entries if definition.system else self._entries
+        if any(item.command == definition.command for item, _ in entries):
+            raise ValueError(f"command already registered: {definition.command}")
+        entries.append((definition, definition.handler))
+        entries.sort(key=lambda item: -len(item[0].command))
+        return lambda: self.unregister(definition.command)
 
     def unregister(self, command: str) -> bool:
-        """注销一条指令。返回是否找到并删除。"""
         for entries in (self._system_entries, self._entries):
-            for i, (d, _) in enumerate(entries):
-                if d.command == command:
-                    entries.pop(i)
-                    logger.info(f"[command] 已注销指令 {command!r}")
+            for index, (definition, _) in enumerate(entries):
+                if definition.command == command:
+                    entries.pop(index)
+                    logger.info("[command] unregistered %s", command)
                     return True
         return False
 
-    def list_commands(self) -> list[dict]:
-        """返回已注册指令列表，供前端命令面板渲染。"""
-        all_entries = self._system_entries + self._entries
-        return [{"command": d.command, "description": d.description,
-                 "args_hint": d.args_hint, "system": d.system,
-                 "source": d.source}
-                for d, _ in all_entries]
+    def list_commands(self) -> list[dict[str, Any]]:
+        entries = self._system_entries + self._entries
+        return [
+            {
+                "command": definition.command,
+                "description": definition.description,
+                "args_hint": definition.args_hint,
+                "system": definition.system,
+                "source": definition.source,
+            }
+            for definition, _ in entries
+        ]
 
-    # ─── 高级 API：接受 data（PipelineData 或 dict），自动判断 & 派发 ────
+    def text_from(self, data: Any) -> str | None:
+        inbound = data.get("inbound") if isinstance(data, dict) else getattr(data, "inbound", None)
+        if inbound is None or inbound.type != "user_message":
+            return None
+        content = inbound.data.get("content", "")
+        if isinstance(content, list):
+            content = next(
+                (
+                    segment.get("text") or segment.get("data") or ""
+                    for segment in content
+                    if isinstance(segment, dict) and segment.get("type") == "text"
+                ),
+                "",
+            )
+        if not isinstance(content, str) or not content.startswith("/"):
+            return None
+        return content
+
+    def parse(self, data: Any) -> CommandDef | None:
+        raw = self.text_from(data)
+        if raw is None:
+            return None
+        matched = self._match(self._system_entries + self._entries, raw)
+        return matched[0] if matched else None
 
     def match(self, data: Any) -> CommandDef | None:
-        """检查 data["inbound"] 是否匹配某个普通指令，但不执行。
-
-        供调用方在执行前做前置工作（如持久化 user_message）。
-        """
-        text = self._extract_from_data(data)
-        if text is None:
+        raw = self.text_from(data)
+        if raw is None:
             return None
-        matched = self._match_entry(self._entries, text)
+        matched = self._match(self._entries, raw)
         return matched[0] if matched else None
 
     def match_any(self, data: Any) -> CommandDef | None:
-        """检查是否命中任何指令（系统级 + 普通级），不执行 handler。
+        return self.parse(data)
 
-        供 _dispatch 在持久化用户输入前判断 persist_input。
-        """
-        text = self._extract_from_data(data)
-        if text is None:
+    async def dispatch_inbound(
+        self,
+        inbound: Any,
+        *,
+        system: bool = False,
+        definition: CommandDef | None = None,
+    ) -> CommandResult | None:
+        raw = self.text_from({"inbound": inbound})
+        if raw is None:
             return None
-        matched = self._match_entry(self._system_entries, text)
-        if matched:
-            return matched[0]
-        matched = self._match_entry(self._entries, text)
-        return matched[0] if matched else None
-
-    def text_from(self, data: Any) -> str | None:
-        """Extract a command line for ingress adapters without exposing internals."""
-        return self._extract_from_data(data)
-
-    def parse(self, data: Any) -> CommandDef | None:
-        """Parse an inbound envelope without executing a handler.
-
-        This is the ingress boundary API. Agent/Turn execution must consume the
-        returned definition/result and must not call ``match_any`` itself.
-        """
-        return self.match_any(data)
-
-    async def dispatch_inbound(self, inbound: Any, *, system: bool = False):
-        """Dispatch a previously admitted inbound command at the ingress edge."""
-        data = {"inbound": inbound}
-        raw = self.text_from(data)
-        if system:
-            return await self.dispatch_system(raw, data)
-        return await self.dispatch(raw, data)
-
-    async def try_dispatch_system(self, data: Any) -> bool:
-        """尝试从 data["inbound"] 匹配并执行系统级指令。
-
-        自动判断 inbound 类型、提取文本、前缀匹配。
-        返回 True 表示命中并已执行，调用方应短路（return）。
-        """
-        text = self._extract_from_data(data)
-        if text is None:
-            return False
-        result = await self._dispatch_from(self._system_entries, text, meta=data)
-        if result is not None:
-            logger.info(f"[command] 系统指令已处理 text={text!r}")
-            return True
-        return False
-
-    async def try_dispatch(self, data: Any) -> CommandResult | None:
-        """尝试从 data["inbound"] 匹配并执行普通指令。
-
-        返回 CommandResult（已执行），未匹配返回 None。
-        """
-        text = self._extract_from_data(data)
-        if text is None:
+        entries = self._system_entries if system else self._entries
+        matched = self._match(entries, raw)
+        if matched is None:
             return None
-        result = await self._dispatch_from(self._entries, text, meta=data)
-        if result is not None:
-            _, cmd_result = result
-            logger.info(f"[command] 指令已处理 text={text!r}")
-            return cmd_result
-        return None
+        current, handler, args = matched
+        if definition is not None and current is not definition:
+            raise ValueError("parsed command definition does not match inbound command")
+        return await self._execute(current, handler, raw, args, inbound)
 
-    # ─── 低级 API：直接传文本 ──────────────────────────────
+    async def dispatch(
+        self,
+        raw: str | None,
+        *,
+        inbound: Any,
+        system: bool = False,
+    ) -> CommandResult | None:
+        if not raw:
+            return None
+        entries = self._system_entries if system else self._entries
+        matched = self._match(entries, raw)
+        if matched is None:
+            return None
+        definition, handler, args = matched
+        return await self._execute(definition, handler, raw, args, inbound)
 
-    async def dispatch_system(self, raw: str | None, meta: dict[str, Any] | None = None) -> bool:
-        """直接传文本匹配系统级指令。"""
-        result = await self._dispatch_from(self._system_entries, raw, meta)
-        return result is not None
-
-    async def dispatch(self, raw: str | None, meta: dict[str, Any] | None = None) -> CommandResult | None:
-        """直接传文本匹配普通指令。返回 CommandResult，未匹配返回 None。"""
-        result = await self._dispatch_from(self._entries, raw, meta)
-        return result[1] if result is not None else None
-
-    # ─── 内部实现 ────────────────────────────────────────
+    async def _execute(
+        self,
+        definition: CommandDef,
+        handler: Handler,
+        raw: str,
+        args: str | None,
+        inbound: Any,
+    ) -> CommandResult:
+        request_id = inbound.metadata.request_id
+        if request_id and request_id in self._request_results:
+            return self._request_results[request_id]
+        self._sequence += 1
+        command_id = request_id or f"command_{self._sequence}"
+        await self._emit("command/run", {
+            "command_id": command_id,
+            "name": definition.command,
+            "args": args if definition.persist_input else None,
+            "source": {"kind": "user"},
+            "session_id": inbound.data.get("session_id") or inbound.from_session,
+            "request_id": inbound.metadata.request_id,
+        })
+        context = CommandContext(
+            raw=raw,
+            command=definition.command,
+            args=args,
+            inbound=inbound,
+        )
+        try:
+            result = handler(context)
+            if inspect.isawaitable(result):
+                result = await result
+            normalized = self._normalize_result(definition.command, result)
+        except asyncio.CancelledError:
+            await self._emit("command/done", {
+                "command_id": command_id,
+                "kind": "error",
+                "text": "command cancelled",
+                "session_id": inbound.data.get("session_id") or inbound.from_session,
+                "request_id": inbound.metadata.request_id,
+            })
+            raise
+        except Exception as exc:
+            await self._emit("command/done", {
+                "command_id": command_id,
+                "kind": "error",
+                "text": str(exc),
+                "session_id": inbound.data.get("session_id") or inbound.from_session,
+                "request_id": inbound.metadata.request_id,
+            })
+            raise
+        await self._emit("command/done", {
+            "command_id": command_id,
+            "kind": normalized.kind,
+            "text": normalized.text,
+            "source_event_seq": normalized.source_event_seq,
+            "session_id": inbound.data.get("session_id") or inbound.from_session,
+            "request_id": inbound.metadata.request_id,
+        })
+        if request_id and normalized.kind == "success":
+            self._request_results[request_id] = normalized
+        return normalized
 
     @staticmethod
-    def _match_entry(
+    def _normalize_result(command: str, value: Any) -> CommandResult:
+        if value is None:
+            return CommandResult.success()
+        if not isinstance(value, CommandResult):
+            raise TypeError(f"command {command!r} handler must return CommandResult")
+        if value.kind not in {"success", "error"}:
+            raise TypeError(f"command {command!r} returned invalid result kind")
+        if value.kind == "error" and not value.text.strip():
+            raise ValueError(f"command {command!r} error text must not be empty")
+        return value
+
+    @staticmethod
+    def _match(
         entries: list[tuple[CommandDef, Handler]],
         raw: str,
     ) -> tuple[CommandDef, Handler, str | None] | None:
-        """匹配文本，返回 (CommandDef, handler, args) 或 None。不执行 handler。
-
-        子命令通过前缀匹配自然支持：
-        注册 "/memory" 和 "/memory add" 两条指令，按长度降序排列，
-        "/memory add key=val" 先匹配 "/memory add" → args="key=val"。
-        不需要递归，靠最长前缀匹配即可。
-        """
-        cmd = raw.strip()
-        if not cmd:
-            return None
-        for d, handler in entries:
-            if cmd == d.command or cmd.startswith(d.command + " "):
-                args = cmd[len(d.command):].strip() or None
-                return (d, handler, args)
+        command_line = raw.strip()
+        for definition, handler in entries:
+            if command_line == definition.command or command_line.startswith(definition.command + " "):
+                args = command_line[len(definition.command):].strip() or None
+                return definition, handler, args
         return None
 
-    @staticmethod
-    def _extract_text(content) -> str:
-        """从 user_message.content 抽取首段纯文本，兼容字符串与多模态分段数组。"""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            for seg in content:
-                if isinstance(seg, dict) and seg.get("type") == "text":
-                    return str(seg.get("text") or seg.get("data") or "")
-        return ""
-
-    def _extract_from_data(self, data) -> str | None:
-        """从 data 提取指令文本。
-
-        支持 PipelineData（dataclass）和 dict 两种格式。
-        仅当 inbound.type == "user_message" 且文本以 "/" 开头时返回文本，否则返回 None。
-        """
-        if isinstance(data, dict):
-            inbound = data.get("inbound")
-        else:
-            inbound = getattr(data, "inbound", None)
-        if inbound is None or inbound.type != "user_message":
-            return None
-        text = self._extract_text(inbound.data.get("content", ""))
-        return text if text.startswith("/") else None
-
-    async def _dispatch_from(
-        self,
-        entries: list[tuple[CommandDef, Handler]],
-        raw: str | None,
-        meta: dict[str, Any] | None,
-    ) -> tuple[CommandDef, CommandResult] | None:
-        """从指定列表匹配并派发指令。返回 (CommandDef, CommandResult)，未匹配返回 None。
-
-        handler 可同步可异步（async def），异步 handler 会被 await。
-        handler 返回 None 视为 Handled（兼容旧 handler）。
-        """
-        if not raw:
-            return None
-        matched = self._match_entry(entries, raw)
-        if matched is None:
-            return None
-        d, handler, args = matched
-        # 注意：用 `meta if meta is not None else {}` 而非 `meta or {}`，
-        # 否则传入空 dict（falsy）时会被换成新 dict，handler 对 meta 的
-        # 修改（如 command_hit / inbound 替换）就回写不到调用方。
-        ctx = CommandContext(raw=raw, command=d.command, args=args,
-                             meta=meta if meta is not None else {})
-        result = handler(ctx)
+    async def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
+        callback = self._lifecycle
+        if callback is None:
+            return
+        result = callback(event_type, payload)
         if inspect.isawaitable(result):
-            result = await result
-        # None → Handled（兼容旧 handler）
-        if result is None:
-            result = Handled()
-        return (d, result)
+            await result
+
+__all__ = ["CommandRuntime"]

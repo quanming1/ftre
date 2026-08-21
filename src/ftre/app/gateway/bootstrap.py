@@ -46,8 +46,7 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         AgentLoopProvider,
         AgentRuntimeServices,
     )
-    from ftre.services.command import CommandManager, CommandService
-    from ftre.services.command.builtin import register_builtin_commands
+    from ftre.services.command import CommandService
     from ftre.services.config import ConfigService
     from ftre.services.config.loader import load_config_file, load_gateway_address
     from ftre.services.config.paths import AGENTS_DIR
@@ -76,14 +75,13 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         bus = EventBus()
         channel_manager = ChannelManager(bus)
         tool_registry = ToolRegistry()
-        command_manager = CommandManager()
         agent_manager = AgentManager(agents_dir=AGENTS_DIR)
         agent_manager.ensure_default()
         config_service = ConfigService(initial=config_data)
         message_bus = MessageBusService(bus)
         channel_service = ChannelService(channel_manager)
         tool_service = ToolService(tool_registry)
-        command_service = CommandService(command_manager)
+        command_service = CommandService()
         profile_service = AgentProfileService(agent_manager)
         agent_service = AgentService()
         composition = await start_gateway(
@@ -114,6 +112,7 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
                 event_hub=composition.context,
                 plugin_manager=composition.plugins,
                 agents=composition.context.get("agents"),
+                attachments=composition.context.get("attachments"),
                 system_prompt=composition.context.get("system_prompt"),
                 hook_runtime=composition.context.get("hook_runtime"),
                 compaction=composition.context.get("compaction"),
@@ -122,12 +121,12 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         agent_runtime = runtime_provider.build()
         agent_loop = agent_runtime.loop
         agent_service.attach_driver(agent_runtime.driver, profile_service)
-        register_builtin_commands(command_manager, agent_loop)
         ws_channel = WebSocketChannel(
             bus,
             host=gateway_host,
             port=gateway_port,
             app=composition.http_app,
+            attachment_service=composition.context.get("attachments"),
         )
         channel_manager.register(ws_channel)
         channel_manager.register(SubagentChannel(bus))

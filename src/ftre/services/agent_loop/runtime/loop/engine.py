@@ -31,10 +31,12 @@ from ftre.services.agent.registry import AgentRegistry
 from ftre.services.compaction import CompactionPort, NullCompactionService
 from ftre.services.messaging.bus import (
     BusMessage,
+    CommandMessagePayload,
     EventBus,
     InboundMetadata,
     MailboxItemPayload,
     MailboxPhase,
+    SessionCommandMessage,
     SessionMailboxSnapshotMessage,
     SessionMailboxSnapshotPayload,
 )
@@ -80,11 +82,12 @@ class AgentLoop:
         config: AgentConfig = None,
         event_hub=None,
         tool_registry: ToolRegistry | None = None,
-        command_manager=None,
         command_service=None,
         plugin_manager=None,
         agent_manager=None,
         agent_registry: AgentRegistry | None = None,
+        agent_service=None,
+        attachments=None,
         system_prompt=None,
         hook_runtime: HookRuntime | None = None,
         compaction: CompactionPort | None = None,
@@ -94,15 +97,11 @@ class AgentLoop:
         self.channel_manager = channel_manager
         self.event_hub = event_hub
         self.tool_registry = tool_registry
-        if command_service is None and command_manager is not None:
-            from ftre.services.command import CommandService
-
-            command_service = CommandService(command_manager)
         self.commands = command_service
-        # Kept as a registration/test surface; TurnExecutor never reads it.
-        self.command_manager = getattr(command_service, "manager", command_manager)
         self.plugin_manager = plugin_manager
         self.agent_manager = agent_manager
+        self.agent_service = agent_service
+        self.attachments = attachments
         self.agent_registry = agent_registry or AgentRegistry()
         self.compaction = compaction or NullCompactionService()
         self.system_prompt = system_prompt
@@ -117,7 +116,15 @@ class AgentLoop:
         self.tracer = Tracer([SQLiteTraceExporter(TRACE_DB_PATH)])
 
         # ─── Turn 执行器 ──────────────────────────────────────
-        self._executor = TurnExecutor(self)
+        self._executor = TurnExecutor(
+            self,
+            sessions=session_manager,
+            agents=agent_service,
+            attachments=attachments,
+            system_prompt=system_prompt,
+            hooks=self.hooks,
+            agent_registry=self.agent_registry,
+        )
 
         # ─── 进行中 Reply 快照注册表 ──────────────────────────
         self.session_projection = SessionProjection(session_manager)
@@ -138,6 +145,8 @@ class AgentLoop:
             executor=self._executor,
             completion=self.completions,
             publish_snapshot=self.publish_mailbox_snapshot,
+            publish_command_result=self.publish_command_result,
+            emit_session_event=self.emit_session_event,
             hooks=self.hooks,
             agent_registry=self.agent_registry,
         )
@@ -146,29 +155,19 @@ class AgentLoop:
 
     def agent_subject(self, agent_id: str) -> AgentSubject:
         """Resolve a stable Agent identity for Hook scope dispatch."""
-        registry = getattr(self, "agent_registry", None)
-        if registry is None:
-            registry = AgentRegistry()
-            self.agent_registry = registry
-        record = registry.ensure(agent_id)
+        record = self.agent_registry.ensure(agent_id)
         return AgentSubject(agent_id=record.agent_id, identity=record.identity)
 
     async def dispatch_agent_hook(self, spec: HookSpec, payload, *, agent_id: str):
         """Dispatch an Agent Hook through the official Cordis scope carrier."""
-        hooks = getattr(self, "hooks", None)
+        hooks = self.hooks
         if hooks is None:
             if spec.default is None:
                 return None
             result = spec.default(payload)
             return await result if inspect.isawaitable(result) else result
-        registry = getattr(self, "agent_registry", None)
-        if registry is None:
-            registry = AgentRegistry()
-            self.agent_registry = registry
-        created_emitted = getattr(self, "_agent_created_emitted", None)
-        if created_emitted is None:
-            created_emitted = set()
-            self._agent_created_emitted = created_emitted
+        registry = self.agent_registry
+        created_emitted = self._agent_created_emitted
         if spec.name != AGENT_CREATED_SPEC.name and agent_id not in created_emitted:
             created_emitted.add(agent_id)
             record = registry.ensure(agent_id)
@@ -185,16 +184,13 @@ class AgentLoop:
 
     async def _dispatch_agent_hook(self, spec: HookSpec, payload, *, agent_id: str):
         """Dispatch one already-scoped Hook without lifecycle side effects."""
-        hooks = getattr(self, "hooks", None)
+        hooks = self.hooks
         if hooks is None:
             if spec.default is None:
                 return None
             result = spec.default(payload)
             return await result if inspect.isawaitable(result) else result
-        registry = getattr(self, "agent_registry", None)
-        if registry is None:
-            registry = AgentRegistry()
-            self.agent_registry = registry
+        registry = self.agent_registry
         registry.ensure(agent_id)
         carrier = registry.scope_carrier(agent_id)
         scope_context = hooks.context_for_scope(carrier)
@@ -307,12 +303,10 @@ class AgentLoop:
 
     async def _dispose_agent_scopes(self) -> None:
         """Close Agent scope observations before the Provider detaches its driver."""
-        hooks = getattr(self, "hooks", None)
+        hooks = self.hooks
         if hooks is None:
             return
-        registry = getattr(self, "agent_registry", None)
-        if registry is None:
-            return
+        registry = self.agent_registry
         for record in tuple(registry.list()):
             agent_id = record["id"]
             current = registry.ensure(agent_id)
@@ -383,34 +377,23 @@ class AgentLoop:
 
     def _parse_ingress_command(self, msg: BusMessage):
         """Parse commands before they enter Mailbox/Turn execution."""
-        commands = getattr(self, "commands", None)
-        if commands is None:
+        if self.commands is None:
             return None
-        parser = getattr(commands, "parse", None)
-        if callable(parser):
-            return parser({"inbound": msg})
-        matcher = getattr(commands, "match_any", None)
-        return matcher({"inbound": msg}) if callable(matcher) else None
+        return self.commands.parse({"inbound": msg})
 
     async def _dispatch_system_command(self, msg: BusMessage) -> bool:
         """Run a system command on the control lane without mailbox admission."""
-        commands = getattr(self, "commands", None)
-        if commands is None:
+        if self.commands is None:
             return False
-        dispatch = getattr(commands, "dispatch_inbound", None)
-        if callable(dispatch):
-            return bool(await dispatch(msg, system=True))
-        raw = commands.text_from({"inbound": msg})
-        return bool(await commands.dispatch_system(raw, {"inbound": msg}))
+        return (await self.commands.dispatch_inbound(msg, system=True)) is not None
 
     async def _emit_existing_agent_created(self) -> None:
         """Publish created once for identities supplied by AgentService at startup."""
-        hooks = getattr(self, "hooks", None)
-        registry = getattr(self, "agent_registry", None)
+        hooks = self.hooks
+        registry = self.agent_registry
         if hooks is None or registry is None:
             return
-        emitted = getattr(self, "_agent_created_emitted", set())
-        self._agent_created_emitted = emitted
+        emitted = self._agent_created_emitted
         for record in tuple(registry.list()):
             if record["id"] in emitted:
                 continue
@@ -463,9 +446,44 @@ class AgentLoop:
         )
         return result
 
+    async def publish_command_result(self, inbound: BusMessage, result) -> None:
+        """Publish a direct Command result without opening an Agent Turn."""
+        if result is None or not getattr(result, "text", ""):
+            return
+        level = "error" if getattr(result, "kind", "success") == "error" else "info"
+        await self.bus.publish_outbound(
+            SessionCommandMessage(
+                from_channel=inbound.from_channel,
+                to_channel=inbound.from_channel,
+                from_session=inbound.from_session,
+                to_session=inbound.from_session,
+                data=CommandMessagePayload(content=result.text, level=level),
+                metadata=inbound.metadata,
+            )
+        )
+
+    async def resume_confirmation(
+        self,
+        session_id: str,
+        channel_id: str,
+        events: list,
+        metadata: InboundMetadata,
+    ):
+        """Resume a paused Agent through the existing Session Event path."""
+        inbound = BusMessage(
+            type="user_message",
+            from_channel=channel_id,
+            from_session=session_id,
+            to_channel="agent",
+            to_session=session_id,
+            data={"session_id": session_id, "content": ""},
+            metadata=metadata,
+        )
+        return await self.lanes.resume_confirmation(inbound, events)
+
     async def _emit_session_event_hook(self, session_id: str, event, result) -> None:
         """Notify observers only after SessionProjection has committed the fact."""
-        hooks = getattr(self, "hooks", None)
+        hooks = self.hooks
         if hooks is None:
             return
         payload = SessionEventPayload(
@@ -482,7 +500,7 @@ class AgentLoop:
             )
 
     async def _flush_session_hooks(self, session_id: str, reason: str) -> None:
-        hooks = getattr(self, "hooks", None)
+        hooks = self.hooks
         if hooks is None:
             return
         await hooks.dispatch(

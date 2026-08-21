@@ -43,6 +43,8 @@ class CompactionPort(Protocol):
 
     async def cancel_all_compact_tasks(self) -> None: ...
 
+    def bind_event_emitter(self, emit_event) -> None: ...
+
 
 class NullCompactionService:
     """No-op port used when the optional Compaction Feature is disabled."""
@@ -69,4 +71,7 @@ class NullCompactionService:
         return False
 
     async def cancel_all_compact_tasks(self) -> None:
+        return None
+
+    def bind_event_emitter(self, _emit_event) -> None:
         return None

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 from xml.sax.saxutils import escape
 
-from ftre.services.attachment.store import load_as_data_url
+from ftre.services.attachment.codec import load_as_data_url
 
 IMAGE_OMITTED_NOTICE = "[图片附件已省略：当前模型不支持视觉输入]"
 

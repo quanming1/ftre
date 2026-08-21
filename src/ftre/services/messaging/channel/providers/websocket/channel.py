@@ -22,6 +22,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketState
 
+from ftre.services.attachment import AttachmentService
 from ftre.services.messaging.bus import (
     GLOBAL_SESSION,
     BusMessage,
@@ -97,15 +98,16 @@ def _validate_attachments(attachments) -> tuple[bool, str]:
     return True, ""
 
 
-def _persist_attachments(attachments: list | None) -> None:
+def _persist_attachments(
+    attachments: list | None,
+    attachment_service: AttachmentService,
+) -> None:
     """将 attachments 中的 base64 data 落盘，替换为 path。
 
     在 _validate_attachments 校验通过后调用。原地修改 attachments 列表。
     """
     if not attachments:
         return
-
-    from ftre.services.attachment.store import save_image
 
     for att in attachments:
         if not isinstance(att, dict):
@@ -123,7 +125,7 @@ def _persist_attachments(attachments: list | None) -> None:
             logger.warning(f"[ws-channel] 附件落盘失败，跳过: {name}")
             continue
 
-        path = save_image(raw, mime, original_name=name)
+        path = attachment_service.save_image(raw, mime, original_name=name)
         del att["data"]
         att["path"] = path
 
@@ -137,6 +139,7 @@ class WebSocketChannel(Channel):
         port: int = 48650,
         plugin_manager=None,
         app: FastAPI | None = None,
+        attachment_service: AttachmentService | None = None,
     ):
         super().__init__(channel_id="ws", name="WebSocket Channel", bus=bus)
         self.host = host
@@ -163,6 +166,9 @@ class WebSocketChannel(Channel):
         self._session_snapshot_provider = None
         self._server = None
         self._server_task: asyncio.Task | None = None
+        # Attachment persistence is a Service dependency; the channel never
+        # reaches into the attachment store or constructs a global fallback.
+        self._attachment_service = attachment_service
 
         # 注册路由
         self.app.websocket("/")(self._ws_endpoint)
@@ -440,7 +446,19 @@ class WebSocketChannel(Channel):
             return
 
         # 附件落盘：base64 → temp 文件路径，事件链路不再携带 base64
-        _persist_attachments(data.get("attachments"))
+        attachments = data.get("attachments")
+        if attachments and self._attachment_service is None:
+            await self._reject(
+                ws,
+                frame_id,
+                session_id,
+                "附件服务未就绪，请稍后重试",
+                code="attachment_service_unavailable",
+                retryable=True,
+            )
+            return
+        if self._attachment_service is not None:
+            _persist_attachments(attachments, self._attachment_service)
 
         # user_message 隐式 attach：接收消息的 ws 自动跟踪该 session
         self._attach(session_id, ws)

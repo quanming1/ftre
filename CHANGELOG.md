@@ -2,6 +2,25 @@
 
 ## [未发布]
 
+### F8 Command Plane 与 Agent Plane 解耦
+
+- CommandRuntime 收敛为 `CommandContext + CommandResult(success/error)`，记录配对的
+  `command/run` 与 `command/done` 生命周期事件。
+- 普通 Command 在 SessionLane 内直接执行，不再进入 Mailbox/TurnExecutor；`/compact`、
+  `/compress-fast`、`/fork` 改用 CompactionPort/SessionService，`/allow`、`/deny` 复用
+  既有确认事件恢复 Agent。
+- 删除 TurnExecutor 的 Command 状态机、混合结果类型、完整 AgentLoop 闭包和重复命令适配器。
+
+### F9 Service Inject/Provide 与架构债务清理
+
+- AgentLoopProvider、TurnExecutor、WebSocket、MCP、Schedule 和内置 Tool 的跨 Service 依赖
+  改为显式 Inject/Provide 或类型化 Provider 参数。
+- 删除 Loop Service Locator、动态依赖查找、重复 facade 与无效生命周期回调；Attachment、
+  Session、Command、Compaction 等 Owner 统一到公开 Service/Contract。
+- 新增 Service 依赖图和架构门禁，覆盖 Owner、注入声明、生命周期可逆性和旧路径扫描。
+- 审计复核统一 Tool 的 `sessions` 注入键，并为 Session Title 后台线程增加可逆关闭和
+  Fiber disposer。
+
 ### F7 Agent Core Hook 直连与 Turn-stopping Continuation
 
 - 将 Core-facing HookSpec、Payload、Result 的唯一实现下沉到 `ftre-agent-core`，ftre 业务路径改为重导出。

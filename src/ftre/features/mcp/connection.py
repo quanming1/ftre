@@ -23,6 +23,8 @@ from .config import McpServerConfig, parse_mcp_config
 if TYPE_CHECKING:
     from ftre_agent_core.tool import ToolRegistry
 
+    from ftre.services.attachment import AttachmentService
+
 logger = logging.getLogger(__name__)
 
 
@@ -172,9 +174,14 @@ class McpManager:
     config watcher 和 reload 共享同一个 asyncio.Lock，避免并发重复注册。
     """
 
-    def __init__(self, tool_registry: ToolRegistry | None = None):
+    def __init__(
+        self,
+        tool_registry: ToolRegistry | None = None,
+        attachment_service: AttachmentService | None = None,
+    ):
         self._connections: dict[str, McpConnection] = {}
         self._tool_registry = tool_registry
+        self._attachments = attachment_service
         self._reload_lock = asyncio.Lock()
         self._watcher_task: asyncio.Task | None = None
 
@@ -343,6 +350,10 @@ class McpManager:
     def get_connected_servers(self) -> list[str]:
         """返回所有已连接的服务器名"""
         return [name for name, conn in self._connections.items() if conn.is_connected]
+
+    @property
+    def attachment_service(self) -> AttachmentService | None:
+        return self._attachments
 
     def get_status(self) -> dict[str, str]:
         """返回所有服务器的连接状态"""

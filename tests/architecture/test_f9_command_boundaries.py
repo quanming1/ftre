@@ -13,7 +13,12 @@ def _text(relative: str) -> str:
 def test_turn_executor_has_no_command_matching_or_legacy_filter_path() -> None:
     source = _text("services/agent_loop/runtime/loop/turn_executor.py")
     forbidden = (
+        "ftre.services.command",
         "command_manager",
+        "execute_command",
+        "TurnStatus.COMMAND",
+        "command_name",
+        "_command(",
         "match_any(",
         "try_dispatch(",
         "BEFORE_AGENT_RUN",
@@ -29,7 +34,7 @@ def test_agent_loop_parses_commands_before_mailbox_admission() -> None:
     source = _text("services/agent_loop/runtime/loop/engine.py")
     assert "_parse_ingress_command" in source
     assert "lanes.dispatch_command" in source
-    assert "parser({\"inbound\": msg})" in source
+    assert "self.commands.parse({\"inbound\": msg})" in source
 
 
 def test_command_layer_does_not_import_private_agent_runtime() -> None:
@@ -38,6 +43,18 @@ def test_command_layer_does_not_import_private_agent_runtime() -> None:
     for path in command_root.rglob("*.py"):
         source = path.read_text(encoding="utf-8")
         assert not any(item in source for item in forbidden), path
+
+
+def test_builtin_commands_use_public_service_owners() -> None:
+    source = _text("services/command/builtin.py")
+    forbidden = ("AgentLoop", "loop.compaction", "loop.session_manager")
+    assert not any(item in source for item in forbidden)
+
+
+def test_command_result_is_not_an_agent_control_union() -> None:
+    source = _text("services/command/types.py")
+    forbidden = ("ResumeAgent", "RewritePrompt", "Passthrough", "SendMessage", "Handled")
+    assert not any(item in source for item in forbidden)
 
 
 def test_retired_filter_module_is_gone() -> None:

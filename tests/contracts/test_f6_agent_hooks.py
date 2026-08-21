@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from cordis import Context
@@ -222,6 +223,8 @@ async def test_request_error_retry_is_bounded_by_progress_token():
     loop = object.__new__(AgentLoop)
     loop.hooks = HookRuntime(context)
     loop.agent_registry = AgentRegistry()
+    loop._agent_created_emitted = set()
+    loop.session_manager = AsyncMock()
     calls: list[int] = []
 
     async def recover(payload, _next_):
@@ -237,7 +240,12 @@ async def test_request_error_retry_is_bounded_by_progress_token():
     from ftre.services.agent_loop.runtime.loop.turn_executor import Turn, TurnExecutor
 
     turn = Turn("turn-1", _inbound(), "session-1")
-    executor = TurnExecutor(loop)
+    executor = TurnExecutor(
+        loop,
+        sessions=loop.session_manager,
+        hooks=loop.hooks,
+        agent_registry=loop.agent_registry,
+    )
 
     async def no_emit(*_args, **_kwargs):
         return None
@@ -258,6 +266,8 @@ async def test_request_and_turn_stopped_hooks_use_typed_boundaries():
     loop = object.__new__(AgentLoop)
     loop.hooks = HookRuntime(context)
     loop.agent_registry = AgentRegistry()
+    loop._agent_created_emitted = set()
+    loop.session_manager = AsyncMock()
     observed: list[str] = []
     signals: list[asyncio.Event] = []
 
@@ -280,7 +290,12 @@ async def test_request_and_turn_stopped_hooks_use_typed_boundaries():
     from ftre.services.agent_loop.runtime.loop.turn_executor import Turn, TurnExecutor
 
     turn = Turn("turn-1", _inbound(), "session-1", config=AgentConfig())
-    executor = TurnExecutor(loop)
+    executor = TurnExecutor(
+        loop,
+        sessions=loop.session_manager,
+        hooks=loop.hooks,
+        agent_registry=loop.agent_registry,
+    )
     result = await executor._request_config(turn, turn.config)
     await executor._notify_turn_stopped(turn)
     await asyncio.sleep(0)

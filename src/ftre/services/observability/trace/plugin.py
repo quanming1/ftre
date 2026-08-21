@@ -16,6 +16,3 @@ def apply(ctx: Context, config=None):
         return
     service = TraceService()
     ctx.provide("traces", service)
-    close = getattr(service.store, "close", None)
-    if close:
-        ctx.effect(lambda: close, label="traces:close")

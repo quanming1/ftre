@@ -10,8 +10,6 @@ from pathlib import Path
 from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
-from ftre.services.attachment.store import save_image
-
 from ._io import file_meta_header, read_text
 from ._truncate import truncate_output
 from ._workspace import WorkspaceAccessor
@@ -119,7 +117,7 @@ def _compress_image(data: bytes, mime: str) -> tuple[bytes, str]:
     return compressed, "image/jpeg"
 
 
-def _image_to_event(path: str, cwd: str) -> HintBlockEvent | str:
+def _image_to_event(path: str, cwd: str, attachments) -> HintBlockEvent | str:
     """把图片加载为可直接喂给 LLM 的视觉输入事件；失败时返回 [error] 文本。
 
     新协议下工具返回 HintBlockEvent（继承 EventBase），react_runner 会把 hint
@@ -141,7 +139,9 @@ def _image_to_event(path: str, cwd: str) -> HintBlockEvent | str:
 
     # 落盘到 temp 目录，事件链路只携带路径；base64 转换在 SessionManager 出口完成。
     original_name = Path(display_path).name if display_path else ""
-    stored_path = save_image(data, mime, original_name=original_name)
+    if attachments is None:
+        return "[error] runtime_context.attachments 未注入"
+    stored_path = attachments.save_image(data, mime, original_name=original_name)
     logger.info(f"[read] image {display_path} -> {stored_path} ({mime}, {len(data)} bytes)")
 
     import base64
@@ -172,6 +172,7 @@ def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> To
         end_line: int = 0,
         ws: WorkspaceAccessor = Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
         llm_config=Injected("llm_config"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        attachments=Injected("attachments"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str | HintBlockEvent | tuple[str, dict]:
         try:
             if not isinstance(ws, WorkspaceAccessor):
@@ -183,7 +184,7 @@ def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> To
             if start_line <= 0 and end_line <= 0 and _is_image_path(path):
                 if not getattr(llm_config, "vision", False):
                     return "[error] 当前模型不支持视觉输入，无法读取图片内容。请切换到支持 vision 的模型后再读取图片。"
-                return _image_to_event(path, cwd)
+                return _image_to_event(path, cwd, attachments)
 
             p = _resolve(path, cwd)
             if not p.exists():

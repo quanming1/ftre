@@ -38,6 +38,8 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         "tool_registry": "tools",
         "command_service": services.commands,
         "plugin_manager": "plugins",
-        "agent_manager": "profiles",
-        "agent_registry": None,
-    }
+            "agent_manager": "profiles",
+            "agent_registry": None,
+            "agent_service": None,
+            "attachments": None,
+        }

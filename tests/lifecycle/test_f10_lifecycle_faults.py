@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from cordis import Context, FiberState
@@ -347,6 +348,8 @@ async def test_request_retry_is_rejected_after_turn_cancellation() -> None:
     loop = object.__new__(AgentLoop)
     loop.hooks = HookRuntime(root)
     loop.agent_registry = AgentRegistry()
+    loop._agent_created_emitted = set()
+    loop.session_manager = AsyncMock()
     called = 0
 
     async def retry(_payload, _next_):
@@ -362,7 +365,12 @@ async def test_request_retry_is_rejected_after_turn_cancellation() -> None:
     )
     turn = Turn("turn-1", _inbound("hello"), "session-1")
     turn.cancellation.set()
-    executor = TurnExecutor(loop)
+    executor = TurnExecutor(
+        loop,
+        sessions=loop.session_manager,
+        hooks=loop.hooks,
+        agent_registry=loop.agent_registry,
+    )
     executor._emit_step = _noop_emit
 
     assert await executor._request_error_recovery(

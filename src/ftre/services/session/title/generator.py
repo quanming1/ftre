@@ -46,6 +46,9 @@ class TitleGenPlugin:
     def __init__(self, sessions=None, event_loop=None) -> None:
         self._sessions = sessions
         self._event_loop = event_loop
+        self._stopping = threading.Event()
+        self._threads: set[threading.Thread] = set()
+        self._threads_lock = threading.Lock()
 
     def configure(self, config: TitleGenConfig | dict | None = None) -> None:
         if isinstance(config, dict):
@@ -73,7 +76,7 @@ class TitleGenPlugin:
 
         inbound_data = ctx.inbound_data
         config = ctx.config
-        event_loop = getattr(ctx, "event_loop", None) or self._event_loop
+        event_loop = ctx.event_loop or self._event_loop
 
         # event_loop 缺失会导致后续 run_coroutine_threadsafe 静默失败，提前显式拦截
         if event_loop is None:
@@ -111,9 +114,14 @@ class TitleGenPlugin:
     ) -> None:
         """起守护线程跑 LLM 生成标题"""
 
+        if self._stopping.is_set():
+            return
+
         def worker() -> None:
             # session 是否已有标题的检查放在 worker 线程里：这里不是事件循环线程，
             # run_coroutine_threadsafe(...).result() 可以安全阻塞等待，不会死锁。
+            if self._stopping.is_set():
+                return
             try:
                 session = asyncio.run_coroutine_threadsafe(
                     self._sessions.get_session(session_id),
@@ -131,6 +139,8 @@ class TitleGenPlugin:
                 )
                 return
 
+            if self._stopping.is_set():
+                return
             try:
                 title = self._generate_title(text, config)
             except Exception:
@@ -140,6 +150,8 @@ class TitleGenPlugin:
                 logger.warning(
                     f"[title_gen] LLM 返回空标题，放弃写入 (session={session_id})"
                 )
+                return
+            if self._stopping.is_set():
                 return
             try:
                 asyncio.run_coroutine_threadsafe(
@@ -153,11 +165,35 @@ class TitleGenPlugin:
                 f"[title_gen] 标题生成成功 session={session_id} title={title!r}"
             )
 
-        threading.Thread(
-            target=worker,
+        def run_worker() -> None:
+            try:
+                worker()
+            finally:
+                with self._threads_lock:
+                    self._threads.discard(threading.current_thread())
+
+        thread = threading.Thread(
+            target=run_worker,
             name=f"title-gen-{session_id}",
             daemon=True,
-        ).start()
+        )
+        with self._threads_lock:
+            if self._stopping.is_set():
+                return
+            self._threads.add(thread)
+        thread.start()
+
+    def close(self) -> None:
+        """Stop new jobs and wait briefly for existing title workers."""
+        self._stopping.set()
+        with self._threads_lock:
+            threads = tuple(self._threads)
+        current = threading.current_thread()
+        for thread in threads:
+            if thread is not current:
+                thread.join(timeout=0.2)
+        with self._threads_lock:
+            self._threads.difference_update(threads)
 
     @staticmethod
     def _has_prior_user_message(messages) -> bool:

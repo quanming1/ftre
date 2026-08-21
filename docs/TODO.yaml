@@ -504,3 +504,98 @@ stages:
           - id: F7.6
             title: 跨仓库安装验证、全量验收与执行报告
             status: done
+
+      - id: F8
+        title: Command Plane 与 Agent Plane 解耦
+        status: done
+        prd: docs/prd/PRD-F8-command-plane-agent-plane.md
+        prd_status: 已验收
+        date: 2026-08-21
+        depends_on:
+          - F6.9
+          - F6.10
+          - F7
+        modules:
+          - src/ftre/services/command/
+          - src/ftre/services/agent_loop/runtime/loop/engine.py
+          - src/ftre/services/agent_loop/runtime/mailbox/lane.py
+          - src/ftre/services/agent_loop/runtime/loop/turn_executor.py
+          - src/ftre/services/compaction/
+          - src/ftre/features/compaction/
+          - src/ftre/services/session/
+          - docs/prd/README.md
+          - tests/contracts/
+          - tests/architecture/
+          - tests/lifecycle/
+        acceptance: Command 通过独立 Runtime 执行并产生命令生命周期事件；纯 Command 不创建 Turn、不进入 Agent；需要 Agent 的命令复用已有 Session Event 恢复流程，不新增 AgentControlPort、AgentEffect 或 ResumeRequest；TurnExecutor 删除全部 Command 依赖；Compaction 与 Session 使用真实 Service Owner；Loop 间接引用、兼容分支、空壳和缓存完成清理；Session 串行、取消、幂等、失败和客户端现有协议保持不变；全量质量门禁和 Gateway 回归通过
+        tasks:
+          - id: F8.1
+            title: CommandContext、CommandResult 与生命周期协议冻结
+            status: done
+          - id: F8.2
+            title: CommandRuntime 独立执行与 command/run、command/done 事件
+            status: done
+          - id: F8.3
+            title: SessionLane 改为直接调用 CommandRuntime
+            status: done
+          - id: F8.4
+            title: 复用 Session Event 的 allow/deny Agent 恢复
+            status: done
+          - id: F8.5
+            title: 内置 Command 迁移到真实 Service Owner
+            status: done
+          - id: F8.6
+            title: TurnExecutor Command 状态与架构债务清理
+            status: done
+          - id: F8.7
+            title: Command/Agent 边界、并发与故障专项测试
+            status: done
+          - id: F8.8
+            title: 全量验收、文档同步与执行报告
+            status: done
+
+      - id: F9
+        title: Service 依赖注入与架构债务清理
+        status: done
+        prd: docs/prd/PRD-F9-service-injection-and-debt-cleanup.md
+        prd_status: 已验收
+        date: 2026-08-21
+        depends_on:
+          - F6.4
+          - F7
+          - F8
+        modules:
+          - src/ftre/platform/plugin_runtime/
+          - src/ftre/app/gateway/
+          - src/ftre/services/
+          - src/ftre/features/
+          - tests/architecture/
+          - tests/contracts/
+          - tests/lifecycle/
+          - docs/prd/README.md
+        acceptance: Service 依赖通过 Inject/Provide、公开 Contract 或类型化 Provider 表达；Command、Feature、HTTP/WS、Tool 不再通过 AgentLoop 字段获取其他 Service；必选依赖缺失、重复 Owner、作用域错误和卸载残留有自动化门禁；Compaction、Session、Config、Filesystem、Attachment、Trace 等 Owner 清晰；死代码、兼容壳、空目录、动态依赖和生成缓存完成扫描清理；现有行为、全量质量门禁和 Gateway 回归通过
+        tasks:
+          - id: F9.1
+            title: Service 依赖图与架构债务基线
+            status: done
+          - id: F9.2
+            title: Inject/Provide 契约与依赖架构门禁
+            status: done
+          - id: F9.3
+            title: Command、Compaction、Session Service Owner 收敛
+            status: done
+          - id: F9.4
+            title: AgentLoop Provider 与数据面依赖边界收敛
+            status: done
+          - id: F9.5
+            title: Feature、Infrastructure 与配置依赖迁移
+            status: done
+          - id: F9.6
+            title: 生命周期、作用域与可选依赖验证
+            status: done
+          - id: F9.7
+            title: 全盘死代码、兼容壳、空目录与生成缓存清理
+            status: done
+          - id: F9.8
+            title: 全量验收、文档同步与执行报告
+            status: done

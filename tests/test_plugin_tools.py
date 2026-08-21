@@ -10,6 +10,7 @@ from ftre_agent_core.tool import Tool, ToolRegistry
 from ftre.platform.hooks import HookRuntime
 from ftre.services.agent.hooks import AgentSubject
 from ftre.services.agent.registry import AgentRegistry
+from ftre.services.attachment import AttachmentService
 from ftre.services.http.service import HttpService
 from ftre.services.system_prompt.hooks import (
     SYSTEM_PROMPT_ASSEMBLE_SPEC,
@@ -56,6 +57,7 @@ def test_read_tool_reads_relative_image_path(tmp_path):
         "screen.png",
         ws=_FakeWorkspace(str(tmp_path)),
         llm_config=SimpleNamespace(vision=True),
+        attachments=AttachmentService(tmp_path / "assets"),
     )
     assert isinstance(result, HintBlockEvent)
     assert result.metadata["path"] == str(image.resolve())
