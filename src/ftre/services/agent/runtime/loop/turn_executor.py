@@ -545,6 +545,7 @@ class TurnExecutor:
                 workspace=workspace,
                 reply_id=turn.confirm_event.reply_id,
                 agent_dir=(agent_profile.agent_dir if agent_profile else ""),
+                event_loop=loop._event_loop,
                 config=hook_config,
                 messages=records,
             )
@@ -940,6 +941,7 @@ class TurnExecutor:
                 workspace=workspace,
                 reply_id=reply_id,
                 agent_dir=agent_dir,
+                event_loop=loop._event_loop,
                 config=hook_config,
                 messages=messages,
             )

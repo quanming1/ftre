@@ -320,6 +320,17 @@ class Fiber:
             self.state = FiberState.ACTIVE
             self._done.set()
         except Exception as exc:
+            # A partially applied plugin must not leak registrations when its
+            # entry point fails.  Cleanup is best-effort so the original
+            # startup error remains the diagnostic users see.
+            for effect in reversed(self.effects):
+                try:
+                    result = effect()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception:
+                    logger.exception("cordis rollback effect failed: %s (%s)", self.plugin_id, effect.label)
+            self.effects.clear()
             self.error = exc
             self.state = FiberState.FAILED
             self._done.set()

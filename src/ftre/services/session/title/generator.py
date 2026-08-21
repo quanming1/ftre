@@ -20,8 +20,6 @@ import threading
 
 from pydantic import BaseModel, ConfigDict
 
-from ftre.plugin import BEFORE_MESSAGES_BUILD, Plugin
-
 logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -40,18 +38,22 @@ class TitleGenConfig(BaseModel):
     max_chars: int = DEFAULT_MAX_CHARS
 
 
-class TitleGenPlugin(Plugin):
+class TitleGenPlugin:
     name = "title_gen"
     version = "1.0.0"
-    inject = ("session_manager", "event_loop")
-    Config = TitleGenConfig
+    inject = ("sessions",)
 
-    async def setup(self, ctx, config: TitleGenConfig) -> None:
-        self._ctx = ctx
-        self._system_prompt = config.system_prompt
-        self._input_truncate = config.input_truncate
-        self._max_chars = config.max_chars
-        ctx.on(BEFORE_MESSAGES_BUILD, self._on_build)
+    def __init__(self, sessions=None, event_loop=None) -> None:
+        self._sessions = sessions
+        self._event_loop = event_loop
+
+    def configure(self, config: TitleGenConfig | dict | None = None) -> None:
+        if isinstance(config, dict):
+            config = TitleGenConfig.model_validate(config)
+        self._config = config or TitleGenConfig()
+        self._system_prompt = self._config.system_prompt
+        self._input_truncate = self._config.input_truncate
+        self._max_chars = self._config.max_chars
         logger.info(
             "[title_gen] 插件已就绪，已注册 before_messages_build hook "
             f"(input_truncate={self._input_truncate}, max_chars={self._max_chars})"
@@ -71,7 +73,7 @@ class TitleGenPlugin(Plugin):
 
         inbound_data = ctx.inbound_data
         config = ctx.config
-        event_loop = self._ctx.event_loop
+        event_loop = getattr(ctx, "event_loop", None) or self._event_loop
 
         # event_loop 缺失会导致后续 run_coroutine_threadsafe 静默失败，提前显式拦截
         if event_loop is None:
@@ -114,7 +116,7 @@ class TitleGenPlugin(Plugin):
             # run_coroutine_threadsafe(...).result() 可以安全阻塞等待，不会死锁。
             try:
                 session = asyncio.run_coroutine_threadsafe(
-                    self._ctx.session_manager.get_session(session_id),
+                    self._sessions.get_session(session_id),
                     event_loop,
                 ).result(timeout=10)
             except Exception:
@@ -141,7 +143,7 @@ class TitleGenPlugin(Plugin):
                 return
             try:
                 asyncio.run_coroutine_threadsafe(
-                    self._ctx.session_manager.update_session(session_id, title=title),
+                    self._sessions.update_session(session_id, title=title),
                     event_loop,
                 ).result(timeout=10)
             except Exception:
@@ -209,7 +211,7 @@ class TitleGenPlugin(Plugin):
             return "".join(parts)
 
         raw = (
-            asyncio.run_coroutine_threadsafe(_collect(), self._ctx.event_loop)
+            asyncio.run_coroutine_threadsafe(_collect(), self._event_loop)
             .result(timeout=60)
             .strip()
         )
