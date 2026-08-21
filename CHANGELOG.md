@@ -2,6 +2,14 @@
 
 ## [未发布]
 
+### F7 Agent Core Hook 直连与 Turn-stopping Continuation
+
+- 将 Core-facing HookSpec、Payload、Result 的唯一实现下沉到 `ftre-agent-core`，ftre 业务路径改为重导出。
+- Agent Core 直接注入 Cordis `HookRuntime` 和 Agent scope context，Tool/LLM 不再经过转换适配器。
+- 删除 `ToolHookBridge`、`HookedToolRegistry`、`HookedLLMAdapter` 及空的 `infrastructure/agent_core` 目录。
+- `agent/turn-stopping` 在 finalize 前支持有界 `ContinueTurn`，`agent/turn-stopped` 保持 ftre 侧完成后观察语义。
+- 新增 Core direct pipeline 与 ftre 架构门禁；ftre 389 项 pytest、Core 234 项 pytest、双仓库 ruff 和 Gateway smoke 通过。
+
 ### F1 后端插件化架构重构
 
 - 基于 `cordis` 公共 Context/Fiber/Service/Inject/Effect 建立唯一新 Composition Root。
@@ -38,6 +46,25 @@
   装配 CronScheduler。
 - 新增 Store 安全、Service CRUD、Scheduler 并发、Plugin 生命周期、Router 边界和旧实现删除
   架构测试；全量 327 项测试通过。
+
+### F6.9 Command 解耦与旧 Hook 删除
+
+- CommandService 在 Bus 接入边界完成解析；普通命令由 SessionLane 串行执行，命令文本不进入 Inbox 或模型上下文。
+- `/compact` 与 `/compress-fast` 只通过公开 CompactionPort；TurnExecutor 不再匹配或派发 Command。
+- 删除 `before_run`、`before_messages_build`、可变 Filter 兼容路径和 `runtime/hooks.py`，统一使用结构化 Prompt Hook。
+- 新增 Command ingress 契约与架构门禁；全量 375 项测试、Hook/契约/架构/生命周期专项通过。
+
+### F6.10 生命周期、作用域、并发与故障测试
+
+- HookRuntime 注册绑定 Cordis Fiber Effect；unload/restart 清理旧 Listener，并等待 in-flight Hook 收敛。
+- 新增 Agent scope 同 id 重建隔离、pre-step 故障重试、Turn cancellation/retry、压缩失败保留 pending 和去重消费测试。
+- 全量测试与专项门禁覆盖 pending 不丢失、不重复执行及生命周期资源无泄漏语义。
+
+### F6.11 最终验收与执行报告
+
+- F6 核心范围完成最终验收：全量测试、Hook/契约/架构/生命周期专项、ruff、YAML、diff check 和 Gateway 启停 smoke 全部通过。
+- 补齐 `session/created` / `session/disposed` 生命周期 Hook，完善公共 Hook 清单文档和执行报告。
+- F6.12 PyPI 发行物切换继续作为独立后置任务。
 
 ## [0.2.4] - 2026-08-20
 

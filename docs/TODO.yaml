@@ -159,7 +159,7 @@ stages:
         status: done
         date: 2026-08-14
         prd: docs/prd/PRD-C4-plugin-kernel.md
-        prd_status: 开发中
+        prd_status: 已验收
         modules:
           - src/ftre/plugin/kernel/
           - src/ftre/plugin/builtin/
@@ -247,7 +247,7 @@ stages:
         prd_status: 已验收
         modules:
           - src/ftre/services/session/
-          - src/ftre/services/agent/runtime/
+          - src/ftre/services/agent_loop/
           - src/ftre/services/messaging/
           - src/ftre/services/command/
           - src/ftre/services/tools/
@@ -278,9 +278,8 @@ stages:
         prd: docs/prd/PRD-F3-plugin-kernel-retirement.md
         prd_status: 已验收
         modules:
-          - src/cordis/
           - src/ftre/platform/plugin_runtime/
-          - src/ftre/services/agent/runtime/hooks.py
+          - src/ftre/platform/hooks/
           - src/ftre/features/
           - src/ftre/api/
           - tests/architecture/
@@ -382,4 +381,126 @@ stages:
             status: done
           - id: F5.7
             title: 全量验收与执行报告
+            status: done
+
+      - id: F6
+        title: 官方 cordis-py 运行时与语义 Hook 系统
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F6-semantic-hook-system.md
+        prd_status: 已验收
+        modules:
+          - pyproject.toml
+          - src/ftre/platform/hooks/
+          - src/ftre/services/agent/
+          - src/ftre/services/agent_loop/
+          - src/ftre/services/tools/
+          - src/ftre/services/session/
+          - src/ftre/services/system_prompt/
+          - src/ftre/services/command/
+          - src/ftre/features/compaction/
+          - src/ftre/infrastructure/agent_core/
+          - tests/hooks/
+          - tests/architecture/
+          - tests/contracts/
+          - tests/lifecycle/
+        acceptance: 建立 continuation waterfall、类型化 Hook 契约、Agent 作用域和 Fiber 生命周期；AgentLoop 只触发稳定语义边界；Compaction、Tool、Session、Prompt、Command 通过公开 Service 与 Hook 解耦；删除旧可变 filter Hook；全量质量门禁和 Gateway 生命周期回归通过。cordis-py PyPI 发行物切换单列为 F6.12 后置任务，不阻塞 F6.3-F6.11。
+        tasks:
+          - id: F6.1
+            title: cordis-py 0.4.0 官方运行时接入
+            status: done
+          - id: F6.2
+            title: 官方 API 适配与重复内核删除
+            status: done
+          - id: F6.3
+            title: Hook 契约基线与架构门禁
+            status: done
+          - id: F6.4
+            title: 类型化 HookSpec、作用域与诊断
+            status: done
+          - id: F6.5
+            title: Agent Registry 与 AgentLoop Provider 分层
+            status: done
+          - id: F6.6
+            title: Agent 状态机语义 Hook 与 pending 领取治理
+            status: done
+          - id: F6.7
+            title: Tool、Session、System Prompt Hook 管线
+            status: done
+          - id: F6.8
+            title: Compaction Plugin Hook 化迁移
+            status: done
+          - id: F6.9
+            title: Command 解耦与旧 Hook 删除
+            status: done
+            date: 2026-08-21
+            modules:
+              - src/ftre/services/command/
+              - src/ftre/services/agent_loop/runtime/loop/engine.py
+              - src/ftre/services/agent_loop/runtime/mailbox/lane.py
+              - src/ftre/services/agent_loop/runtime/loop/turn_executor.py
+              - tests/architecture/test_f9_command_boundaries.py
+              - tests/contracts/test_f9_command_ingress.py
+            acceptance: Command 在接入层解析并绕过 Inbox；普通命令由 SessionLane 串行执行；/compact 只调用公开 CompactionPort；旧 before_run、before_messages_build、Filter 与兼容模块删除，专项和全量质量门禁通过
+          - id: F6.10
+            title: 生命周期、作用域、并发与故障测试
+            status: done
+            date: 2026-08-21
+            modules:
+              - src/ftre/platform/hooks/runtime.py
+              - tests/lifecycle/test_f10_lifecycle_faults.py
+              - tests/hooks/test_hook_runtime.py
+              - tests/contracts/test_f6_agent_hooks.py
+            acceptance: Hook Fiber unload/restart 可逆且等待 in-flight 调用；Agent scope 同 id 重建隔离；取消和重试边界明确；压缩失败保留 pending 并可显式取消；pre-step 故障重试不丢失、不重复消费；专项与全量质量门禁通过
+          - id: F6.11
+            title: 全量验收与执行报告
+            status: done
+            date: 2026-08-21
+            modules:
+              - docs/prd/PRD-F6-semantic-hook-system.md
+              - docs/execution/EXECUTION-F6-semantic-hook-system.md
+              - CHANGELOG.md
+            acceptance: 全量 pytest、Hook/契约/架构/生命周期专项、ruff、YAML、diff check 和 Gateway 启停 smoke 通过；PRD/TODO/CHANGELOG/执行报告同步；F6.12 PyPI 后置任务明确保留
+          - id: F6.12
+            title: cordis-py PyPI 发行物切换与洁净安装验收
+            status: todo
+
+      - id: F7
+        title: Agent Core 直接消费 ftre Hook 协议与 Turn-stopping Continuation
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F7-agent-core-hook-integration.md
+        prd_status: 已验收
+        depends_on:
+          - F6.1-F6.11
+        external_dependency: E:\ftre-agent-core（C1 独立 PR；两个仓库分别验证）
+        modules:
+          - src/ftre/platform/hooks/
+          - src/ftre/services/agent/hooks.py
+          - src/ftre/services/tools/hooks.py
+          - src/ftre/services/llm/hooks.py
+          - src/ftre/services/agent_loop/runtime/loop/
+          - tests/contracts/
+          - tests/architecture/test_f7_agent_core_direct.py
+          - tests/hooks/
+          - tests/lifecycle/
+        acceptance: Agent Core 直接消费 Core-facing ftre Hook 契约；Tool/LLM 不再经过重复转换层；agent/turn-stopping 在 Core finalize 前支持有界 Stop/Continue 决策；Session、Mailbox、Compaction 等 ftre-only Hook 不下沉；全量质量门禁、Core 独立测试和 Gateway 回归通过
+        tasks:
+          - id: F7.1
+            title: Core-facing Hook 契约所有权与跨仓库接口冻结
+            status: done
+          - id: F7.2
+            title: Agent Core Dispatcher 注入与旧 HookManager 退役
+            status: done
+          - id: F7.3
+            title: Tool/LLM 直接 Hook 管线与转换层删除
+            status: done
+          - id: F7.4
+            title: Turn-stopping 停止决策与 continuation 有界执行
+            status: done
+          - id: F7.5
+            title: Scope、取消、错误和生命周期测试
+            status: done
+          - id: F7.6
+            title: 跨仓库安装验证、全量验收与执行报告
             status: done

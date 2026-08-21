@@ -1,5 +1,7 @@
 # F1 后端插件化重构总执行报告
 
+> 基座纠偏说明（F6，2026-08-21）：本报告记录的是 F1 当时的历史执行结果。F1 报告中提到的 `src/cordis/` fallback 已被审计确认不是真正的 `cordis-py` 运行时，现已删除；当前 ftre 使用 `E:\cordis-py` 提供的官方 `cordis-py==0.4.0`。当前基座、安装方式和验证结果以 `docs/prd/PRD-F6-semantic-hook-system.md` 为准。
+
 ## 1. 执行结论
 
 F1 PRD 已在 `feature/F1-backend-plugin-refactor` 分支完成开发和验证。所有改动限定在 `E:\ftre`，没有修改 Desktop 客户端、`ftre-agent-core`、Octo 独立仓库或其他项目。
