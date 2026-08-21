@@ -273,10 +273,10 @@ stages:
 
       - id: F3
         title: 旧 Plugin Kernel 与兼容入口退役
-        status: in_progress
+        status: done
         date: 2026-08-21
         prd: docs/prd/PRD-F3-plugin-kernel-retirement.md
-        prd_status: approved
+        prd_status: 已验收
         modules:
           - src/cordis/
           - src/ftre/platform/plugin_runtime/
@@ -299,7 +299,7 @@ stages:
             status: done
           - id: F3.4
             title: 旧 Kernel 删除与架构门禁
-            status: in_progress
+            status: done
           - id: F3.5
             title: 全量验收与执行报告
-            status: todo
+            status: done

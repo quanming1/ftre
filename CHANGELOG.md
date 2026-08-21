@@ -16,6 +16,13 @@
 - 新增 AgentRuntimeProvider、Session/Agent/Trace/Attachment/Command Router，WebSocket 复用 Composition Host。
 - 生产启动路径移除 aggregate API、全局 setter 和 `bind_legacy_api`；保留旧 Plugin Kernel/API 仅作为兼容测试面。
 
+### F3 旧 Plugin Kernel 与兼容入口退役
+
+- Hook/Event、SessionTitle 和 Builtin Plugin 测试统一到 Cordis Context、Feature Plugin 与 Service-owned Router。
+- 删除旧 `ftre.plugin.kernel`、`ftre.plugin.builtin`、`ftre.plugin.api` 和 aggregate API；新增架构导入门禁。
+- 保留仅供已安装外部插件渐进迁移使用的窄 `ftre.plugin.Plugin` 标记入口，不恢复旧 Kernel 能力。
+- Cordis Plugin apply 失败时自动回滚已注册 Effect，避免启动半成品泄漏。
+
 ## [0.2.4] - 2026-08-20
 
 ### 修复

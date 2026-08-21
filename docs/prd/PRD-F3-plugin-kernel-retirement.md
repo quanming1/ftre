@@ -8,10 +8,10 @@
 |---|---|
 | 阶段 | F3 |
 | 名称 | 旧 Plugin Kernel 与兼容入口退役 |
-| 状态 | 开发中 |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-21 |
 | 定稿日期 | 2026-08-21 |
-| 验收日期 | — |
+| 验收日期 | 2026-08-21 |
 | 关联文档 | `docs/TODO.yaml` 阶段 F3；`AGENTS.md`；`docs/PROCESS.md`；`docs/prd/PRD-F1-backend-plugin-refactor.md`；`docs/prd/PRD-F2-data-plane-migration.md` |
 
 ## 1. 背景与目标
@@ -35,14 +35,14 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 
 ### 2.1 功能需求
 
-- [ ] **FR1：Hook 契约统一。** Agent Runtime 只使用 `services/agent/runtime/hooks.py` 和 Cordis Context Event；旧 `ftre.plugin.kernel.events` 不再被生产代码或新测试导入。
-- [ ] **FR2：旧 Builtin Plugin 迁移。** Skill、MCP、Plan、Team、Schedule、ContextGovern、SessionTitle 的测试改为验证 `features/*` 或 `services/*` 的新 Plugin/Service，删除 `src/ftre/plugin/builtin`。
-- [ ] **FR3：旧 Kernel 测试迁移。** 旧 FtreContext/EventHub/PluginRegistry/PluginLoader 测试替换为 Cordis Context/Fiber/PluginContext/Effect/PluginRuntime 测试，保留相同的依赖缺失、生命周期、事件过滤和失败诊断覆盖。
-- [ ] **FR4：旧 aggregate API 退役。** `src/ftre/api/routes.py`、`api/app.py` 和旧 setter 测试迁移到 Service-owned Router，删除旧 API 包中不再被引用的实现。
-- [ ] **FR5：旧 Plugin 公共入口收敛。** `ftre.plugin` 不再导出 FtreContext、EventHub、PluginLoader、PluginRegistry 等旧符号；公开入口只保留必要迁移说明或空兼容包，防止新代码误用。
-- [ ] **FR6：生产导入门禁。** `src/ftre/app`、`platform`、`services`、`features` 和 `cordis` 不得导入 `ftre.plugin`、`ftre.api` 或旧 Kernel/Builtin。
-- [ ] **FR7：外部 Plugin 边界保持。** 外部 `setup(ctx, config)` Plugin 仍可通过 Cordis `LegacyPluginContext` 使用公开 Service；规范 `module:attribute` Plugin 使用 `PluginContext`。
-- [ ] **FR8：删除旧实现。** 旧 Kernel、旧 Builtin、旧 aggregate API 和旧 `ftre.plugin.api` 在生产树中删除；仓库只保留新 Runtime 和明确的外部兼容说明。
+- [x] **FR1：Hook 契约统一。** Agent Runtime 只使用 `services/agent/runtime/hooks.py` 和 Cordis Context Event；旧 `ftre.plugin.kernel.events` 不再被生产代码或新测试导入。
+- [x] **FR2：旧 Builtin Plugin 迁移。** Skill、MCP、Plan、Team、Schedule、ContextGovern、SessionTitle 的测试改为验证 `features/*` 或 `services/*` 的新 Plugin/Service，删除 `src/ftre/plugin/builtin`。
+- [x] **FR3：旧 Kernel 测试迁移。** 旧 FtreContext/EventHub/PluginRegistry/PluginLoader 测试替换为 Cordis Context/Fiber/PluginContext/Effect/PluginRuntime 测试，保留相同的依赖缺失、生命周期、事件过滤和失败诊断覆盖。
+- [x] **FR4：旧 aggregate API 退役。** `src/ftre/api/routes.py`、`api/app.py` 和旧 setter 测试迁移到 Service-owned Router，删除旧 API 包中不再被引用的实现。
+- [x] **FR5：旧 Plugin 公共入口收敛。** `ftre.plugin` 不再导出 FtreContext、EventHub、PluginLoader、PluginRegistry 等旧符号；公开入口只保留必要迁移说明或空兼容包，防止新代码误用。
+- [x] **FR6：生产导入门禁。** `src/ftre/app`、`platform`、`services`、`features` 和 `cordis` 不得导入 `ftre.plugin`、`ftre.api` 或旧 Kernel/Builtin。
+- [x] **FR7：外部 Plugin 边界保持。** 外部 `setup(ctx, config)` Plugin 仍可通过 Cordis `LegacyPluginContext` 使用公开 Service；规范 `module:attribute` Plugin 使用 `PluginContext`。
+- [x] **FR8：删除旧实现。** 旧 Kernel、旧 Builtin、旧 aggregate API 和旧 `ftre.plugin.api` 在生产树中删除；仓库只保留新 Runtime 和明确的外部兼容说明。
 
 ### 2.2 非功能需求
 
@@ -85,15 +85,15 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 
 ## 4. 验收标准
 
-- [ ] **AC1：Hook 新契约。** Agent Runtime 只从 `services.agent.runtime.hooks` 导入 Hook Context/常量；Cordis Event filter 测试通过。
-- [ ] **AC2：Feature Plugin 行为保持。** Skill/MCP/Plan/Team/Schedule/ContextGovern/SessionTitle 新 Plugin 的 Tool、Prompt、Router、状态和 cleanup 测试通过。
-- [ ] **AC3：Kernel 语义覆盖。** 新测试覆盖 Provider/Consumer PENDING→ACTIVE、Effect LIFO、依赖下线、事件 filter 和 required failure。
-- [ ] **AC4：HTTP 旧表面删除。** `ftre.api.routes`、旧 setter 和 `ftre.api.app` 不再存在；Service-owned Router 路径基线保持。
-- [ ] **AC5：旧目录删除。** `src/ftre/plugin/kernel`、`src/ftre/plugin/builtin` 和无用 `src/ftre/plugin/api.py` 删除。
-- [ ] **AC6：生产导入清零。** 新四层和 Cordis 不导入旧 Plugin/API 包；架构测试阻止回归。
-- [ ] **AC7：外部兼容。** Octo test double、synthetic audit Plugin、历史 `module:Class` 入口兼容测试通过。
-- [ ] **AC8：全量质量。** pytest、ruff、diff check、Gateway health、WebSocket attach 和正常 dispose 全部通过。
-- [ ] **AC9：分支收尾。** F3 所有代码按切片提交，分支干净，执行报告完整。
+- [x] **AC1：Hook 新契约。** Agent Runtime 只从 `services.agent.runtime.hooks` 导入 Hook Context/常量；Cordis Event filter 测试通过。
+- [x] **AC2：Feature Plugin 行为保持。** Skill/MCP/Plan/Team/Schedule/ContextGovern/SessionTitle 新 Plugin 的 Tool、Prompt、Router、状态和 cleanup 测试通过。
+- [x] **AC3：Kernel 语义覆盖。** 新测试覆盖 Provider/Consumer PENDING→ACTIVE、Effect LIFO、依赖下线、事件 filter 和 required failure。
+- [x] **AC4：HTTP 旧表面删除。** `ftre.api.routes`、旧 setter 和 `ftre.api.app` 不再存在；Service-owned Router 路径基线保持。
+- [x] **AC5：旧目录删除。** `src/ftre/plugin/kernel`、`src/ftre/plugin/builtin` 和无用 `src/ftre/plugin/api.py` 删除。
+- [x] **AC6：生产导入清零。** 新四层和 Cordis 不导入旧 Plugin/API 包；架构测试阻止回归。
+- [x] **AC7：外部兼容。** Octo test double、synthetic audit Plugin、历史 `module:Class` 入口兼容测试通过。
+- [x] **AC8：全量质量。** pytest、ruff、diff check、Gateway health、WebSocket attach 和正常 dispose 全部通过。
+- [x] **AC9：分支收尾。** F3 所有代码按切片提交，分支干净，执行报告完整。
 
 ## 5. 测试计划
 
@@ -112,3 +112,4 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 | 2026-08-21 | 旧聚合 API 与图片路由测试迁移至 AttachmentService-owned Router | 删除全局 setter 和 aggregate router，保留图片预览兼容行为 |
 | 2026-08-21 | 删除旧 `ftre.plugin.kernel`、`ftre.plugin.builtin`、`ftre.plugin.api` 与兼容导出，加入架构导入门禁 | Cordis 与 platform Plugin Runtime 已覆盖依赖、事件、Effect、Loader 语义，旧实现不再需要保留 |
 | 2026-08-21 | 保留仅含 `Plugin` 标记类与 Hook 常量的 `ftre.plugin` 窄兼容入口 | 已安装 Octo 等外部旧式 `setup` 插件仍需完成渐进迁移；该入口不恢复 Kernel、Registry、Loader 或旧 Service |
+| 2026-08-21 | 完成全量 pytest、ruff、diff、Gateway health、WebSocket attach 与 dispose 验证；F3 标记已验收 | 所有 FR/AC 已有代码、测试和手动证据，进入阶段收尾 |
