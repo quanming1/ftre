@@ -53,7 +53,8 @@ src/ftre/features/schedule/
 | `09c4da4` | Schedule Owner 实现迁移与旧 cron 删除 |
 | `9a362e2` | Schedule Store/Service/Scheduler/Plugin/Router 测试与架构门禁 |
 | `58ecf39` | 加固 Job ID、重复创建、损坏排序和 run_history 边界 |
-| 收尾提交 | PRD、TODO、CHANGELOG 与执行报告同步 |
+| `717a067` | PRD、TODO、CHANGELOG 与执行报告同步 |
+| 收尾补充 | 记录最终缓存清理与工作区状态 |
 
 ## 4. 自动化验证
 
@@ -106,4 +107,4 @@ git diff --check
 - PRD：`docs/prd/PRD-F5-schedule-owner-cleanup.md`（已验收）
 - TODO：阶段 F5（`done`）
 - CHANGELOG：已追加 `[未发布]` F5 条目
-- 最终工作区：收尾提交后清理非源码缓存并确认干净
+- 最终工作区：干净；`__pycache__`、`.pyc`、`.pyo` 均已清理
