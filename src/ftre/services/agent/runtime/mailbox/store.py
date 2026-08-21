@@ -5,7 +5,7 @@ SessionManager 的原子持久化操作。这样执行调度与 JSON 状态格�
 """
 from __future__ import annotations
 
-from ftre.bus import BusMessage
+from ftre.services.messaging.bus import BusMessage
 from ftre.services.session.entity.state import MailboxState, QueueItem
 from ftre.services.session.service import RequestAdmission, SessionService
 

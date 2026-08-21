@@ -1,8 +1,14 @@
-from .base import Channel
-from .manager import ChannelManager
-from .subagent_channel import SUBAGENT_CHANNEL_ID, SubagentChannel
+"""Legacy Channel package surface; implementations live in ``services``."""
+
+from ftre.services.messaging.channel.base import Channel
+from ftre.services.messaging.channel.manager import ChannelManager
+from ftre.services.messaging.channel.providers.subagent.channel import (
+    SUBAGENT_CHANNEL_ID,
+    SubagentChannel,
+)
+from ftre.services.messaging.channel.providers.websocket.channel import WebSocketChannel
+
 from .test_channel import TestChannel
-from .ws_channel import WebSocketChannel
 
 __all__ = [
     "SUBAGENT_CHANNEL_ID",

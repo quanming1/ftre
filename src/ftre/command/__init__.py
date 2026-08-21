@@ -1,4 +1,8 @@
-from .manager import CommandManager
+"""Legacy Command package surface; implementations live in ``services``."""
+
+from ftre.services.command import CommandManager, CommandService
+
+__all__ = ["CommandManager", "CommandService"]
 from .types import (
     CommandContext,
     CommandDef,

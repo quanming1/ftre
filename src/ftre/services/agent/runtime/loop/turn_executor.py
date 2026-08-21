@@ -31,24 +31,31 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import Msg, from_openai_message
 
-from ftre.bus import BusMessage, CommandMessagePayload, SessionCommandMessage
-from ftre.command.types import (
+from ftre.config import AgentConfig, load_config
+from ftre.services.command.types import (
     Handled,
     Passthrough,
     ResumeAgent,
     RewritePrompt,
     SendMessage,
 )
-from ftre.config import AgentConfig, load_config
+from ftre.services.messaging.bus import (
+    BusMessage,
+    CommandMessagePayload,
+    SessionCommandMessage,
+)
 from ftre.services.session.message.multimodal import (
     build_user_content,
     normalize_stored_user_content,
 )
-from ftre.tools._workspace import WorkspaceAccessor, ensure_workspace_ext_dir
+from ftre.services.tools.builtin._workspace import (
+    WorkspaceAccessor,
+    ensure_workspace_ext_dir,
+)
 
 if TYPE_CHECKING:
-    from ftre.command.types import CommandDef
     from ftre.services.agent.profile.manager import AgentProfile
+    from ftre.services.command.types import CommandDef
 
     from .engine import AgentLoop
 

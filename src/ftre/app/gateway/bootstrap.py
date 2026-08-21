@@ -40,10 +40,6 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     from ftre_agent_core.hooks import FtreCoreHookManager
     from ftre_agent_core.tool import ToolRegistry
 
-    from ftre.bus import EventBus
-    from ftre.channel import ChannelManager, SubagentChannel, WebSocketChannel
-    from ftre.command import CommandManager
-    from ftre.command.builtin import register_builtin_commands
     from ftre.config import AGENTS_DIR, load_config_file, load_gateway_address
     from ftre.services.agent import AgentService
     from ftre.services.agent.profile import AgentProfileService
@@ -52,11 +48,19 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         AgentRuntimeProvider,
         AgentRuntimeServices,
     )
-    from ftre.services.command import CommandService
+    from ftre.services.command import CommandManager, CommandService
+    from ftre.services.command.builtin import register_builtin_commands
     from ftre.services.config import ConfigService
     from ftre.services.http.legacy import bind_legacy_api
-    from ftre.services.messaging.bus import MessageBusService
+    from ftre.services.messaging.bus import EventBus, MessageBusService
     from ftre.services.messaging.channel import ChannelService
+    from ftre.services.messaging.channel.manager import ChannelManager
+    from ftre.services.messaging.channel.providers.subagent.channel import (
+        SubagentChannel,
+    )
+    from ftre.services.messaging.channel.providers.websocket.channel import (
+        WebSocketChannel,
+    )
     from ftre.services.tools import ToolService
     from ftre.tools.cron import CronScheduler
 

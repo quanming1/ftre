@@ -262,10 +262,10 @@ stages:
             status: done
           - id: F2.3
             title: MessageBus、Channel、Command、Tool Provider 迁移
-            status: in_progress
+            status: done
           - id: F2.4
             title: HTTP/WS legacy 入口移除
-            status: todo
+            status: in_progress
           - id: F2.5
             title: 旧目录清理与全量验收
             status: todo

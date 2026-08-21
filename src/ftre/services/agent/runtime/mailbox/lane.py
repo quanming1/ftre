@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from ftre.bus import BusMessage, InboundMetadata
+from ftre.services.messaging.bus import BusMessage, InboundMetadata
 from ftre.services.session.entity.state import MailboxState, QueueItem
 from ftre.services.session.service import RequestAdmission
 

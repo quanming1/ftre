@@ -18,7 +18,8 @@ from ftre_agent_core import Tracer
 from ftre_agent_core.hooks import FtreCoreHookManager
 from ftre_agent_core.tool import ToolRegistry
 
-from ftre.bus import (
+from ftre.config import AgentConfig
+from ftre.services.messaging.bus import (
     BusMessage,
     EventBus,
     InboundMetadata,
@@ -27,7 +28,6 @@ from ftre.bus import (
     SessionMailboxSnapshotMessage,
     SessionMailboxSnapshotPayload,
 )
-from ftre.config import AgentConfig
 from ftre.services.session import SessionService
 from ftre.services.session.projection import ProjectionResult, SessionProjection
 from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter

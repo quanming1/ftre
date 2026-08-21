@@ -21,7 +21,7 @@ from typing import Any
 from ftre_agent_core.message import Msg, MsgName
 from ftre_agent_core.types import ReplyFinishedReason
 
-from ftre.bus import BusMessage
+from ftre.services.messaging.bus import BusMessage
 from ftre.services.session.entity.models import (
     ExternalSessionModel,
     MessageModel,
@@ -158,7 +158,9 @@ class SessionService:
         若是 team leader：级联取消并删除全部成员 session 与 sub_agents profile 树。
         若是 team 成员（被单独删除）：反向从 leader 的 teams 摘除并删其 profile。
         """
-        from ftre.agent import sub_agent_profile  # 惰性导入避免包间循环
+        from ftre.services.agent.profile import (
+            sub_agent as sub_agent_profile,  # 惰性导入避免包间循环
+        )
 
         meta = await self.get_session_metadata(session_id)  # 不存在 → {}，幂等入口
 

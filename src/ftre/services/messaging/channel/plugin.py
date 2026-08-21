@@ -14,7 +14,7 @@ def apply(ctx: PluginContext, config=None):
     """Bind a ChannelManager to the injected bus and publish ``channels``."""
     if ctx.optional("channels") is not None:
         return
-    from ftre.channel.manager import ChannelManager
+    from .manager import ChannelManager
 
     service = ChannelService(ChannelManager(ctx.message_bus.bus))
     ctx.provide("channels", service)

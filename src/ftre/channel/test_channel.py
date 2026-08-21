@@ -3,7 +3,7 @@ TestChannel - 用于测试的 Channel 实现
 
 收集所有 outbound 消息到内存列表，方便断言验证。
 """
-from ftre.bus import BusMessage, EventBus
+from ftre.services.messaging.bus import BusMessage, EventBus
 
 from .base import Channel
 
