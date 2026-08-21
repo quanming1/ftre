@@ -1370,3 +1370,4 @@ PRD 进入 `approved` 前必须逐项确认：
 | 2026-08-20 | F1 全部 AC 完成验收：完整 pytest、ruff、Composition 启停、health、WebSocket attach/admission/cancel、Session workspace 和外部 Plugin/Octo 兼容验证通过 | 完成 F1 六步闭环并冻结交付结果 | AC1-AC20 全部勾选；执行报告见 `docs/execution/EXECUTION-F1-backend-plugin-refactor.md` |
 | 2026-08-20 | 收尾复核：最终提交后再次执行 `pytest`，结果更新为 366 passed、1 个既有 collection warning；ruff 仍全绿 | 确认最后一次文档和兼容层变更没有引入回归 | AC14、AC15 无变化 |
 | 2026-08-21 | F6 基座纠偏：撤销“离线同契约 fallback”决策，删除 ftre 内 `src/cordis`，锁定并接入官方 `cordis-py==0.4.0`；F1 历史验收记录保留，当前运行时事实以 F6 PRD 为准 | 运行时审计发现 F1 实际没有加载 `E:\cordis-py`，同名 fallback 会抢占 import 并阻断后续 Hook/生命周期语义 | F1 历史 AC 不重算；F6 PRE1-PRE10 接管当前基座验收 |
+| 2026-08-22 | 修复 Gateway 默认 CORS 仅允许裸 `localhost`、无法覆盖桌面开发端口（如 `localhost:48651`）的问题；默认策略允许 localhost/127.0.0.1 的端口变体，自定义 origins 仍保持精确匹配 | 前端请求已返回 200，但浏览器因缺少 `Access-Control-Allow-Origin` 拦截，导致 Session、Config、Workspace API 在桌面开发环境不可用 | 新增 Gateway CORS 回归测试；不改变远程 Origin 的访问权限 |
