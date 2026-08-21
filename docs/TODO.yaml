@@ -349,10 +349,10 @@ stages:
 
       - id: F5
         title: Schedule Owner 收敛与调度生命周期治理
-        status: todo
+        status: in_progress
         date: 2026-08-21
         prd: docs/prd/PRD-F5-schedule-owner-cleanup.md
-        prd_status: 草稿
+        prd_status: approved
         modules:
           - src/ftre/features/schedule/
           - src/ftre/services/tools/builtin/cron.py
@@ -365,7 +365,7 @@ stages:
         tasks:
           - id: F5.1
             title: Schedule 现状基线与接口冻结
-            status: todo
+            status: in_progress
           - id: F5.2
             title: CronStore 与 ScheduleService 归位
             status: todo
