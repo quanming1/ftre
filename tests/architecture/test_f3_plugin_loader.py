@@ -47,3 +47,12 @@ def test_plugin_manifest_rejects_legacy_module_config_key() -> None:
     discovery = PluginDiscovery()
     with pytest.raises(ValueError, match="requires entry"):
         discovery.catalog([], {"plugins": [{"id": "legacy-config", "module": "legacy:apply"}]})
+
+
+def test_disabled_external_plugin_does_not_require_entry() -> None:
+    discovery = PluginDiscovery()
+    catalog = discovery.catalog(
+        [],
+        {"plugins": [{"id": "legacy-config", "enabled": False}]},
+    )
+    assert catalog.get("legacy-config") is None
