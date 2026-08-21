@@ -305,10 +305,10 @@ stages:
 
       - id: F4
         title: 架构债务清理与单一 Owner 收敛
-        status: in_progress
+        status: done
         date: 2026-08-21
         prd: docs/prd/PRD-F4-architecture-debt-cleanup.md
-        prd_status: 开发中
+        prd_status: 已验收
         modules:
           - src/ftre/agent/
           - src/ftre/session/
@@ -345,4 +345,4 @@ stages:
             status: done
           - id: F4.7
             title: 全量验收与执行报告
-            status: in_progress
+            status: done

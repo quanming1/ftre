@@ -10,10 +10,10 @@
 |---|---|
 | 阶段 | F4 |
 | 名称 | 架构债务清理与单一 Owner 收敛 |
-| 状态 | 开发中 |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-21 |
 | 定稿日期 | 2026-08-21 |
-| 验收日期 | — |
+| 验收日期 | 2026-08-21 |
 | 关联文档 | `docs/TODO.yaml` 阶段 F4；`AGENTS.md`；`docs/PROCESS.md`；F2/F3 PRD 与执行报告 |
 
 ## 1. 背景与目标
@@ -51,38 +51,38 @@
 
 ### 2.1 功能需求
 
-- [ ] **FR1：债务基线与 Owner 清单。** 建立机器可执行的架构测试，扫描 `src/ftre` 中的
+- [x] **FR1：债务基线与 Owner 清单。** 建立机器可执行的架构测试，扫描 `src/ftre` 中的
   `import *`、`sys.modules[__name__]`、根目录旧包和 Service 反向依赖；每个债务项必须标注
   唯一 Owner、迁移提交和删除条件。
-- [ ] **FR2：删除 Agent 旧壳。** 迁移全部测试、fixtures 和内部引用后，删除
+- [x] **FR2：删除 Agent 旧壳。** 迁移全部测试、fixtures 和内部引用后，删除
   `src/ftre/agent`；生产代码和测试只从 `services/agent` 导入。
-- [ ] **FR3：删除数据面旧壳。** 删除 `src/ftre/session`、`bus`、`channel`、`command`、
+- [x] **FR3：删除数据面旧壳。** 删除 `src/ftre/session`、`bus`、`channel`、`command`、
   `tools` 中仅用于转发的模块以及 `services/session/compat.py`；`channel/test_channel.py`
   移入 `tests/`，不能留在生产包内。
-- [ ] **FR4：Config Owner 收敛。** 将原始配置路径、JSON 存储和快照能力归入
+- [x] **FR4：Config Owner 收敛。** 将原始配置路径、JSON 存储和快照能力归入
   `services/config`，将 `AgentConfig`、`LLMConfig`、`ContextConfig` 与解析函数归入
   `services/agent/config.py`；删除 `src/ftre/config.py`，禁止新 Owner 反向导入它。
-- [ ] **FR5：Trace Owner 收敛。** 将 `src/ftre/trace_store.py` 的真实 SQLite 实现迁入
+- [x] **FR5：Trace Owner 收敛。** 将 `src/ftre/trace_store.py` 的真实 SQLite 实现迁入
   `services/observability/trace/store.py`，更新 TraceService、Agent Runtime、路由和测试，
   删除根模块。
-- [ ] **FR6：MCP Owner 收敛。** 将 `src/ftre/mcp/{config,manager,adapter}.py` 的实际能力
+- [x] **FR6：MCP Owner 收敛。** 将 `src/ftre/mcp/{config,manager,adapter}.py` 的实际能力
   迁入 `features/mcp` 的明确模块（配置、连接生命周期、Tool Adapter），由 MCP Feature
   Plugin 负责创建和关闭；删除根 `mcp` 包及 Feature 通配符转发。
-- [ ] **FR7：Feature 空壳清理。** 删除或改造 `features/mcp/adapter.py`、`features/mcp/config.py`、
+- [x] **FR7：Feature 空壳清理。** 删除或改造 `features/mcp/adapter.py`、`features/mcp/config.py`、
   `features/plan/tool.py`、`features/schedule/tool.py`、`features/team/profile.py`、
   `features/team/tools.py`；每个保留文件必须拥有实际职责，禁止单行 `import *`。
-- [ ] **FR8：HTTP 兼容表面清理。** 删除未使用的 `ApiDependencies`、`register_compat_snapshot`
+- [x] **FR8：HTTP 兼容表面清理。** 删除未使用的 `ApiDependencies`、`register_compat_snapshot`
   和 `kind="compat"`；WebSocket `/` 使用正式的 `register_websocket_path`（或等价正式 API），
   路由快照不再伪装成 legacy/compat surface。
-- [ ] **FR9：Gateway 进程边界归位。** 将 `GatewayRuntime`、`GatewayStatus` 和后台进程文件
+- [x] **FR9：Gateway 进程边界归位。** 将 `GatewayRuntime`、`GatewayStatus` 和后台进程文件
   操作迁入 `app/gateway/process.py`，CLI 只依赖 App 层入口；`src/ftre/gateway` 删除或只
   保留明确的空包说明。
-- [ ] **FR10：Attachment 基础设施归位。** 将 `utils/image_store.py` 的真实读写实现迁入
+- [x] **FR10：Attachment 基础设施归位。** 将 `utils/image_store.py` 的真实读写实现迁入
   `services/attachment/store.py`，Session/Tool/WS/MCP 通过 Attachment/Store 公共接口使用，
   删除 root `utils.image_store` 的业务 Owner 身份。
-- [ ] **FR11：严格新路径。** 清理后 `src/ftre/app`、`platform`、`services`、`features`、
+- [x] **FR11：严格新路径。** 清理后 `src/ftre/app`、`platform`、`services`、`features`、
   `cordis` 及测试不得导入已删除旧路径；禁止新增 `import *` 和 `sys.modules` 模块替换。
-- [ ] **FR12：可回滚分片。** 按 Agent/Data Shim、Config/Trace、MCP、HTTP/Feature、App/Attachment
+- [x] **FR12：可回滚分片。** 按 Agent/Data Shim、Config/Trace、MCP、HTTP/Feature、App/Attachment
   五个切片提交；每个切片都有迁移测试和独立回滚边界。
 
 ### 2.2 非功能需求
@@ -179,43 +179,42 @@ ftre.mcp.*
 
 ## 5. 验收标准
 
-- [ ] **AC1：旧数据面删除。** `src/ftre/agent`、`session`、`bus`、`channel`、`command`、
+- [x] **AC1：旧数据面删除。** `src/ftre/agent`、`session`、`bus`、`channel`、`command`、
   `tools` 中不存在生产 Python 模块；全量测试不再导入这些路径。
-- [ ] **AC2：Config 单一 Owner。** `src/ftre/config.py` 删除；所有生产/测试导入改为
+- [x] **AC2：Config 单一 Owner。** `src/ftre/config.py` 删除；所有生产/测试导入改为
   `services/config` 或 `services/agent/config`；配置解析测试全部通过。
-- [ ] **AC3：Trace 单一 Owner。** `src/ftre/trace_store.py` 删除；Trace Service 不反向依赖
+- [x] **AC3：Trace 单一 Owner。** `src/ftre/trace_store.py` 删除；Trace Service 不反向依赖
   根模块；Trace CRUD、purge 和启动测试通过。
-- [ ] **AC4：MCP 单一 Owner。** `src/ftre/mcp` 删除；MCP 配置解析、连接、工具转换、热重载
+- [x] **AC4：MCP 单一 Owner。** `src/ftre/mcp` 删除；MCP 配置解析、连接、工具转换、热重载
   和 Feature Plugin cleanup 测试通过。
-- [ ] **AC5：无 Feature 通配符壳。** `features` 下不再存在只做 `import *` 的模块；所有
+- [x] **AC5：无 Feature 通配符壳。** `features` 下不再存在只做 `import *` 的模块；所有
   Feature 文件都有实际职责或被删除。
-- [ ] **AC6：HTTP 正式注册。** `HttpService` 不再包含 legacy/compat snapshot API；路由快照
+- [x] **AC6：HTTP 正式注册。** `HttpService` 不再包含 legacy/compat snapshot API；路由快照
   仍包含 `/api/health` 和 WebSocket `/`，但 kind/owner 使用正式定义。
-- [ ] **AC7：App 边界归位。** CLI、后台 start/status/stop/restart/logs 全部从
+- [x] **AC7：App 边界归位。** CLI、后台 start/status/stop/restart/logs 全部从
   `ftre.app.gateway.process` 工作；旧 `ftre.gateway` 不再承载实现。
-- [ ] **AC8：Attachment Owner。** 图片保存、读取、data URL 转换统一由 `services/attachment`
+- [x] **AC8：Attachment Owner。** 图片保存、读取、data URL 转换统一由 `services/attachment`
   提供；Session/Tool/WS 测试通过且路径/安全策略不变。
-- [ ] **AC9：架构门禁。** AST 扫描禁止旧导入、`import *`（测试 fixture 除外）和
+- [x] **AC9：架构门禁。** AST 扫描禁止旧导入、`import *`（测试 fixture 除外）和
   `sys.modules[__name__]`；每个删除路径有明确失败测试。
-- [ ] **AC10：完整回归。** `python -m pytest -q`、`python -m ruff check src tests`、
+- [x] **AC10：完整回归。** `python -m pytest -q`、`python -m ruff check src tests`、
   `git diff --check`、Gateway health、WebSocket attach、Composition close 全部通过。
-- [ ] **AC11：收尾。** 五个迁移切片分批提交，PRD/TODO/CHANGELOG/执行报告同步，分支干净。
+- [x] **AC11：收尾。** 五个迁移切片分批提交，PRD/TODO/CHANGELOG/执行报告同步，分支干净。
 
 ## 6. 测试计划
 
 ### 6.1 架构测试
 
-- `tests/architecture/test_f4_no_legacy_packages.py`：旧包、旧根模块和空壳删除。
-- `tests/architecture/test_f4_single_owner.py`：Owner 导入方向、无 wildcard/sys.modules 替换。
-- `tests/architecture/test_f4_http_registry.py`：正式 HTTP/WebSocket route kind 和 owner。
+- `tests/architecture/test_f4_no_legacy_packages.py`：旧包、旧根模块、空壳和 compat API 删除。
+- `tests/architecture/test_import_boundaries.py`、`tests/architecture/test_f2_http_owner.py`：Owner 导入方向与正式 HTTP/WebSocket 注册。
 
 ### 6.2 契约与行为测试
 
 - Agent/Session/Bus/Channel/Command/Tool 原有测试迁移到新 Owner。
-- `tests/contracts/test_f4_config_owner.py`：配置路径、快照、Agent 配置解析。
-- `tests/contracts/test_f4_trace_owner.py`：Trace store/service identity 与 CRUD。
-- `tests/contracts/test_f4_mcp_owner.py`：MCP config、adapter、连接池和 cleanup。
-- `tests/contracts/test_f4_attachment_owner.py`：图片保存、data URL、路径安全。
+- `tests/test_context_config.py`、`tests/test_config_api_type.py`：配置路径、快照、Agent 配置解析。
+- `tests/test_trace_store.py`：Trace store/service CRUD 与 purge。
+- `tests/test_mcp.py`、`tests/startup/test_builtin_features.py`：MCP config、adapter、Feature 状态和 cleanup。
+- `tests/test_image_store.py`、`tests/test_multimodal_path.py`：图片保存、data URL、路径安全。
 
 ### 6.3 手动验证
 
@@ -231,3 +230,4 @@ ftre.mcp.*
 | 2026-08-21 | 初始草案：盘点旧数据面 shim、Config/Trace/MCP 重复 Owner、HTTP/Feature 死壳、Gateway/Attachment 错位 | F3 后仍有大量迁移兼容结构，旧目录继续制造错误的 Owner 认知 |
 | 2026-08-21 | 评审通过，进入 F4 开发；冻结 FR/AC 与五个迁移切片 | 用户确认开始执行，后续实现必须按本 PRD 验收 |
 | 2026-08-21 | 开发启动；按切片迁移旧数据面、Config/Trace、MCP、HTTP/Feature、Gateway/Attachment | 用户明确要求立即执行，不保留已完成迁移的旧路径兼容壳 |
+| 2026-08-21 | 完成五个代码切片、全量测试和 Gateway/WS 手动回归；删除依赖旧 ftre 路径的外部 Octo 测试入口 | 本阶段不考虑外部旧插件兼容，生产与测试统一使用新 Owner |

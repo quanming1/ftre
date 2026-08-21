@@ -21,6 +21,13 @@
 - Hook/Event、SessionTitle 和 Builtin Plugin 测试统一到 Cordis Context、Feature Plugin 与 Service-owned Router。
 - 删除旧 `ftre.plugin.kernel`、`ftre.plugin.builtin`、`ftre.plugin.api` 和 aggregate API；新增架构导入门禁。
 - 删除 `ftre.plugin` 窄兼容入口、`LegacyPluginContext` 和旧 `setup`/`module.Class` Plugin 解析路径；Plugin 统一使用 Cordis `apply` 契约。
+
+### F4 架构债务清理与单一 Owner 收敛
+
+- 删除 Agent、Session、Bus、Channel、Command、Tool 旧路径转发壳和迁移测试入口。
+- Config、Trace、MCP、Gateway Process、Attachment 实现归入各自 Service/Feature/App Owner。
+- 删除 Feature 通配符转发、HTTP legacy/compat 注册 API、死依赖和外部旧插件测试入口。
+- 生产代码与测试统一使用新四层导入路径，新增 F4 架构门禁。
 - Cordis Plugin apply 失败时自动回滚已注册 Effect，避免启动半成品泄漏。
 
 ## [0.2.4] - 2026-08-20

@@ -67,8 +67,9 @@ ftre.main
 4. Plugin 的所有注册、路由、事件监听、后台任务和资源都必须绑定 `ctx.effect`，保证 unload/close
    可逆且幂等。
 5. 必选 Plugin 启动失败会产生诊断并阻止 Gateway 启动；可选 Plugin 失败只记录状态。
-6. `ftre.plugin`、`ftre.agent`、`ftre.api` 等旧目录已退役。新代码不得依赖旧 Kernel 或兼容入口，
-   新的 Service/Feature 必须放入四层目录。
+6. `ftre.plugin`、`ftre.agent`、`ftre.session`、`ftre.bus`、`ftre.channel`、`ftre.command`、
+   `ftre.tools`、`ftre.api`、`ftre.config`、`ftre.mcp` 等旧目录/根模块已退役。新代码不得
+   依赖旧 Kernel 或兼容入口，新的 Service/Feature 必须放入四层目录。
 
 ## Agent 数据面不变量
 
