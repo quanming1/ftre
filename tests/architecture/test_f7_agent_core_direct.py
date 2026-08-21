@@ -1,10 +1,18 @@
 """F7 门禁：Core 直接消费宿主 Dispatcher，不得回流桥接层。"""
 
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
 FTRE_SRC = ROOT / "src" / "ftre"
-CORE_SRC = Path(r"E:\ftre-agent-core\src\ftre_agent_core")
+_CORE_CANDIDATES = (
+    Path(os.environ["FTRE_AGENT_CORE_SRC"])
+    if os.environ.get("FTRE_AGENT_CORE_SRC")
+    else None,
+    ROOT / "ftre-agent-core" / "src" / "ftre_agent_core",
+    ROOT.parent / "ftre-agent-core" / "src" / "ftre_agent_core",
+)
+CORE_SRC = next((path for path in _CORE_CANDIDATES if path and path.is_dir()), _CORE_CANDIDATES[1])
 
 
 def _source_files(root: Path):
