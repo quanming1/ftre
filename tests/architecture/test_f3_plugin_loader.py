@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-
 from cordis import Context, FiberState
+
 from ftre.platform.plugin_runtime import PluginDiscovery, PluginManager, PluginManifest
 
 
@@ -20,7 +20,7 @@ async def test_required_plugin_failure_is_reported_and_context_is_cleaned() -> N
 
     with pytest.raises(PluginStartupError):
         await manager.load([PluginManifest("required-broken", broken, required=True)], {})
-    assert context.services == {}
+    assert not context.reflect.store
 
 
 @pytest.mark.asyncio
@@ -47,3 +47,12 @@ def test_plugin_manifest_rejects_legacy_module_config_key() -> None:
     discovery = PluginDiscovery()
     with pytest.raises(ValueError, match="requires entry"):
         discovery.catalog([], {"plugins": [{"id": "legacy-config", "module": "legacy:apply"}]})
+
+
+def test_disabled_external_plugin_does_not_require_entry() -> None:
+    discovery = PluginDiscovery()
+    catalog = discovery.catalog(
+        [],
+        {"plugins": [{"id": "legacy-config", "enabled": False}]},
+    )
+    assert catalog.get("legacy-config") is None

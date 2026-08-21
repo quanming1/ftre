@@ -36,6 +36,12 @@ class PluginDiscovery:
             if plugin_id in seen:
                 raise ValueError(f"duplicate plugin config entry: {plugin_id}")
             seen.add(plugin_id)
+            # Disabled external entries are still valid configuration.  Do not
+            # require or resolve their entry point: this lets users keep an
+            # older plugin declaration disabled while migrating to the current
+            # ``module:attribute`` contract.
+            if bool(item.get("disabled", False)) or item.get("enabled") is False:
+                continue
             if catalog.get(plugin_id) is not None:
                 # Builtin config entries are overrides, not a second candidate.
                 continue

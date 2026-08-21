@@ -611,7 +611,8 @@ class AgentManager:
         tracer=None,
         channel_id: str | None = None,
         session_id: str | None = None,
-        hook_manager=None,
+        hooks=None,
+        hook_context=None,
         state=None,
     ):
         """根据 AgentProfile + 全局 config 构建 ReActAgent。
@@ -661,7 +662,8 @@ class AgentManager:
             max_tokens=c.llm.max_output,
             reasoning_effort=c.llm.reasoning_effort,
             tracer=tracer,
-            hook_manager=hook_manager,
+            hooks=hooks,
+            hook_context=hook_context,
             state=state,
         )
 

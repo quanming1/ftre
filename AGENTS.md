@@ -1,7 +1,8 @@
 # ftre 后端协作说明
 
-本文件是 `E:\\ftre` 后端仓库的协作约束。后端代码位于 `src/ftre/`；桌面端、文档站和
-Agent 核心库是独立仓库，本仓库任务不得修改它们。
+本文件是 `E:\\ftre` 后端仓库的协作约束。后端代码位于 `src/ftre/`；桌面端和文档站
+仍是严格边界。`ftre-agent-core` 是独立仓库；只有明确授权的跨仓库阶段（如 F7/C1）
+才可在 Core 自有 feature 分支同步修改，禁止把 Core 文件复制进本仓库。
 
 ## 项目边界
 
@@ -17,7 +18,6 @@ Agent 核心库是独立仓库，本仓库任务不得修改它们。
 
 ```text
 src/
-├─ cordis/                         # cordis-py 公共契约的离线兼容实现
 └─ ftre/
    ├─ app/                         # 进程边界：CLI、Gateway 启动、FastAPI Host、uvicorn
    │  └─ gateway/
@@ -45,7 +45,7 @@ src/
   `provide = (...)` 声明输出、`inject = (...)` 声明依赖，并用 `ctx.effect(...)` 注册可逆清理。
 - **Feature Plugin** 位于 `features/`，拥有 Skill、MCP、Team 等产品行为；它只能消费公开
   Service，不得访问 AgentLoop、Session 存储等私有实现。
-- `factory.py` 只允许表达内部对象组装（当前仅 Agent runtime 使用）；它不是 Service，也不是
+- Agent runtime 的对象组装由 `services/agent_loop/provider.py` 负责；它不是 Service，也不是
   Plugin 的入口。Plugin 入口统一是 `module:attribute` 指向 `apply`。
 
 ## 启动与生命周期
@@ -63,7 +63,7 @@ ftre.main
 
 1. `composition.py` 是默认 Plugin 清单的唯一事实源；新增内置能力先加入清单，再写对应测试。
 2. `PluginDiscovery` 只解析 Manifest，不导入未启用的外部模块；外部插件必须在用户配置中显式启用。
-3. `PluginContext` 按声明限制 Service 访问；依赖缺失时 Fiber 保持 `PENDING`，依赖出现后重新激活。
+3. `Context` 按声明限制 Service 访问；依赖缺失时 Fiber 保持 `PENDING`，依赖出现后重新激活。
 4. Plugin 的所有注册、路由、事件监听、后台任务和资源都必须绑定 `ctx.effect`，保证 unload/close
    可逆且幂等。
 5. 必选 Plugin 启动失败会产生诊断并阻止 Gateway 启动；可选 Plugin 失败只记录状态。
@@ -83,13 +83,13 @@ ftre.main
 ## 插件开发约定
 
 ```python
-from cordis import PluginContext
+from cordis import Context
 
 inject = ("http",)
 provide = ("example",)
 
 
-def apply(ctx: PluginContext, config: dict | None = None):
+def apply(ctx: Context, config: dict | None = None):
     service = ExampleService(config or {})
     ctx.provide("example", service)
     ctx.effect(service.close, label="example:close")

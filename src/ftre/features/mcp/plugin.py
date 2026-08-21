@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
-from cordis import PluginContext
+from cordis import Context
 
 from .connection import McpManager
 from .service import McpService
 
-inject = ("config", "tools")
+inject = ("config", "tools", "attachments")
 provide = ("mcp",)
 
 
-async def apply(ctx: PluginContext, config=None):
+async def apply(ctx: Context, config=None):
     """Publish MCP state and own the transport manager's full lifecycle."""
-    if ctx.optional("mcp") is not None:
+    if ctx.get("mcp", strict=False) is not None:
         return
-    manager = McpManager(tool_registry=ctx.tools.registry)
+    manager = McpManager(
+        tool_registry=ctx.tools.registry,
+        attachment_service=ctx.attachments,
+    )
     service = McpService(manager)
     ctx.provide("mcp", service)
     raw = ctx.config.snapshot().value.get("mcp", {})
     if isinstance(raw, dict) and raw:
         await service.start_and_register(raw)
-    ctx.effect(service.stop, label="mcp:stop")
+    ctx.effect(lambda: service.stop, label="mcp:stop")

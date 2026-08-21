@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cordis import PluginContext
+from cordis import Context
 
 from .service import ChannelService
 
@@ -10,9 +10,9 @@ inject = ("message_bus",)
 provide = ("channels",)
 
 
-def apply(ctx: PluginContext, config=None):
+def apply(ctx: Context, config=None):
     """Bind a ChannelManager to the injected bus and publish ``channels``."""
-    if ctx.optional("channels") is not None:
+    if ctx.get("channels", strict=False) is not None:
         return
     from .manager import ChannelManager
 

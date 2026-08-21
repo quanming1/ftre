@@ -25,6 +25,7 @@ class ChannelManager:
         self.bus = bus
         self._channels: dict[str, Channel] = {}
         self._dispatch_task: asyncio.Task | None = None
+        self._started = False
 
     def register(self, channel: Channel) -> None:
         self._channels[channel.channel_id] = channel
@@ -38,21 +39,28 @@ class ChannelManager:
 
     async def start(self) -> None:
         """启动所有 Channel + 全局分发循环"""
+        if self._dispatch_task is not None and not self._dispatch_task.done():
+            return
         for ch in self._channels.values():
             await ch.start()
         self._dispatch_task = asyncio.create_task(self._dispatch_loop())
+        self._started = True
         logger.info(f"[channel-manager] started: {list(self._channels.keys())}")
 
     async def stop(self) -> None:
         """停止分发 + 所有 Channel"""
+        if not self._started:
+            return
         if self._dispatch_task:
             self._dispatch_task.cancel()
             try:
                 await self._dispatch_task
             except asyncio.CancelledError:
                 pass
+            self._dispatch_task = None
         for ch in self._channels.values():
             await ch.stop()
+        self._started = False
         logger.info("[channel-manager] stopped")
 
     async def _dispatch_loop(self) -> None:

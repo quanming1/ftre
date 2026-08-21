@@ -43,10 +43,10 @@ def create_send_message_tool(channel_manager) -> Tool:
         kind: str = "notify",
         caller_channel: str = Injected("channel_id"),
         caller_session: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        bus=Injected("bus"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        bus=Injected("bus"),  # noqa: B008 - MessageBus transport context
+        session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
+        agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
     ) -> str:
         # ── 通用前置校验 ────────────────────────────────────
         if caller_channel == SUBAGENT_CHANNEL_ID:
@@ -85,7 +85,7 @@ def create_send_message_tool(channel_manager) -> Tool:
             ack = _do_invoke(
                 target_channel=target_channel,
                 event_loop=event_loop,
-                agent_loop=agent_loop,
+                agent_service=agent_service,
                 target_session_id=session_id,
                 content=content,
                 caller_channel=caller_channel or "",
@@ -201,7 +201,7 @@ def _do_invoke(
     *,
     target_channel,
     event_loop,
-    agent_loop,
+    agent_service,
     target_session_id: str,
     content: str,
     caller_channel: str,
@@ -218,8 +218,8 @@ def _do_invoke(
         "content": prefixed_content,
         "session_id": target_session_id,
     }
-    if agent_loop is None:
-        raise RuntimeError("runtime context 未注入 agent_loop")
+    if agent_service is None:
+        raise RuntimeError("runtime context 未注入 agent")
     inbound = BusMessage(
         type="user_message",
         from_channel=target_channel.channel_id,
@@ -228,8 +228,8 @@ def _do_invoke(
         to_session=target_session_id,
         data=data,
     )
-    # submit_inbound 返回时 state.json 的 Mailbox 已经原子落盘；这才是 invoke 的
+    # AgentService.submit 返回时 state.json 的 Mailbox 已经原子落盘；这才是 invoke 的
     # "发送成功"边界，而不是仅仅放进 EventBus 内存队列。
     return asyncio.run_coroutine_threadsafe(
-        agent_loop.submit_inbound(inbound), event_loop
+        agent_service.submit(inbound), event_loop
     ).result(timeout=10)

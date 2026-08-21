@@ -8,9 +8,11 @@
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from cordis import Context
 from ftre_agent_core.agent.runner import RunState, RunStatus
 from ftre_agent_core.event import (
     ReplyFinishedReason,
@@ -25,19 +27,25 @@ from ftre_agent_core.message import (
     ToolCallState,
 )
 
+from ftre.platform.hooks import HookRuntime
 from ftre.services.agent.config import AgentConfig, ContextConfig, LLMConfig
-from ftre.services.agent.runtime.loop.engine import AgentLoop
-from ftre.services.agent.runtime.loop.turn_executor import TurnExecutor
-from ftre.services.command import CommandManager
+from ftre.services.agent.registry import AgentRegistry
+from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
+from ftre.services.agent_loop.runtime.loop.turn_executor import TurnExecutor
+from ftre.services.command import CommandService
 from ftre.services.command.builtin import register_builtin_commands
 from ftre.services.messaging.bus import BusMessage
 from ftre.services.session.projection import SessionProjection
+from ftre.services.system_prompt.hooks import (
+    SYSTEM_PROMPT_ASSEMBLE_SPEC,
+    PromptAssemblyPayload,
+)
 
 
 class PausingAgent:
     """模拟工具命中 ASK：产出 RequireUserConfirmEvent 后停在 PAUSED，不 finalize。"""
 
-    def __init__(self, reply_id_holder=None):
+    def __init__(self):
         self.tool_registry = Mock()
         self._captured_runtime_context = None
         self._captured_run_input = None
@@ -107,6 +115,8 @@ def _make_executor(agent) -> TurnExecutor:
     config.context = ContextConfig()
     loop._injected_config = config
     loop._event_loop = asyncio.get_running_loop()
+    loop.hooks = None
+    loop.agent_registry = AgentRegistry()
     loop.session_manager = AsyncMock()
     loop.session_manager.get_session = AsyncMock(
         return_value={"channel_id": "ws", "workspace": "/tmp"}
@@ -115,13 +125,13 @@ def _make_executor(agent) -> TurnExecutor:
     loop.session_manager.get_context_messages = AsyncMock(return_value=[])
     loop.bus = AsyncMock()
     loop.agent_manager = Mock()
+    loop.agent_service = None
+    loop._agent_created_emitted = set()
     loop.agent_manager.load = Mock(return_value=None)
     loop.agent_manager.create_agent = Mock(return_value=agent)
     loop.agent_manager._default_agent_state = Mock(return_value=_FakeState())
-    loop.hook_manager = None
     loop.channel_manager = None
     loop.tool_registry = None
-    loop.core_hook_manager = None
     loop.compact_manager = AsyncMock()
     loop.compact_manager.is_compacting = Mock(return_value=False)
     loop.compact_manager.should_compact = AsyncMock(return_value=False)
@@ -134,7 +144,17 @@ def _make_executor(agent) -> TurnExecutor:
 
     loop.session_projection = SessionProjection(loop.session_manager)
 
-    executor = TurnExecutor(loop)
+    async def emit_session_event(session_id, channel_id, event, *, metadata=None):
+        return await AgentLoop.emit_session_event(
+            loop,
+            session_id,
+            channel_id,
+            event,
+            metadata=metadata,
+        )
+
+    loop.emit_session_event = emit_session_event
+    executor = TurnExecutor(loop, sessions=loop.session_manager)
     executor._build_messages = AsyncMock(
         return_value=([{"role": "user", "content": "hi"}], config)
     )
@@ -180,9 +200,38 @@ def _confirm_inbound(*, approved=True, tool_call_id="call-1"):
 
 
 def _enable_builtin_commands(executor):
-    manager = CommandManager()
-    register_builtin_commands(manager, executor._loop)
-    executor._loop.command_manager = manager
+    service = CommandService()
+
+    async def resume_confirmation(session_id, channel_id, events, metadata):
+        for event in events:
+            await executor._loop.emit_session_event(
+                session_id, channel_id, event, metadata=metadata
+            )
+        inbound = _confirm_inbound()
+        return await executor.execute(
+            inbound,
+            confirm_event=events[-1],
+            persist_input=False,
+        )
+
+    agents = SimpleNamespace(resume_confirmation=resume_confirmation)
+    sessions = executor._loop.session_manager
+    compaction = SimpleNamespace()
+    register_builtin_commands(
+        service.runtime,
+        agents=agents,
+        sessions=sessions,
+        compaction=compaction,
+    )
+    executor._loop.command_service = service
+    return service
+
+
+async def _execute_command(executor, inbound):
+    """Exercise the same ingress parse/dispatch path used by AgentLoop."""
+    service = executor._loop.command_service
+    command = service.parse({"inbound": inbound})
+    return await service.dispatch_inbound(inbound, definition=command)
 
 
 def _saved_messages(executor):
@@ -263,7 +312,7 @@ async def test_confirm_command_is_not_persisted_as_user_msg():
         return_value=executor._loop.session_manager.get_messages_by_session.return_value
     )
 
-    await executor.execute(_confirm_inbound(approved=True))
+    await _execute_command(executor, _confirm_inbound(approved=True))
 
     # 控制指令不产生 UserMsg
     saved = _saved_messages(executor)
@@ -298,7 +347,7 @@ async def test_confirm_result_injects_history_and_drives_resume():
         return_value=history
     )
 
-    await executor.execute(_confirm_inbound(approved=True, tool_call_id="call-1"))
+    await _execute_command(executor, _confirm_inbound(approved=True, tool_call_id="call-1"))
 
     # create_agent 收到注入了历史 context 的 state
     create_kwargs = executor._loop.agent_manager.create_agent.call_args.kwargs
@@ -349,7 +398,7 @@ async def test_confirm_result_denied_still_resumes():
         return_value=history
     )
 
-    await executor.execute(_confirm_inbound(approved=False))
+    await _execute_command(executor, _confirm_inbound(approved=False))
 
     run_input = agent._captured_run_input
     assert isinstance(run_input, UserConfirmResultEvent)
@@ -357,7 +406,7 @@ async def test_confirm_result_denied_still_resumes():
 
 
 @pytest.mark.asyncio
-async def test_confirm_resume_runs_before_agent_hook_and_applies_system_prompt():
+async def test_confirm_resume_uses_structured_prompt_hook():
     agent = ResumingAgent()
     agent.system_prompt = "base"
     executor = _make_executor(agent)
@@ -381,20 +430,32 @@ async def test_confirm_resume_runs_before_agent_hook_and_applies_system_prompt()
     executor._loop.session_manager.get_context_messages = AsyncMock(
         return_value=history
     )
-    hooks = AsyncMock()
+    executor._loop.hooks = HookRuntime(Context())
+    executor._loop.agent_registry = AgentRegistry()
+    executor._hooks = executor._loop.hooks
+    executor._agent_registry = executor._loop.agent_registry
 
-    async def inject(point, ctx):
-        if point == "agent/before_run":
-            ctx.messages[0]["content"] += "\nprivate tools ready"
-        return ctx
+    async def inject(payload: PromptAssemblyPayload, next_):
+        result = await next_()
+        return type(result)(
+            result.agent_id,
+            result.session_id,
+            result.workspace,
+            result.contributions,
+            result.text + "\nprivate tools ready",
+        )
 
-    hooks.filter.side_effect = inject
-    executor._loop.event_hub = hooks
+    executor._loop.hooks.register(
+        SYSTEM_PROMPT_ASSEMBLE_SPEC,
+        inject,
+        owner="test-prompt",
+        global_listener=True,
+    )
 
-    await executor.execute(_confirm_inbound(approved=True))
+    await _execute_command(executor, _confirm_inbound(approved=True))
 
-    assert hooks.filter.await_count == 2
-    assert agent.system_prompt == "base\nprivate tools ready"
+    create_kwargs = executor._loop.agent_manager.create_agent.call_args.kwargs
+    assert create_kwargs["config"].system_prompt.endswith("private tools ready")
 
 
 @pytest.mark.asyncio
@@ -430,7 +491,7 @@ async def test_batch_confirm_checkpoints_all_before_resuming():
     )
 
     inbound = _confirm_inbound(tool_call_id="call-1 call-2")
-    await executor.execute(inbound)
+    await _execute_command(executor, inbound)
 
     assert agent._captured_run_input.tool_call_id == "call-2"
     checkpoint = executor._loop.session_manager.update_message.await_args.args[0]

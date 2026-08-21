@@ -4,11 +4,11 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 行为：
 - session_id 不传 → 在 channel="subagent" 下新建 session
 - session_id 传了 → 复用，会带上其历史
-- 通过 AgentLoop.submit_inbound 耐久接纳 user_message
+- 通过 AgentService.submit 耐久接纳 user_message
 - 投递后阻塞等待目标 session 跑完，返回最后一条 ai 回复 + session_id
 
 终止判定：
-- 通过 AgentLoop.wait_request(request_id) 等待本进程内的 TurnOutcome。
+- 通过 AgentService.wait(request_id) 等待本进程内的 TurnOutcome。
 - 同 session 有多条队列消息时，其他 Turn 的完成不会提前唤醒本次 task。
 
 防递归：subagent channel 的调用方禁止再调 task。
@@ -60,14 +60,14 @@ def create_task_tool(channel_manager) -> Tool:
         session_id: str = "",
         working_dir: str = "",
         caller_channel: str = Injected("channel_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        workspace=Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
+        agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
+        workspace=Injected("workspace"),  # noqa: B008 - public WorkspaceAccessor runtime key
     ) -> str:
         if not prompt or not prompt.strip():
             return "[error] prompt 不能为空"
-        if event_loop is None or session_manager is None or agent_loop is None:
+        if event_loop is None or session_manager is None or agent_service is None:
             return "[error] runtime context 未注入完整"
         if caller_channel == SUBAGENT_CHANNEL_ID:
             return (
@@ -108,7 +108,7 @@ def create_task_tool(channel_manager) -> Tool:
             wrapped_prompt = _wrap_with_preamble(prompt)
 
             ack = _run_async(
-                agent_loop.submit_inbound(BusMessage(
+                agent_service.submit(BusMessage(
                     type="user_message",
                     from_channel=SUBAGENT_CHANNEL_ID,
                     from_session=sid,
@@ -131,14 +131,14 @@ def create_task_tool(channel_manager) -> Tool:
         # task 调用本身也会中断，不尝试跨进程恢复。
         try:
             done_payload = _run_async(
-                agent_loop.wait_request(sid, ack.request_id),
+                agent_service.wait(sid, ack.request_id),
                 event_loop,
                 timeout=None,
             )
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 等待 subagent 完成时出错: {type(e).__name__}: {e}"
 
-        # agent 已结束，使用 AgentLoop 回传的最后一条完整 assistant Msg。
+        # AgentService 已返回最后一条完整 assistant Msg。
         status = done_payload.status
         final_content = done_payload.final_content
         head_full = f"<FTRE_SYSTEM_FACT>[session={sid}, status={status}]</FTRE_SYSTEM_FACT>"

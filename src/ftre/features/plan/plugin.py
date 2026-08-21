@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from cordis import PluginContext
+from cordis import Context
+
 from ftre.services.system_prompt.types import PromptSection
 from ftre.services.tools.builtin.plan import create_plan_tool
 
@@ -10,10 +11,10 @@ inject = ("tools", "system_prompt")
 provide = ()
 
 
-def apply(ctx: PluginContext, config=None):
+def apply(ctx: Context, config=None):
     """Register both behavior contributions and bind their cleanup to the Fiber."""
     disposer = ctx.tools.register(create_plan_tool(), owner="plan", source="builtin")
-    ctx.effect(disposer, label="tool:plan")
+    ctx.effect(lambda: disposer, label="tool:plan")
     prompt = PromptSection(
         name="plan-guidance",
         content=(
@@ -25,4 +26,4 @@ def apply(ctx: PluginContext, config=None):
         source="builtin",
     )
     prompt_disposer = ctx.system_prompt.register_section(prompt)
-    ctx.effect(prompt_disposer, label="prompt:plan")
+    ctx.effect(lambda: prompt_disposer, label="prompt:plan")

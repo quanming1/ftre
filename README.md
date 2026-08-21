@@ -36,9 +36,10 @@ and owns the reversible shutdown path.
 | Platform Runtime | `src/ftre/platform/plugin_runtime/` | Manifest validation, explicit discovery, Cordis loading, status and failure diagnostics |
 | App Host | `src/ftre/app/` | Process boundaries only: CLI, Gateway bootstrap, FastAPI and uvicorn |
 
-`factory.py` is only an internal object-construction helper for the Agent
-runtime. It is not a Service or Plugin entry point. Plugin entries use
-`module:attribute` and normally point to an `apply(ctx, config)` function.
+`services/agent_loop/provider.py` is the internal object-construction boundary
+for the Agent runtime. It is not a Service or Plugin entry point. Plugin
+entries use `module:attribute` and normally point to an `apply(ctx, config)`
+function.
 
 ## Repository tree
 
@@ -48,7 +49,6 @@ ftre/
 ├─ config.example.json            # ~/.ftre/config.json template
 ├─ docs/                          # PRD, process, TODO and execution records
 ├─ src/
-│  ├─ cordis/                     # small public-contract fallback for offline/dev images
 │  └─ ftre/
 │     ├─ main.py                  # thin Typer entry point
 │     ├─ app/
@@ -67,18 +67,18 @@ ftre/
 │     ├─ features/                 # optional product Plugins
 │     │  ├─ skill/ mcp/ plan/ team/ schedule/
 │     │  └─ context_govern/
-│     └─ <legacy packages>/        # migration bridges; no new production code
+│     └─ __init__.py                # package boundary
 └─ tests/
    ├─ architecture/               # import boundaries and runtime contracts
    ├─ contracts/                   # Service contracts
    ├─ startup/ lifecycle/          # composition and reversible cleanup
-   └─ plugin/                      # compatibility and built-in behavior
+   └─ hooks/                       # semantic Hook behavior and contracts
 ```
 
-The legacy packages (`agent`, `api`, `bus`, `channel`, `plugin`, `session`,
-etc.) remain temporarily so existing clients and installed plugins keep working.
-New code belongs in `app`, `platform`, `services` or `features` and must not
-depend on `ftre.plugin.kernel`.
+The retired root packages (`agent`, `api`, `bus`, `channel`, `plugin`, `session`,
+etc.) are intentionally absent. New code belongs in `app`, `platform`,
+`services` or `features`; external plugins use the explicit runtime manifest
+boundary rather than importing private ftre modules.
 
 ## Startup and lifecycle
 
@@ -88,7 +88,8 @@ depend on `ftre.plugin.kernel`.
 3. Required Service Plugins are activated first through declared dependencies;
    optional Feature and external Plugins are activated when enabled.
 4. Each Plugin contributes Services, routes, hooks, tools or channels through
-   its `PluginContext`; every side effect is registered with `ctx.effect`.
+   the official `cordis.Context`; every cleanup is registered with a Cordis
+   Effect factory such as `ctx.effect(lambda: disposer)`.
 5. The real data plane binds the existing Session/Agent/Bus/Channel providers,
    freezes the HTTP registry, and starts the long-running Gateway.
 6. Shutdown disposes Fibers in reverse order, then stops AgentLoop, Channels,
@@ -130,18 +131,24 @@ invariants are covered by the SessionLane and lifecycle tests.
   commands, attachments, traces and system prompts.
 - **Features:** Skill catalog/loading, global/private MCP, Plan tool, Team
   orchestration, Schedule persistence and context governance hooks.
-- **Compatibility:** legacy `setup(ctx, config)` plugins and the external Octo
-  channel are adapted at the runtime boundary; they do not define the new
-  architecture.
+- **Extension boundary:** external plugins are loaded only through explicit
+  `module:attribute` manifests; they do not import private ftre modules or
+  define the core architecture.
 
 ## Development
 
 ```bash
+# Official runtime, developed in the sibling E:\cordis-py repository.
+python -m pip install -e E:\cordis-py
 python -m pip install -e .[dev]
 python -m pytest -q
 python -m ruff check src tests
 ftre gateway
 ```
+
+The project does not contain a local `src/cordis` fallback. In CI or a clean
+machine, install the reviewed `cordis-py` 0.4.0 release/source distribution
+before installing ftre; verify with `python -c "import cordis; print(cordis.__file__)"`.
 
 Configuration is read from `~/.ftre/config.json`; copy
 `config.example.json` as a starting point. See `docs/PROCESS.md` for the PRD

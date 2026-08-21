@@ -27,8 +27,6 @@ from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Tool, ToolParameter
 from mcp import Tool as McpToolDef
 
-from ftre.services.attachment.store import save_image
-
 from .connection import McpManager
 
 logger = logging.getLogger(__name__)
@@ -170,7 +168,9 @@ def create_mcp_tool(
 
                     try:
                         image_bytes = base64.b64decode(data)
-                        stored_path = save_image(
+                        if manager.attachment_service is None:
+                            raise RuntimeError("attachment service is not available")
+                        stored_path = manager.attachment_service.save_image(
                             image_bytes,
                             mime_type,
                             original_name=f"{server_name}_{mcp_tool.name}.png",
@@ -206,7 +206,13 @@ def create_mcp_tool(
                         try:
                             blob_bytes = base64.b64decode(resource.blob)
                             original_name = getattr(resource, "name", "") or f"{server_name}_{mcp_tool.name}"
-                            stored_path = save_image(blob_bytes, getattr(resource, "mimeType", "application/octet-stream"), original_name=original_name)
+                            if manager.attachment_service is None:
+                                raise RuntimeError("attachment service is not available")
+                            stored_path = manager.attachment_service.save_image(
+                                blob_bytes,
+                                getattr(resource, "mimeType", "application/octet-stream"),
+                                original_name=original_name,
+                            )
                             text_parts.append(
                                 f"[resource 二进制内容已保存到本地，请读取该路径获取完整内容: {stored_path}]"
                             )

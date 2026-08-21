@@ -63,12 +63,6 @@ class PluginManager:
         """Return current Fiber states suitable for startup and health output."""
         return self.loader.statuses() or self._statuses
 
-    @property
-    def routers(self) -> list[Any]:
-        """Legacy read-only router view; new Host uses HttpService registry."""
-        service = self.context.get("http", strict=False)
-        return list(service.router_objects()) if service is not None else []
-
     def diagnostics(self) -> list[dict[str, Any]]:
         """Return status dictionaries for JSON responses and logs."""
         return [status.as_dict() for status in self.statuses()]

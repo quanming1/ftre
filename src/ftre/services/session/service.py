@@ -13,6 +13,7 @@ import copy
 import logging
 import shutil
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -71,6 +72,63 @@ class SessionService:
 
     def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
         self._repo = SessionRepository(db_path, sessions_dir=sessions_dir)
+        self._flush_dispatcher: Callable[[str, str], Awaitable[None]] | None = None
+        self._lifecycle_dispatcher: Callable[[str, str, str], Awaitable[None]] | None = None
+
+    def bind_flush_dispatcher(
+        self, dispatcher: Callable[[str, str], Awaitable[None]]
+    ) -> Callable[[], bool]:
+        """Bind the single runtime flush barrier owner and return an idempotent unbinder."""
+        if not callable(dispatcher):
+            raise TypeError("flush dispatcher must be callable")
+        previous = self._flush_dispatcher
+        self._flush_dispatcher = dispatcher
+        disposed = False
+
+        def dispose() -> bool:
+            nonlocal disposed
+            if disposed:
+                return False
+            disposed = True
+            if self._flush_dispatcher is dispatcher:
+                self._flush_dispatcher = previous
+            return True
+
+        return dispose
+
+    async def flush(self, session_id: str = "", *, reason: str = "manual") -> None:
+        """Run the unique session persistence barrier after durable writes settle."""
+        dispatcher = self._flush_dispatcher
+        if dispatcher is not None:
+            await dispatcher(session_id, reason)
+
+    def bind_lifecycle_dispatcher(
+        self, dispatcher: Callable[[str, str, str], Awaitable[None]]
+    ) -> Callable[[], bool]:
+        """Bind the post-commit session created/disposed Hook bridge."""
+        if not callable(dispatcher):
+            raise TypeError("session lifecycle dispatcher must be callable")
+        previous = self._lifecycle_dispatcher
+        self._lifecycle_dispatcher = dispatcher
+        disposed = False
+
+        def dispose() -> bool:
+            nonlocal disposed
+            if disposed:
+                return False
+            disposed = True
+            if self._lifecycle_dispatcher is dispatcher:
+                self._lifecycle_dispatcher = previous
+            return True
+
+        return dispose
+
+    async def _emit_lifecycle(
+        self, kind: str, session_id: str, channel_id: str = ""
+    ) -> None:
+        dispatcher = self._lifecycle_dispatcher
+        if dispatcher is not None:
+            await dispatcher(kind, session_id, channel_id)
 
     async def search_sessions(
         self,
@@ -110,7 +168,9 @@ class SessionService:
     async def create_session(
         self, channel_id: str, title: str = "", workspace: str = ""
     ) -> str:
-        return await self._repo.create_session(channel_id, title, workspace)
+        session_id = await self._repo.create_session(channel_id, title, workspace)
+        await self._emit_lifecycle("created", session_id, channel_id)
+        return session_id
 
     async def get_or_create_external_session(
         self,
@@ -152,6 +212,32 @@ class SessionService:
         """原子读-改-写 metadata 的单个 key（updater(旧值) -> 新值，全程在锁内）。"""
         return await self._repo.mutate_session_metadata(session_id, key, updater)
 
+    async def append_command_event(
+        self,
+        session_id: str,
+        event: dict[str, Any],
+    ) -> int:
+        """Persist one Command lifecycle record without projecting it as chat content."""
+        if not isinstance(event, dict) or not event.get("type"):
+            raise ValueError("command event must contain a type")
+        def append(old):
+            records = list(old) if isinstance(old, list) else []
+            records.append(copy.deepcopy(event))
+            return records
+
+        metadata = await self.mutate_session_metadata(
+            session_id,
+            "_command_events",
+            append,
+        )
+        return len(metadata.get("_command_events") or [])
+
+    async def get_command_events(self, session_id: str) -> list[dict[str, Any]]:
+        """Return the durable Command lifecycle log for diagnostics/replay."""
+        metadata = await self.get_session_metadata(session_id)
+        events = metadata.get("_command_events")
+        return copy.deepcopy(events) if isinstance(events, list) else []
+
     async def delete_session(self, session_id: str) -> None:
         """删除 session。
 
@@ -184,6 +270,7 @@ class SessionService:
 
         # 5) 删自身
         await self._repo.delete_session(session_id)
+        await self._emit_lifecycle("disposed", session_id)
 
         # 6) 反向解绑：被单独删除的是 team 成员时，从 leader 的 teams 摘除
         binding = sub_agent_profile.binding_of(meta)

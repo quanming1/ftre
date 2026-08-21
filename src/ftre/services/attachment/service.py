@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,29 @@ class AttachmentService:
 
     def read(self, filename: str, limit: int = 10_000_000) -> bytes:
         return self.resolve(filename).read_bytes()[:limit]
+
+    def save_image(self, raw: bytes, mime: str, original_name: str = "") -> str:
+        """Persist image bytes under this Service's configured root."""
+        if not isinstance(raw, bytes):
+            raise TypeError("attachment data must be bytes")
+        extension = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+        }.get(mime, ".bin")
+        name = os.path.basename(original_name or f"attachment_{uuid.uuid4().hex[:8]}")
+        name = re.sub(r"[^a-zA-Z0-9._-]", "_", name) or f"attachment_{uuid.uuid4().hex[:8]}"
+        if not name.lower().endswith(extension):
+            name = f"{name}{extension}"
+        candidate = self.resolve(name)
+        counter = 1
+        while candidate.exists():
+            stem = candidate.stem
+            candidate = self.resolve(f"{stem}_{counter}{candidate.suffix}")
+            counter += 1
+        candidate.write_bytes(raw)
+        return str(candidate)
 
     def resolve_local_image(self, path: str) -> tuple[Path, str]:
         """Resolve a renderer preview path while preserving the old image contract."""

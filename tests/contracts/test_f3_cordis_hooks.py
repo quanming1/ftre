@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from cordis import Context
 
 
@@ -15,33 +14,40 @@ def test_event_registration_preserves_order_and_is_reversible() -> None:
 
     context.emit("event")
     assert calls == ["first", "second"]
-    assert dispose_first() is True
-    assert dispose_first() is False
+    dispose_first()
+    dispose_first()
     context.emit("event")
     assert calls == ["first", "second", "second"]
 
 
 @pytest.mark.asyncio
-async def test_filter_threads_hook_context_and_keeps_none_result() -> None:
+async def test_waterfall_composes_hook_context_and_default_result() -> None:
     context = Context()
 
-    async def add_one(value: int) -> int:
-        return value + 1
+    async def add_one(value: int, next_):
+        return (await next_()) + 1
 
-    def keep(value: int) -> None:
-        return None
+    async def keep(value: int, next_):
+        return await next_()
 
-    context.on("filter", add_one)
-    context.on("filter", keep)
-    assert await context.filter("filter", 1) == 2
+    context.on("hook", add_one)
+    context.on("hook", keep)
+
+    async def identity(value: int) -> int:
+        return value
+
+    assert await context.waterfall("hook", 1, inner=identity) == 2
 
 
 @pytest.mark.asyncio
-async def test_filter_disposer_stops_a_hook_from_running() -> None:
+async def test_waterfall_disposer_stops_a_hook_from_running() -> None:
     context = Context()
     calls: list[str] = []
-    dispose = context.on("filter", lambda value: calls.append("called") or value)
+    dispose = context.on("hook", lambda value, next_: calls.append("called") or value)
     dispose()
 
-    assert await context.filter("filter", "value") == "value"
+    async def identity(value):
+        return value
+
+    assert await context.waterfall("hook", "value", inner=identity) == "value"
     assert calls == []

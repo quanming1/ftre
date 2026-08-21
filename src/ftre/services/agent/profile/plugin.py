@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from cordis import PluginContext
+from cordis import Context
+
 from ftre.services.config.paths import AGENTS_DIR
 
 from .manager import AgentManager
@@ -12,9 +13,9 @@ inject = ()
 provide = ("agent_profiles",)
 
 
-def apply(ctx: PluginContext, config=None):
+def apply(ctx: Context, config=None):
     """Build the profile manager and publish it as ``agent_profiles``."""
-    if ctx.optional("agent_profiles") is not None:
+    if ctx.get("agent_profiles", strict=False) is not None:
         return
     options = config if isinstance(config, dict) else {}
     manager = AgentManager(agents_dir=options.get("agents_dir", AGENTS_DIR))

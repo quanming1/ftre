@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from cordis import Context, FiberState
 from ftre_agent_core.tool import ToolRegistry
 
-from cordis import Context, FiberState
 from ftre.features.schedule.plugin import apply, inject, provide
 from ftre.services.messaging.bus import EventBus, MessageBusService
 from ftre.services.messaging.channel import ChannelService
@@ -16,13 +16,12 @@ class _Sessions:
         return "cron_test"
 
 
-class _SchedulePlugin:
-    inject = inject
-    provide = provide
+async def schedule_plugin(ctx, config=None):
+    return await apply(ctx, config)
 
-    @staticmethod
-    async def apply(ctx, config=None):
-        return await apply(ctx, config)
+
+schedule_plugin.inject = inject
+schedule_plugin.provide = provide
 
 
 @pytest.mark.asyncio
@@ -35,8 +34,8 @@ async def test_schedule_plugin_owns_channel_tool_scheduler_and_cleanup(tmp_path)
     root.provide("sessions", _Sessions())
     root.provide("channels", channels)
     root.provide("tools", tools)
-    fiber = root.plugin(_SchedulePlugin, {"root": str(tmp_path), "scan_interval": 60}, id="schedule")
-    await root.settle()
+    fiber = root.plugin(schedule_plugin, {"root": str(tmp_path), "scan_interval": 60})
+    await fiber
 
     assert fiber.state is FiberState.ACTIVE
     assert root.get("schedule").list() == []
@@ -44,7 +43,11 @@ async def test_schedule_plugin_owns_channel_tool_scheduler_and_cleanup(tmp_path)
     assert tools.registry.get("cron") is not None
     assert root.get("schedule") is not None
 
-    assert await root.unload("schedule") is True
+    cleanup = fiber.dispose()
+    if cleanup is not None:
+        await cleanup
     assert channels.manager.get("cron") is None
     assert tools.registry.get("cron") is None
-    await root.dispose()
+    cleanup = root.dispose()
+    if cleanup is not None:
+        await cleanup

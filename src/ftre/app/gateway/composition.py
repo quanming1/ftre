@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from cordis import Context
+
+from ftre.platform.hooks import HookRuntime
 from ftre.platform.plugin_runtime import PluginManager, PluginManifest
 from ftre.services.config.loader import load_config_file
 
@@ -27,12 +29,14 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("attachments", "ftre.services.attachment.plugin:apply", "builtin", True, True, description="attachment storage"),
         PluginManifest("traces", "ftre.services.observability.trace.plugin:apply", "builtin", True, True, description="trace persistence"),
         PluginManifest("agents", "ftre.services.agent.plugin:apply", "builtin", True, True, description="public agent facade"),
+        PluginManifest("compaction", "ftre.services.compaction.plugin:apply", "builtin", True, True, description="context compaction service"),
         PluginManifest("skill", "ftre.features.skill.plugin:apply", "builtin", False, True, description="skill catalog and tool"),
         PluginManifest("mcp", "ftre.features.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
         PluginManifest("plan", "ftre.features.plan.plugin:apply", "builtin", False, True, description="plan behavior"),
         PluginManifest("team", "ftre.features.team.plugin:apply", "builtin", False, True, description="team lifecycle"),
         PluginManifest("schedule", "ftre.features.schedule.plugin:apply", "builtin", False, True, description="cron persistence"),
         PluginManifest("context-govern", "ftre.features.context_govern.plugin:apply", "builtin", True, True, description="workspace governance"),
+        PluginManifest("compaction-hooks", "ftre.features.compaction.plugin:apply", "builtin", True, True, description="context compaction hooks"),
         PluginManifest("session-title", "ftre.services.session.title.plugin:apply", "builtin", False, True, description="title behavior"),
     ]
 
@@ -118,6 +122,9 @@ async def build_composition(
     """Create and settle a composition without opening a listening socket."""
     config = config_data if config_data is not None else load_config_file()
     context = Context()
+    # One HookRuntime per Composition lets Plugins register through their Fiber
+    # while AgentLoop/Session/Tool adapters share the same Cordis event graph.
+    context.provide("hook_runtime", HookRuntime(context))
     for name, value in (initial_services or {}).items():
         if value is not None:
             context.provide(name, value)

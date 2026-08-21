@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from cordis import PluginContext
+from cordis import Context
 
 from .service import TeamService
 
-inject = ("sessions",)
+inject = ()
 provide = ("teams",)
 
 
-def apply(ctx: PluginContext, config=None):
+def apply(ctx: Context, config=None):
     """Publish a TeamService backed by the injected Session capability."""
-    if ctx.optional("teams") is not None:
+    if ctx.get("teams", strict=False) is not None:
         return
     ctx.provide("teams", TeamService())

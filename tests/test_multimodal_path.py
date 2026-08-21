@@ -1,14 +1,15 @@
 
-from ftre.services.attachment.store import save_image
+from ftre.services.attachment import AttachmentService
 from ftre.services.session.message.multimodal import (
     build_user_content,
     normalize_user_content,
 )
 
 
-def test_normalize_user_content_image_file_with_vision():
+def test_normalize_user_content_image_file_with_vision(tmp_path):
+    service = AttachmentService(tmp_path)
     raw = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-    path = save_image(raw, "image/png", "test.png")
+    path = service.save_image(raw, "image/png", "test.png")
 
     content = [
         {"type": "text", "text": "看图"},
@@ -23,9 +24,10 @@ def test_normalize_user_content_image_file_with_vision():
     assert result[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
-def test_normalize_user_content_image_file_without_vision():
+def test_normalize_user_content_image_file_without_vision(tmp_path):
+    service = AttachmentService(tmp_path)
     raw = b"\x00" * 10
-    path = save_image(raw, "image/png", "test.png")
+    path = service.save_image(raw, "image/png", "test.png")
 
     content = [
         {"type": "text", "text": "看图"},
@@ -52,9 +54,10 @@ def test_normalize_user_content_image_file_missing_file():
     assert "看图" in result
 
 
-def test_build_user_content_with_path_attachment():
+def test_build_user_content_with_path_attachment(tmp_path):
+    service = AttachmentService(tmp_path)
     raw = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-    path = save_image(raw, "image/png", "upload.png")
+    path = service.save_image(raw, "image/png", "upload.png")
 
     attachments = [
         {"type": "image", "mime_type": "image/png", "path": path, "name": "upload.png"},
@@ -68,9 +71,10 @@ def test_build_user_content_with_path_attachment():
     assert result[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
-def test_build_user_content_with_path_attachment_without_vision():
+def test_build_user_content_with_path_attachment_without_vision(tmp_path):
+    service = AttachmentService(tmp_path)
     raw = b"\x00" * 10
-    path = save_image(raw, "image/png", "upload.png")
+    path = service.save_image(raw, "image/png", "upload.png")
 
     attachments = [
         {"type": "image", "mime_type": "image/png", "path": path, "name": "upload.png"},

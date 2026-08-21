@@ -81,14 +81,14 @@ def _agent_ref_metadata(leader_session_id: str, member_session_id: str) -> Inbou
 def _dispatch_to_member(
     channel_manager,
     event_loop,
-    agent_loop,
+    agent_service,
     leader_session_id: str,
     member_session_id: str,
     content: str,
 ) -> object:
     """向团队成员投递一条 inbound user_message（团队内发消息的唯一入口）。
 
-    直接调用 AgentLoop.submit_inbound()，返回时 request 已耐久接纳；
+    通过 AgentService.submit()，返回时 request 已耐久接纳；
     与 send_message invoke 使用同一个 SessionLane 入口。
     统一携带 agent_ref 定位标记（成员据此加载自己的 profile）。
 
@@ -99,8 +99,8 @@ def _dispatch_to_member(
     subagent_channel = channel_manager.get(SUBAGENT_CHANNEL_ID)
     if subagent_channel is None:
         raise RuntimeError(f"未注册 channel: {SUBAGENT_CHANNEL_ID}")
-    if agent_loop is None:
-        raise RuntimeError("runtime context 未注入 agent_loop")
+    if agent_service is None:
+        raise RuntimeError("runtime context 未注入 agent")
     inbound = BusMessage(
         type="user_message",
         from_channel=SUBAGENT_CHANNEL_ID,
@@ -113,7 +113,7 @@ def _dispatch_to_member(
         },
         metadata=_agent_ref_metadata(leader_session_id, member_session_id),
     )
-    return _run_async(agent_loop.submit_inbound(inbound), event_loop)
+    return _run_async(agent_service.submit(inbound), event_loop)
 
 
 def _run_async(coro, event_loop, timeout: float | None = 10.0):
@@ -200,9 +200,9 @@ def _create_team_create_tool() -> Tool:
         team_name: str,
         team_id: str = "",
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
+        agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
     ) -> str:
         if not session_id or event_loop is None or session_manager is None:
@@ -271,9 +271,9 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         profile: dict | None = None,
         invoke: str = "",
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
+        agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
         workspace=Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str:
@@ -331,7 +331,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
             )
         except (OSError, ValueError) as e:
             try:
-                _run_async(agent_loop.delete_session(member_sid), event_loop)
+                _run_async(agent_service.delete_session(member_sid), event_loop)
             except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                 pass
             return f"[error] 写入成员 profile 失败: {type(e).__name__}: {e}"
@@ -350,7 +350,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             sub_agent_profile.delete_member_profile(session_manager, session_id, member_sid)
             try:
-                _run_async(agent_loop.delete_session(member_sid), event_loop)
+                _run_async(agent_service.delete_session(member_sid), event_loop)
             except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                 pass
             return f"[error] 写入成员绑定失败: {type(e).__name__}: {e}"
@@ -375,7 +375,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             sub_agent_profile.delete_member_profile(session_manager, session_id, member_sid)
             try:
-                _run_async(agent_loop.delete_session(member_sid), event_loop)
+                _run_async(agent_service.delete_session(member_sid), event_loop)
             except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                 pass
             return (
@@ -394,7 +394,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         # invoke 已传：作为成员的第一条 user 消息，创建后立即执行
         try:
             _dispatch_to_member(
-                channel_manager, event_loop, agent_loop,
+                channel_manager, event_loop, agent_service,
                 session_id, member_sid, invoke.strip()
             )
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
@@ -463,9 +463,9 @@ def _create_team_say_tool(channel_manager) -> Tool:
         session_id: str,
         content: str,
         parent_session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
+        agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
     ) -> str:
         if not parent_session_id or event_loop is None or session_manager is None:
@@ -499,7 +499,7 @@ def _create_team_say_tool(channel_manager) -> Tool:
 
         try:
             ack = _dispatch_to_member(
-                channel_manager, event_loop, agent_loop,
+                channel_manager, event_loop, agent_service,
                 parent_session_id, session_id.strip(), content,
             )
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
@@ -550,9 +550,9 @@ def _create_team_agent_status_tool() -> Tool:
         team_id: str,
         session_id: str = "",
         parent_session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
+        agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
     ) -> str:
         """查询团队成员状态（不阻塞）。
@@ -577,8 +577,8 @@ def _create_team_agent_status_tool() -> Tool:
         def _one(member_sid: str) -> tuple[str, str, int, float]:
             """(status, last_text, msg_count, elapsed)"""
             running = (
-                agent_loop is not None
-                and agent_loop.is_session_busy(member_sid)
+                agent_service is not None
+                and agent_service.is_session_busy(member_sid)
             )
             status = "running" if running else "idle"
             last_text = _member_last_text(session_manager, event_loop, member_sid)
@@ -667,9 +667,9 @@ def _create_team_delete_tool() -> Tool:
     def team_delete(
         team_id: str,
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
+        agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
     ) -> str:
         if not session_id or event_loop is None or session_manager is None:
@@ -705,7 +705,7 @@ def _create_team_delete_tool() -> Tool:
         deleted, failed = 0, 0
         for msid in member_sids:
             try:
-                _run_async(agent_loop.delete_session(msid), event_loop)
+                _run_async(agent_service.delete_session(msid), event_loop)
                 deleted += 1
             except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 failed += 1
@@ -739,12 +739,12 @@ def _create_wait_agent_tool() -> Tool:
     def wait_agent(
         session_ids: list | None = None,
         parent_session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        session_manager=Injected("session_manager"),  # noqa: B008 legacy compatibility boundary reviewed in F1
-        agent_loop=Injected("agent_loop"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
+        agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
     ) -> str:
-        if not parent_session_id or event_loop is None or agent_loop is None or session_manager is None:
+        if not parent_session_id or event_loop is None or agent_service is None or session_manager is None:
             return "[error] runtime context 未注入完整"
         guard = _guard_not_subagent(caller_channel)
         if guard:
@@ -771,7 +771,7 @@ def _create_wait_agent_tool() -> Tool:
         for sid in sids:
             try:
                 _run_async(
-                    agent_loop.wait_session_quiescent(sid),
+                    agent_service.wait_session_quiescent(sid),
                     event_loop,
                     timeout=None,
                 )

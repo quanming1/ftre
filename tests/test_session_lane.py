@@ -6,11 +6,14 @@ import json
 
 import pytest
 
-from ftre.services.agent.runtime.loop.completion_registry import CompletionRegistry
-from ftre.services.agent.runtime.loop.context_gate import ContextDecision
-from ftre.services.agent.runtime.loop.turn_executor import TurnOutcome
-from ftre.services.agent.runtime.mailbox.lane import SessionLane, SessionLaneRegistry
-from ftre.services.agent.runtime.mailbox.store import MailboxStore
+from ftre.services.agent_loop.runtime.loop.completion_registry import CompletionRegistry
+from ftre.services.agent_loop.runtime.loop.context_gate import ContextDecision
+from ftre.services.agent_loop.runtime.loop.turn_executor import TurnOutcome
+from ftre.services.agent_loop.runtime.mailbox.lane import (
+    SessionLane,
+    SessionLaneRegistry,
+)
+from ftre.services.agent_loop.runtime.mailbox.store import MailboxStore
 from ftre.services.messaging.bus import BusMessage
 from ftre.services.session.service import SessionService as SessionManager
 

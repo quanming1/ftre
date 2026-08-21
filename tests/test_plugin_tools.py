@@ -1,14 +1,23 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
+from cordis import Context, FiberState
 from fastapi import APIRouter
 from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Tool, ToolRegistry
 
-from cordis import Context, FiberState
-from ftre.services.agent.config import AgentConfig
-from ftre.services.agent.runtime.hooks import BEFORE_AGENT_RUN, AgentRunContext
+from ftre.platform.hooks import HookRuntime
+from ftre.services.agent.hooks import AgentSubject
+from ftre.services.agent.registry import AgentRegistry
+from ftre.services.attachment import AttachmentService
 from ftre.services.http.service import HttpService
+from ftre.services.system_prompt.hooks import (
+    SYSTEM_PROMPT_ASSEMBLE_SPEC,
+    PromptAssemblyPayload,
+)
+from ftre.services.system_prompt.service import SystemPromptService
+from ftre.services.system_prompt.types import PromptSection
 from ftre.services.tools import ToolService
 from ftre.services.tools.builtin import build_default_tools
 from ftre.services.tools.builtin._workspace import WorkspaceAccessor
@@ -48,6 +57,7 @@ def test_read_tool_reads_relative_image_path(tmp_path):
         "screen.png",
         ws=_FakeWorkspace(str(tmp_path)),
         llm_config=SimpleNamespace(vision=True),
+        attachments=AttachmentService(tmp_path / "assets"),
     )
     assert isinstance(result, HintBlockEvent)
     assert result.metadata["path"] == str(image.resolve())
@@ -59,19 +69,19 @@ async def test_cordis_plugin_failure_rolls_back_registered_tools():
     tools = ToolService(ToolRegistry())
     root.provide("tools", tools)
 
-    class FailingPlugin:
-        inject = ("tools",)
-        provide = ()
+    def failing_plugin(ctx, _config=None):
+        ctx.effect(lambda: ctx.tools.register(_dummy_tool("leaked"), owner="failing"))
+        raise RuntimeError("boom")
 
-        def apply(self, ctx):
-            ctx.effect(ctx.tools.register(_dummy_tool("leaked"), owner="failing"))
-            raise RuntimeError("boom")
-
-    fiber = root.plugin(FailingPlugin, id="failing")
-    await root.settle()
+    failing_plugin.inject = ("tools",)
+    fiber = root.plugin(failing_plugin)
+    with pytest.raises(RuntimeError, match="boom"):
+        await fiber.await_()
     assert fiber.state is FiberState.FAILED
     assert tools.snapshot() == ()
-    await root.dispose()
+    cleanup = root.dispose()
+    if cleanup is not None:
+        await cleanup
 
 
 @pytest.mark.asyncio
@@ -82,47 +92,70 @@ async def test_cordis_plugin_contributions_and_router_are_reversible():
     root.provide("tools", tools)
     root.provide("http", http)
 
-    class Plugin:
-        inject = ("tools", "http")
-        provide = ()
+    def plugin(ctx, _config=None):
+        ctx.effect(lambda: ctx.tools.register(_dummy_tool("from_plugin"), owner="plugin"))
+        router = APIRouter()
 
-        def apply(self, ctx):
-            ctx.effect(ctx.tools.register(_dummy_tool("from_plugin"), owner="plugin"))
-            router = APIRouter()
+        @router.get("/ping")
+        def ping():
+            return {"pong": True}
 
-            @router.get("/ping")
-            def ping():
-                return {"pong": True}
+        ctx.effect(lambda: ctx.http.register_router(router, owner="plugin"))
 
-            ctx.effect(ctx.http.register_router(router, owner="plugin"))
-
-    fiber = root.plugin(Plugin, id="plugin")
-    await root.settle()
+    plugin.inject = ("tools", "http")
+    fiber = root.plugin(plugin)
+    await fiber
     assert fiber.state is FiberState.ACTIVE
     assert tools.snapshot()[0].name == "from_plugin"
     assert any(item["path"] == "/api/ping" for item in http.snapshot())
-    await root.dispose()
+    cleanup = root.dispose()
+    if cleanup is not None:
+        await cleanup
     assert tools.snapshot() == ()
     assert http.snapshot() == ()
 
 
 @pytest.mark.asyncio
-async def test_cordis_event_filter_can_insert_messages():
-    root = Context()
+async def test_structured_prompt_hook_replaces_assembly_without_mutable_filter():
+    runtime = HookRuntime(Context())
+    service = SystemPromptService()
+    service.register_section(PromptSection(name="feature", content="feature"))
+    assembly = service.assemble_result("default", "sess_1", base_prompt="base")
+    registry = AgentRegistry()
+    registry.ensure("default")
 
-    def rewrite(ctx):
-        ctx.messages.insert(0, {"role": "system", "content": "persona: Alice"})
-        return ctx
+    async def rewrite(payload, next_):
+        result = await next_()
+        return type(result)(
+            result.agent_id,
+            result.session_id,
+            result.workspace,
+            result.contributions,
+            result.text + "\n\npersona: Alice",
+        )
 
-    root.on(BEFORE_AGENT_RUN, rewrite)
-    ctx = AgentRunContext(
-        session_id="sess_1",
-        channel_id="ws",
-        messages=[{"role": "system", "content": "base"}],
-        config=AgentConfig(),
+    runtime.register(
+        SYSTEM_PROMPT_ASSEMBLE_SPEC,
+        rewrite,
+        owner="prompt-test",
+        global_listener=True,
     )
-    ctx = await root.filter(BEFORE_AGENT_RUN, ctx)
-    assert [message["content"] for message in ctx.messages] == ["persona: Alice", "base"]
+    result = await runtime.dispatch(
+        SYSTEM_PROMPT_ASSEMBLE_SPEC,
+        PromptAssemblyPayload(
+            agent=AgentSubject("default", registry.scope_identity("default")),
+            session_id="sess_1",
+            workspace="/tmp",
+            assembly=assembly,
+            messages=(),
+            inbound_data={},
+            config=SimpleNamespace(),
+            event_loop=None,
+            cancellation=asyncio.Event(),
+        ),
+        context=runtime.context_for_scope(registry.scope_carrier("default")),
+    )
+    assert result.text.endswith("persona: Alice")
 
 
 class _FakeWorkspace(WorkspaceAccessor):

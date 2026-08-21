@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cordis import PluginContext
+from cordis import Context
+
 from ftre.services.system_prompt.types import PromptSection
 
 inject = ("system_prompt", "workspaces", "filesystem")
 provide = ()
 
 
-def apply(ctx: PluginContext, config=None):
+def apply(ctx: Context, config=None):
     """Register a lazy prompt section so the current workspace is read per turn."""
     def workspace_rules(values):
         workspace = values.get("workspace") or ""
@@ -28,4 +29,4 @@ def apply(ctx: PluginContext, config=None):
         return ""
 
     disposer = ctx.system_prompt.register_section(PromptSection(name="workspace-rules", factory=workspace_rules, priority=40, owner="context-govern", source="builtin"))
-    ctx.effect(disposer, label="prompt:context-govern")
+    ctx.effect(lambda: disposer, label="prompt:context-govern")

@@ -21,7 +21,7 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import AssistantMsg, Msg, MsgName, UserMsg
 
-from ftre.services.agent.runtime.compaction.events import CompactEventName
+from ftre.services.compaction.events import CompactEventName
 
 if TYPE_CHECKING:
     from ftre.services.session import SessionService
