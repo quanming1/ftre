@@ -5,21 +5,16 @@
 """
 import json
 import logging
-import os
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ftre.services.config.loader import load_config_file
+from ftre.services.config.paths import AGENTS_DIR, CONFIG_PATH
+
 logger = logging.getLogger(__name__)
 
-# 配置文件路径
-CONFIG_PATH = Path(os.environ.get("USERPROFILE", Path.home()) if sys.platform == "win32" else Path.home()) / ".ftre" / "config.json"
-
-# Agent 目录路径
-AGENTS_DIR = CONFIG_PATH.parent / "agents"
-
-# 默认 system prompt 文件（与 config.py 同级）
-SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "system_prompt.md"
+# 默认 system prompt 文件由应用包统一提供。
+SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[2] / "system_prompt.md"
 
 
 def _load_system_prompt() -> str:
@@ -157,33 +152,6 @@ class AgentConfig:
 # 因为 model/provider/workspace 现在从 default agent 读取。
 _last_config: AgentConfig | None = None
 _last_sig: str = ""
-
-
-def load_config_file() -> dict:
-    """读取 ~/.ftre/config.json 原始内容"""
-    if not CONFIG_PATH.exists():
-        logger.warning(f"[config] 不存在: {CONFIG_PATH}")
-        return {}
-    try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        logger.error(f"[config] 读取失败: {e}")
-        return {}
-
-
-def load_gateway_address(default_host: str = "127.0.0.1", default_port: int = 48650) -> tuple[str, int]:
-    """读取 gateway 监听地址。
-
-    端口/host 的单一事实源是 config.json 的 servers.gateway，缺失时回退到默认值。
-    """
-    servers = load_config_file().get("servers", {})
-    gateway = servers.get("gateway", {}) if isinstance(servers, dict) else {}
-    host = gateway.get("host") if isinstance(gateway, dict) else None
-    port = gateway.get("port") if isinstance(gateway, dict) else None
-    return (
-        host if isinstance(host, str) and host else default_host,
-        port if isinstance(port, int) else default_port,
-    )
 
 
 def _build_model_name(model_id: str, protocol: str) -> str:
@@ -390,9 +358,3 @@ def load_config() -> AgentConfig:
     _last_sig = current_sig
 
     return result
-
-
-# Configuration is now owned by ``ftre.services.config.ConfigService``.  Keep
-# ``load_config`` as a compatibility read facade for the Agent runtime, but do
-# not evaluate it at import time: importing a module must never read disk or
-# create a second configuration fact source.

@@ -149,8 +149,8 @@ def load_member_profile(
                 leader_session_id, member_session_id,
             )
             return None
-        from ftre.config import AGENTS_DIR
         from ftre.services.agent.profile.manager import AgentManager
+        from ftre.services.config.paths import AGENTS_DIR
 
         return AgentManager(
             base_dir.parent, fallback_agents_dir=AGENTS_DIR

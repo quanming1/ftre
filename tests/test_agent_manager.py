@@ -614,8 +614,8 @@ def test_create_agent_passes_reasoning_effort_to_core(
     tmp_agents_dir, fake_global_config
 ):
     """The merged effort reaches ReActAgent instead of its empty-string default."""
+    from ftre.services.agent.config import AgentConfig
     from ftre.services.agent.profile.manager import AgentManager
-    from ftre.config import AgentConfig
 
     mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("default")
@@ -767,4 +767,3 @@ def test_update_agent_name_and_workspace(tmp_path):
 
     assert cfg["name"] == "NewName"
     assert cfg["workspace"] == "/new/ws"
-

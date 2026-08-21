@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from ftre.config import AgentConfig
+from ftre.services.agent.config import AgentConfig
 from ftre.services.session.entity.state import QueueItem
 
 from ..compaction.manager import CompactManager

@@ -14,8 +14,8 @@ from typing import ClassVar
 
 import typer
 
-from ftre.config import load_gateway_address
 from ftre.gateway.runtime import GatewayRuntime
+from ftre.services.config.loader import load_gateway_address
 
 
 class ColorFormatter(logging.Formatter):

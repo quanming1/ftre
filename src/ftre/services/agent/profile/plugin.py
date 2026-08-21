@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from cordis import PluginContext
-from ftre.config import AGENTS_DIR
+from ftre.services.config.paths import AGENTS_DIR
 
 from .manager import AgentManager
 from .service import AgentProfileService

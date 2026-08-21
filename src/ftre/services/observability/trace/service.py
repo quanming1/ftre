@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ftre.trace_store import (
+from .store import (
     SQLiteTraceExporter,
     get_trace,
     get_trace_run,

@@ -9,8 +9,8 @@ import pytest
 import pytest_asyncio
 from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
 
-from ftre.services.session.service import SessionService as SessionManager
 from ftre.services.session.message.converter import to_openai
+from ftre.services.session.service import SessionService as SessionManager
 
 
 @pytest_asyncio.fixture

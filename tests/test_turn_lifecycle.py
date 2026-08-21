@@ -14,11 +14,11 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import Msg
 
+from ftre.services.agent.config import AgentConfig, ContextConfig, LLMConfig
 from ftre.services.agent.runtime.loop.engine import AgentLoop
-from ftre.services.session.projection import SessionProjection
 from ftre.services.agent.runtime.loop.turn_executor import TurnExecutor
 from ftre.services.messaging.bus import BusMessage, InboundMetadata
-from ftre.config import AgentConfig, ContextConfig, LLMConfig
+from ftre.services.session.projection import SessionProjection
 
 
 class FakeAgent:

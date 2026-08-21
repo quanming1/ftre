@@ -14,7 +14,10 @@ import pytest_asyncio
 from ftre_agent_core.message import UserMsg
 
 from ftre.services.session.entity.state import AgentStateFile
-from ftre.services.session.persistence.json_store import JsonStateStore, validate_session_id
+from ftre.services.session.persistence.json_store import (
+    JsonStateStore,
+    validate_session_id,
+)
 
 
 def _state(session_id: str, *texts: str) -> AgentStateFile:

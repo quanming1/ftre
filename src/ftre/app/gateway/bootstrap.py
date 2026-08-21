@@ -40,7 +40,6 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     from ftre_agent_core.hooks import FtreCoreHookManager
     from ftre_agent_core.tool import ToolRegistry
 
-    from ftre.config import AGENTS_DIR, load_config_file, load_gateway_address
     from ftre.services.agent import AgentService
     from ftre.services.agent.profile import AgentProfileService
     from ftre.services.agent.profile.manager import AgentManager
@@ -51,6 +50,8 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     from ftre.services.command import CommandManager, CommandService
     from ftre.services.command.builtin import register_builtin_commands
     from ftre.services.config import ConfigService
+    from ftre.services.config.loader import load_config_file, load_gateway_address
+    from ftre.services.config.paths import AGENTS_DIR
     from ftre.services.messaging.bus import EventBus, MessageBusService
     from ftre.services.messaging.channel import ChannelService
     from ftre.services.messaging.channel.manager import ChannelManager

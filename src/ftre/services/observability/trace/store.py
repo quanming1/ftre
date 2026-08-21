@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ftre.config import CONFIG_PATH
+from ftre.services.config.paths import CONFIG_PATH
 
 if TYPE_CHECKING:
     from ftre_agent_core.tracing import TraceRun

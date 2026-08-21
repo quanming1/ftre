@@ -23,7 +23,7 @@ from typing import Any
 
 from ftre_agent_core.message import Msg, MsgName
 
-from ftre.config import CONFIG_PATH
+from ftre.services.config.paths import CONFIG_PATH
 from ftre.services.session.entity.models import (
     ExternalSessionModel,
     MessageModel,

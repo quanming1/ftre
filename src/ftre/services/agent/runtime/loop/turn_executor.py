@@ -31,7 +31,7 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import Msg, from_openai_message
 
-from ftre.config import AgentConfig, load_config
+from ftre.services.agent.config import AgentConfig, load_config
 from ftre.services.agent.runtime.hooks import (
     BEFORE_AGENT_RUN,
     BEFORE_MESSAGES_BUILD,

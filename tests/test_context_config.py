@@ -7,8 +7,13 @@ from __future__ import annotations
 
 import pytest
 
-from ftre import config as ftre_config
-from ftre.config import AgentConfig, ContextConfig, LLMConfig, sanitize_agent_effort
+from ftre.services.agent import config as ftre_config
+from ftre.services.agent.config import (
+    AgentConfig,
+    ContextConfig,
+    LLMConfig,
+    sanitize_agent_effort,
+)
 
 
 @pytest.fixture

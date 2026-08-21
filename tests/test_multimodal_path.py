@@ -1,5 +1,8 @@
 
-from ftre.services.session.message.multimodal import build_user_content, normalize_user_content
+from ftre.services.session.message.multimodal import (
+    build_user_content,
+    normalize_user_content,
+)
 from ftre.utils.image_store import save_image
 
 

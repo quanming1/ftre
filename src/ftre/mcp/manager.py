@@ -21,7 +21,7 @@ except ImportError:  # mcp 2.0 起改名为 streamable_http_client
 from .config import McpServerConfig, parse_mcp_config
 
 if TYPE_CHECKING:
-    from ftre.tools import ToolRegistry
+    from ftre_agent_core.tool import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +220,7 @@ class McpManager:
         2. mtime 变了再比 mcp 段的 JSON 内容——避免 config.json 其他段落
            的改动触发不必要的 MCP 重连
         """
-        from ftre.config import CONFIG_PATH
+        from ftre.services.config.paths import CONFIG_PATH
         last_mtime: float = 0.0
         last_mcp_json: str = ""
 

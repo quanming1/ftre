@@ -18,7 +18,7 @@ from ftre_agent_core import Tracer
 from ftre_agent_core.hooks import FtreCoreHookManager
 from ftre_agent_core.tool import ToolRegistry
 
-from ftre.config import AgentConfig
+from ftre.services.agent.config import AgentConfig
 from ftre.services.messaging.bus import (
     BusMessage,
     EventBus,
@@ -28,9 +28,9 @@ from ftre.services.messaging.bus import (
     SessionMailboxSnapshotMessage,
     SessionMailboxSnapshotPayload,
 )
+from ftre.services.observability.trace.store import TRACE_DB_PATH, SQLiteTraceExporter
 from ftre.services.session import SessionService
 from ftre.services.session.projection import ProjectionResult, SessionProjection
-from ftre.trace_store import TRACE_DB_PATH, SQLiteTraceExporter
 
 from ..compaction.manager import CompactManager
 from ..mailbox.lane import AdmissionResult, SessionLaneRegistry
@@ -119,7 +119,7 @@ class AgentLoop:
             return cfg.context
         except Exception:
             logger.debug("[agent-loop] 使用默认 ContextConfig", exc_info=True)
-            from ftre.config import ContextConfig
+            from ftre.services.agent.config import ContextConfig
 
             return ContextConfig()
 

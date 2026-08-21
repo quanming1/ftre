@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from ftre.config import (
+from ftre.services.agent.config import (
     AgentConfig,
     LLMConfig,
     _build_llm_config,

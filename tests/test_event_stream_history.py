@@ -9,8 +9,8 @@ from ftre_agent_core.message import (
     ToolResultBlock,
 )
 
-from ftre.services.session.service import SessionService as SessionManager
 from ftre.services.session.message.converter import to_openai
+from ftre.services.session.service import SessionService as SessionManager
 
 
 def test_persisted_msg_converts_without_event_replay():
