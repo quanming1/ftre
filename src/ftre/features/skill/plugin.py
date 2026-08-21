@@ -1,3 +1,5 @@
+"""Feature Plugin for Skill discovery and the ``loadSkill`` tool."""
+
 from __future__ import annotations
 
 from cordis import PluginContext
@@ -10,6 +12,7 @@ provide = ("skills",)
 
 
 def apply(ctx: PluginContext, config=None):
+    """Publish the catalog and register its tool as a reversible contribution."""
     if ctx.optional("skills") is not None:
         return
     service = SkillService()

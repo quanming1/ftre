@@ -11,9 +11,11 @@ from .target import FileTarget
 
 
 class LocalFilesystemService:
+    """Path-policy-aware filesystem facade shared by tools and Features."""
     key = "filesystem"
 
     def resolve(self, path: str | Path, cwd: str | Path | None = None, policy: PathPolicy | None = None) -> FileTarget:
+        """Normalize a path and apply the caller's workspace policy before IO."""
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = Path(cwd or os.getcwd()) / candidate
@@ -46,4 +48,3 @@ class LocalFilesystemService:
     @staticmethod
     def _path(target: FileTarget | str | Path) -> Path:
         return target.path if isinstance(target, FileTarget) else Path(target).expanduser().resolve(strict=False)
-

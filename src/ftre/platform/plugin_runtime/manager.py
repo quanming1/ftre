@@ -13,6 +13,7 @@ from .manifest import PluginManifest
 
 
 class PluginManager:
+    """Composition-facing facade that applies config selection over PluginLoader."""
     def __init__(self, context: Context, *, plugins_dir=None) -> None:
         from .discovery import PluginDiscovery
 
@@ -26,6 +27,7 @@ class PluginManager:
         builtins: list[PluginManifest],
         config: dict[str, Any] | None = None,
     ) -> tuple[PluginStatus, ...]:
+        """Build the catalog, filter disabled/external entries, then load selected Fibers."""
         self.catalog = self.loader.discovery.catalog(builtins, config)
         entries = config.get("plugins", []) if isinstance(config, dict) else []
         overrides = {
@@ -58,6 +60,7 @@ class PluginManager:
         return self._statuses
 
     def statuses(self) -> tuple[PluginStatus, ...]:
+        """Return current Fiber states suitable for startup and health output."""
         return self.loader.statuses() or self._statuses
 
     @property
@@ -67,10 +70,13 @@ class PluginManager:
         return list(service.router_objects()) if service is not None else []
 
     def diagnostics(self) -> list[dict[str, Any]]:
+        """Return status dictionaries for JSON responses and logs."""
         return [status.as_dict() for status in self.statuses()]
 
     async def unload(self, plugin_id: str) -> bool:
+        """Delegate reversible unload while retaining a stable public API."""
         return await self.loader.unload(plugin_id)
 
     async def close(self) -> None:
+        """Close the Context once; Cordis makes repeated cleanup safe."""
         await self.loader.dispose()

@@ -1,3 +1,5 @@
+"""Public facade over persisted Agent profile definitions."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -8,6 +10,7 @@ from .models import EffectiveProfile
 
 
 class AgentProfileService:
+    """Expose profile CRUD without leaking AgentManager internals to Features."""
     key = "agent_profiles"
 
     def __init__(self, manager: AgentManager) -> None:
@@ -30,4 +33,3 @@ class AgentProfileService:
 
     def resolve(self, agent_id: str, session_id: str | None = None) -> EffectiveProfile:
         return EffectiveProfile(agent_id, self.manager.load(agent_id))
-

@@ -1,3 +1,5 @@
+"""Provider Plugin for the business message bus."""
+
 from __future__ import annotations
 
 from cordis import PluginContext
@@ -9,6 +11,7 @@ inject = ()
 
 
 def apply(ctx: PluginContext, config=None):
+    """Create the bus Service; channel providers consume its public facade."""
     if ctx.optional("message_bus") is not None:
         return
     service = MessageBusService()

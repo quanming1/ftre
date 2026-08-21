@@ -1,3 +1,5 @@
+"""Provider Plugin for durable Agent execution traces."""
+
 from __future__ import annotations
 
 from cordis import PluginContext
@@ -9,6 +11,7 @@ inject = ()
 
 
 def apply(ctx: PluginContext, config=None):
+    """Publish TraceService and close its exporter when the Fiber unloads."""
     if ctx.optional("traces") is not None:
         return
     service = TraceService()

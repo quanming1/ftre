@@ -1,3 +1,5 @@
+"""Provider Plugin for ordered, scoped system-prompt sections."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,6 +13,7 @@ inject = ()
 
 
 def apply(ctx: PluginContext, config=None):
+    """Publish the prompt registry and load the immutable base section."""
     if ctx.optional("system_prompt") is not None:
         return
     service = SystemPromptService()

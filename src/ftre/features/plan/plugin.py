@@ -1,3 +1,5 @@
+"""Feature Plugin that contributes the planning tool and usage guidance."""
+
 from __future__ import annotations
 
 from cordis import PluginContext
@@ -9,6 +11,7 @@ provide = ()
 
 
 def apply(ctx: PluginContext, config=None):
+    """Register both behavior contributions and bind their cleanup to the Fiber."""
     disposer = ctx.tools.register(create_plan_tool(), owner="plan", source="builtin")
     ctx.effect(disposer, label="tool:plan")
     prompt = PromptSection(

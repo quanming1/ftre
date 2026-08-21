@@ -1,3 +1,5 @@
+"""Provider Plugin for Session persistence and lifecycle."""
+
 from __future__ import annotations
 
 from cordis import PluginContext
@@ -9,6 +11,7 @@ provide = ("sessions",)
 
 
 async def apply(ctx: PluginContext, config=None):
+    """Initialize the session store before making ``sessions`` visible."""
     if ctx.optional("sessions") is not None:
         return
     options = config if isinstance(config, dict) else {}

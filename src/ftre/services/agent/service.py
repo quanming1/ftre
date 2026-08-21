@@ -8,6 +8,7 @@ from typing import Any
 
 
 class AgentService:
+    """Stable facade that hides the mutable AgentLoop binding from callers."""
     key = "agents"
 
     def __init__(self, loop: Any | None = None, profiles: Any | None = None) -> None:
@@ -22,17 +23,21 @@ class AgentService:
         return self._loop
 
     def bind(self, loop: Any, profiles: Any | None = None) -> None:
+        """Attach the data-plane loop after Composition has settled providers."""
         self._loop = loop
         if profiles is not None:
             self._profiles = profiles
 
     async def submit(self, *args: Any, **kwargs: Any) -> Any:
+        """Forward a turn submission to the bound AgentLoop."""
         return await self._call("submit", *args, **kwargs)
 
     async def cancel(self, *args: Any, **kwargs: Any) -> Any:
+        """Forward cancellation while preserving the public Service boundary."""
         return await self._call("cancel", *args, **kwargs)
 
     async def wait(self, *args: Any, **kwargs: Any) -> Any:
+        """Wait for a request through the loop's completion registry."""
         return await self._call("wait", *args, **kwargs)
 
     def status(self, session_id: str) -> Any:
@@ -81,4 +86,3 @@ class AgentService:
             return True
 
         return dispose
-

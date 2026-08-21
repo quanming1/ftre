@@ -1,3 +1,5 @@
+"""Ordered, scoped system-prompt contribution registry."""
+
 from __future__ import annotations
 
 import inspect
@@ -9,6 +11,7 @@ from .types import PromptSection
 
 
 class SystemPromptService:
+    """Assemble prompt sections while retaining an audit receipt per request."""
     key = "system_prompt"
 
     def __init__(self) -> None:
@@ -17,6 +20,7 @@ class SystemPromptService:
         self._last_receipt: PromptAssemblyReceipt | None = None
 
     def register_section(self, section: PromptSection, owner: str | None = None, scope: str | None = None):
+        """Register a section and return a disposer used by its owning Plugin."""
         if owner or scope:
             section = PromptSection(**{**section.__dict__, "owner": owner or section.owner, "scope": scope or section.scope})
         self._sections.append(section)
@@ -40,6 +44,7 @@ class SystemPromptService:
         return section.scope == "global" or section.scope == f"agent:{agent_id}" or section.scope == f"session:{session_id}"
 
     def assemble(self, agent_id: str, session_id: str, workspace: str = "", messages: Iterable[Any] = ()) -> str:
+        """Build eligible sections in deterministic order; required failures propagate."""
         parts: list[str] = []
         records: list[dict[str, Any]] = []
         for order, section in enumerate(sorted(self._sections, key=lambda value: (value.priority, value.owner, value.name)), start=1):
@@ -62,9 +67,11 @@ class SystemPromptService:
         return text
 
     def receipt(self, agent_id: str, session_id: str, workspace: str = "", messages: Iterable[Any] = ()) -> PromptAssemblyReceipt:
+        """Assemble once and return the inclusion/error audit receipt."""
         self.assemble(agent_id, session_id, workspace, messages)
         assert self._last_receipt is not None
         return self._last_receipt
 
     def snapshot(self) -> tuple[PromptSection, ...]:
+        """Return registered sections for diagnostics without exposing the mutable list."""
         return tuple(self._sections)

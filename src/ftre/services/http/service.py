@@ -16,6 +16,7 @@ class RouteConflictError(ValueError):
 
 
 class HttpService:
+    """Collect route contributions before materializing a FastAPI Host."""
     key = "http"
 
     def __init__(self) -> None:
@@ -28,6 +29,7 @@ class HttpService:
         return self._frozen
 
     def register_router(self, router: APIRouter, owner: str, prefix: str = "/api") -> Callable[[], bool]:
+        """Register all paths in a router and return a Fiber-owned disposer."""
         additions = [
             RouteContribution(method=method, path=f"{prefix}{route.path}", owner=owner, kind="router", router=router)
             for route in router.routes
@@ -80,6 +82,7 @@ class HttpService:
             self._routes.append(RouteContribution(method=method.upper(), path=path, owner=owner, kind="compat"))
 
     def register_route(self, method: str, path: str, handler: Callable[..., Any], owner: str, kind: str = "exact") -> Callable[[], bool]:
+        """Register one exact handler while rejecting owner conflicts."""
         addition = RouteContribution(method=method.upper(), path=path, owner=owner, kind=kind, handler=handler)
         self._check_conflicts([addition])
         self._routes.append(addition)
@@ -101,6 +104,7 @@ class HttpService:
         return dispose
 
     def _check_conflicts(self, additions: Iterable[RouteContribution]) -> None:
+        """Validate method/path/kind uniqueness before mutating the registry."""
         current = self._routes + list(additions)
         seen: dict[tuple[str, str, str], str] = {}
         for item in current:
@@ -123,6 +127,7 @@ class HttpService:
         return tuple(result)
 
     def build_app(self, *, title: str = "ftre", version: str = "0.2.4"):
+        """Materialize current contributions; callers freeze the registry afterwards."""
         from fastapi import FastAPI
 
         app = FastAPI(title=title, version=version)

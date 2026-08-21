@@ -13,11 +13,13 @@ from .manifest import PluginManifest
 
 
 class PluginDiscovery:
+    """Catalog configured candidates and resolve entries only after enablement."""
     def __init__(self, *, plugins_dir: Path | None = None) -> None:
         default_root = Path(os.environ.get("USERPROFILE", Path.home())) / ".ftre" / "plugins"
         self.plugins_dir = Path(plugins_dir) if plugins_dir else default_root
 
     def catalog(self, builtins: list[PluginManifest], config: dict[str, Any] | None = None) -> PluginCatalog:
+        """Merge external declarations with built-ins without importing modules."""
         catalog = PluginCatalog(builtins)
         raw = (config or {}).get("plugins", [])
         if raw is None:
@@ -63,6 +65,8 @@ class PluginDiscovery:
 
     def resolve(self, manifest: PluginManifest) -> Any:
         """Resolve a selected entry.  This is intentionally called post-enable."""
+        # Resolution is deliberately separate from cataloging: a disabled
+        # plugin must not execute import-time code or mutate ``sys.path``.
         entry = manifest.entry
         if not isinstance(entry, str):
             return entry

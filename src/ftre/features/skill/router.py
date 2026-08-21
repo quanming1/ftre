@@ -1,9 +1,12 @@
+"""HTTP routes for Skill catalog and source diagnostics."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter
 
 
 def build_router(service) -> APIRouter:
+    """Build routes against the SkillService supplied by Composition."""
     router = APIRouter(prefix="/skills")
 
     @router.get("")
@@ -16,4 +19,3 @@ def build_router(service) -> APIRouter:
         return {"name": name, "content": item.content if item else None}
 
     return router
-

@@ -1,3 +1,5 @@
+"""Public command registry facade used by CLI and Agent integrations."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -6,6 +8,7 @@ from ftre.command.manager import CommandManager
 
 
 class CommandService:
+    """Keep command ownership and unregister callbacks behind one Service key."""
     key = "commands"
 
     def __init__(self, manager: CommandManager | None = None) -> None:
@@ -27,4 +30,3 @@ class CommandService:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.manager, name)
-

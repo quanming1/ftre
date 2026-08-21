@@ -1,3 +1,5 @@
+"""Owned uvicorn resource wrapper used by the optional server Plugin."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -13,12 +15,13 @@ class UvicornServer:
         self.server = None
 
     async def start(self) -> None:
+        """Create the uvicorn server at listen time, keeping imports optional."""
         import uvicorn
 
         self.server = uvicorn.Server(uvicorn.Config(self.app, host=self.host, port=self.port, log_config=None))
         await self.server.serve()
 
     async def stop(self) -> None:
+        """Request graceful shutdown; uvicorn owns the actual event loop task."""
         if self.server is not None:
             self.server.should_exit = True
-

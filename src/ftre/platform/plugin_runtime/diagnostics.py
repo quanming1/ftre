@@ -10,6 +10,7 @@ from cordis import FiberState
 
 @dataclass(frozen=True)
 class PluginStatus:
+    """Stable, JSON-friendly view of one Plugin Fiber and its startup outcome."""
     id: str
     source: str
     entry: str
@@ -23,6 +24,7 @@ class PluginStatus:
     contributions: tuple[dict[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
+        """Serialize Enum state and tuple fields for HTTP/CLI consumers."""
         return {
             "id": self.id,
             "source": self.source,
@@ -39,7 +41,7 @@ class PluginStatus:
 
 
 class PluginStartupError(RuntimeError):
+    """Raised when one or more required Plugins cannot become ACTIVE."""
     def __init__(self, message: str, statuses: tuple[PluginStatus, ...] = ()) -> None:
         super().__init__(message)
         self.statuses = statuses
-

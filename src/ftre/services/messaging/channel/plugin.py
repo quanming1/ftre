@@ -1,3 +1,5 @@
+"""Provider Plugin for the channel registry backed by the message bus."""
+
 from __future__ import annotations
 
 from cordis import PluginContext
@@ -9,6 +11,7 @@ provide = ("channels",)
 
 
 def apply(ctx: PluginContext, config=None):
+    """Bind a ChannelManager to the injected bus and publish ``channels``."""
     if ctx.optional("channels") is not None:
         return
     from ftre.channel.manager import ChannelManager

@@ -11,6 +11,7 @@ from ftre.platform.plugin_runtime import PluginManager, PluginManifest
 
 
 def default_manifests() -> list[PluginManifest]:
+    """Return the single ordered built-in catalog used by every Gateway host."""
     return [
         PluginManifest("config", "ftre.services.config.plugin:apply", "builtin", True, True, description="root configuration"),
         PluginManifest("filesystem", "ftre.services.filesystem.plugin:apply", "builtin", True, True, description="path policy and atomic IO"),
@@ -38,6 +39,7 @@ def default_manifests() -> list[PluginManifest]:
 
 @dataclass
 class Composition:
+    """Own the Context, PluginManager, config snapshot, and optional HTTP app."""
     context: Context
     plugins: PluginManager
     config: dict[str, Any]
@@ -45,9 +47,11 @@ class Composition:
 
     @property
     def diagnostics(self) -> list[dict[str, Any]]:
+        """Return a JSON-ready snapshot without exposing PluginManager internals."""
         return self.plugins.diagnostics()
 
     async def close(self) -> None:
+        """Dispose all Plugin Fibers in reverse lifecycle order."""
         await self.plugins.close()
 
     def register_default_routes(self) -> None:
@@ -92,6 +96,7 @@ async def build_composition(
     plugins_dir=None,
     initial_services: dict[str, Any] | None = None,
 ) -> Composition:
+    """Create and settle a composition without opening a listening socket."""
     config = config_data if config_data is not None else load_config_file()
     context = Context()
     for name, value in (initial_services or {}).items():

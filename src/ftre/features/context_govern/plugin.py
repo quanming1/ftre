@@ -1,3 +1,5 @@
+"""Feature Plugin that injects workspace AGENTS.md governance rules."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,6 +12,7 @@ provide = ()
 
 
 def apply(ctx: PluginContext, config=None):
+    """Register a lazy prompt section so the current workspace is read per turn."""
     def workspace_rules(values):
         workspace = values.get("workspace") or ""
         path = Path(workspace) / "AGENTS.md" if workspace else None

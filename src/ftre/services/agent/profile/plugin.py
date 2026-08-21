@@ -1,3 +1,5 @@
+"""Provider Plugin for persisted Agent profile configuration."""
+
 from __future__ import annotations
 
 from cordis import PluginContext
@@ -11,6 +13,7 @@ provide = ("agent_profiles",)
 
 
 def apply(ctx: PluginContext, config=None):
+    """Build the profile manager and publish it as ``agent_profiles``."""
     if ctx.optional("agent_profiles") is not None:
         return
     options = config if isinstance(config, dict) else {}

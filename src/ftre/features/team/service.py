@@ -1,3 +1,5 @@
+"""In-memory Team Feature state; member execution stays in Agent services."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -11,6 +13,7 @@ class Team:
 
 
 class TeamService:
+    """Manage Team metadata without owning SessionLane or AgentLoop internals."""
     key = "teams"
 
     def __init__(self) -> None:
@@ -31,4 +34,3 @@ class TeamService:
 
     def snapshot(self) -> tuple[Team, ...]:
         return tuple(self._teams.values())
-

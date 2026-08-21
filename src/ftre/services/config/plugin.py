@@ -1,3 +1,5 @@
+"""Provider Plugin for the user configuration Service."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -11,6 +13,7 @@ provide = ("config",)
 
 
 async def apply(ctx: PluginContext, config: dict[str, Any] | None = None):
+    """Create the config owner; Composition-injected instances take precedence."""
     existing = ctx.optional("config")
     if existing is not None:
         return

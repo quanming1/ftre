@@ -1,3 +1,5 @@
+"""Public channel registry facade with lifecycle-aware registration."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -6,12 +8,14 @@ from ftre.channel.manager import ChannelManager
 
 
 class ChannelService:
+    """Own channel registration while leaving protocol behavior to providers."""
     key = "channels"
 
     def __init__(self, manager: ChannelManager) -> None:
         self.manager = manager
 
     def register(self, channel: Any, owner: str = "builtin"):
+        """Register one channel and return an idempotent async disposer."""
         channel_id = channel.channel_id
         if self.manager.get(channel_id) is not None:
             raise ValueError(f"channel {channel_id!r} already registered")
@@ -33,12 +37,15 @@ class ChannelService:
         return dispose
 
     async def start_all(self) -> None:
+        """Start all registered channel providers in the manager."""
         await self.manager.start()
 
     async def stop_all(self) -> None:
+        """Stop every channel before its owning Composition is disposed."""
         await self.manager.stop()
 
     async def send(self, channel_id: str, message: Any) -> None:
+        """Send through a named channel, failing explicitly when it is absent."""
         channel = self.manager.get(channel_id)
         if channel is None:
             raise KeyError(channel_id)
@@ -47,4 +54,3 @@ class ChannelService:
     def snapshot(self) -> tuple[dict[str, str], ...]:
         channels = getattr(self.manager, "_channels", {})
         return tuple({"channel_id": key, "owner": "builtin", "state": "registered"} for key in channels)
-

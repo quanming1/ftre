@@ -1,3 +1,5 @@
+"""Global and scoped tool contribution registry."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -9,6 +11,7 @@ from .types import ToolContribution
 
 
 class ToolService:
+    """Own tool registration, per-agent restrictions, and disposable contributions."""
     key = "tools"
 
     def __init__(self, registry: ToolRegistry | None = None) -> None:
@@ -17,6 +20,7 @@ class ToolService:
         self._restrictions: list[ToolRestriction] = []
 
     def register(self, tool: Any, owner: str, scope: str = "global", source: str = "builtin"):
+        """Register a tool in a scope and return the Fiber cleanup callback."""
         name = str(tool.name)
         if any(item.name == name and item.scope == scope for item in self._items):
             raise ValueError(f"tool {name!r} already registered in {scope}")
@@ -42,6 +46,7 @@ class ToolService:
         return dispose
 
     def restrict(self, agent_id: str, owner: str, allow=None, deny=None):
+        """Add a reversible allow/deny policy for one Agent's tool view."""
         restriction = ToolRestriction(agent_id, owner, frozenset(allow or ()), frozenset(deny or ()))
         self._restrictions.append(restriction)
         disposed = False
@@ -60,9 +65,11 @@ class ToolService:
         return dispose
 
     def snapshot(self, agent_id: str | None = None) -> tuple[ToolContribution, ...]:
+        """Return visible contributions for an Agent or the global view."""
         return tuple(item for item in self._visible(agent_id))
 
     def schemas(self, agent_id: str | None = None) -> list[dict[str, Any]]:
+        """Return OpenAI-compatible schemas enriched with ownership metadata."""
         result = []
         for item in self._visible(agent_id):
             schema = item.tool.to_openai_dict() if hasattr(item.tool, "to_openai_dict") else {"name": item.name}
@@ -70,15 +77,18 @@ class ToolService:
         return result
 
     def build_view(self, agent_id: str, session_id: str | None = None) -> ToolRegistry:
+        """Build an isolated registry so one Agent cannot mutate global visibility."""
         view = ToolRegistry()
         for item in self._visible(agent_id):
             view.register(item.tool)
         return view
 
     def execute(self, name: str, execution_context: dict | None = None, arguments=None) -> Any:
+        """Execute only through the global registry's established tool contract."""
         return self.registry.execute(name, execution_context, **(arguments or {}))
 
     def _visible(self, agent_id: str | None):
+        """Resolve scoped shadowing first, then apply restrictions newest-first."""
         candidates = [item for item in self._items if item.scope == "global" or item.scope == f"agent:{agent_id}"]
         by_name: dict[str, ToolContribution] = {}
         for item in candidates:

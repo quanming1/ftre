@@ -1,3 +1,5 @@
+"""HTTP contribution for revisioned ConfigService updates."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
@@ -6,6 +8,7 @@ from .service import ConfigConflictError, ConfigService
 
 
 def build_router(service: ConfigService) -> APIRouter:
+    """Build config routes against an injected service, not a module singleton."""
     router = APIRouter()
 
     @router.get("/config")
@@ -28,4 +31,3 @@ def build_router(service: ConfigService) -> APIRouter:
         return {"status": "ok", "revision": snapshot.revision}
 
     return router
-

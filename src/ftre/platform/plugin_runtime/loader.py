@@ -12,6 +12,7 @@ from .manifest import PluginManifest
 
 
 class PluginLoader:
+    """Translate selected manifests into Cordis Fibers and lifecycle statuses."""
     def __init__(self, context: Context, *, discovery: PluginDiscovery | None = None) -> None:
         self.context = context
         self.discovery = discovery or PluginDiscovery()
@@ -21,6 +22,7 @@ class PluginLoader:
         self.restart_required = False
 
     async def load(self, manifests: list[PluginManifest]) -> tuple[PluginStatus, ...]:
+        """Resolve, register, settle, and enforce required-plugin startup policy."""
         for manifest in manifests:
             if manifest.id in self._fibers:
                 raise ValueError(f"plugin {manifest.id!r} is already loaded")
@@ -49,6 +51,7 @@ class PluginLoader:
         return statuses
 
     async def unload(self, plugin_id: str) -> bool:
+        """Unload one Fiber and flag host restart when its surface is immutable."""
         result = await self.context.unload(plugin_id)
         self._fibers.pop(plugin_id, None)
         self._manifests.pop(plugin_id, None)
@@ -57,10 +60,12 @@ class PluginLoader:
         return result
 
     async def dispose(self) -> None:
+        """Dispose the complete Context and forget loader-owned Fiber handles."""
         await self.context.dispose()
         self._fibers.clear()
 
     def statuses(self) -> tuple[PluginStatus, ...]:
+        """Project internal Fibers into diagnostics without exposing runtime objects."""
         result: list[PluginStatus] = []
         for plugin_id, manifest in self._manifests.items():
             fiber = self._fibers.get(plugin_id)
@@ -87,7 +92,9 @@ class PluginLoader:
 
 
 def _failed_fiber(context: Context, plugin_id: str, error: BaseException, error_code: str) -> Fiber:
-    # A real Fiber is preferable to a second ad-hoc state machine in diagnostics.
+    """Create a failed Fiber record when import/validation failed before registration."""
+    # A real Fiber is preferable to a second ad-hoc state machine in diagnostics:
+    # callers can inspect failures through the same state surface as normal Plugins.
     fiber = Fiber(context, lambda _ctx: None, {}, plugin_id, len(context.fibers))
     fiber.error = error
     fiber.error_code = error_code

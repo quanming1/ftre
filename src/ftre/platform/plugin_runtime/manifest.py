@@ -12,6 +12,7 @@ PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 
 @dataclass(frozen=True)
 class PluginManifest:
+    """Validated metadata separating plugin identity/config from its callable entry."""
     id: str
     entry: str | Callable[..., Any] | Any
     source: str = "builtin"
@@ -31,9 +32,11 @@ class PluginManifest:
 
     @property
     def entry_text(self) -> str:
+        """Render callable/class entries in the canonical diagnostic format."""
         return self.entry if isinstance(self.entry, str) else f"{self.entry.__module__}:{self.entry.__name__}"
 
     def with_config(self, config: dict[str, Any] | None) -> PluginManifest:
+        """Return a new manifest with an override, preserving identity metadata."""
         merged = dict(self.config)
         if config:
             merged.update(config)
@@ -47,4 +50,3 @@ class PluginManifest:
             description=self.description,
             config=merged,
         )
-

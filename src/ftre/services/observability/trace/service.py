@@ -1,3 +1,5 @@
+"""Public read facade over the SQLite Agent trace exporter."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -11,6 +13,7 @@ from ftre.trace_store import (
 
 
 class TraceService:
+    """Keep trace persistence behind a stable key and read-only query methods."""
     key = "traces"
 
     def __init__(self, store: SQLiteTraceExporter | None = None) -> None:

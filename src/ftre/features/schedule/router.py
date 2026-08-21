@@ -1,9 +1,12 @@
+"""HTTP routes for persisted Schedule jobs."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter
 
 
 def build_router(service) -> APIRouter:
+    """Build schedule routes against one Feature-owned service instance."""
     router = APIRouter(prefix="/cron")
 
     @router.get("")
@@ -15,4 +18,3 @@ def build_router(service) -> APIRouter:
         service.delete(job_id)
 
     return router
-

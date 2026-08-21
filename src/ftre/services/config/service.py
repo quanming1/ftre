@@ -27,6 +27,7 @@ class ConfigSnapshot:
 
 
 class ConfigService:
+    """Own config memory, atomic persistence, revisions, and watcher callbacks."""
     key = "config"
 
     def __init__(self, path: Path | str = CONFIG_PATH, initial: dict[str, Any] | None = None) -> None:
@@ -40,9 +41,11 @@ class ConfigService:
         return self._store.path
 
     def snapshot(self) -> ConfigSnapshot:
+        """Return a defensive copy so callers cannot mutate service state."""
         return ConfigSnapshot(self._revision, copy.deepcopy(self._value))
 
     def plugin_config(self, plugin_id: str) -> dict[str, Any]:
+        """Read one plugin's nested config without exposing the full config object."""
         entries = self._value.get("plugins", [])
         if not isinstance(entries, list):
             return {}
@@ -53,6 +56,7 @@ class ConfigService:
         return {}
 
     def watch(self, callback: Callable[[ConfigSnapshot], Any]) -> Callable[[], bool]:
+        """Subscribe to committed snapshots and return an idempotent disposer."""
         self._watchers.append(callback)
         disposed = False
 
@@ -70,12 +74,14 @@ class ConfigService:
         return dispose
 
     async def update(self, patch: dict[str, Any], expected_revision: int | None = None) -> ConfigSnapshot:
+        """Deep-merge a patch and commit it with optional optimistic concurrency."""
         if not isinstance(patch, dict):
             raise TypeError("config patch must be an object")
         candidate = _deep_merge(self._value, patch)
         return await self._commit(candidate, expected_revision)
 
     async def replace(self, value: dict[str, Any], expected_revision: int | None = None) -> ConfigSnapshot:
+        """Atomically replace the complete config and notify watchers."""
         if not isinstance(value, dict):
             raise TypeError("config must be an object")
         return await self._commit(value, expected_revision)

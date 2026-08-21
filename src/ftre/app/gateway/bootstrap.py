@@ -9,6 +9,7 @@ from .composition import build_composition
 
 
 async def start_gateway(*, config: dict[str, Any] | None = None, plugins_dir=None, initial_services=None):
+    """Build a composition and materialize its HTTP Host for embedders/tests."""
     composition = await build_composition(config, plugins_dir=plugins_dir, initial_services=initial_services)
     http_service = composition.context.get("http")
     if http_service is not None:
@@ -20,6 +21,7 @@ async def start_gateway(*, config: dict[str, Any] | None = None, plugins_dir=Non
 
 
 async def run_gateway(*, config: dict[str, Any] | None = None, plugins_dir=None, initial_services=None):
+    """Keep an embedded Gateway alive until cancellation, then close it."""
     composition = await start_gateway(config=config, plugins_dir=plugins_dir, initial_services=initial_services)
     try:
         while True:
