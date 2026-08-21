@@ -256,13 +256,13 @@ stages:
         tasks:
           - id: F2.1
             title: Session 与 Workspace 真实实现迁移
-            status: in_progress
+            status: done
           - id: F2.2
             title: Agent Runtime 真实实现迁移
-            status: todo
+            status: done
           - id: F2.3
             title: MessageBus、Channel、Command、Tool Provider 迁移
-            status: todo
+            status: in_progress
           - id: F2.4
             title: HTTP/WS legacy 入口移除
             status: todo

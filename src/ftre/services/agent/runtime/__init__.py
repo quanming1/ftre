@@ -1,2 +1,1 @@
-"""Internal Agent runtime layout; implementations remain compatibility imports."""
-
+"""Internal Agent runtime Owner used by the public AgentService."""

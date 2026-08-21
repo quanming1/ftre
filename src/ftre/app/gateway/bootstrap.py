@@ -40,8 +40,6 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     from ftre_agent_core.hooks import FtreCoreHookManager
     from ftre_agent_core.tool import ToolRegistry
 
-    from ftre.agent.agent_manager import AgentManager
-    from ftre.agent.loop import AgentLoop
     from ftre.bus import EventBus
     from ftre.channel import ChannelManager, SubagentChannel, WebSocketChannel
     from ftre.command import CommandManager
@@ -49,6 +47,11 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     from ftre.config import AGENTS_DIR, load_config_file, load_gateway_address
     from ftre.services.agent import AgentService
     from ftre.services.agent.profile import AgentProfileService
+    from ftre.services.agent.profile.manager import AgentManager
+    from ftre.services.agent.runtime.factory import (
+        AgentRuntimeProvider,
+        AgentRuntimeServices,
+    )
     from ftre.services.command import CommandService
     from ftre.services.config import ConfigService
     from ftre.services.http.legacy import bind_legacy_api
@@ -64,9 +67,9 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     channel_manager = None
     composition = None
     try:
-        from ftre.session import SessionManager
+        from ftre.services.session import SessionService
 
-        session_manager = SessionManager()
+        session_manager = SessionService()
         await session_manager.init()
         bus = EventBus()
         channel_manager = ChannelManager(bus)
@@ -99,17 +102,20 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         config_host, config_port = load_gateway_address()
         gateway_host = host if host is not None else config_host
         gateway_port = port if port is not None else config_port
-        agent_loop = AgentLoop(
-            bus=bus,
-            session_manager=session_manager,
-            channel_manager=channel_manager,
-            event_hub=composition.context.events,
-            core_hook_manager=core_hooks,
-            tool_registry=tool_registry,
-            command_manager=command_manager,
-            plugin_manager=composition.plugins,
-            agent_manager=agent_manager,
+        runtime_provider = AgentRuntimeProvider(
+            AgentRuntimeServices(
+                sessions=composition.context.get("sessions"),
+                message_bus=composition.context.get("message_bus"),
+                channels=composition.context.get("channels"),
+                tools=composition.context.get("tools"),
+                commands=composition.context.get("commands"),
+                agent_profiles=composition.context.get("agent_profiles"),
+                event_hub=composition.context.events,
+                core_hook_manager=core_hooks,
+                plugin_manager=composition.plugins,
+            )
         )
+        agent_loop = runtime_provider.build_loop()
         agent_service.bind(agent_loop, profile_service)
         bind_legacy_api(
             sessions=session_manager,

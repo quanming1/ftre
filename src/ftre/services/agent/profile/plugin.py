@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from cordis import PluginContext
-from ftre.agent.agent_manager import AgentManager
 from ftre.config import AGENTS_DIR
 
+from .manager import AgentManager
 from .service import AgentProfileService
 
 inject = ()

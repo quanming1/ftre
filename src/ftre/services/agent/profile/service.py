@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ftre.agent.agent_manager import AgentManager
-
+from .manager import AgentManager
 from .models import EffectiveProfile
 
 

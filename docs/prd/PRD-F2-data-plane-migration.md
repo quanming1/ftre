@@ -181,3 +181,4 @@ class AgentRuntimeProvider:
 | 日期 | 变更内容 | 理由 |
 |---|---|---|
 | 2026-08-21 | 初始定稿；把 F1 的兼容窗口明确拆成 F2 数据面迁移，并规定旧路径只能单向 re-export | F1 已验证控制面，但核心数据面需要渐进迁移，避免一次性重写造成行为回归 |
+| 2026-08-21 | 完成 F2.1 Session/Workspace 基础迁移与 F2.2 Agent Runtime 迁移；旧路径改为模块别名，Gateway 使用 AgentRuntimeProvider | 保持旧 import 和测试兼容，同时让真实实现和 Composition 依赖指向新 Owner |
