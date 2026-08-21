@@ -1,12 +1,16 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ftre.api.routes import router
+from ftre.services.attachment.router import build_router
+from ftre.services.attachment.service import AttachmentService
 
 
-def _client() -> TestClient:
+def _client(tmp_path) -> TestClient:
     app = FastAPI()
-    app.include_router(router, prefix="/api")
+    app.include_router(
+        build_router(AttachmentService(tmp_path / "assets")),
+        prefix="/api",
+    )
     return TestClient(app)
 
 
@@ -20,7 +24,7 @@ def test_serve_image_file_from_local_path(tmp_path):
     )
     image.write_bytes(raw)
 
-    response = _client().get("/api/image-file", params={"path": str(image)})
+    response = _client(tmp_path).get("/api/image-file", params={"path": str(image)})
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/png")
@@ -31,6 +35,6 @@ def test_serve_image_file_rejects_non_image(tmp_path):
     text_file = tmp_path / "notes.txt"
     text_file.write_text("not image", encoding="utf-8")
 
-    response = _client().get("/api/image-file", params={"path": str(text_file)})
+    response = _client(tmp_path).get("/api/image-file", params={"path": str(text_file)})
 
     assert response.status_code == 415
