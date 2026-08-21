@@ -308,7 +308,7 @@ stages:
         status: in_progress
         date: 2026-08-21
         prd: docs/prd/PRD-F4-architecture-debt-cleanup.md
-        prd_status: approved
+        prd_status: 开发中
         modules:
           - src/ftre/agent/
           - src/ftre/session/
@@ -327,22 +327,22 @@ stages:
         tasks:
           - id: F4.1
             title: 债务基线与架构门禁
-            status: in_progress
+            status: done
           - id: F4.2
             title: Agent 与数据面旧壳删除
-            status: todo
+            status: done
           - id: F4.3
             title: Config 与 Trace Owner 收敛
-            status: todo
+            status: done
           - id: F4.4
             title: MCP Feature Owner 收敛
-            status: todo
+            status: done
           - id: F4.5
             title: HTTP、Feature 空壳与兼容 API 清理
-            status: todo
+            status: done
           - id: F4.6
             title: Gateway Process 与 Attachment 基础设施归位
-            status: todo
+            status: done
           - id: F4.7
             title: 全量验收与执行报告
-            status: todo
+            status: in_progress
