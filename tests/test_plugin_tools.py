@@ -7,7 +7,7 @@ from ftre_agent_core.tool import Tool, ToolRegistry
 
 from cordis import Context, FiberState
 from ftre.config import AgentConfig
-from ftre.services.agent.runtime.hooks import AgentRunContext, BEFORE_AGENT_RUN
+from ftre.services.agent.runtime.hooks import BEFORE_AGENT_RUN, AgentRunContext
 from ftre.services.http.service import HttpService
 from ftre.services.tools import ToolService
 from ftre.services.tools.builtin import build_default_tools

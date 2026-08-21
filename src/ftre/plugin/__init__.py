@@ -29,10 +29,10 @@ class Plugin:
 
 
 __all__ = [
-    "Plugin",
     "BEFORE_AGENT_RUN",
     "BEFORE_MESSAGES_BUILD",
     "AgentRunContext",
     "MessagesBuildContext",
+    "Plugin",
     "append_to_first_system",
 ]
