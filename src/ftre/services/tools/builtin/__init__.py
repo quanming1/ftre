@@ -9,7 +9,6 @@ ftre 内置工具集
 from ftre_agent_core.tool import ToolRegistry
 
 from .bash import create_bash_tool
-from .cron import create_cron_tool
 from .edit import create_edit_tool
 from .read import create_read_tool
 from .send_message import create_send_message_tool
@@ -73,8 +72,11 @@ def build_default_tools(
     tool_registry: ToolRegistry | None = None,
     llm_config=None,
 ) -> ToolRegistry:
-    """构建默认工具集：bash + read + write + edit + set_workspace + cron
-    + task + send_message + 插件注册的全局工具
+    """构建默认工具集：bash + read + write + edit + set_workspace
+    + task + send_message + 插件注册的全局工具。
+
+    Cron is contributed by ``features.schedule`` through ``ToolService``;
+    keeping it out of this provider prevents a second, unowned registration.
 
     Args:
         channel_manager: ChannelManager 实例（用于 send_message / task 工具）
@@ -91,7 +93,6 @@ def build_default_tools(
     registry.register(create_write_tool())
     registry.register(create_edit_tool())
     registry.register(create_set_workspace_tool())
-    registry.register(create_cron_tool())
 
     if channel_manager:
         registry.register(create_task_tool(channel_manager))

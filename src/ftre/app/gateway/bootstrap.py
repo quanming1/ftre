@@ -62,12 +62,10 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         WebSocketChannel,
     )
     from ftre.services.tools import ToolService
-    from ftre.services.tools.builtin.cron import CronScheduler
 
     config_data = config if config is not None else load_config_file()
     session_manager = None
     agent_loop = None
-    cron_scheduler = None
     channel_manager = None
     composition = None
     try:
@@ -134,14 +132,10 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         ws_channel.set_session_projection(agent_loop.session_projection)
         ws_channel.set_session_snapshot_provider(agent_loop)
         await channel_manager.start()
-        cron_scheduler = CronScheduler(bus=bus, session_manager=session_manager, channel_manager=channel_manager)
-        cron_scheduler.start()
         composition.context.get("http").freeze()
         while True:
             await asyncio.sleep(1)
     finally:
-        if cron_scheduler is not None:
-            await cron_scheduler.stop()
         if agent_loop is not None:
             await agent_loop.stop()
         if channel_manager is not None:

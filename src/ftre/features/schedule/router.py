@@ -1,38 +1,43 @@
-"""HTTP routes for persisted Schedule jobs."""
+"""HTTP surface for Schedule jobs; persistence remains behind Service APIs."""
 
 from __future__ import annotations
-
-import json
-import time
-import uuid
 
 from croniter import croniter
 from fastapi import APIRouter, HTTPException, Request
 
+from .service import ScheduleService
 
-def build_router(service) -> APIRouter:
-    """Build schedule routes against one Feature-owned service instance."""
+
+def build_router(service: ScheduleService) -> APIRouter:
+    """Build cron routes without reaching into Store or filesystem details."""
     router = APIRouter(prefix="/cron")
 
-    def validate(payload: dict, *, require_all: bool) -> tuple[dict, str | None]:
+    def validate(payload: dict, *, require_all: bool) -> dict:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
         cleaned: dict = {}
         for field in ("cron", "title", "prompt"):
             value = payload.get(field)
-            if value is not None:
-                if not isinstance(value, str) or not value.strip():
-                    return {}, f"{field} 不能为空"
-                if field == "cron" and not croniter.is_valid(value.strip()):
-                    return {}, f"无效的 cron 表达式: {value}"
-                cleaned[field] = value.strip()
-            elif require_all:
-                return {}, f"缺少字段: {field}"
+            if value is None:
+                if require_all:
+                    raise HTTPException(status_code=400, detail=f"缺少字段: {field}")
+                continue
+            if not isinstance(value, str) or not value.strip():
+                raise HTTPException(status_code=400, detail=f"{field} 不能为空")
+            value = value.strip()
+            if field == "cron" and not croniter.is_valid(value):
+                raise HTTPException(status_code=400, detail=f"无效的 cron 表达式: {value}")
+            cleaned[field] = value
         if "disabled" in payload:
             if not isinstance(payload["disabled"], bool):
-                return {}, "disabled 必须是布尔值"
+                raise HTTPException(status_code=400, detail="disabled 必须是布尔值")
             cleaned["disabled"] = payload["disabled"]
         if not require_all and not cleaned:
-            return {}, "至少需要更新 cron / title / prompt / disabled 中的一项"
-        return cleaned, None
+            raise HTTPException(
+                status_code=400,
+                detail="至少需要更新 cron / title / prompt / disabled 中的一项",
+            )
+        return cleaned
 
     @router.get("")
     async def list_jobs():
@@ -40,57 +45,52 @@ def build_router(service) -> APIRouter:
 
     @router.get("/{job_id}")
     async def get_job(job_id: str):
-        path = service.root / f"{job_id}.json"
-        if not path.is_file():
-            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise HTTPException(status_code=500, detail=f"读取失败: {exc}") from exc
+            job = service.get(job_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+        return job
 
     @router.post("", status_code=201)
     async def create_job(request: Request):
         payload = await request.json()
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
-        cleaned, error = validate(payload, require_all=True)
-        if error:
-            raise HTTPException(status_code=400, detail=error)
-        job = {
-            "id": f"job_{uuid.uuid4().hex[:10]}",
-            **cleaned,
-            "disabled": bool(cleaned.get("disabled", False)),
-            "created_at": time.time(),
-            "run_history": [],
-        }
-        service.save(job)
-        return job
+        cleaned = validate(payload, require_all=True)
+        try:
+            return service.create(cleaned)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.patch("/{job_id}")
     async def update_job(job_id: str, request: Request):
-        path = service.root / f"{job_id}.json"
-        if not path.is_file():
-            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
         payload = await request.json()
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
         illegal = set(payload) - {"cron", "title", "prompt", "disabled"}
         if illegal:
             raise HTTPException(status_code=400, detail=f"不允许修改字段: {sorted(illegal)}")
-        cleaned, error = validate(payload, require_all=False)
-        if error:
-            raise HTTPException(status_code=400, detail=error)
+        cleaned = validate(payload, require_all=False)
         try:
-            job = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise HTTPException(status_code=500, detail=f"读取失败: {exc}") from exc
-        job.update(cleaned)
-        service.save(job)
-        return job
+            return service.update(job_id, cleaned)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @router.delete("/{job_id}", status_code=204)
     async def delete_job(job_id: str):
-        if not service.delete(job_id):
+        try:
+            deleted = service.delete(job_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if not deleted:
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
 
     return router

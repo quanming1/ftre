@@ -1,3 +1,21 @@
-from ftre.services.tools.builtin.cron import CronChannel
+"""Cron Channel owned by the Schedule Feature.
 
-__all__ = ["CronChannel"]
+Cron sessions are internal workers. Their outbound messages are intentionally
+discarded here; agents can explicitly use ``send_message`` to reach a real
+channel, while ChannelManager still has a valid sink for the cron route.
+"""
+
+from __future__ import annotations
+
+from ftre.services.messaging.channel.base import Channel
+
+
+class CronChannel(Channel):
+    """Silent sink for messages produced by scheduled sessions."""
+
+    def __init__(self, bus) -> None:
+        super().__init__(channel_id="cron", name="Cron Channel", bus=bus)
+
+    async def send(self, msg) -> None:
+        """Do not echo internal cron output to an external client."""
+        return
