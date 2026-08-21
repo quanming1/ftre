@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from cordis import Context, FiberState
 from ftre_agent_core.tool import ToolRegistry
 
-from cordis import Context, FiberState
 from ftre.platform.plugin_runtime import PluginManager
 from ftre.services.system_prompt import SystemPromptService
 from ftre.services.tools import ToolService

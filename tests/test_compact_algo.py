@@ -12,8 +12,8 @@ from ftre_agent_core.message import (
     UserMsg,
 )
 
-from ftre.services.agent.runtime.compaction.manager import (
-    CompactManager,
+from ftre.features.compaction.service import (
+    CompactionService,
     _build_prompt,
     _estimate_body_chars,
     _serialize_messages,
@@ -95,7 +95,7 @@ async def test_fast_compact_updates_tool_result_blocks_via_emit_event():
     async def emit_event(session_id, channel_id, event):
         emitted.append(event)
 
-    manager = CompactManager(session_manager=session_manager, emit_event=emit_event)
+    manager = CompactionService(session_manager=session_manager, emit_event=emit_event)
 
     # keep_turns=0（默认）：不保护任何轮，活跃区间内全部工具结果被裁
     changed = await manager.compress_fast(
@@ -153,7 +153,7 @@ async def test_fast_compact_batches_multiple_changed_messages():
     ]
     session_manager = AsyncMock()
     session_manager.get_context_messages.return_value = records
-    manager = CompactManager(
+    manager = CompactionService(
         session_manager=session_manager,
         emit_event=AsyncMock(),
     )
@@ -203,7 +203,7 @@ async def test_fast_compact_keep_turns_protects_recent_turns():
     async def emit_event(session_id, channel_id, event):
         emitted.append(event)
 
-    manager = CompactManager(session_manager=session_manager, emit_event=emit_event)
+    manager = CompactionService(session_manager=session_manager, emit_event=emit_event)
 
     # keep_turns=1：保护最近一轮（user1 及之后）——recent 保留，old 被裁
     changed = await manager.compress_fast(
@@ -239,7 +239,7 @@ async def test_fast_compact_keep_turns_covers_all_returns_false():
     async def emit_event(session_id, channel_id, event):
         emitted.append(event)
 
-    manager = CompactManager(session_manager=session_manager, emit_event=emit_event)
+    manager = CompactionService(session_manager=session_manager, emit_event=emit_event)
     # keep_turns=1 保护这唯一一轮 → 无可裁剪 → False
     changed = await manager.compress_fast(
         "ws::session", "ws", config=SimpleNamespace(), keep_turns=1,
@@ -286,7 +286,7 @@ async def test_fast_compact_ignores_compact_fast_bubble_in_turn_count():
     async def emit_event(session_id, channel_id, event):
         emitted.append(event)
 
-    manager = CompactManager(session_manager=session_manager, emit_event=emit_event)
+    manager = CompactionService(session_manager=session_manager, emit_event=emit_event)
     # keep_turns=1：气泡不占轮 → 保护 user1 轮（recent 保留），old 被裁
     changed = await manager.compress_fast(
         "ws::session", "ws", config=SimpleNamespace(), keep_turns=1,

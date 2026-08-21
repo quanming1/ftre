@@ -1,14 +1,14 @@
 """CommandManager — 指令注册 & 匹配 & 派发。
 
 支持两级指令：
-- 系统级（system=True）：在 _dispatch 的 session lock 之外执行，
-  用于需要立即响应的指令（如 /cancel），不受锁阻塞。
-- 普通级（默认）：在 _step_command 中执行，受 session lock 保护，
+- 系统级（system=True）：在 AgentLoop control lane 立即执行，
+  用于需要立即响应的指令（如 /cancel），不受 session mailbox 阻塞。
+- 普通级（默认）：由 SessionLane 在同会话 admission lock 内执行，
   用于需要串行执行的指令（如 /compact）。
 
 调用方只需：
-    if await cmd.try_dispatch_system(data): return   # 锁外
-    result = await cmd.try_dispatch(data)             # 锁内
+    if await cmd.try_dispatch_system(data): return   # 接入层 control lane
+    result = await cmd.try_dispatch(data)             # SessionLane 内
     if result is not None:                            # 匹配到
         match result:
             case RewritePrompt(...): ...  # 继续 pipeline
@@ -37,8 +37,8 @@ class CommandManager:
     """指令注册 & 前缀匹配 & 派发。
 
     两级指令：
-    - 系统级（system=True）：try_dispatch_system() 匹配，在 session lock 外执行
-    - 普通级：try_dispatch() 匹配，在 session lock 内执行
+    - 系统级（system=True）：在 control lane 执行
+    - 普通级：在目标 SessionLane 的 admission lock 内执行
     """
 
     def __init__(self) -> None:
@@ -64,7 +64,7 @@ class CommandManager:
         默认 system=False → 普通指令，在 _step_command 的 lock 内执行。
 
         persist_input=False → 不持久化用户输入（/cancel 等纯控制指令用），
-        _dispatch 在入库前回查 match_any() 跳过持久化。
+        接入层在入库前根据 parse() 结果决定是否跳过持久化。
 
         按 command 长度降序排列，长的优先匹配。
         """
@@ -146,6 +146,26 @@ class CommandManager:
             return matched[0]
         matched = self._match_entry(self._entries, text)
         return matched[0] if matched else None
+
+    def text_from(self, data: Any) -> str | None:
+        """Extract a command line for ingress adapters without exposing internals."""
+        return self._extract_from_data(data)
+
+    def parse(self, data: Any) -> CommandDef | None:
+        """Parse an inbound envelope without executing a handler.
+
+        This is the ingress boundary API. Agent/Turn execution must consume the
+        returned definition/result and must not call ``match_any`` itself.
+        """
+        return self.match_any(data)
+
+    async def dispatch_inbound(self, inbound: Any, *, system: bool = False):
+        """Dispatch a previously admitted inbound command at the ingress edge."""
+        data = {"inbound": inbound}
+        raw = self.text_from(data)
+        if system:
+            return await self.dispatch_system(raw, data)
+        return await self.dispatch(raw, data)
 
     async def try_dispatch_system(self, data: Any) -> bool:
         """尝试从 data["inbound"] 匹配并执行系统级指令。

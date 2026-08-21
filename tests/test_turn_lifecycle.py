@@ -15,8 +15,8 @@ from ftre_agent_core.event import (
 from ftre_agent_core.message import Msg
 
 from ftre.services.agent.config import AgentConfig, ContextConfig, LLMConfig
-from ftre.services.agent.runtime.loop.engine import AgentLoop
-from ftre.services.agent.runtime.loop.turn_executor import TurnExecutor
+from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
+from ftre.services.agent_loop.runtime.loop.turn_executor import TurnExecutor
 from ftre.services.messaging.bus import BusMessage, InboundMetadata
 from ftre.services.session.projection import SessionProjection
 
@@ -83,10 +83,8 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop.agent_manager = Mock()
     loop.agent_manager.load = Mock(return_value=None)
     loop.agent_manager.create_agent = Mock(return_value=agent)
-    loop.hook_manager = None
     loop.channel_manager = None
     loop.tool_registry = None
-    loop.core_hook_manager = None
     loop.compact_manager = AsyncMock()
     loop.compact_manager.is_compacting = Mock(return_value=False)
     loop.compact_manager.should_compact = AsyncMock(return_value=False)

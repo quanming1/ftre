@@ -54,7 +54,7 @@ class Channel(ABC):
         调用这里，而不是自己构造 BusMessage 直接 publish_inbound，确保
         "外部 → Bus" 的入口唯一可控。
 
-        边界校验（wire 协议契约见 ftre.bus.protocol）：
+        边界校验（wire 协议契约见 ftre.services.messaging.bus.protocol）：
         - data     过 InboundData 归一（未知键丢弃）
         - metadata 过 InboundMetadata 归一（服务端受信来源，非白名单）
 

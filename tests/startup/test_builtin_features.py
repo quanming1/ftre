@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import pytest
-
 from cordis import FiberState
+
 from ftre.app.gateway.composition import build_composition
 
 
@@ -14,6 +14,8 @@ async def test_feature_plugins_activate_through_cordis_composition():
         expected = {"skill", "mcp", "plan", "team", "schedule", "context-govern", "session-title"}
         assert expected.issubset(statuses)
         assert all(statuses[name].state is FiberState.ACTIVE for name in expected)
-        assert {"skills", "mcp", "schedule", "teams"}.issubset(composition.context.services)
+        assert {"skills", "mcp", "schedule", "teams"}.issubset(
+            composition.context.reflect.store
+        )
     finally:
         await composition.close()

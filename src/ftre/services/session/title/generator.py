@@ -1,7 +1,7 @@
 """
 title_gen — 首条消息自动生成会话标题
 
-通过 before_messages_build hook 判断是否首条消息：
+通过 system-prompt/assemble hook 判断是否首条消息：
 - messages 中只有本轮这一条可见 user Msg
 - session 没有 title
 
@@ -55,12 +55,12 @@ class TitleGenPlugin:
         self._input_truncate = self._config.input_truncate
         self._max_chars = self._config.max_chars
         logger.info(
-            "[title_gen] 插件已就绪，已注册 before_messages_build hook "
+            "[title_gen] 插件已就绪，已注册 system-prompt/assemble hook "
             f"(input_truncate={self._input_truncate}, max_chars={self._max_chars})"
         )
 
     async def _on_build(self, ctx):
-        """before_messages_build hook：首条消息时异步生成标题"""
+        """system-prompt/assemble hook：首条消息时异步生成标题"""
         session_id = ctx.session_id
 
         # 当前 user Msg 已在 COMMAND 状态提前写入 DB。

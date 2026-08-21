@@ -16,5 +16,4 @@ def apply(ctx, config=None):
         source="external:synthetic-audit",
     )
     disposer = ctx.system_prompt.register_section(section)
-    ctx.effect(disposer, label="prompt:synthetic-audit")
-
+    ctx.effect(lambda: disposer, label="prompt:synthetic-audit")

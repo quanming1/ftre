@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from ftre.services.agent.runtime import factory
-from ftre.services.agent.runtime.factory import (
-    AgentRuntimeProvider,
+from ftre.services.agent_loop import (
+    AgentLoopProvider,
     AgentRuntimeServices,
+    provider,
 )
 
 
@@ -16,7 +16,7 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr(factory, "AgentLoop", FakeLoop)
+    monkeypatch.setattr(provider, "AgentLoop", FakeLoop)
     services = AgentRuntimeServices(
         sessions=object(),
         message_bus=SimpleNamespace(bus="bus"),
@@ -25,20 +25,19 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         commands=SimpleNamespace(manager="commands"),
         agent_profiles=SimpleNamespace(manager="profiles"),
         event_hub="events",
-        core_hook_manager="hooks",
         plugin_manager="plugins",
     )
 
-    AgentRuntimeProvider(services).build_loop()
+    AgentLoopProvider(services).build()
 
     assert captured == {
         "bus": "bus",
         "session_manager": services.sessions,
         "channel_manager": "channels",
         "event_hub": "events",
-        "core_hook_manager": "hooks",
         "tool_registry": "tools",
-        "command_manager": "commands",
+        "command_service": services.commands,
         "plugin_manager": "plugins",
         "agent_manager": "profiles",
+        "agent_registry": None,
     }

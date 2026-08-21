@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from cordis import Context
+
+from ftre.platform.hooks import HookRuntime
 from ftre.platform.plugin_runtime import PluginManager, PluginManifest
 from ftre.services.config.loader import load_config_file
 
@@ -33,6 +35,7 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("team", "ftre.features.team.plugin:apply", "builtin", False, True, description="team lifecycle"),
         PluginManifest("schedule", "ftre.features.schedule.plugin:apply", "builtin", False, True, description="cron persistence"),
         PluginManifest("context-govern", "ftre.features.context_govern.plugin:apply", "builtin", True, True, description="workspace governance"),
+        PluginManifest("compaction", "ftre.features.compaction.plugin:apply", "builtin", True, True, description="context compaction"),
         PluginManifest("session-title", "ftre.services.session.title.plugin:apply", "builtin", False, True, description="title behavior"),
     ]
 
@@ -118,6 +121,9 @@ async def build_composition(
     """Create and settle a composition without opening a listening socket."""
     config = config_data if config_data is not None else load_config_file()
     context = Context()
+    # One HookRuntime per Composition lets Plugins register through their Fiber
+    # while AgentLoop/Session/Tool adapters share the same Cordis event graph.
+    context.provide("hook_runtime", HookRuntime(context))
     for name, value in (initial_services or {}).items():
         if value is not None:
             context.provide(name, value)

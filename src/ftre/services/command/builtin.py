@@ -6,28 +6,30 @@ handler 通过闭包捕获 loop 实例，不需要往 ctx.meta 里塞 _loop。
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
+from .manager import CommandManager
 from .types import Handled, ResumeAgent, SendMessage
-
-if TYPE_CHECKING:
-    from ftre.services.agent.runtime.loop.engine import AgentLoop
-    from ftre.services.command.manager import CommandManager
 
 logger = logging.getLogger(__name__)
 
 
-def register_builtin_commands(mgr: CommandManager, loop: AgentLoop) -> None:
+def register_builtin_commands(mgr: CommandManager, loop) -> None:
     """注册内置斜杠指令到 CommandManager。
 
     :param mgr: CommandManager 实例
     :param loop: AgentLoop 实例（handler 通过闭包捕获）
     """
 
+    def _inbound(ctx):
+        """Read the ingress envelope from the public CommandContext metadata."""
+        meta = ctx.meta
+        return meta.get("inbound") if isinstance(meta, dict) else meta.inbound
+
     # 文本 /cancel 仍保留为兼容入口；WS 的停止按钮会发送 turn_cancel，
     # 不经过这条用户指令，也不会写入聊天历史。
     async def _on_cancel(ctx) -> Handled:
-        sid = ctx.meta.inbound.from_session or ctx.meta.inbound.data.get(
+        inbound = _inbound(ctx)
+        sid = inbound.from_session or inbound.data.get(
             "session_id", ""
         )
         if await loop.cancel_session(sid):
@@ -52,7 +54,7 @@ def register_builtin_commands(mgr: CommandManager, loop: AgentLoop) -> None:
 
         from ftre.services.session.message.converter import _as_msg
 
-        inbound = ctx.meta.inbound
+        inbound = _inbound(ctx)
         session_id = inbound.from_session or inbound.data.get("session_id", "")
         records = await loop.session_manager.get_messages_by_session(session_id)
         targets: dict[str, tuple[str, ToolCallBlock]] = {}
@@ -109,7 +111,7 @@ def register_builtin_commands(mgr: CommandManager, loop: AgentLoop) -> None:
     # /compact [提示词]：普通指令，在锁内执行，串行安全
     # 可选参数是自然语言提示词，透传给摘要 LLM，强调优先保留的上下文。
     async def _on_compact(ctx) -> Handled:
-        inbound = ctx.meta.inbound
+        inbound = _inbound(ctx)
         session_id = inbound.from_session
         channel_id = inbound.from_channel
         focus_hint = (ctx.args or "").strip()
@@ -118,11 +120,10 @@ def register_builtin_commands(mgr: CommandManager, loop: AgentLoop) -> None:
 
         try:
             config = loop._load_current_config()
-            await loop.compact_manager.compact(
+            await loop.compaction.compact_now(
                 session_id,
                 channel_id,
                 config=config,
-                trigger="manual",
                 focus_hint=focus_hint,
             )
         except Exception:
@@ -134,7 +135,7 @@ def register_builtin_commands(mgr: CommandManager, loop: AgentLoop) -> None:
     # /compress-fast [轮数]：零 LLM 成本的快速压缩
     # 可选整数参数 = 保护最近 N 轮对话内的工具输出不被裁剪（默认 0=全裁）。
     async def _on_compress_fast(ctx) -> Handled:
-        inbound = ctx.meta.inbound
+        inbound = _inbound(ctx)
         session_id = inbound.from_session
         channel_id = inbound.from_channel
 
@@ -143,7 +144,7 @@ def register_builtin_commands(mgr: CommandManager, loop: AgentLoop) -> None:
 
         try:
             config = loop._load_current_config()
-            await loop.compact_manager.compress_fast(
+            await loop.compaction.compress_fast(
                 session_id,
                 channel_id,
                 config=config,
@@ -156,7 +157,7 @@ def register_builtin_commands(mgr: CommandManager, loop: AgentLoop) -> None:
     # /fork：把当前会话复制成一个独立的新会话（沿用 channel/workspace，复制
     # 消息与 metadata，追加 forked_from 溯源）。不入库对话本身。
     async def _on_fork(ctx) -> SendMessage:
-        inbound = ctx.meta.inbound
+        inbound = _inbound(ctx)
         session_id = inbound.from_session or inbound.data.get("session_id", "")
         if not session_id:
             return SendMessage("无法确定当前会话", level="error")

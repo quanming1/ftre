@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from cordis import FiberState
 from ftre_agent_core.tool import ToolRegistry
 
-from cordis import FiberState
 from ftre.app.gateway.composition import build_composition
 from ftre.services.command import CommandService
 from ftre.services.config import ConfigService
@@ -32,7 +32,9 @@ async def test_default_composition_has_required_public_services(tmp_path) -> Non
         required = {item.id: item for item in composition.plugins.statuses() if item.required}
         assert required
         assert all(item.state is FiberState.ACTIVE for item in required.values())
-        assert {"config", "filesystem", "http", "message_bus", "tools"}.issubset(composition.context.services)
+        assert {"config", "filesystem", "http", "message_bus", "tools"}.issubset(
+            composition.context.reflect.store
+        )
         routes = composition.context.get("http").snapshot()
         assert any(route["path"] == "/api/health" for route in routes)
         paths = {route["path"] for route in routes}

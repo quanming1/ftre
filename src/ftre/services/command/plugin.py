@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cordis import PluginContext
+from cordis import Context
 
 from .service import CommandService
 
@@ -10,8 +10,8 @@ provide = ("commands",)
 inject = ()
 
 
-def apply(ctx: PluginContext, config=None):
+def apply(ctx: Context, config=None):
     """Publish a command facade unless the data plane supplied one already."""
-    if ctx.optional("commands") is not None:
+    if ctx.get("commands", strict=False) is not None:
         return
     ctx.provide("commands", CommandService())

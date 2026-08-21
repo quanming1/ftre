@@ -5,10 +5,9 @@ description = "ftre - AI 编程助手"
 requires-python = ">=3.12"
 license = {text = "MIT"}
 dependencies = [
-    # The runtime is vendored below as a compatibility fallback for offline
-    # development; installations with the reviewed cordis-py distribution use
-    # the same public Context/Fiber/Service/Inject/Effect contract.
-    "cordis-py>=0.4,<0.5",
+    # The official Cordis runtime is installed as the cordis-py distribution;
+    # ftre intentionally does not ship a same-name fallback implementation.
+    "cordis-py==0.4.0",
     "ftre-agent-core>=0.1.0",
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.20.0",
@@ -31,6 +30,9 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 ftre = "ftre.main:app"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

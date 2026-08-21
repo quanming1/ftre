@@ -37,14 +37,13 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     providers; they receive public Service handles from Composition and are
     stopped by the returned root cleanup path.
     """
-    from ftre_agent_core.hooks import FtreCoreHookManager
     from ftre_agent_core.tool import ToolRegistry
 
     from ftre.services.agent import AgentService
     from ftre.services.agent.profile import AgentProfileService
     from ftre.services.agent.profile.manager import AgentManager
-    from ftre.services.agent.runtime.factory import (
-        AgentRuntimeProvider,
+    from ftre.services.agent_loop import (
+        AgentLoopProvider,
         AgentRuntimeServices,
     )
     from ftre.services.command import CommandManager, CommandService
@@ -66,6 +65,7 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     config_data = config if config is not None else load_config_file()
     session_manager = None
     agent_loop = None
+    agent_service = None
     channel_manager = None
     composition = None
     try:
@@ -100,11 +100,10 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
             },
             plugins_dir=plugins_dir,
         )
-        core_hooks = FtreCoreHookManager()
         config_host, config_port = load_gateway_address()
         gateway_host = host if host is not None else config_host
         gateway_port = port if port is not None else config_port
-        runtime_provider = AgentRuntimeProvider(
+        runtime_provider = AgentLoopProvider(
             AgentRuntimeServices(
                 sessions=composition.context.get("sessions"),
                 message_bus=composition.context.get("message_bus"),
@@ -112,13 +111,17 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
                 tools=composition.context.get("tools"),
                 commands=composition.context.get("commands"),
                 agent_profiles=composition.context.get("agent_profiles"),
-                event_hub=composition.context.events,
-                core_hook_manager=core_hooks,
+                event_hub=composition.context,
                 plugin_manager=composition.plugins,
+                agents=composition.context.get("agents"),
+                system_prompt=composition.context.get("system_prompt"),
+                hook_runtime=composition.context.get("hook_runtime"),
+                compaction=composition.context.get("compaction"),
             )
         )
-        agent_loop = runtime_provider.build_loop()
-        agent_service.bind(agent_loop, profile_service)
+        agent_runtime = runtime_provider.build()
+        agent_loop = agent_runtime.loop
+        agent_service.attach_driver(agent_runtime.driver, profile_service)
         register_builtin_commands(command_manager, agent_loop)
         ws_channel = WebSocketChannel(
             bus,
@@ -138,6 +141,8 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     finally:
         if agent_loop is not None:
             await agent_loop.stop()
+        if agent_service is not None:
+            agent_service.detach_driver()
         if channel_manager is not None:
             await channel_manager.stop()
         if composition is not None:

@@ -1,6 +1,6 @@
 import pytest
-
 from cordis import Context
+
 from ftre.features.context_govern import plugin as context_govern
 from ftre.services.filesystem.local import LocalFilesystemService
 from ftre.services.system_prompt.service import SystemPromptService
@@ -14,8 +14,8 @@ async def _assemble(tmp_path):
     root.provide("system_prompt", prompts)
     root.provide("filesystem", LocalFilesystemService())
     root.provide("workspaces", WorkspaceService())
-    fiber = root.plugin(context_govern, id="context-govern-test")
-    await root.settle()
+    fiber = root.plugin(context_govern.apply)
+    await fiber
     return root, prompts.assemble("default", "session", workspace=str(tmp_path)), fiber
 
 
@@ -25,4 +25,6 @@ async def test_context_govern_injects_workspace_agents_md(tmp_path):
     try:
         assert "Always verify the Msg boundary." in text
     finally:
-        await root.dispose()
+        cleanup = root.dispose()
+        if cleanup is not None:
+            await cleanup

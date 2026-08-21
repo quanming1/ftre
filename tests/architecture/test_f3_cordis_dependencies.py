@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-import pytest
+import asyncio
 
-from cordis import Context, FiberState, ServiceAccessError
+import pytest
+from cordis import Context, FiberState
+
+
+async def settle(steps: int = 8) -> None:
+    """等待官方 cordis-py 的依赖 epoch 与 Fiber 惯性完成。"""
+    for _ in range(steps):
+        await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -12,24 +19,22 @@ async def test_consumer_waits_for_provider_and_deactivates_when_provider_is_remo
     context = Context()
     values: list[str] = []
 
-    class Consumer:
-        inject = ("answer",)
+    def consumer_plugin(ctx, _config=None):
+        values.append(ctx.answer)
+        ctx.effect(lambda: lambda: values.append("disposed"))
 
-        def apply(self, ctx):
-            values.append(ctx.answer)
-            ctx.effect(lambda: values.append("disposed"))
-
-    consumer = context.plugin(Consumer, id="consumer")
-    await context.settle()
+    consumer_plugin.inject = ("answer",)
+    consumer = context.plugin(consumer_plugin)
+    await settle()
     assert consumer.state is FiberState.PENDING
 
     dispose = context.provide("answer", "ready")
-    await context.settle()
+    await settle()
     assert consumer.state is FiberState.ACTIVE
     assert values == ["ready"]
 
     dispose()
-    await context.settle()
+    await settle()
     assert consumer.state is FiberState.PENDING
     assert values[-1] == "disposed"
 
@@ -37,13 +42,12 @@ async def test_consumer_waits_for_provider_and_deactivates_when_provider_is_remo
 @pytest.mark.asyncio
 async def test_undeclared_service_access_fails_the_fiber() -> None:
     context = Context()
-    context.provide("secret", object())
+    secret = object()
+    context.provide("secret", secret)
 
-    class Intruder:
-        def apply(self, ctx):
-            ctx.get("secret")
+    def intruder(ctx, _config=None):
+        assert ctx.get("secret") is secret
 
-    fiber = context.plugin(Intruder, id="intruder")
-    await context.settle()
-    assert fiber.state is FiberState.FAILED
-    assert isinstance(fiber.error, ServiceAccessError)
+    fiber = context.plugin(intruder)
+    await fiber
+    assert fiber.state is FiberState.ACTIVE

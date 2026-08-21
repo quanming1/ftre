@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cordis import PluginContext
+from cordis import Context
 
 from .service import TraceService
 
@@ -10,12 +10,12 @@ provide = ("traces",)
 inject = ()
 
 
-def apply(ctx: PluginContext, config=None):
+def apply(ctx: Context, config=None):
     """Publish TraceService and close its exporter when the Fiber unloads."""
-    if ctx.optional("traces") is not None:
+    if ctx.get("traces", strict=False) is not None:
         return
     service = TraceService()
     ctx.provide("traces", service)
     close = getattr(service.store, "close", None)
     if close:
-        ctx.effect(close, label="traces:close")
+        ctx.effect(lambda: close, label="traces:close")

@@ -1,4 +1,11 @@
 from .receipt import PromptAssemblyReceipt
 from .service import PromptSection, SystemPromptService
+from .types import PromptAssembly, PromptContribution
 
-__all__ = ["PromptAssemblyReceipt", "PromptSection", "SystemPromptService"]
+__all__ = [
+    "PromptAssembly",
+    "PromptAssemblyReceipt",
+    "PromptContribution",
+    "PromptSection",
+    "SystemPromptService",
+]

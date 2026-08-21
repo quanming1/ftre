@@ -1,12 +1,12 @@
-"""Provider Plugin for the public Agent facade.
+"""Provider Plugin for the public Agent Registry/Service.
 
-The concrete AgentLoop is injected later by the Gateway data-plane bootstrap;
+The data-plane Driver is attached later by the independent runtime Provider;
 this Plugin only makes the stable ``agents`` Service key available.
 """
 
 from __future__ import annotations
 
-from cordis import PluginContext
+from cordis import Context
 
 from .service import AgentService
 
@@ -14,9 +14,8 @@ inject = ("agent_profiles",)
 provide = ("agents",)
 
 
-def apply(ctx: PluginContext, config=None):
+def apply(ctx: Context, config=None):
     """Create the facade unless Composition already supplied an instance."""
-    if ctx.optional("agents") is not None:
+    if ctx.get("agents", strict=False) is not None:
         return
-    options = config if isinstance(config, dict) else {}
-    ctx.provide("agents", AgentService(options.get("loop"), ctx.agent_profiles))
+    ctx.provide("agents", AgentService(ctx.agent_profiles))

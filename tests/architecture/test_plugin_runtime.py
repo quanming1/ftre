@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import pytest
-
 from cordis import Context, FiberState
+
 from ftre.platform.plugin_runtime import (
     PluginManager,
     PluginManifest,
@@ -73,4 +73,4 @@ async def test_required_entry_failure_is_fail_loud_and_disposes_context() -> Non
     manager = PluginManager(ctx)
     with pytest.raises(PluginStartupError):
         await manager.load([PluginManifest("required-broken", broken, required=True)], {})
-    assert ctx.services == {}
+    assert not ctx.reflect.store

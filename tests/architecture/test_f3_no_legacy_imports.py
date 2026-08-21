@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ast
+import importlib.metadata
 from pathlib import Path
+
+import cordis
 
 ROOT = Path(__file__).parents[2]
 SOURCE = ROOT / "src"
@@ -41,14 +44,15 @@ def test_runtime_source_does_not_import_retired_namespaces() -> None:
 
 
 def test_new_hook_contract_is_the_single_runtime_hook_owner() -> None:
-    hooks = SOURCE / "ftre" / "services" / "agent" / "runtime" / "hooks.py"
-    assert hooks.is_file()
-    assert "class AgentRunContext" in hooks.read_text(encoding="utf-8")
-    assert "class MessagesBuildContext" in hooks.read_text(encoding="utf-8")
+    hooks = SOURCE / "ftre" / "platform" / "hooks"
+    assert hooks.is_dir()
+    assert (hooks / "runtime.py").is_file()
+    retired = SOURCE / "ftre" / "services" / "agent_loop" / "runtime" / "hooks.py"
+    assert not retired.exists()
 
 
 def test_legacy_plugin_context_and_compatibility_entry_are_removed() -> None:
     assert not (SOURCE / "ftre" / "plugin" / "__init__.py").exists()
-    cordis_source = (SOURCE / "cordis" / "__init__.py").read_text(encoding="utf-8")
-    assert "LegacyPluginContext" not in cordis_source
-    assert "setup(Legacy" not in cordis_source
+    assert not (SOURCE / "cordis").exists()
+    assert not Path(cordis.__file__).resolve().is_relative_to(SOURCE)
+    assert importlib.metadata.version("cordis-py") == "0.4.0"

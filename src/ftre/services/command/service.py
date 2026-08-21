@@ -25,6 +25,14 @@ class CommandService:
     def dispatch(self, *args: Any, **kwargs: Any):
         return self.manager.try_dispatch(*args, **kwargs)
 
+    def parse(self, data: Any):
+        """Parse an inbound envelope without invoking a handler."""
+        return self.manager.parse(data)
+
+    async def dispatch_inbound(self, inbound: Any, *, system: bool = False):
+        """Ingress adapter used by AgentLoop before mailbox admission."""
+        return await self.manager.dispatch_inbound(inbound, system=system)
+
     def list(self) -> list[dict[str, Any]]:
         return self.manager.list_commands()
 

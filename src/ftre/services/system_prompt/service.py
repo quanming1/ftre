@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .receipt import PromptAssemblyReceipt
-from .types import PromptSection
+from .types import PromptAssembly, PromptContribution, PromptSection
 
 
 class SystemPromptService:
@@ -17,7 +17,6 @@ class SystemPromptService:
     def __init__(self) -> None:
         self._sections: list[PromptSection] = []
         self._sequence = 0
-        self._last_receipt: PromptAssemblyReceipt | None = None
 
     def register_section(self, section: PromptSection, owner: str | None = None, scope: str | None = None):
         """Register a section and return a disposer used by its owning Plugin."""
@@ -44,10 +43,34 @@ class SystemPromptService:
         return section.scope == "global" or section.scope == f"agent:{agent_id}" or section.scope == f"session:{session_id}"
 
     def assemble(self, agent_id: str, session_id: str, workspace: str = "", messages: Iterable[Any] = ()) -> str:
-        """Build eligible sections in deterministic order; required failures propagate."""
+        """Build eligible sections in deterministic order and return rendered text."""
+        return self.assemble_result(agent_id, session_id, workspace=workspace).text
+
+    def assemble_result(
+        self,
+        agent_id: str,
+        session_id: str,
+        workspace: str = "",
+        messages: Iterable[Any] = (),
+        *,
+        base_prompt: str = "",
+    ) -> PromptAssembly:
+        """Render a structured, immutable assembly without touching message history."""
+        del messages  # reserved for deterministic section factories in later slices
+        contributions: list[PromptContribution] = []
         parts: list[str] = []
-        records: list[dict[str, Any]] = []
-        for order, section in enumerate(sorted(self._sections, key=lambda value: (value.priority, value.owner, value.name)), start=1):
+        order = 0
+        base = (base_prompt or "").strip()
+        if base:
+            order += 1
+            contributions.append(
+                PromptContribution("config-base", base, "config", "config", "global", order)
+            )
+            parts.append(base)
+        for section_order, section in enumerate(
+            sorted(self._sections, key=lambda value: (value.priority, value.owner, value.name)),
+            start=order + 1,
+        ):
             if not self._eligible(section, agent_id, session_id):
                 continue
             try:
@@ -57,20 +80,63 @@ class SystemPromptService:
                 content = str(content)
                 if content:
                     parts.append(content)
-                records.append({"name": section.name, "owner": section.owner, "source": section.source, "scope": section.scope, "order": order, "bytes": len(content.encode()), "token_estimate": max(1, len(content) // 4) if content else 0, "included": bool(content), "error": None})
+                contributions.append(
+                    PromptContribution(
+                        section.name,
+                        content,
+                        section.owner,
+                        section.source,
+                        section.scope,
+                        section_order,
+                    )
+                )
             except Exception as exc:
-                records.append({"name": section.name, "owner": section.owner, "source": section.source, "scope": section.scope, "order": order, "bytes": 0, "token_estimate": 0, "included": False, "error": str(exc)})
                 if section.required:
                     raise
-        text = "\n\n".join(parts)
-        self._last_receipt = PromptAssemblyReceipt(agent_id, session_id, tuple(records), len(text.encode()), max(1, len(text) // 4) if text else 0)
-        return text
+                contributions.append(
+                    PromptContribution(
+                        section.name,
+                        f"[section failed: {type(exc).__name__}]",
+                        section.owner,
+                        section.source,
+                        section.scope,
+                        section_order,
+                    )
+                )
+        return PromptAssembly(
+            agent_id=agent_id,
+            session_id=session_id,
+            workspace=workspace,
+            contributions=tuple(contributions),
+            text="\n\n".join(parts),
+        )
 
     def receipt(self, agent_id: str, session_id: str, workspace: str = "", messages: Iterable[Any] = ()) -> PromptAssemblyReceipt:
         """Assemble once and return the inclusion/error audit receipt."""
-        self.assemble(agent_id, session_id, workspace, messages)
-        assert self._last_receipt is not None
-        return self._last_receipt
+        assembly = self.assemble_result(agent_id, session_id, workspace, messages)
+        records = tuple(
+            {
+                "name": item.name,
+                "owner": item.owner,
+                "source": item.source,
+                "scope": item.scope,
+                "order": item.order,
+                "bytes": len(item.content.encode()),
+                "token_estimate": max(1, len(item.content) // 4)
+                if item.content
+                else 0,
+                "included": bool(item.content),
+                "error": None,
+            }
+            for item in assembly.contributions
+        )
+        return PromptAssemblyReceipt(
+            agent_id,
+            session_id,
+            records,
+            len(assembly.text.encode()),
+            max(1, len(assembly.text) // 4) if assembly.text else 0,
+        )
 
     def snapshot(self) -> tuple[PromptSection, ...]:
         """Return registered sections for diagnostics without exposing the mutable list."""

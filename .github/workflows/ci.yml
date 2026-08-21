@@ -23,6 +23,13 @@ jobs:
           ref: master
           path: ftre-agent-core
 
+      - name: Checkout cordis-py
+        uses: actions/checkout@v4
+        with:
+          repository: quanming1/cordis-py
+          ref: v0.4.0
+          path: cordis-py
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -30,6 +37,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          pip install -e ./cordis-py
           pip install -e ./ftre-agent-core
           pip install -e .
           pip install pytest pytest-asyncio
