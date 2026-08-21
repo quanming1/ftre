@@ -1,24 +1,30 @@
-from types import SimpleNamespace
-
 import pytest
+from cordis import Context
 
-from ftre.plugin.builtin.context_govern import ContextGovernPlugin
+from ftre.features.context_govern import plugin as context_govern
+from ftre.services.filesystem.local import LocalFilesystemService
+from ftre.services.system_prompt.service import SystemPromptService
+from ftre.services.workspace.service import WorkspaceService
+
+
+async def _assemble(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("Always verify the Msg boundary.", encoding="utf-8")
+    prompts = SystemPromptService()
+    root = Context()
+    root.provide("system_prompt", prompts)
+    root.provide("filesystem", LocalFilesystemService())
+    root.provide("workspaces", WorkspaceService())
+    fiber = root.plugin(context_govern.apply)
+    await fiber
+    return root, prompts.assemble("default", "session", workspace=str(tmp_path)), fiber
 
 
 @pytest.mark.asyncio
-async def test_context_govern_keeps_msg_history_and_injects_agents_md(tmp_path):
-    agents_file = tmp_path / "AGENTS.md"
-    agents_file.write_text("Always verify the Msg boundary.", encoding="utf-8")
-    messages = [{"id": "msg-1", "role": "user", "content": []}]
-    config = SimpleNamespace(system_prompt="base")
-    context = SimpleNamespace(
-        messages=messages,
-        workspace=str(tmp_path),
-        agent_dir="",
-        config=config,
-    )
-
-    result = await ContextGovernPlugin()._govern(context)
-
-    assert result.messages is messages
-    assert "Always verify the Msg boundary." in result.config.system_prompt
+async def test_context_govern_injects_workspace_agents_md(tmp_path):
+    root, text, _ = await _assemble(tmp_path)
+    try:
+        assert "Always verify the Msg boundary." in text
+    finally:
+        cleanup = root.dispose()
+        if cleanup is not None:
+            await cleanup

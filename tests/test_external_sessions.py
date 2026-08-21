@@ -1,6 +1,6 @@
 import pytest
 
-from ftre.session import SessionManager
+from ftre.services.session.service import SessionService as SessionManager
 
 
 @pytest.mark.asyncio

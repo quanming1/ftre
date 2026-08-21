@@ -156,14 +156,14 @@ stages:
 
       - id: C4
         title: Cordis 风格插件内核
-        status: in_progress
+        status: done
         date: 2026-08-14
         prd: docs/prd/PRD-C4-plugin-kernel.md
-        prd_status: 开发中
+        prd_status: 已验收
         modules:
           - src/ftre/plugin/kernel/
           - src/ftre/plugin/builtin/
-        acceptance: 插件依赖按序加载/循环依赖报错，事件 5 模式可用，配置树驱动加载，现有内置插件迁移后行为不变
+        acceptance: 历史 Cordis 风格内核能力已由 F1 新 Composition/cordis 公共运行时接管；旧模块仅保留迁移兼容测试面
 
       - id: C5
         title: 本地文件链接协议
@@ -200,3 +200,448 @@ stages:
           - src/ftre/session/search.py
           - src/ftre/api/routes.py
         acceptance: 内存态直接检索（不读盘不解析 state.json、不引入额外存储），中文子串与标题均可检索，大数据量下接口百毫秒级，配套前端高亮筛选
+
+  - id: F
+    name: 后端架构重构
+    steps:
+      - id: F1
+        title: 基于 cordis-py 的后端插件化重构
+        status: done
+        date: 2026-08-20
+        prd: docs/prd/PRD-F1-backend-plugin-refactor.md
+        prd_status: 已验收
+        modules:
+          - pyproject.toml
+          - src/ftre/main.py
+          - src/ftre/app/
+          - src/ftre/platform/
+          - src/ftre/services/
+          - src/ftre/features/
+          - tests/
+        acceptance: cordis-py 成为唯一插件内核，四层目录与唯一 Composition Root 落地，生命周期可逆，现有 Session/Agent/HTTP/WS/插件行为通过 PRD-F1 全部验收标准
+        tasks:
+          - id: F1.1
+            title: Cordis 基座与 Composition Root
+            status: done
+          - id: F1.2
+            title: Config、Filesystem、HTTP 与诊断 Service
+            status: done
+          - id: F1.3
+            title: Session、Workspace、Agent、Bus 与 Channel Service
+            status: done
+          - id: F1.4
+            title: Tool、Skill、Prompt、MCP、Schedule、Team 行为 Plugin
+            status: done
+          - id: F1.5
+            title: 外部插件兼容、Octo 边界与合成审计插件
+            status: done
+          - id: F1.6
+            title: 全量验收、回归、提交与执行报告
+            status: done
+
+      - id: F2
+        title: 核心数据面 Service 化迁移
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F2-data-plane-migration.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/services/session/
+          - src/ftre/services/agent_loop/
+          - src/ftre/services/messaging/
+          - src/ftre/services/command/
+          - src/ftre/services/tools/
+          - src/ftre/app/gateway/
+        acceptance: 旧数据面按切片迁入新 Service Owner；旧路径只保留单向兼容导出；Session/Agent/Bus/Channel/HTTP 生产引用逐步清零；全量测试、lint 和 Gateway 回归通过
+        tasks:
+          - id: F2.1
+            title: Session 与 Workspace 真实实现迁移
+            status: done
+
+          - id: F2.2
+            title: Agent Runtime 真实实现迁移
+            status: done
+          - id: F2.3
+            title: MessageBus、Channel、Command、Tool Provider 迁移
+            status: done
+          - id: F2.4
+            title: HTTP/WS legacy 入口移除
+            status: done
+          - id: F2.5
+            title: 旧目录清理与全量验收
+            status: done
+
+      - id: F3
+        title: 旧 Plugin Kernel 与兼容入口退役
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F3-plugin-kernel-retirement.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/platform/plugin_runtime/
+          - src/ftre/platform/hooks/
+          - src/ftre/features/
+          - src/ftre/api/
+          - tests/architecture/
+          - tests/contracts/
+        acceptance: 旧 Plugin Kernel、Builtin、aggregate API 和 ftre.plugin 兼容入口删除；新 Cordis/Feature/Service 测试覆盖必要语义；生产导入清零；Gateway 和全量质量门禁通过
+        tasks:
+          - id: F3.1
+            title: Hook/Event 契约迁移
+            status: done
+          - id: F3.2
+            title: Builtin Plugin 测试与实现迁移
+            status: done
+          - id: F3.3
+            title: Aggregate API 路由清理
+            status: done
+          - id: F3.4
+            title: 旧 Kernel 删除与架构门禁
+            status: done
+          - id: F3.5
+            title: 全量验收与执行报告
+            status: done
+
+      - id: F4
+        title: 架构债务清理与单一 Owner 收敛
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F4-architecture-debt-cleanup.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/agent/
+          - src/ftre/session/
+          - src/ftre/bus/
+          - src/ftre/channel/
+          - src/ftre/command/
+          - src/ftre/tools/
+          - src/ftre/config.py
+          - src/ftre/trace_store.py
+          - src/ftre/mcp/
+          - src/ftre/services/http/
+          - src/ftre/features/
+          - src/ftre/gateway/
+          - src/ftre/utils/image_store.py
+        acceptance: 删除迁移兼容壳与重复 Owner；Config、Trace、MCP、Attachment、Gateway Process 归位；生产/测试只使用新路径；全量质量与 Gateway 回归通过
+        tasks:
+          - id: F4.1
+            title: 债务基线与架构门禁
+            status: done
+          - id: F4.2
+            title: Agent 与数据面旧壳删除
+            status: done
+          - id: F4.3
+            title: Config 与 Trace Owner 收敛
+            status: done
+          - id: F4.4
+            title: MCP Feature Owner 收敛
+            status: done
+          - id: F4.5
+            title: HTTP、Feature 空壳与兼容 API 清理
+            status: done
+          - id: F4.6
+            title: Gateway Process 与 Attachment 基础设施归位
+            status: done
+          - id: F4.7
+            title: 全量验收与执行报告
+            status: done
+
+      - id: F5
+        title: Schedule Owner 收敛与调度生命周期治理
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F5-schedule-owner-cleanup.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/features/schedule/
+          - src/ftre/app/gateway/bootstrap.py
+          - src/ftre/services/messaging/channel/
+          - tests/features/schedule/
+          - tests/startup/
+          - tests/lifecycle/
+        acceptance: Schedule Feature 拥有 ScheduleService、CronScheduler、CronChannel 和 cron Tool；删除 schedule 空壳与 tools/builtin/cron.py；Plugin 负责启动/停止和 Effect 清理；全量回归通过
+        tasks:
+          - id: F5.1
+            title: Schedule 现状基线与接口冻结
+            status: done
+          - id: F5.2
+            title: CronStore 与 ScheduleService 归位
+            status: done
+          - id: F5.3
+            title: CronScheduler 与 CronChannel 迁移
+            status: done
+          - id: F5.4
+            title: cron Tool 与 Router 统一 Feature Owner
+            status: done
+          - id: F5.5
+            title: Plugin 生命周期接管与 Bootstrap 解耦
+            status: done
+          - id: F5.6
+            title: 空壳删除、测试迁移与架构门禁
+            status: done
+          - id: F5.7
+            title: 全量验收与执行报告
+            status: done
+
+      - id: F6
+        title: 官方 cordis-py 运行时与语义 Hook 系统
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F6-semantic-hook-system.md
+        prd_status: 已验收
+        modules:
+          - pyproject.toml
+          - src/ftre/platform/hooks/
+          - src/ftre/services/agent/
+          - src/ftre/services/agent_loop/
+          - src/ftre/services/tools/
+          - src/ftre/services/session/
+          - src/ftre/services/system_prompt/
+          - src/ftre/services/command/
+          - src/ftre/features/compaction/
+          - src/ftre/infrastructure/agent_core/
+          - tests/hooks/
+          - tests/architecture/
+          - tests/contracts/
+          - tests/lifecycle/
+        acceptance: 建立 continuation waterfall、类型化 Hook 契约、Agent 作用域和 Fiber 生命周期；AgentLoop 只触发稳定语义边界；Compaction、Tool、Session、Prompt、Command 通过公开 Service 与 Hook 解耦；删除旧可变 filter Hook；全量质量门禁和 Gateway 生命周期回归通过。cordis-py PyPI 发行物切换单列为 F6.12 后置任务，不阻塞 F6.3-F6.11。
+        tasks:
+          - id: F6.1
+            title: cordis-py 0.4.0 官方运行时接入
+            status: done
+          - id: F6.2
+            title: 官方 API 适配与重复内核删除
+            status: done
+          - id: F6.3
+            title: Hook 契约基线与架构门禁
+            status: done
+          - id: F6.4
+            title: 类型化 HookSpec、作用域与诊断
+            status: done
+          - id: F6.5
+            title: Agent Registry 与 AgentLoop Provider 分层
+            status: done
+          - id: F6.6
+            title: Agent 状态机语义 Hook 与 pending 领取治理
+            status: done
+          - id: F6.7
+            title: Tool、Session、System Prompt Hook 管线
+            status: done
+          - id: F6.8
+            title: Compaction Plugin Hook 化迁移
+            status: done
+          - id: F6.9
+            title: Command 解耦与旧 Hook 删除
+            status: done
+            date: 2026-08-21
+            modules:
+              - src/ftre/services/command/
+              - src/ftre/services/agent_loop/runtime/loop/engine.py
+              - src/ftre/services/agent_loop/runtime/mailbox/lane.py
+              - src/ftre/services/agent_loop/runtime/loop/turn_executor.py
+              - tests/architecture/test_f9_command_boundaries.py
+              - tests/contracts/test_f9_command_ingress.py
+            acceptance: Command 在接入层解析并绕过 Inbox；普通命令由 SessionLane 串行执行；/compact 只调用公开 CompactionService；旧 before_run、before_messages_build、Filter 与兼容模块删除，专项和全量质量门禁通过
+          - id: F6.10
+            title: 生命周期、作用域、并发与故障测试
+            status: done
+            date: 2026-08-21
+            modules:
+              - src/ftre/platform/hooks/runtime.py
+              - tests/lifecycle/test_f10_lifecycle_faults.py
+              - tests/hooks/test_hook_runtime.py
+              - tests/contracts/test_f6_agent_hooks.py
+            acceptance: Hook Fiber unload/restart 可逆且等待 in-flight 调用；Agent scope 同 id 重建隔离；取消和重试边界明确；压缩失败保留 pending 并可显式取消；pre-step 故障重试不丢失、不重复消费；专项与全量质量门禁通过
+          - id: F6.11
+            title: 全量验收与执行报告
+            status: done
+            date: 2026-08-21
+            modules:
+              - docs/prd/PRD-F6-semantic-hook-system.md
+              - docs/execution/EXECUTION-F6-semantic-hook-system.md
+              - CHANGELOG.md
+            acceptance: 全量 pytest、Hook/契约/架构/生命周期专项、ruff、YAML、diff check 和 Gateway 启停 smoke 通过；PRD/TODO/CHANGELOG/执行报告同步；F6.12 PyPI 后置任务明确保留
+          - id: F6.12
+            title: cordis-py PyPI 发行物切换与洁净安装验收
+            status: todo
+
+      - id: F7
+        title: Agent Core 直接消费 ftre Hook 协议与 Turn-stopping Continuation
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F7-agent-core-hook-integration.md
+        prd_status: 已验收
+        depends_on:
+          - F6.1-F6.11
+        external_dependency: E:\ftre-agent-core（C1 独立 PR；两个仓库分别验证）
+        modules:
+          - src/ftre/platform/hooks/
+          - src/ftre/services/agent/hooks.py
+          - src/ftre/services/tools/hooks.py
+          - src/ftre/services/llm/hooks.py
+          - src/ftre/services/agent_loop/runtime/loop/
+          - tests/contracts/
+          - tests/architecture/test_f7_agent_core_direct.py
+          - tests/hooks/
+          - tests/lifecycle/
+        acceptance: Agent Core 直接消费 Core-facing ftre Hook 契约；Tool/LLM 不再经过重复转换层；agent/turn-stopping 在 Core finalize 前支持有界 Stop/Continue 决策；Session、Mailbox、Compaction 等 ftre-only Hook 不下沉；全量质量门禁、Core 独立测试和 Gateway 回归通过
+        tasks:
+          - id: F7.1
+            title: Core-facing Hook 契约所有权与跨仓库接口冻结
+            status: done
+          - id: F7.2
+            title: Agent Core Dispatcher 注入与旧 HookManager 退役
+            status: done
+          - id: F7.3
+            title: Tool/LLM 直接 Hook 管线与转换层删除
+            status: done
+          - id: F7.4
+            title: Turn-stopping 停止决策与 continuation 有界执行
+            status: done
+          - id: F7.5
+            title: Scope、取消、错误和生命周期测试
+            status: done
+          - id: F7.6
+            title: 跨仓库安装验证、全量验收与执行报告
+            status: done
+
+      - id: F8
+        title: Command Plane 与 Agent Plane 解耦
+        status: done
+        prd: docs/prd/PRD-F8-command-plane-agent-plane.md
+        prd_status: 已验收
+        date: 2026-08-21
+        depends_on:
+          - F6.9
+          - F6.10
+          - F7
+        modules:
+          - src/ftre/services/command/
+          - src/ftre/services/agent_loop/runtime/loop/engine.py
+          - src/ftre/services/agent_loop/runtime/mailbox/lane.py
+          - src/ftre/services/agent_loop/runtime/loop/turn_executor.py
+          - src/ftre/services/compaction/
+          - src/ftre/features/compaction/
+          - src/ftre/services/session/
+          - docs/prd/README.md
+          - tests/contracts/
+          - tests/architecture/
+          - tests/lifecycle/
+        acceptance: Command 通过独立 Runtime 执行并产生命令生命周期事件；纯 Command 不创建 Turn、不进入 Agent；需要 Agent 的命令复用已有 Session Event 恢复流程，不新增 AgentControlPort、AgentEffect 或 ResumeRequest；TurnExecutor 删除全部 Command 依赖；CompactionService 与 Session 使用真实 Service Owner；Loop 间接引用、兼容分支、空壳和缓存完成清理；Session 串行、取消、幂等、失败和客户端现有协议保持不变；全量质量门禁和 Gateway 回归通过
+        tasks:
+          - id: F8.1
+            title: CommandContext、CommandResult 与生命周期协议冻结
+            status: done
+          - id: F8.2
+            title: CommandRuntime 独立执行与 command/run、command/done 事件
+            status: done
+          - id: F8.3
+            title: SessionLane 改为直接调用 CommandRuntime
+            status: done
+          - id: F8.4
+            title: 复用 Session Event 的 allow/deny Agent 恢复
+            status: done
+          - id: F8.5
+            title: 内置 Command 迁移到真实 Service Owner
+            status: done
+          - id: F8.6
+            title: TurnExecutor Command 状态与架构债务清理
+            status: done
+          - id: F8.7
+            title: Command/Agent 边界、并发与故障专项测试
+            status: done
+          - id: F8.8
+            title: 全量验收、文档同步与执行报告
+            status: done
+
+      - id: F9
+        title: Service 依赖注入与架构债务清理
+        status: done
+        prd: docs/prd/PRD-F9-service-injection-and-debt-cleanup.md
+        prd_status: 已验收
+        date: 2026-08-21
+        depends_on:
+          - F6.4
+          - F7
+          - F8
+        modules:
+          - src/ftre/platform/plugin_runtime/
+          - src/ftre/app/gateway/
+          - src/ftre/services/
+          - src/ftre/features/
+          - tests/architecture/
+          - tests/contracts/
+          - tests/lifecycle/
+          - docs/prd/README.md
+        acceptance: Service 依赖通过 Inject/Provide、公开 Contract 或类型化 Provider 表达；Command、Feature、HTTP/WS、Tool 不再通过 AgentLoop 字段获取其他 Service；必选依赖缺失、重复 Owner、作用域错误和卸载残留有自动化门禁；Compaction、Session、Config、Filesystem、Attachment、Trace 等 Owner 清晰；死代码、兼容壳、空目录、动态依赖和生成缓存完成扫描清理；现有行为、全量质量门禁和 Gateway 回归通过
+        tasks:
+          - id: F9.1
+            title: Service 依赖图与架构债务基线
+            status: done
+          - id: F9.2
+            title: Inject/Provide 契约与依赖架构门禁
+            status: done
+          - id: F9.3
+            title: Command、Compaction、Session Service Owner 收敛
+            status: done
+          - id: F9.4
+            title: AgentLoop Provider 与数据面依赖边界收敛
+            status: done
+          - id: F9.5
+            title: Feature、Infrastructure 与配置依赖迁移
+            status: done
+          - id: F9.6
+            title: 生命周期、作用域与可选依赖验证
+            status: done
+          - id: F9.7
+            title: 全盘死代码、兼容壳、空目录与生成缓存清理
+            status: done
+          - id: F9.8
+            title: 全量验收、文档同步与执行报告
+            status: done
+
+      - id: F10
+        title: Compaction Service Owner 收敛与 Port 删除
+        status: done
+        prd: docs/prd/PRD-F10-compaction-service-owner.md
+        prd_status: 已验收
+        date: 2026-08-22
+        depends_on:
+          - F9
+        modules:
+          - src/ftre/services/compaction/
+          - src/ftre/features/compaction/
+          - src/ftre/services/agent_loop/
+          - src/ftre/services/command/
+          - src/ftre/app/gateway/composition.py
+          - tests/architecture/
+          - tests/contracts/
+          - tests/lifecycle/
+          - docs/prd/README.md
+          - CHANGELOG.md
+        acceptance: CompactionService 迁入 services/compaction 并成为 compaction key 的唯一真实 Owner；CompactionPort、contracts.py 和旧实现删除；Feature 只注册压缩 Hook；AgentLoop、ContextGate、Command、Provider 直接使用 CompactionService；自动/手动/快速压缩、溢出重试、事件投影、pending 和客户端协议保持不变；Service/Hook unload、restart、失败回滚和全量质量门禁通过（405 passed）
+        tasks:
+          - id: F10.1
+            title: CompactionService 迁入 services Owner
+            status: done
+          - id: F10.2
+            title: 删除 CompactionPort 与旧 contracts 导出
+            status: done
+          - id: F10.3
+            title: Service Plugin 与 Feature Hook Plugin 拆分
+            status: done
+          - id: F10.4
+            title: AgentLoop、ContextGate、Command、Provider 类型与调用迁移
+            status: done
+          - id: F10.5
+            title: Composition Manifest 与 Service key 收敛
+            status: done
+          - id: F10.6
+            title: 行为、生命周期、失败回滚与启动测试
+            status: done
+          - id: F10.7
+            title: 旧实现、引用、兼容导出与生成物清理
+            status: done
+          - id: F10.8
+            title: 全量验收、文档同步与执行报告
+            status: done

@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 from starlette.websockets import WebSocketState
 
-from ftre.bus import EventBus
-from ftre.channel.ws_channel import WebSocketChannel
+from ftre.services.messaging.bus import EventBus
+from ftre.services.messaging.channel.providers.websocket.channel import WebSocketChannel
 
 
 class FakeWebSocket:

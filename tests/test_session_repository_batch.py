@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 from ftre_agent_core.message import AssistantMsg, UserMsg
 
-from ftre.session.storage.repository import SessionRepository
+from ftre.services.session.persistence.repository import SessionRepository
 
 
 @pytest_asyncio.fixture

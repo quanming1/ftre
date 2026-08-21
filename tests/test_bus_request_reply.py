@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from ftre.bus import BusMessage, EventBus
+from ftre.services.messaging.bus import BusMessage, EventBus
 
 
 @pytest.mark.asyncio

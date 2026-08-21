@@ -1,6 +1,6 @@
 import logging
 
-from ftre.tools._workspace import ensure_workspace_ext_dir
+from ftre.services.tools.builtin._workspace import ensure_workspace_ext_dir
 
 
 def test_non_utf8_gitignore_does_not_block_workspace_setup(tmp_path, caplog):
@@ -8,7 +8,7 @@ def test_non_utf8_gitignore_does_not_block_workspace_setup(tmp_path, caplog):
     original = b"# GBK comment: \xb9\xa4\xd7\xf7\xc7\xf8\r\n"
     gitignore.write_bytes(original)
 
-    with caplog.at_level(logging.WARNING, logger="ftre.tools._workspace"):
+    with caplog.at_level(logging.WARNING, logger="ftre.services.tools.builtin._workspace"):
         ensure_workspace_ext_dir(str(tmp_path))
 
     assert (tmp_path / ".ftre" / "skills").is_dir()

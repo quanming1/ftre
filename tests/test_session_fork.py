@@ -14,8 +14,8 @@ import pytest
 import pytest_asyncio
 from ftre_agent_core.message import AssistantMsg, UserMsg
 
-from ftre.bus import BusMessage
-from ftre.session import SessionManager
+from ftre.services.messaging.bus import BusMessage
+from ftre.services.session.service import SessionService as SessionManager
 
 
 @pytest_asyncio.fixture
