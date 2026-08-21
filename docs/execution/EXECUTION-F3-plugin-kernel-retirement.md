@@ -49,7 +49,7 @@ F3 已完成。旧 Plugin Kernel、旧 Builtin Plugin、旧 aggregate API 和无
 | F3.3 | `53a04c9` | Aggregate API 删除与 Attachment Router 测试迁移 |
 | F3.4 | `b2afc8b` | 旧 Kernel/Builtin/API 删除与架构导入门禁 |
 | F3.4 兼容修正 | `3fac399` | 外部旧式 Plugin 的窄兼容入口 |
-| F3.5 | `601a48f` + 收尾提交 | 测试格式、文档、验收与执行报告 |
+| F3.5 | `601a48f`、`5416cbc` | 测试格式、文档、验收与执行报告 |
 
 ## 4. 验收矩阵
 
