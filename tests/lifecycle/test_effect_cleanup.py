@@ -4,8 +4,8 @@ import pytest
 from ftre_agent_core.tool import Tool, ToolRegistry
 
 from cordis import Context, FiberState
-from ftre.bus import EventBus
-from ftre.channel.manager import ChannelManager
+from ftre.services.messaging.bus import EventBus
+from ftre.services.messaging.channel.manager import ChannelManager
 from ftre.services.command import CommandService
 from ftre.services.messaging.channel import ChannelService
 from ftre.services.system_prompt import SystemPromptService

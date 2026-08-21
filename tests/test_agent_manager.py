@@ -91,14 +91,14 @@ def fake_global_config():
 @pytest.fixture(autouse=True)
 def _mock_load_config_file(monkeypatch, fake_global_config):
     """Patch load_config_file so AgentManager reads the fake config instead of the real file."""
-    from ftre.agent import agent_manager as am
+    from ftre.services.agent.profile import manager as am
 
     monkeypatch.setattr(am, "load_config_file", lambda: fake_global_config)
 
 
 def test_load_default_agent_uses_global_config(tmp_agents_dir, fake_global_config):
     """Loading 'default' with empty agent.config.json inherits everything from global."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("default")
@@ -125,7 +125,7 @@ def test_tool_filter_allow_deny():
     """filter_tools respects allow and deny lists."""
     from ftre_agent_core.tool import Tool, ToolRegistry
 
-    from ftre.tools import filter_tools
+    from ftre.services.tools.builtin import filter_tools
 
     def _noop(**kw):
         return ""
@@ -170,7 +170,7 @@ def test_tool_filter_allow_deny():
 
 def test_load_agent_with_tool_overrides(tmp_agents_dir, fake_global_config):
     """Agent with tools config gets tools_config set on profile."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -204,7 +204,7 @@ def test_agent_reasoning_effort_overrides_model_default_including_empty_value(
     tmp_agents_dir, fake_global_config
 ):
     """An explicitly configured effort wins over the matching model's default."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -235,7 +235,7 @@ def test_agent_reasoning_effort_dropped_for_model_without_support(
     tmp_agents_dir, fake_global_config
 ):
     """模型未声明任何推理强度配置（无默认值/无 values）→ agent 显式 effort 被清空。"""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -260,7 +260,7 @@ def test_agent_reasoning_effort_kept_for_model_with_support(
     tmp_agents_dir, fake_global_config
 ):
     """模型声明了 reasoning_effort（默认 high）→ agent 显式 effort 保留。"""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -283,7 +283,7 @@ def test_agent_reasoning_effort_kept_for_model_with_support(
 
 def test_load_agent_with_mcp_merge(tmp_agents_dir, fake_global_config):
     """Agent MCP config deep-merges with global."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -310,7 +310,7 @@ def test_load_agent_with_mcp_merge(tmp_agents_dir, fake_global_config):
 
 def test_load_agent_with_plugins_merge(tmp_agents_dir, fake_global_config):
     """Agent plugins merge by name with global."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -338,7 +338,7 @@ def test_load_agent_with_plugins_merge(tmp_agents_dir, fake_global_config):
 
 def test_load_agent_with_disabled_skills_override(tmp_agents_dir, fake_global_config):
     """Agent disabled_skills replaces global."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -362,7 +362,7 @@ def test_load_nonexistent_agent_falls_back_to_default(
     tmp_agents_dir, fake_global_config
 ):
     """Loading a non-existent agent_id falls back to 'default'."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("nonexistent")
@@ -372,7 +372,7 @@ def test_load_nonexistent_agent_falls_back_to_default(
 
 def test_load_agent_reads_md_files(tmp_agents_dir, fake_global_config):
     """Agent loads SOUL.md, AGENTS.md, USER.md from its directory."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -393,7 +393,7 @@ def test_load_agent_reads_md_files(tmp_agents_dir, fake_global_config):
 
 def test_list_agents(tmp_agents_dir, fake_global_config):
     """list_agents returns all agent directories with metadata."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -427,7 +427,7 @@ def test_list_agents(tmp_agents_dir, fake_global_config):
 
 def test_ensure_default_creates_agent_dir(tmp_path, monkeypatch):
     """ensure_default() creates default/ with agent.config.json and md templates."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     agents_dir = tmp_path / "agents"
     global_data = {
@@ -443,7 +443,7 @@ def test_ensure_default_creates_agent_dir(tmp_path, monkeypatch):
         "agents": {},
     }
     monkeypatch.setattr(
-        "ftre.agent.agent_manager.load_config_file", lambda: global_data
+        "ftre.services.agent.profile.manager.load_config_file", lambda: global_data
     )
     mgr = AgentManager(agents_dir=agents_dir)
 
@@ -463,7 +463,7 @@ def test_ensure_default_creates_agent_dir(tmp_path, monkeypatch):
 
 def test_ensure_default_idempotent(tmp_path, monkeypatch):
     """ensure_default() does not overwrite existing default agent."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     agents_dir = tmp_path / "agents"
     default_dir = agents_dir / "default"
@@ -475,7 +475,7 @@ def test_ensure_default_idempotent(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr("ftre.agent.agent_manager.load_config_file", dict)
+    monkeypatch.setattr("ftre.services.agent.profile.manager.load_config_file", dict)
     mgr = AgentManager(agents_dir=agents_dir)
 
     mgr.ensure_default()
@@ -488,7 +488,7 @@ def test_agent_profile_llm_uses_agent_provider_model(
     tmp_agents_dir, fake_global_config
 ):
     """Agent with different provider/model gets correct LLMConfig from global providers."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -514,7 +514,7 @@ def test_agent_profile_llm_fallback_on_invalid_provider(
     tmp_agents_dir, fake_global_config
 ):
     """Agent specifying an invalid provider falls back to global default."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     coder_dir = tmp_agents_dir / "coder"
     coder_dir.mkdir()
@@ -536,7 +536,7 @@ def test_agent_profile_llm_fallback_on_invalid_provider(
 
 def test_default_agent_config_as_global_fallback(tmp_path):
     """Without agents.defaults, default agent's config is the global fallback."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     agents_dir = tmp_path / "agents"
     # default agent with llm config
@@ -571,7 +571,7 @@ def test_default_agent_config_as_global_fallback(tmp_path):
 
 def test_ensure_default_picks_first_provider(tmp_path, monkeypatch):
     """ensure_default() picks first provider/model when agents.defaults is absent."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     agents_dir = tmp_path / "agents"
     global_data = {
@@ -595,7 +595,7 @@ def test_ensure_default_picks_first_provider(tmp_path, monkeypatch):
     }
 
     monkeypatch.setattr(
-        "ftre.agent.agent_manager.load_config_file", lambda: global_data
+        "ftre.services.agent.profile.manager.load_config_file", lambda: global_data
     )
     mgr = AgentManager(agents_dir=agents_dir)
     mgr.ensure_default()
@@ -614,7 +614,7 @@ def test_create_agent_passes_reasoning_effort_to_core(
     tmp_agents_dir, fake_global_config
 ):
     """The merged effort reaches ReActAgent instead of its empty-string default."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
     from ftre.config import AgentConfig
 
     mgr = AgentManager(agents_dir=tmp_agents_dir)
@@ -626,7 +626,7 @@ def test_create_agent_passes_reasoning_effort_to_core(
 
 def test_create_agent_profile(tmp_path):
     """create_agent_profile creates a new agent directory with config and empty md files."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
@@ -674,7 +674,7 @@ def test_create_agent_profile(tmp_path):
 
 def test_create_agent_duplicate_raises(tmp_path):
     """Creating an agent that already exists raises ValueError."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
@@ -693,7 +693,7 @@ def test_create_agent_duplicate_raises(tmp_path):
 
 def test_create_agent_invalid_id_raises(tmp_path):
     """Invalid agent_id raises ValueError."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
@@ -710,7 +710,7 @@ def test_create_agent_invalid_id_raises(tmp_path):
 
 def test_delete_agent(tmp_path):
     """delete_agent removes the agent directory."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
@@ -728,7 +728,7 @@ def test_delete_agent(tmp_path):
 
 def test_delete_default_raises(tmp_path):
     """Deleting default agent raises ValueError."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
@@ -746,7 +746,7 @@ def test_delete_default_raises(tmp_path):
 
 def test_update_agent_name_and_workspace(tmp_path):
     """update_agent supports name and workspace fields."""
-    from ftre.agent.agent_manager import AgentManager
+    from ftre.services.agent.profile.manager import AgentManager
 
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
@@ -767,3 +767,4 @@ def test_update_agent_name_and_workspace(tmp_path):
 
     assert cfg["name"] == "NewName"
     assert cfg["workspace"] == "/new/ws"
+

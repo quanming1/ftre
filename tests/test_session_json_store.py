@@ -13,8 +13,8 @@ import pytest
 import pytest_asyncio
 from ftre_agent_core.message import UserMsg
 
-from ftre.session.entity.state import AgentStateFile
-from ftre.session.storage.json_store import JsonStateStore, validate_session_id
+from ftre.services.session.entity.state import AgentStateFile
+from ftre.services.session.persistence.json_store import JsonStateStore, validate_session_id
 
 
 def _state(session_id: str, *texts: str) -> AgentStateFile:
@@ -125,7 +125,7 @@ async def test_replace_uses_unique_tmp_and_retries_sharing_violation(store, monk
         return original_replace(source, target)
 
     monkeypatch.setattr(os, "replace", flaky_replace)
-    monkeypatch.setattr("ftre.session.storage.json_store.time.sleep", lambda _: None)
+    monkeypatch.setattr("ftre.services.session.persistence.json_store.time.sleep", lambda _: None)
     await store.write(_state("ws_sess_1", "saved"))
 
     assert calls == 3

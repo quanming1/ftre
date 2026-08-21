@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ftre.bus import BusMessage
+from ftre.services.messaging.bus import BusMessage
 
 
 class TestExtractParentGroupNo:

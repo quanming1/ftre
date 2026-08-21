@@ -1,6 +1,6 @@
 import logging
 
-from ftre.tools._workspace import ensure_workspace_ext_dir
+from ftre.services.tools.builtin._workspace import ensure_workspace_ext_dir
 
 
 def test_non_utf8_gitignore_does_not_block_workspace_setup(tmp_path, caplog):

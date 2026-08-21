@@ -14,10 +14,10 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import Msg
 
-from ftre.agent.loop import AgentLoop
-from ftre.agent.session_projection import SessionProjection
-from ftre.agent.turn_executor import TurnExecutor
-from ftre.bus import BusMessage, InboundMetadata
+from ftre.services.agent.runtime.loop.engine import AgentLoop
+from ftre.services.session.projection import SessionProjection
+from ftre.services.agent.runtime.loop.turn_executor import TurnExecutor
+from ftre.services.messaging.bus import BusMessage, InboundMetadata
 from ftre.config import AgentConfig, ContextConfig, LLMConfig
 
 

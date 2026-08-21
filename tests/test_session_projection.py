@@ -20,7 +20,7 @@ from ftre_agent_core.message import (
     ToolCallState,
 )
 
-from ftre.agent.session_projection import SessionProjection
+from ftre.services.session.projection import SessionProjection
 
 
 @pytest.mark.asyncio

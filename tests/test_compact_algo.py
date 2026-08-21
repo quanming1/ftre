@@ -12,13 +12,13 @@ from ftre_agent_core.message import (
     UserMsg,
 )
 
-from ftre.agent.compact_manager import (
+from ftre.services.agent.runtime.compaction.manager import (
     CompactManager,
     _build_prompt,
     _estimate_body_chars,
     _serialize_messages,
 )
-from ftre.session.message.converter import to_openai
+from ftre.services.session.message.converter import to_openai
 
 
 def _record(message, timestamp=1.0):
