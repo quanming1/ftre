@@ -1,247 +1,157 @@
-# FTRE
+# FTRE Gateway
 
 English | [中文](README.zh-CN.md)
 
-FTRE is a local-first AI coding assistant, consisting of four interconnected projects:
+FTRE is a local-first AI coding assistant. This repository contains its stateful
+Python Gateway: it composes runtime Services and Plugins, owns sessions and
+agent execution, and exposes HTTP/WebSocket APIs to the desktop client.
 
-| Project | Repo | Role |
-|---|---|---|
-| ftre-agent-core | [quanming1/ftre-agent-core](https://github.com/quanming1/ftre-agent-core) | ReAct, LLM, Tool & tracing core (stateless algorithm library) |
-| ftre | [quanming1/ftre](https://github.com/quanming1/ftre) | Gateway backend: Session, Channel, MCP, plugins, HTTP API |
-| ftre-desktop | [quanming1/ftre-desktop](https://github.com/quanming1/ftre-desktop) | Electron + React desktop client |
-| ftre-docs | [quanming1/ftre-docs](https://github.com/quanming1/ftre-docs) | Documentation site (React + Vite) |
+The stateless algorithm layer lives in `ftre-agent-core`; the desktop and docs
+projects are separate repositories and are outside the scope of this backend.
 
-```
-ftre-agent-core    Agent core library (stateless, pure algorithm)
-      │              ReActAgent / LLMHandler / Tool system / Runner
-      │              Imported by ftre backend, not deployed standalone
-      │
-      ▼
-ftre               Gateway backend (stateful, long-running process)
-      │              Session management / EventBus / Channel / Plugins / MCP
-      │              Built-in plugins: skill, mcp, context_govern, title_gen
-      │              Provides WebSocket + HTTP API to desktop
-      ▼
-ftre-desktop        Desktop client (Electron + React)
-                     GUI: chat interface, editor, Inspector panel, settings
-                     Communicates with backend via WebSocket
-      ▼
-ftre-docs          Documentation site (independent deployment)
+## Architecture at a glance
+
+```text
+CLI (ftre.main)
+  └─ Gateway bootstrap
+      └─ Composition Root (app/gateway/composition.py)
+          └─ cordis Context / Fiber
+              ├─ Platform: plugin discovery, loading, lifecycle diagnostics
+              ├─ Services: stateful shared capabilities
+              ├─ Features: product behavior Plugins
+              └─ HTTP Host + Channels + Agent data plane
 ```
 
-## Quick Start
+There is one Composition Root. It declares the built-in Plugin manifests,
+applies configuration, creates the Cordis context, registers startup routes,
+and owns the reversible shutdown path.
 
-### Prerequisites
+### Service, Provider Plugin, and Feature Plugin
 
-- Python 3.12+
-- Node.js 18+ / pnpm
-- An OpenAI-compatible LLM API key
+| Concept | Location | Responsibility |
+| --- | --- | --- |
+| Service | `src/ftre/services/<name>/service.py` | Stateful capability with a stable public key, such as `sessions`, `tools`, `http` or `message_bus` |
+| Provider Plugin | beside the Service in `plugin.py` | Declares `inject`/`provide`, creates or binds the Service, and registers cleanup effects |
+| Feature Plugin | `src/ftre/features/<name>/` | Optional product behavior such as Skill, MCP, Plan, Team, Schedule or context governance |
+| Platform Runtime | `src/ftre/platform/plugin_runtime/` | Manifest validation, explicit discovery, Cordis loading, status and failure diagnostics |
+| App Host | `src/ftre/app/` | Process boundaries only: CLI, Gateway bootstrap, FastAPI and uvicorn |
 
-### 1. Clone repositories
+`factory.py` is only an internal object-construction helper for the Agent
+runtime. It is not a Service or Plugin entry point. Plugin entries use
+`module:attribute` and normally point to an `apply(ctx, config)` function.
 
-```bash
-git clone https://github.com/quanming1/ftre.git
-git clone https://github.com/quanming1/ftre-agent-core.git
-git clone https://github.com/quanming1/ftre-desktop.git
-git clone https://github.com/quanming1/ftre-docs.git
-```
+## Repository tree
 
-Place all four repos in the same parent directory:
-
-```
-parent/
-├── ftre/
-├── ftre-agent-core/
-├── ftre-desktop/
-└── ftre-docs/
-```
-
-### 2. Install dependencies
-
-```bash
-# Backend + agent-core
-cd ftre-agent-core
-pip install -e .
-cd ../ftre
-pip install -e .
-
-# Frontend
-cd ../ftre-desktop
-pnpm install
-
-# Docs site
-cd ../ftre-docs
-pnpm install
-```
-
-### 3. Configure
-
-Copy the example config and add your API key:
-
-```bash
-mkdir -p ~/.ftre
-cp ftre/config.example.json ~/.ftre/config.json
-# Edit ~/.ftre/config.json and fill in your api_key
-```
-
-### 4. Run
-
-Two terminals:
-
-```bash
-# Terminal 1 — Backend
-ftre gateway
-
-# Terminal 2 — Desktop client (ftre-desktop repo)
-cd ftre-desktop && pnpm dev
-```
-
-## Project Structure
-
-```
+```text
 ftre/
-├── src/ftre/
-│   ├── agent/          # AgentLoop — consumes inbound messages, drives Agent execution
-│   ├── bus/            # EventBus — in-process message bus
-│   ├── channel/        # Channel — WebSocket / SubAgent communication channels
-│   ├── command/        # Command system (/compact, /cancel, etc.)
-│   ├── config.py       # Loads config from ~/.ftre/config.json
-│   ├── main.py         # Entry point: FastAPI Gateway service
-│   ├── plugin/         # Built-in plugins (skill, mcp, context_govern, title_gen)
-│   ├── session/        # SessionManager — SQLite persistence
-│   ├── tools/          # 8 built-in tools
-│   └── trace_store.py  # Agent Tracing SQLite exporter
-├── tests/
-├── config.example.json # Example configuration
-└── pyproject.toml
+├─ pyproject.toml                 # Python package and cordis-py dependency
+├─ config.example.json            # ~/.ftre/config.json template
+├─ docs/                          # PRD, process, TODO and execution records
+├─ src/
+│  ├─ cordis/                     # small public-contract fallback for offline/dev images
+│  └─ ftre/
+│     ├─ main.py                  # thin Typer entry point
+│     ├─ app/
+│     │  └─ gateway/
+│     │     ├─ composition.py     # the only default Composition Root
+│     │     ├─ bootstrap.py       # startup/close orchestration
+│     │     └─ http/               # FastAPI Host and uvicorn adapter
+│     ├─ platform/
+│     │  └─ plugin_runtime/       # Catalog → Discovery → Loader → Manager
+│     ├─ services/                 # public stateful runtime capabilities
+│     │  ├─ config/ filesystem/ http/
+│     │  ├─ messaging/{bus,channel}/
+│     │  ├─ session/ agent/ tools/ workspace/
+│     │  ├─ command/ attachment/ observability/
+│     │  └─ system_prompt/
+│     ├─ features/                 # optional product Plugins
+│     │  ├─ skill/ mcp/ plan/ team/ schedule/
+│     │  └─ context_govern/
+│     └─ <legacy packages>/        # migration bridges; no new production code
+└─ tests/
+   ├─ architecture/               # import boundaries and runtime contracts
+   ├─ contracts/                   # Service contracts
+   ├─ startup/ lifecycle/          # composition and reversible cleanup
+   └─ plugin/                      # compatibility and built-in behavior
 ```
 
-## AgentLoop SessionLane Architecture
+The legacy packages (`agent`, `api`, `bus`, `channel`, `plugin`, `session`,
+etc.) remain temporarily so existing clients and installed plugins keep working.
+New code belongs in `app`, `platform`, `services` or `features` and must not
+depend on `ftre.plugin.kernel`.
 
-The backend keeps the existing `Channel -> EventBus -> AgentLoop` pipeline and
-extends `AgentLoop` with one serialized lane per session:
+## Startup and lifecycle
 
-```mermaid
-flowchart LR
-    CH["Channel"] --> BUS["EventBus"]
-    BUS --> LOOP["AgentLoop"]
-    LOOP --> REG["SessionLaneRegistry"]
+1. `ftre.main` parses CLI options and delegates to `app.gateway.bootstrap`.
+2. `build_composition()` builds the default manifest list and creates a
+   `PluginManager` over a public Cordis `Context`.
+3. Required Service Plugins are activated first through declared dependencies;
+   optional Feature and external Plugins are activated when enabled.
+4. Each Plugin contributes Services, routes, hooks, tools or channels through
+   its `PluginContext`; every side effect is registered with `ctx.effect`.
+5. The real data plane binds the existing Session/Agent/Bus/Channel providers,
+   freezes the HTTP registry, and starts the long-running Gateway.
+6. Shutdown disposes Fibers in reverse order, then stops AgentLoop, Channels,
+   schedulers and persistence. Cleanup is idempotent.
 
-    REG --> LA["SessionLane(session-A)"]
-    REG --> LB["SessionLane(session-B)"]
+External modules are not imported during discovery. An entry is resolved only
+after its manifest is explicitly enabled in `~/.ftre/config.json`:
 
-    LA --> MA["MailboxStore"]
-    LB --> MA
-
-    MA --> P["QueueItem<br/>pending"]
-    P --> G["ContextGate"]
-
-    G -->|"needs compaction"| CM["CompactManager"]
-    CM --> G
-
-    G -->|"claim allowed"| A["TurnOperation<br/>memory only"]
-    A --> TE["TurnExecutor"]
-    TE --> O["TurnOutcome"]
-
-    TE --> MSG["messages<br/>durable chat history"]
-    O --> RC["CompletionRegistry<br/>memory-only wait"]
-
-    MA --> SNAP["Mailbox Snapshot<br/>pending + phase"]
-
-    SNAP --> BUS
+```json
+{
+  "plugins": [
+    {
+      "id": "my-plugin",
+      "entry": "my_plugin:apply",
+      "enabled": true,
+      "config": {}
+    }
+  ]
+}
 ```
 
-Responsibilities are deliberately separated:
+## Agent data plane
 
-- `Channel` accepts WebSocket/HTTP/plugin input and emits outbound frames.
-- `EventBus` transports typed messages; it does not own session ordering.
-- `AgentLoop` routes an inbound request to the correct lane.
-- `SessionLaneRegistry` owns the lifecycle of lanes and guarantees one lane per session.
-- `SessionLane` is the single actor for one session: FIFO claim, cancellation, compaction gates, and state publication.
-- `MailboxStore` persists pending requests only.
-- `ContextGate` decides whether the next request may be claimed and waits for compaction when required.
-- `CompactManager` performs the shared context compaction operation.
-- `TurnExecutor` executes exactly one claimed turn and returns a `TurnOutcome`; it does not drain queues.
-- `TurnOperation` and `CompletionRegistry` are in-memory execution and waiting state.
-- `messages` is the only durable chat history; `Mailbox Snapshot` projects pending items and runtime phase.
+```text
+Channel → MessageBus → AgentLoop → SessionLane → ContextGate → TurnExecutor
+                                      ├─ MailboxStore (pending only)
+                                      ├─ CompactManager (no turn overlap)
+                                      └─ messages (durable chat history)
+```
 
-Claiming uses at-most-once semantics: after a pending request is taken, a gateway crash does
-not replay it automatically. A persisted UserMessage remains in `messages`, so the user may
-send “continue” to begin a new turn.
+Different sessions run concurrently. A session has at most one active turn;
+turn and compaction never overlap. Pending claims are at-most-once. These
+invariants are covered by the SessionLane and lifecycle tests.
 
-The core invariant is: different sessions may run concurrently, but one session
-never has two active turns or a turn and compaction running at the same time.
+## Built-in capabilities
 
-## Core Features
+- **Services:** configuration, filesystem policy/IO, HTTP route registry,
+  message bus, channels, sessions, agents/profiles, tools, workspaces,
+  commands, attachments, traces and system prompts.
+- **Features:** Skill catalog/loading, global/private MCP, Plan tool, Team
+  orchestration, Schedule persistence and context governance hooks.
+- **Compatibility:** legacy `setup(ctx, config)` plugins and the external Octo
+  channel are adapted at the runtime boundary; they do not define the new
+  architecture.
 
-### Built-in Tools
+## Development
 
-8 built-in tools (`src/ftre/tools/`): bash, read, write, edit, set_workspace, cron, task, send_message.
+```bash
+python -m pip install -e .[dev]
+python -m pytest -q
+python -m ruff check src tests
+ftre gateway
+```
 
-- **read/write/edit** return `(result_str, diff_metadata)` tuples; the desktop Inspector panel displays diff previews and file snapshots
-- **bash** supports RTK auto-rewriting (reduces token usage) and semble semantic code search integration
-- **task** sub-agent mode dispatches tasks to independent sessions for synchronous execution
-- Tools are filtered per Agent config (`tools.allow` / `tools.deny`)
+Configuration is read from `~/.ftre/config.json`; copy
+`config.example.json` as a starting point. See `docs/PROCESS.md` for the PRD
+workflow and `docs/COMMIT.md` for commit conventions.
 
-### Multi-Agent Architecture
+## Related repositories
 
-Each Agent has an independent config directory `~/.ftre/agents/<agent_id>/`, supporting independent LLM, tools, MCP, Skills, and workspace configuration.
-
-### MCP Dual-Layer Configuration
-
-| Layer | Config source | Registration target |
-|------|----------|----------|
-| Public MCP | `config.json` `mcp` section | Global `tool_registry` (shared by all Agents) |
-| Private MCP | `agent.config.json` `mcp` section | Per-agent `tool_registry` |
-
-### Inspector Panel
-
-Desktop right-side extension panel with:
-- **File preview**: Monaco editor read-only rendering, content snapshot from read tool metadata
-- **Diff preview**: edit/write tools open side-by-side diff view
-- **File tree sidebar**: workspace directory browsing, git status markers (negotiated cache polling), image preview
-- **Changes node**: flat list of all git-changed files with line counts and status markers
-
-### Hook System
-
-Fully async filter chain with two hook points:
-- `before_messages_build`: event stream governance + AGENTS.md injection
-- `before_agent_run`: MCP/Skill system prompt injection + private tool registration
-
-### Plugin System
-
-4 built-in plugins (shipped with code): `skill`, `mcp`, `context_govern`, `title_gen`. External plugins directory: `~/.ftre/plugins/`.
-
-### Agent Tracing
-
-The Gateway automatically records a tree-shaped Trace for each Agent execution. The Desktop left-side **Traces** panel shows Trace list, Run tree, and full details.
-
-Read-only API:
-- `GET /api/traces?limit=100`: recent Trace summaries
-- `GET /api/traces/{trace_id}`: single Trace's Run tree
-- `GET /api/traces/{trace_id}/runs/{run_id}`: single Run's full payload
-
-> Traces contain full prompts and tool inputs/outputs. Review for sensitive information before sharing or archiving JSONL files.
-
-## Configuration
-
-Global config: `~/.ftre/config.json` (see `config.example.json`)
-
-Agent config: `~/.ftre/agents/<agent_id>/agent.config.json`
-
-Full documentation: [ftre-docs](https://github.com/quanming1/ftre-docs)
-
-## Tech Stack
-
-- **Backend**: Python 3.12 + asyncio + FastAPI
-- **Frontend**: TypeScript + React + Electron + Vite
-- **Editor**: Monaco Editor
-- **LLM**: OpenAI-compatible API (via ftre-agent-core's LLMHandler)
-- **Storage**: SQLite
-
-## Contributing
-
-Please read [CONTRIBUTING.md](CONTRIBUTING.md).
+- [ftre-agent-core](https://github.com/quanming1/ftre-agent-core) — stateless Agent/LLM/Tool core
+- [ftre-desktop](https://github.com/quanming1/ftre-desktop) — Electron + React client
+- [ftre-docs](https://github.com/quanming1/ftre-docs) — documentation site
 
 ## License
 
