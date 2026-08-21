@@ -257,6 +257,7 @@ stages:
           - id: F2.1
             title: Session 与 Workspace 真实实现迁移
             status: done
+
           - id: F2.2
             title: Agent Runtime 真实实现迁移
             status: done
@@ -269,3 +270,36 @@ stages:
           - id: F2.5
             title: 旧目录清理与全量验收
             status: done
+
+      - id: F3
+        title: 旧 Plugin Kernel 与兼容入口退役
+        status: in_progress
+        date: 2026-08-21
+        prd: docs/prd/PRD-F3-plugin-kernel-retirement.md
+        prd_status: approved
+        modules:
+          - src/cordis/
+          - src/ftre/platform/plugin_runtime/
+          - src/ftre/services/agent/runtime/hooks.py
+          - src/ftre/features/
+          - src/ftre/api/
+          - src/ftre/plugin/
+          - tests/architecture/
+          - tests/contracts/
+        acceptance: 旧 Plugin Kernel、Builtin、aggregate API 删除；新 Cordis/Feature/Service 测试覆盖原有必要语义；生产导入清零；外部 Plugin、Gateway 和全量质量门禁通过
+        tasks:
+          - id: F3.1
+            title: Hook/Event 契约迁移
+            status: todo
+          - id: F3.2
+            title: Builtin Plugin 测试与实现迁移
+            status: todo
+          - id: F3.3
+            title: Aggregate API 路由清理
+            status: todo
+          - id: F3.4
+            title: 旧 Kernel 删除与架构门禁
+            status: todo
+          - id: F3.5
+            title: 全量验收与执行报告
+            status: todo
