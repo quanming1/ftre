@@ -1,7 +1,5 @@
-"""Session 包：Entity / Storage / Message 分层 + SessionManager 业务门面。
+"""Legacy Session import surface; the implementation lives in ``services.session``."""
 
-对外只暴露 SessionManager 门面，保持历史 import 路径不变。
-"""
-from .manager import SessionManager
+from ftre.services.session.compat import SessionManager
 
 __all__ = ["SessionManager"]

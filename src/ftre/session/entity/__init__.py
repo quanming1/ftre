@@ -1,25 +1,4 @@
-"""Entity 层：Session 持久化数据模型（映射 state.json 结构）。
+"""Legacy re-export for Session entity models."""
 
-本层只有 Pydantic 数据结构与版本校验，不含任何存储/业务逻辑。
-"""
-from .state import (
-    CURRENT_SCHEMA_VERSION,
-    AgentStateFile,
-    MailboxState,
-    QueueItem,
-    SessionState,
-    UnsupportedAgentStateVersion,
-    parse_agent_state,
-    parse_agent_state_json,
-)
-
-__all__ = [
-    "CURRENT_SCHEMA_VERSION",
-    "AgentStateFile",
-    "MailboxState",
-    "QueueItem",
-    "SessionState",
-    "UnsupportedAgentStateVersion",
-    "parse_agent_state",
-    "parse_agent_state_json",
-]
+from ftre.services.session.entity.models import *
+from ftre.services.session.entity.state import *

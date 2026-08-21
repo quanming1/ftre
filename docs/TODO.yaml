@@ -256,7 +256,7 @@ stages:
         tasks:
           - id: F2.1
             title: Session 与 Workspace 真实实现迁移
-            status: todo
+            status: in_progress
           - id: F2.2
             title: Agent Runtime 真实实现迁移
             status: todo
