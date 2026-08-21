@@ -1,9 +1,9 @@
 
+from ftre.services.attachment.store import save_image
 from ftre.services.session.message.multimodal import (
     build_user_content,
     normalize_user_content,
 )
-from ftre.services.attachment.store import save_image
 
 
 def test_normalize_user_content_image_file_with_vision():
