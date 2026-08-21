@@ -48,7 +48,7 @@ F2 已在 `feature/F2-data-plane-migration` 分支完成并通过验收。迁移
 | F2.2 | `2a2988e` | Agent Runtime、Agent profile、Runtime Provider 迁移 |
 | F2.3 | `7544134` | Bus、Channel、Command、内置 Tool 迁移 |
 | F2.4 | `6214729` | HTTP/WS Owner Router 与 Host 迁移 |
-| F2.5 | 待提交 | Hook 边界、旧 shim 审计、文档和最终验收 |
+| F2.5 | `a3909fc` | Hook 边界、旧 shim 审计、文档和最终验收 |
 
 ## 4. 自动化验证
 
@@ -91,4 +91,4 @@ git diff --check
 - 范围：仅 `E:\ftre`
 - PRD：`docs/prd/PRD-F2-data-plane-migration.md`
 - TODO：阶段 F2 已标记 `done`
-- 最终工作区：待 F2.5 收尾提交后必须保持干净
+- 最终工作区：干净
