@@ -1,7 +1,9 @@
 import base64
 import os
 
-from ftre.channel.ws_channel import _persist_attachments
+from ftre.services.messaging.channel.providers.websocket.channel import (
+    _persist_attachments,
+)
 
 
 def test_persist_attachments_replaces_data_with_path():

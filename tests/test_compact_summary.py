@@ -16,9 +16,9 @@ import pytest_asyncio
 from ftre_agent_core.event import CustomEvent
 from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
 
-from ftre.agent.compact_manager import CompactManager
-from ftre.agent.session_projection import SessionProjection
-from ftre.session import SessionManager
+from ftre.services.agent.runtime.compaction.manager import CompactManager
+from ftre.services.session.projection import SessionProjection
+from ftre.services.session.service import SessionService as SessionManager
 
 
 def _config() -> SimpleNamespace:
@@ -48,7 +48,7 @@ async def env(tmp_path):
 @pytest.mark.asyncio
 async def test_compact_generation_passes_reasoning_effort_to_handler(monkeypatch):
     """Context compaction forwards the selected LLM configuration's effort."""
-    from ftre.agent import compact_manager
+    from ftre.services.agent.runtime.compaction import manager as compact_manager
 
     captured = {}
 
@@ -121,7 +121,7 @@ def _event_names(emitted) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_first_compact_writes_compact_msg(env, monkeypatch):
-    manager, emitted, projection, compact = env
+    manager, emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     ids = await _seed(manager, sid, 3)
     monkeypatch.setattr(
@@ -166,7 +166,7 @@ async def test_compact_start_uses_main_model_without_compact_override(env, monke
 
 @pytest.mark.asyncio
 async def test_same_session_compact_requests_share_one_task(env, monkeypatch):
-    manager, emitted, projection, compact = env
+    manager, emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     await _seed(manager, sid, 2)
     started = asyncio.Event()
@@ -207,7 +207,7 @@ async def test_same_session_compact_requests_share_one_task(env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_second_compact_keeps_both_and_context_uses_last(env, monkeypatch):
-    manager, emitted, projection, compact = env
+    manager, _emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     ids = await _seed(manager, sid, 2)
     llm = AsyncMock(return_value="摘要 v1")
@@ -233,7 +233,7 @@ async def test_second_compact_keeps_both_and_context_uses_last(env, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_llm_failure_writes_no_compact_msg(env, monkeypatch):
-    manager, emitted, projection, compact = env
+    manager, emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     await _seed(manager, sid, 2)
     monkeypatch.setattr(compact, "_run_compact_llm", AsyncMock(return_value=None))
@@ -252,7 +252,7 @@ async def test_llm_failure_writes_no_compact_msg(env, monkeypatch):
 @pytest.mark.asyncio
 async def test_empty_summary_retries_once_then_succeeds(env, monkeypatch):
     """首次摘要为空时重试一次；重试产出摘要则正常落 compact Msg。"""
-    manager, emitted, projection, compact = env
+    manager, emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     await _seed(manager, sid, 2)
     llm = AsyncMock(side_effect=[None, "重试后的摘要"])
@@ -275,7 +275,7 @@ async def test_empty_summary_after_retry_falls_back_to_compress_fast(env, monkey
     """重试后摘要仍为空：回退 compress_fast 裁剪工具输出，不写 compact Msg。"""
     from ftre_agent_core.message import ToolCallBlock, ToolResultBlock
 
-    manager, emitted, projection, compact = env
+    manager, emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     user = UserMsg(name=MsgName.DEFAULT, content="请读取文件")
     assistant = AssistantMsg(
@@ -298,7 +298,7 @@ async def test_empty_summary_after_retry_falls_back_to_compress_fast(env, monkey
     assert not any(m["name"] == MsgName.COMPACT for m in full)
     fast_msgs = [m for m in full if m["name"] == MsgName.COMPACT_FAST]
     assert len(fast_msgs) == 1
-    trimmed = [m for m in full if m["id"] == assistant.id][0]
+    trimmed = next(m for m in full if m["id"] == assistant.id)
     tool_blocks = [b for b in trimmed["content"] if b.get("type") == "tool_result"]
     assert len(tool_blocks) == 1
     assert [p.get("text") for p in tool_blocks[0]["output"]] == ["[工具输出已压缩]"]
@@ -315,12 +315,12 @@ async def test_compress_fast_invalidates_stale_usage_anchor(env):
     """
     from ftre_agent_core.message import (
         MsgToken,
+        TokenUsage,
         ToolCallBlock,
         ToolResultBlock,
-        TokenUsage,
     )
 
-    manager, emitted, projection, compact = env
+    manager, _emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     stale_usage = TokenUsage(
         prompt_tokens=900_000, completion_tokens=500, total_tokens=900_500,
@@ -351,7 +351,7 @@ async def test_compress_fast_invalidates_stale_usage_anchor(env):
 
 @pytest.mark.asyncio
 async def test_inflated_summary_rejected(env, monkeypatch):
-    manager, emitted, projection, compact = env
+    manager, emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     await _seed(manager, sid, 2)
     monkeypatch.setattr(
@@ -369,7 +369,7 @@ async def test_inflated_summary_rejected(env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_compact_with_existing_compact_but_no_tail_skips(env, monkeypatch):
-    manager, emitted, projection, compact = env
+    manager, _emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     await _seed(manager, sid, 2)
     monkeypatch.setattr(compact, "_run_compact_llm", AsyncMock(return_value="摘要 v1"))
@@ -387,7 +387,7 @@ async def test_compact_with_existing_compact_but_no_tail_skips(env, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_message_arriving_during_compact_stays_in_tail(env, monkeypatch):
-    manager, emitted, projection, compact = env
+    manager, _emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     ids = await _seed(manager, sid, 2)
 
@@ -427,7 +427,7 @@ async def test_message_arriving_during_compact_stays_in_tail(env, monkeypatch):
 @pytest.mark.asyncio
 async def test_done_event_idempotent_no_duplicate(env, monkeypatch):
     """重放同一 context_compact_done event.id 不产生重复 Msg。"""
-    manager, emitted, projection, compact = env
+    manager, _emitted, projection, _compact = env
     sid = await manager.create_session("ws")
     await _seed(manager, sid, 1)
     from ftre_agent_core.event import CustomEvent
@@ -452,7 +452,7 @@ async def test_done_event_idempotent_no_duplicate(env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_compress_fast_no_tool_results_returns_false(env):
-    manager, emitted, projection, compact = env
+    manager, emitted, _projection, compact = env
     sid = await manager.create_session("ws")
     # 无工具结果时返回 False，不产生任何 compact 事件
     await _seed(manager, sid, 1)
@@ -467,11 +467,13 @@ async def test_compress_fast_projects_compact_fast_msg(env):
     且不污染上下文锚点（get_context_messages 的 tail 起点只认 MsgName.COMPACT）。"""
     from ftre_agent_core.message import (
         AssistantMsg as _AssistantMsg,
+    )
+    from ftre_agent_core.message import (
         ToolCallBlock,
         ToolResultBlock,
     )
 
-    manager, emitted, projection, compact = env
+    manager, _emitted, _projection, compact = env
     sid = await manager.create_session("ws")
 
     user = UserMsg(name=MsgName.DEFAULT, content="请读取文件")

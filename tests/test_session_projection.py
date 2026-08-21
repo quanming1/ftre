@@ -1,26 +1,26 @@
 from unittest.mock import AsyncMock
 
 import pytest
-
-from ftre.agent.session_projection import SessionProjection
-from ftre_agent_core.event import UserMessageEvent
 from ftre_agent_core.event import (
     CustomEvent,
-    RequireUserConfirmEvent,
     ReplyEndEvent,
     ReplyFinishedReason,
     ReplyStartEvent,
+    RequireUserConfirmEvent,
     TextBlockDeltaEvent,
     TextBlockStartEvent,
     ToolCallEndEvent,
     ToolCallStartEvent,
     UserConfirmResultEvent,
+    UserMessageEvent,
 )
 from ftre_agent_core.message import (
     AssistantMsg,
     ToolCallBlock,
     ToolCallState,
 )
+
+from ftre.services.session.projection import SessionProjection
 
 
 @pytest.mark.asyncio

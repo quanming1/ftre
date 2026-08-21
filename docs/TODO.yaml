@@ -156,14 +156,14 @@ stages:
 
       - id: C4
         title: Cordis 风格插件内核
-        status: in_progress
+        status: done
         date: 2026-08-14
         prd: docs/prd/PRD-C4-plugin-kernel.md
         prd_status: 开发中
         modules:
           - src/ftre/plugin/kernel/
           - src/ftre/plugin/builtin/
-        acceptance: 插件依赖按序加载/循环依赖报错，事件 5 模式可用，配置树驱动加载，现有内置插件迁移后行为不变
+        acceptance: 历史 Cordis 风格内核能力已由 F1 新 Composition/cordis 公共运行时接管；旧模块仅保留迁移兼容测试面
 
       - id: C5
         title: 本地文件链接协议
@@ -200,3 +200,186 @@ stages:
           - src/ftre/session/search.py
           - src/ftre/api/routes.py
         acceptance: 内存态直接检索（不读盘不解析 state.json、不引入额外存储），中文子串与标题均可检索，大数据量下接口百毫秒级，配套前端高亮筛选
+
+  - id: F
+    name: 后端架构重构
+    steps:
+      - id: F1
+        title: 基于 cordis-py 的后端插件化重构
+        status: done
+        date: 2026-08-20
+        prd: docs/prd/PRD-F1-backend-plugin-refactor.md
+        prd_status: 已验收
+        modules:
+          - pyproject.toml
+          - src/ftre/main.py
+          - src/ftre/app/
+          - src/ftre/platform/
+          - src/ftre/services/
+          - src/ftre/features/
+          - tests/
+        acceptance: cordis-py 成为唯一插件内核，四层目录与唯一 Composition Root 落地，生命周期可逆，现有 Session/Agent/HTTP/WS/插件行为通过 PRD-F1 全部验收标准
+        tasks:
+          - id: F1.1
+            title: Cordis 基座与 Composition Root
+            status: done
+          - id: F1.2
+            title: Config、Filesystem、HTTP 与诊断 Service
+            status: done
+          - id: F1.3
+            title: Session、Workspace、Agent、Bus 与 Channel Service
+            status: done
+          - id: F1.4
+            title: Tool、Skill、Prompt、MCP、Schedule、Team 行为 Plugin
+            status: done
+          - id: F1.5
+            title: 外部插件兼容、Octo 边界与合成审计插件
+            status: done
+          - id: F1.6
+            title: 全量验收、回归、提交与执行报告
+            status: done
+
+      - id: F2
+        title: 核心数据面 Service 化迁移
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F2-data-plane-migration.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/services/session/
+          - src/ftre/services/agent/runtime/
+          - src/ftre/services/messaging/
+          - src/ftre/services/command/
+          - src/ftre/services/tools/
+          - src/ftre/app/gateway/
+        acceptance: 旧数据面按切片迁入新 Service Owner；旧路径只保留单向兼容导出；Session/Agent/Bus/Channel/HTTP 生产引用逐步清零；全量测试、lint 和 Gateway 回归通过
+        tasks:
+          - id: F2.1
+            title: Session 与 Workspace 真实实现迁移
+            status: done
+
+          - id: F2.2
+            title: Agent Runtime 真实实现迁移
+            status: done
+          - id: F2.3
+            title: MessageBus、Channel、Command、Tool Provider 迁移
+            status: done
+          - id: F2.4
+            title: HTTP/WS legacy 入口移除
+            status: done
+          - id: F2.5
+            title: 旧目录清理与全量验收
+            status: done
+
+      - id: F3
+        title: 旧 Plugin Kernel 与兼容入口退役
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F3-plugin-kernel-retirement.md
+        prd_status: 已验收
+        modules:
+          - src/cordis/
+          - src/ftre/platform/plugin_runtime/
+          - src/ftre/services/agent/runtime/hooks.py
+          - src/ftre/features/
+          - src/ftre/api/
+          - tests/architecture/
+          - tests/contracts/
+        acceptance: 旧 Plugin Kernel、Builtin、aggregate API 和 ftre.plugin 兼容入口删除；新 Cordis/Feature/Service 测试覆盖必要语义；生产导入清零；Gateway 和全量质量门禁通过
+        tasks:
+          - id: F3.1
+            title: Hook/Event 契约迁移
+            status: done
+          - id: F3.2
+            title: Builtin Plugin 测试与实现迁移
+            status: done
+          - id: F3.3
+            title: Aggregate API 路由清理
+            status: done
+          - id: F3.4
+            title: 旧 Kernel 删除与架构门禁
+            status: done
+          - id: F3.5
+            title: 全量验收与执行报告
+            status: done
+
+      - id: F4
+        title: 架构债务清理与单一 Owner 收敛
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F4-architecture-debt-cleanup.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/agent/
+          - src/ftre/session/
+          - src/ftre/bus/
+          - src/ftre/channel/
+          - src/ftre/command/
+          - src/ftre/tools/
+          - src/ftre/config.py
+          - src/ftre/trace_store.py
+          - src/ftre/mcp/
+          - src/ftre/services/http/
+          - src/ftre/features/
+          - src/ftre/gateway/
+          - src/ftre/utils/image_store.py
+        acceptance: 删除迁移兼容壳与重复 Owner；Config、Trace、MCP、Attachment、Gateway Process 归位；生产/测试只使用新路径；全量质量与 Gateway 回归通过
+        tasks:
+          - id: F4.1
+            title: 债务基线与架构门禁
+            status: done
+          - id: F4.2
+            title: Agent 与数据面旧壳删除
+            status: done
+          - id: F4.3
+            title: Config 与 Trace Owner 收敛
+            status: done
+          - id: F4.4
+            title: MCP Feature Owner 收敛
+            status: done
+          - id: F4.5
+            title: HTTP、Feature 空壳与兼容 API 清理
+            status: done
+          - id: F4.6
+            title: Gateway Process 与 Attachment 基础设施归位
+            status: done
+          - id: F4.7
+            title: 全量验收与执行报告
+            status: done
+
+      - id: F5
+        title: Schedule Owner 收敛与调度生命周期治理
+        status: done
+        date: 2026-08-21
+        prd: docs/prd/PRD-F5-schedule-owner-cleanup.md
+        prd_status: 已验收
+        modules:
+          - src/ftre/features/schedule/
+          - src/ftre/app/gateway/bootstrap.py
+          - src/ftre/services/messaging/channel/
+          - tests/features/schedule/
+          - tests/startup/
+          - tests/lifecycle/
+        acceptance: Schedule Feature 拥有 ScheduleService、CronScheduler、CronChannel 和 cron Tool；删除 schedule 空壳与 tools/builtin/cron.py；Plugin 负责启动/停止和 Effect 清理；全量回归通过
+        tasks:
+          - id: F5.1
+            title: Schedule 现状基线与接口冻结
+            status: done
+          - id: F5.2
+            title: CronStore 与 ScheduleService 归位
+            status: done
+          - id: F5.3
+            title: CronScheduler 与 CronChannel 迁移
+            status: done
+          - id: F5.4
+            title: cron Tool 与 Router 统一 Feature Owner
+            status: done
+          - id: F5.5
+            title: Plugin 生命周期接管与 Bootstrap 解耦
+            status: done
+          - id: F5.6
+            title: 空壳删除、测试迁移与架构门禁
+            status: done
+          - id: F5.7
+            title: 全量验收与执行报告
+            status: done

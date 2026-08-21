@@ -6,10 +6,8 @@ MCP 模块单元测试
 - 工具名映射（adapter.py）
 - 参数转换（adapter.py）
 """
-import pytest
-from ftre.mcp.config import parse_mcp_config, McpServerConfig
-from ftre.mcp.adapter import mcp_tool_id, _parse_tool_name, _convert_parameters, MCP_TOOL_PREFIX
-
+from ftre.features.mcp.adapter import _convert_parameters, _parse_tool_name, mcp_tool_id
+from ftre.features.mcp.config import parse_mcp_config
 
 # ============================================================
 # 配置解析

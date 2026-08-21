@@ -1,0 +1,128 @@
+"""The single default Composition Root for ftre's backend."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from cordis import Context
+from ftre.platform.plugin_runtime import PluginManager, PluginManifest
+from ftre.services.config.loader import load_config_file
+
+
+def default_manifests() -> list[PluginManifest]:
+    """Return the single ordered built-in catalog used by every Gateway host."""
+    return [
+        PluginManifest("config", "ftre.services.config.plugin:apply", "builtin", True, True, description="root configuration"),
+        PluginManifest("filesystem", "ftre.services.filesystem.plugin:apply", "builtin", True, True, description="path policy and atomic IO"),
+        PluginManifest("http-service", "ftre.services.http.plugin:apply", "builtin", True, True, description="route contribution registry"),
+        PluginManifest("system-prompt", "ftre.services.system_prompt.plugin:apply", "builtin", True, True, description="prompt section registry"),
+        PluginManifest("message-bus", "ftre.services.messaging.bus.plugin:apply", "builtin", True, True, description="business message plane"),
+        PluginManifest("tools", "ftre.services.tools.plugin:apply", "builtin", True, True, description="scoped tool registry"),
+        PluginManifest("commands", "ftre.services.command.plugin:apply", "builtin", True, True, description="command registry"),
+        PluginManifest("sessions", "ftre.services.session.plugin:apply", "builtin", True, True, description="session persistence facade"),
+        PluginManifest("agent-profiles", "ftre.services.agent.profile.plugin:apply", "builtin", True, True, description="agent profile merge"),
+        PluginManifest("workspaces", "ftre.services.workspace.plugin:apply", "builtin", True, True, description="workspace boundary"),
+        PluginManifest("channels", "ftre.services.messaging.channel.plugin:apply", "builtin", True, True, description="channel registry"),
+        PluginManifest("attachments", "ftre.services.attachment.plugin:apply", "builtin", True, True, description="attachment storage"),
+        PluginManifest("traces", "ftre.services.observability.trace.plugin:apply", "builtin", True, True, description="trace persistence"),
+        PluginManifest("agents", "ftre.services.agent.plugin:apply", "builtin", True, True, description="public agent facade"),
+        PluginManifest("skill", "ftre.features.skill.plugin:apply", "builtin", False, True, description="skill catalog and tool"),
+        PluginManifest("mcp", "ftre.features.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
+        PluginManifest("plan", "ftre.features.plan.plugin:apply", "builtin", False, True, description="plan behavior"),
+        PluginManifest("team", "ftre.features.team.plugin:apply", "builtin", False, True, description="team lifecycle"),
+        PluginManifest("schedule", "ftre.features.schedule.plugin:apply", "builtin", False, True, description="cron persistence"),
+        PluginManifest("context-govern", "ftre.features.context_govern.plugin:apply", "builtin", True, True, description="workspace governance"),
+        PluginManifest("session-title", "ftre.services.session.title.plugin:apply", "builtin", False, True, description="title behavior"),
+    ]
+
+
+@dataclass
+class Composition:
+    """Own the Context, PluginManager, config snapshot, and optional HTTP app."""
+    context: Context
+    plugins: PluginManager
+    config: dict[str, Any]
+    http_app: Any | None = None
+
+    @property
+    def diagnostics(self) -> list[dict[str, Any]]:
+        """Return a JSON-ready snapshot without exposing PluginManager internals."""
+        return self.plugins.diagnostics()
+
+    async def close(self) -> None:
+        """Dispose all Plugin Fibers in reverse lifecycle order."""
+        await self.plugins.close()
+
+    def register_default_routes(self) -> None:
+        """Register startup-time routes from their owning Service/Feature."""
+        http = self.context.get("http", strict=False)
+        if http is None:
+            return
+        http.register_health()
+        http.register_websocket_path("/", "websocket-channel")
+        config = self.context.get("config", strict=False)
+        if config is not None:
+            from ftre.services.config.router import build_router
+
+            http.register_router(build_router(config), owner="config")
+        sessions = self.context.get("sessions", strict=False)
+        agents = self.context.get("agents", strict=False)
+        if sessions is not None and agents is not None:
+            from ftre.services.session.router import build_router
+
+            http.register_router(build_router(sessions, agents), owner="sessions")
+        profiles = self.context.get("agent_profiles", strict=False)
+        if profiles is not None:
+            from ftre.services.agent.router import build_router
+
+            http.register_router(build_router(profiles), owner="agent-profiles")
+        commands = self.context.get("commands", strict=False)
+        if commands is not None:
+            from ftre.services.command.router import build_router
+
+            http.register_router(build_router(commands), owner="commands")
+        traces = self.context.get("traces", strict=False)
+        if traces is not None:
+            from ftre.services.observability.trace.router import build_router
+
+            http.register_router(build_router(traces), owner="traces")
+        attachments = self.context.get("attachments", strict=False)
+        if attachments is not None:
+            from ftre.services.attachment.router import build_router
+
+            http.register_router(build_router(attachments), owner="attachments")
+        skills = self.context.get("skills", strict=False)
+        if skills is not None:
+            from ftre.features.skill.router import build_router
+
+            http.register_router(build_router(skills), owner="skill")
+        mcp = self.context.get("mcp", strict=False)
+        if mcp is not None:
+            from ftre.features.mcp.router import build_router
+
+            http.register_router(build_router(mcp), owner="mcp")
+        schedule = self.context.get("schedule", strict=False)
+        if schedule is not None:
+            from ftre.features.schedule.router import build_router
+
+            http.register_router(build_router(schedule), owner="schedule")
+
+
+async def build_composition(
+    config_data: dict[str, Any] | None = None,
+    *,
+    plugins_dir=None,
+    initial_services: dict[str, Any] | None = None,
+) -> Composition:
+    """Create and settle a composition without opening a listening socket."""
+    config = config_data if config_data is not None else load_config_file()
+    context = Context()
+    for name, value in (initial_services or {}).items():
+        if value is not None:
+            context.provide(name, value)
+    manager = PluginManager(context, plugins_dir=plugins_dir)
+    await manager.load(default_manifests(), config)
+    composition = Composition(context=context, plugins=manager, config=config)
+    composition.register_default_routes()
+    return composition

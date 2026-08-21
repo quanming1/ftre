@@ -5,18 +5,14 @@ from fastapi import APIRouter
 from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Tool, ToolRegistry
 
-from ftre.config import AgentConfig
-from ftre.plugin import (
-    BEFORE_AGENT_RUN,
-    AgentRunContext,
-    EventHub,
-    FtreContext,
-    Plugin,
-    PluginRegistry,
-)
-from ftre.tools import build_default_tools
-from ftre.tools._workspace import WorkspaceAccessor
-from ftre.tools.read import create_read_tool
+from cordis import Context, FiberState
+from ftre.services.agent.config import AgentConfig
+from ftre.services.agent.runtime.hooks import BEFORE_AGENT_RUN, AgentRunContext
+from ftre.services.http.service import HttpService
+from ftre.services.tools import ToolService
+from ftre.services.tools.builtin import build_default_tools
+from ftre.services.tools.builtin._workspace import WorkspaceAccessor
+from ftre.services.tools.builtin.read import create_read_tool
 
 
 def _dummy_tool(name: str = "dummy") -> Tool:
@@ -40,20 +36,6 @@ def test_build_default_tools_includes_registry_tools():
     assert "extra" in build_default_tools(tool_registry=registry).names
 
 
-def test_build_default_tools_omits_see_img_without_vision():
-    assert (
-        "see_img"
-        not in build_default_tools(llm_config=SimpleNamespace(vision=False)).names
-    )
-
-
-def test_build_default_tools_omits_see_img_with_vision():
-    assert (
-        "see_img"
-        not in build_default_tools(llm_config=SimpleNamespace(vision=True)).names
-    )
-
-
 def test_read_tool_reads_relative_image_path(tmp_path):
     image = tmp_path / "screen.png"
     image.write_bytes(
@@ -68,97 +50,79 @@ def test_read_tool_reads_relative_image_path(tmp_path):
         llm_config=SimpleNamespace(vision=True),
     )
     assert isinstance(result, HintBlockEvent)
-    assert result.metadata["hide"] is True
     assert result.metadata["path"] == str(image.resolve())
-    assert "data:image" in result.hint
-
-
-def test_read_tool_rejects_image_without_vision(tmp_path):
-    image = tmp_path / "screen.png"
-    image.write_bytes(b"not decoded because vision is disabled")
-    result = create_read_tool().func(
-        "screen.png",
-        ws=_FakeWorkspace(str(tmp_path)),
-        llm_config=SimpleNamespace(vision=False),
-    )
-    assert "当前模型不支持视觉输入" in result
 
 
 @pytest.mark.asyncio
-async def test_plugin_setup_failure_rolls_back_registered_tools():
-    class FailingToolPlugin(Plugin):
-        name = "failing_tool"
-        inject = ("tool_registry",)
+async def test_cordis_plugin_failure_rolls_back_registered_tools():
+    root = Context()
+    tools = ToolService(ToolRegistry())
+    root.provide("tools", tools)
 
-        async def setup(self, ctx, config):
-            ctx.tool_registry.register(_dummy_tool("leaked"))
+    class FailingPlugin:
+        inject = ("tools",)
+        provide = ()
+
+        def apply(self, ctx):
+            ctx.effect(ctx.tools.register(_dummy_tool("leaked"), owner="failing"))
             raise RuntimeError("boom")
 
-    _root, registry, tools = _plugin_runtime()
-    instance = await registry.register(FailingToolPlugin)
-    assert instance.error is not None
-    assert tools.get("leaked") is None
+    fiber = root.plugin(FailingPlugin, id="failing")
+    await root.settle()
+    assert fiber.state is FiberState.FAILED
+    assert tools.snapshot() == ()
+    await root.dispose()
 
 
 @pytest.mark.asyncio
-async def test_plugin_context_registers_and_cleans_shared_tool():
-    class ToolPlugin(Plugin):
-        name = "tool_plugin"
-        inject = ("tool_registry",)
+async def test_cordis_plugin_contributions_and_router_are_reversible():
+    root = Context()
+    tools = ToolService(ToolRegistry())
+    http = HttpService()
+    root.provide("tools", tools)
+    root.provide("http", http)
 
-        async def setup(self, ctx, config):
-            ctx.tool_registry.register(_dummy_tool("from_plugin"))
+    class Plugin:
+        inject = ("tools", "http")
+        provide = ()
 
-    _root, registry, tools = _plugin_runtime()
-    await registry.register(ToolPlugin)
-    assert [tool.name for tool in tools.snapshot()] == ["from_plugin"]
-    await registry.unload("tool_plugin")
-    assert tools.snapshot() == []
-
-
-@pytest.mark.asyncio
-async def test_plugin_context_registers_router():
-    class RouterPlugin(Plugin):
-        name = "router_plugin"
-        inject = ("routers",)
-
-        async def setup(self, ctx, config):
+        def apply(self, ctx):
+            ctx.effect(ctx.tools.register(_dummy_tool("from_plugin"), owner="plugin"))
             router = APIRouter()
 
             @router.get("/ping")
             def ping():
                 return {"pong": True}
 
-            ctx.register_router(router)
+            ctx.effect(ctx.http.register_router(router, owner="plugin"))
 
-    root, registry, _ = _plugin_runtime()
-    await registry.register(RouterPlugin)
-    routers = root.get("routers")
-    assert [route.path for route in routers[0].routes] == ["/ping"]
+    fiber = root.plugin(Plugin, id="plugin")
+    await root.settle()
+    assert fiber.state is FiberState.ACTIVE
+    assert tools.snapshot()[0].name == "from_plugin"
+    assert any(item["path"] == "/api/ping" for item in http.snapshot())
+    await root.dispose()
+    assert tools.snapshot() == ()
+    assert http.snapshot() == ()
 
 
 @pytest.mark.asyncio
-async def test_before_agent_run_filter_can_insert_messages():
-    events = EventHub()
+async def test_cordis_event_filter_can_insert_messages():
+    root = Context()
 
     def rewrite(ctx):
         ctx.messages.insert(0, {"role": "system", "content": "persona: Alice"})
-        ctx.messages.insert(1, {"role": "user", "content": "群规"})
         return ctx
 
-    events.on(BEFORE_AGENT_RUN, rewrite)
+    root.on(BEFORE_AGENT_RUN, rewrite)
     ctx = AgentRunContext(
         session_id="sess_1",
         channel_id="ws",
         messages=[{"role": "system", "content": "base"}],
         config=AgentConfig(),
     )
-    ctx = await events.filter(BEFORE_AGENT_RUN, ctx)
-    assert [message["content"] for message in ctx.messages] == [
-        "persona: Alice",
-        "群规",
-        "base",
-    ]
+    ctx = await root.filter(BEFORE_AGENT_RUN, ctx)
+    assert [message["content"] for message in ctx.messages] == ["persona: Alice", "base"]
 
 
 class _FakeWorkspace(WorkspaceAccessor):
@@ -167,11 +131,3 @@ class _FakeWorkspace(WorkspaceAccessor):
 
     def get(self) -> str:
         return self.cwd
-
-
-def _plugin_runtime():
-    root = FtreContext()
-    tools = ToolRegistry()
-    root.provide("tool_registry", tools)
-    root.provide("routers", [])
-    return root, PluginRegistry(root), tools

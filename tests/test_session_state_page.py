@@ -3,7 +3,7 @@
 import pytest
 from ftre_agent_core.message import AssistantMsg, UserMsg
 
-from ftre.session import SessionManager
+from ftre.services.session.service import SessionService as SessionManager
 
 
 @pytest.mark.asyncio

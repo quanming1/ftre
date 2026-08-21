@@ -25,13 +25,13 @@ from ftre_agent_core.message import (
     ToolCallState,
 )
 
-from ftre.agent.loop import AgentLoop
-from ftre.agent.session_projection import SessionProjection
-from ftre.agent.turn_executor import TurnExecutor
-from ftre.bus import BusMessage
-from ftre.command import CommandManager
-from ftre.command.builtin import register_builtin_commands
-from ftre.config import AgentConfig, ContextConfig, LLMConfig
+from ftre.services.agent.config import AgentConfig, ContextConfig, LLMConfig
+from ftre.services.agent.runtime.loop.engine import AgentLoop
+from ftre.services.agent.runtime.loop.turn_executor import TurnExecutor
+from ftre.services.command import CommandManager
+from ftre.services.command.builtin import register_builtin_commands
+from ftre.services.messaging.bus import BusMessage
+from ftre.services.session.projection import SessionProjection
 
 
 class PausingAgent:

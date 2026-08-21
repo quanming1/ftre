@@ -3,12 +3,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-
-from ftre.agent.session_projection import SessionProjection
-from ftre.agent.loop import AgentLoop
-from ftre.agent.turn_executor import TurnExecutor
-from ftre.bus import BusMessage, InboundMetadata
-from ftre.config import AgentConfig, ContextConfig, LLMConfig
 from ftre_agent_core.agent.runner import RunState, RunStatus
 from ftre_agent_core.event import (
     ReplyEndEvent,
@@ -19,6 +13,12 @@ from ftre_agent_core.event import (
     TextBlockStartEvent,
 )
 from ftre_agent_core.message import Msg
+
+from ftre.services.agent.config import AgentConfig, ContextConfig, LLMConfig
+from ftre.services.agent.runtime.loop.engine import AgentLoop
+from ftre.services.agent.runtime.loop.turn_executor import TurnExecutor
+from ftre.services.messaging.bus import BusMessage, InboundMetadata
+from ftre.services.session.projection import SessionProjection
 
 
 class FakeAgent:
