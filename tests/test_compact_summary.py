@@ -16,7 +16,7 @@ import pytest_asyncio
 from ftre_agent_core.event import CustomEvent
 from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
 
-from ftre.features.compaction.service import CompactionService
+from ftre.services.compaction.service import CompactionService
 from ftre.services.session.projection import SessionProjection
 from ftre.services.session.service import SessionService as SessionManager
 
@@ -48,7 +48,7 @@ async def env(tmp_path):
 @pytest.mark.asyncio
 async def test_compact_generation_passes_reasoning_effort_to_handler(monkeypatch):
     """Context compaction forwards the selected LLM configuration's effort."""
-    from ftre.features.compaction import service as compact_manager
+    from ftre.services.compaction import service as compact_manager
 
     captured = {}
 

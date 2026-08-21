@@ -203,7 +203,7 @@ CommandIngress → CommandRuntime → Domain Service
   `TurnExecutor`；
 - `TurnExecutor` 不依赖 Command 类型，也不负责解析或解释 Command；
 - `persist_input` 只描述命令审计/历史策略，不能作为创建 Agent Turn 的隐式开关；
-- Command Handler 直接依赖公开 `CompactionPort`、`SessionService` 等真实 Service Owner，
+- Command Handler 直接依赖公开 `CompactionService`、`SessionService` 等真实 Service Owner，
   不得通过 `AgentLoop.compaction` 或 `AgentLoop.session_manager` 间接取 Service；
 - `command_id`、`request_id`、`turn_id` 各自独立，不能相互替代。
 
@@ -234,3 +234,26 @@ Service
   其他 Feature 私有实现；
 - `AgentLoopProvider` 可以装配内部 runtime，但业务 Handler 不得反向依赖 Loop；
 - unload/restart 后注入的 Listener、Task、Router、闭包和旧 Service 实例必须全部可逆清理。
+
+## 13. Compaction Service Owner 收敛（F10）
+
+F10 将上下文压缩的真实实现从 `features/compaction/service.py` 迁入
+`services/compaction/service.py`，删除 `CompactionPort`。压缩能力只有一个公共 Service：
+
+```text
+services/compaction/plugin.py
+  → 创建 CompactionService
+  → provide("compaction")
+
+features/compaction/plugin.py
+  → inject("compaction")
+  → 注册 agent/pre-step、agent/request-error Hook
+```
+
+不可违反的规则：
+
+- `CompactionService` 是唯一真实压缩状态和算法 Owner；
+- AgentLoop、ContextGate、Command、Provider 直接消费 `CompactionService`；
+- Feature 只能注册 Hook，不得创建或 `provide("compaction")`；
+- 不新增第二个 Port、Facade 或兼容别名；
+- `compaction` Service key、压缩事件、命令和客户端协议保持不变。

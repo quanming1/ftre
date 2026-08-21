@@ -1,6 +1,6 @@
-"""Public Compaction port consumed by AgentLoop and Command."""
+"""Public Compaction Service consumed by AgentLoop, ContextGate and Command."""
 
-from .contracts import CompactionPort, NullCompactionService
 from .events import CompactEventName
+from .service import CompactionService
 
-__all__ = ["CompactEventName", "CompactionPort", "NullCompactionService"]
+__all__ = ["CompactEventName", "CompactionService"]

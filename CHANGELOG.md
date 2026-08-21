@@ -2,6 +2,19 @@
 
 ## [未发布]
 
+### Gateway CORS 修复
+
+- 默认允许 `localhost`/`127.0.0.1` 的桌面开发端口跨域访问 Gateway API；自定义 CORS origins 仍按精确值匹配。
+
+### F10 Compaction Service Owner 收敛
+
+- 将 `CompactionService` 从 `features/compaction` 迁入 `services/compaction`，由 Service
+  Plugin 唯一创建并提供 `compaction` key。
+- 删除 `CompactionPort`、旧 `contracts.py` 和 Feature 层实现；Compaction Feature 只
+  注册 `agent/pre-step` 与 `agent/request-error` Hook。
+- AgentLoop、ContextGate、Command、Provider 直接使用 `CompactionService`，压缩行为和
+  客户端协议保持不变。
+
 ### F8 Command Plane 与 Agent Plane 解耦
 
 - CommandRuntime 收敛为 `CommandContext + CommandResult(success/error)`，记录配对的

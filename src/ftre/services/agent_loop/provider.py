@@ -13,7 +13,7 @@ from ftre.services.agent.profile import AgentProfileService
 from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
 from ftre.services.attachment import AttachmentService
 from ftre.services.command import CommandService
-from ftre.services.compaction import CompactionPort
+from ftre.services.compaction import CompactionService
 from ftre.services.messaging.bus import MessageBusService
 from ftre.services.messaging.channel import ChannelService
 from ftre.services.session import SessionService
@@ -39,7 +39,7 @@ class AgentRuntimeServices:
     attachments: AttachmentService | None = None
     system_prompt: SystemPromptService | None = None
     hook_runtime: HookRuntime | None = None
-    compaction: CompactionPort | None = None
+    compaction: CompactionService | None = None
 
 
 @dataclass

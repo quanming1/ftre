@@ -45,7 +45,7 @@ loop.session_manager.fork_session(...)
 这掩盖了真实的 Service Owner：
 
 ```text
-CompactionService / CompactionPort
+CompactionService
 SessionService
 ```
 
@@ -81,7 +81,7 @@ Command
 - Command 执行不再进入 `TurnExecutor`；
 - `TurnExecutor` 不认识 Command 类型；
 - `CommandResult` 只表示成功或失败；
-- `/compact` 直接依赖公开 `CompactionPort`；
+- `/compact` 直接依赖公开 `CompactionService`；
 - `/fork` 直接依赖 `SessionService`；
 - `/allow`、`/deny` 复用已有确认事件恢复 Agent；
 - 旧的 Loop 间接引用、混合返回类型和命令状态机全部清理。
@@ -163,8 +163,8 @@ Command 需要影响 Agent 时，不扩展 `CommandResult`。Handler 写入已�
   - `reply_id`、`tool_call_id`、`request_id` 的现有幂等语义必须保持。
 
 - [x] **FR7：内置命令只依赖真实 Service Owner**
-  - `/compact` 直接依赖公开 `CompactionPort`；实现由 `CompactionService` 提供。
-  - `/compress-fast` 直接依赖公开 `CompactionPort`。
+  - `/compact` 直接依赖公开 `CompactionService`。
+  - `/compress-fast` 直接依赖公开 `CompactionService`。
   - `/fork` 直接依赖 `SessionService`。
   - `/cancel` 保持控制面语义，不将完整 `AgentLoop` 暴露给 Command Handler。
   - 删除 `register_builtin_commands(manager, loop)` 这种完整 Loop 闭包依赖。
@@ -249,7 +249,7 @@ CommandRuntime
 
 ```text
 Command Plugin
-   ├─ CompactionPort → CompactionService
+   ├─ CompactionService
    ├─ SessionService
    └─ 已有 Session Event 出口
 
@@ -296,8 +296,8 @@ register_builtin_commands(manager, agent_loop)
 | 命令 | 当前实现 | F8 目标实现 | 直接输出 |
 |---|---|---|---|
 | `/cancel` | system command，Handler 捕获完整 Loop | 保持控制面，改为窄取消依赖 | 状态/快照 |
-| `/compact` | `loop.compaction.compact_now()`，经过命令 Turn | `CompactionPort.compact_now()`，不创建 Turn | 成功/失败结果与压缩事件 |
-| `/compress-fast` | `loop.compaction.compress_fast()`，经过命令 Turn | `CompactionPort.compress_fast()`，不创建 Turn | 成功/失败结果 |
+| `/compact` | `loop.compaction.compact_now()`，经过命令 Turn | `CompactionService.compact_now()`，不创建 Turn | 成功/失败结果与压缩事件 |
+| `/compress-fast` | `loop.compaction.compress_fast()`，经过命令 Turn | `CompactionService.compress_fast()`，不创建 Turn | 成功/失败结果 |
 | `/fork` | `loop.session_manager.fork_session()` | `SessionService.fork_session()` | `CommandResult.text` |
 | `/allow` | 返回 `ResumeAgent`，由 TurnExecutor 解释 | 写入已有 `UserConfirmResultEvent` | Agent 后续回复 |
 | `/deny` | 返回 `ResumeAgent`，由 TurnExecutor 解释 | 写入已有 `UserConfirmResultEvent` | Agent 后续回复 |
@@ -309,8 +309,8 @@ register_builtin_commands(manager, agent_loop)
 | Command 进入 TurnExecutor | `SessionLane.dispatch_command()` 调用 `execute_command()` | CommandRuntime 直接返回结果，删除调用 |
 | TurnExecutor 命令状态机 | `COMMAND`、`_command()`、`command_name` | 删除命令状态和字段 |
 | 混合 CommandResult | `Handled`、`SendMessage`、`ResumeAgent` 等 | 收敛为 success/error |
-| 完整 Loop 闭包 | `register_builtin_commands(manager, loop)` | 直接注入 `CompactionPort`、`SessionService` 等已有依赖 |
-| Compaction 间接 Owner | `loop.compaction` | 改为公开 `CompactionPort` |
+| 完整 Loop 闭包 | `register_builtin_commands(manager, loop)` | 直接注入 `CompactionService`、`SessionService` 等已有依赖 |
+| Compaction 间接 Owner | `loop.compaction` | 改为公开 `CompactionService` |
 | Session 间接 Owner | `loop.session_manager` | 改为 `SessionService` |
 | Command 隐式恢复 Agent | `ResumeAgent` match-case | 复用已有 Session Event |
 | 直接 Bus 文本适配 | `_send_command_message()` 位于 TurnExecutor | 由 Command Runtime/接入层统一发送结果 |
@@ -346,7 +346,7 @@ register_builtin_commands(manager, agent_loop)
 
 ### F8.5 内置命令 Service Owner 收敛
 
-- `/compact`、`/compress-fast` 注入 `CompactionPort`；
+- `/compact`、`/compress-fast` 注入 `CompactionService`；
 - `/fork` 注入 `SessionService`；
 - `/cancel` 移除完整 Loop 闭包；
 - 删除 `register_builtin_commands(manager, loop)`。
@@ -389,7 +389,7 @@ register_builtin_commands(manager, agent_loop)
   - 每个已匹配命令都有配对 `command/run`、`command/done`；异常、取消和协议失败也有终态。
 
 - [x] **AC5：Service Owner 正确**
-  - `/compact` 只依赖 `CompactionPort`；`/fork` 只依赖 `SessionService`；Command
+  - `/compact` 只依赖 `CompactionService`；`/fork` 只依赖 `SessionService`；Command
     Handler 不捕获完整 `AgentLoop`，不使用 `loop.compaction` 或 `loop.session_manager`。
 
 - [x] **AC6：确认事件恢复**
@@ -452,3 +452,4 @@ register_builtin_commands(manager, agent_loop)
 | 2026-08-21 | 收敛为最小 CommandResult；删除 AgentEffect、AgentControlPort、AgentResumeRequest 设计；改为复用已有 Session Event；增加 Compaction/Session Owner、Loop 闭包和兼容分支清理 | 避免过度设计，保持 Command 协议小而稳定 |
 | 2026-08-21 | 完成 F8 实施与验收：CommandRuntime 独立执行、TurnExecutor 脱离 Command、确认事件恢复和 Service Owner 收敛；402 项全量测试与架构门禁通过 | 按最小协议完成 Command Plane/Agent Plane 解耦 |
 | 2026-08-21 | 审计复核后补充 Service 注入键与后台线程生命周期门禁，F8/F9 联合全量验证更新为 404 项通过 | 收尾审计发现并修复残余依赖命名和资源清理债务 |
+| 2026-08-22 | F10 立项后将 F8 中的 Compaction 调用契约同步为 `CompactionService`；具体迁移由 F10 完成 | 避免 F8 文档继续把已废弃的 Port 写成当前契约 |

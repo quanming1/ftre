@@ -93,8 +93,9 @@ def test_plugins_declare_context_service_attributes() -> None:
 
 def test_builtin_command_owner_dependencies_are_explicit() -> None:
     source = _source("services/command/builtin.py")
-    for symbol in ("CompactionPort", "SessionService", "AgentService"):
+    for symbol in ("CompactionService", "SessionService", "AgentService"):
         assert symbol in source
+    assert "CompactionPort" not in source
     assert "register_builtin_commands(manager, loop)" not in source
 
 

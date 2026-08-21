@@ -1,7 +1,7 @@
 """Compaction Feature Plugin.
 
-The Feature owns the implementation and registers only semantic Agent Hooks;
-AgentLoop consumes the public ``CompactionPort`` and never imports this module.
+The Service owner lives in ``ftre.services.compaction``. This Feature only
+registers semantic Agent Hooks against the injected Service.
 """
 
 from __future__ import annotations
@@ -18,20 +18,15 @@ from ftre.services.agent.hooks import (
     RetryRequest,
 )
 
-from .service import CompactionService
-
 logger = logging.getLogger(__name__)
 
-inject = ("sessions", "hook_runtime")
-provide = ("compaction",)
+inject = ("compaction", "sessions", "hook_runtime")
+provide = ()
 
 
 def apply(ctx: Context, config=None):
-    """Create the Compaction Service and attach its reversible Hook listeners."""
-    if ctx.get("compaction", strict=False) is not None:
-        return
-    service = CompactionService(session_manager=ctx.sessions)
-    ctx.provide("compaction", service)
+    """Attach reversible pressure/recovery Hook listeners to the Service."""
+    service = ctx.compaction
 
     async def on_pre_step(payload, next_):
         if payload.cancellation.is_set():
@@ -111,12 +106,6 @@ def apply(ctx: Context, config=None):
         lambda: error_receipt.dispose,
         label="hook:agent:request-error:compaction",
     )
-
-    async def close() -> None:
-        await service.cancel_all_compact_tasks()
-
-    ctx.effect(lambda: close, label="compaction:close")
-
 
 def _is_overflow(error_code: str) -> bool:
     value = (error_code or "").lower()

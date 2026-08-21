@@ -441,7 +441,7 @@ stages:
               - src/ftre/services/agent_loop/runtime/loop/turn_executor.py
               - tests/architecture/test_f9_command_boundaries.py
               - tests/contracts/test_f9_command_ingress.py
-            acceptance: Command 在接入层解析并绕过 Inbox；普通命令由 SessionLane 串行执行；/compact 只调用公开 CompactionPort；旧 before_run、before_messages_build、Filter 与兼容模块删除，专项和全量质量门禁通过
+            acceptance: Command 在接入层解析并绕过 Inbox；普通命令由 SessionLane 串行执行；/compact 只调用公开 CompactionService；旧 before_run、before_messages_build、Filter 与兼容模块删除，专项和全量质量门禁通过
           - id: F6.10
             title: 生命周期、作用域、并发与故障测试
             status: done
@@ -527,7 +527,7 @@ stages:
           - tests/contracts/
           - tests/architecture/
           - tests/lifecycle/
-        acceptance: Command 通过独立 Runtime 执行并产生命令生命周期事件；纯 Command 不创建 Turn、不进入 Agent；需要 Agent 的命令复用已有 Session Event 恢复流程，不新增 AgentControlPort、AgentEffect 或 ResumeRequest；TurnExecutor 删除全部 Command 依赖；Compaction 与 Session 使用真实 Service Owner；Loop 间接引用、兼容分支、空壳和缓存完成清理；Session 串行、取消、幂等、失败和客户端现有协议保持不变；全量质量门禁和 Gateway 回归通过
+        acceptance: Command 通过独立 Runtime 执行并产生命令生命周期事件；纯 Command 不创建 Turn、不进入 Agent；需要 Agent 的命令复用已有 Session Event 恢复流程，不新增 AgentControlPort、AgentEffect 或 ResumeRequest；TurnExecutor 删除全部 Command 依赖；CompactionService 与 Session 使用真实 Service Owner；Loop 间接引用、兼容分支、空壳和缓存完成清理；Session 串行、取消、幂等、失败和客户端现有协议保持不变；全量质量门禁和 Gateway 回归通过
         tasks:
           - id: F8.1
             title: CommandContext、CommandResult 与生命周期协议冻结
@@ -597,5 +597,51 @@ stages:
             title: 全盘死代码、兼容壳、空目录与生成缓存清理
             status: done
           - id: F9.8
+            title: 全量验收、文档同步与执行报告
+            status: done
+
+      - id: F10
+        title: Compaction Service Owner 收敛与 Port 删除
+        status: done
+        prd: docs/prd/PRD-F10-compaction-service-owner.md
+        prd_status: 已验收
+        date: 2026-08-22
+        depends_on:
+          - F9
+        modules:
+          - src/ftre/services/compaction/
+          - src/ftre/features/compaction/
+          - src/ftre/services/agent_loop/
+          - src/ftre/services/command/
+          - src/ftre/app/gateway/composition.py
+          - tests/architecture/
+          - tests/contracts/
+          - tests/lifecycle/
+          - docs/prd/README.md
+          - CHANGELOG.md
+        acceptance: CompactionService 迁入 services/compaction 并成为 compaction key 的唯一真实 Owner；CompactionPort、contracts.py 和旧实现删除；Feature 只注册压缩 Hook；AgentLoop、ContextGate、Command、Provider 直接使用 CompactionService；自动/手动/快速压缩、溢出重试、事件投影、pending 和客户端协议保持不变；Service/Hook unload、restart、失败回滚和全量质量门禁通过（405 passed）
+        tasks:
+          - id: F10.1
+            title: CompactionService 迁入 services Owner
+            status: done
+          - id: F10.2
+            title: 删除 CompactionPort 与旧 contracts 导出
+            status: done
+          - id: F10.3
+            title: Service Plugin 与 Feature Hook Plugin 拆分
+            status: done
+          - id: F10.4
+            title: AgentLoop、ContextGate、Command、Provider 类型与调用迁移
+            status: done
+          - id: F10.5
+            title: Composition Manifest 与 Service key 收敛
+            status: done
+          - id: F10.6
+            title: 行为、生命周期、失败回滚与启动测试
+            status: done
+          - id: F10.7
+            title: 旧实现、引用、兼容导出与生成物清理
+            status: done
+          - id: F10.8
             title: 全量验收、文档同步与执行报告
             status: done

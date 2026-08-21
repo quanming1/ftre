@@ -28,7 +28,8 @@ from ftre.services.agent.hooks import (
     AgentSubject,
 )
 from ftre.services.agent.registry import AgentRegistry
-from ftre.services.compaction import CompactionPort, NullCompactionService
+from ftre.services.compaction import CompactionService
+from ftre.services.compaction.service import NullCompactionService
 from ftre.services.messaging.bus import (
     BusMessage,
     CommandMessagePayload,
@@ -90,7 +91,7 @@ class AgentLoop:
         attachments=None,
         system_prompt=None,
         hook_runtime: HookRuntime | None = None,
-        compaction: CompactionPort | None = None,
+        compaction: CompactionService | None = None,
     ):
         self.bus = bus
         self.session_manager = session_manager

@@ -139,7 +139,7 @@ Composition Root / Provider
   - 构造函数参数必须表达真实依赖，禁止用 `Any` 或任意 `**kwargs` 隐藏必选依赖。
 
 - [x] **FR4：Command Service Owner 收敛**
-  - `/compact`、`/compress-fast` 使用注入的 `CompactionPort`。
+  - `/compact`、`/compress-fast` 使用注入的 `CompactionService`。
   - `/fork` 使用注入的 `SessionService`。
   - Command Handler 删除对 `AgentLoop` 完整对象的闭包捕获。
   - 与 F8 的 Command Runtime 解耦保持一致。
@@ -208,7 +208,7 @@ def apply(ctx: Context, config=None):
 
 - `ctx.sessions` 是 Plugin 的注入依赖；
 - `CompactionService` 不自己调用 `Context.get()`；
-- Command、AgentLoop、其他 Feature 只消费 `CompactionPort`；
+- Command、AgentLoop、其他 Feature 只消费 `CompactionService`；
 - `CompactionService` 的实现 Owner 仍属于 Compaction Feature。
 
 ### 4.2 Composition Root 与 Provider 边界
@@ -286,7 +286,7 @@ infrastructure implementations
 ### F9.3 Command、Compaction、Session 依赖迁移
 
 - 配合 F8，删除 Command Handler 的完整 Loop 闭包；
-- `/compact`、`/compress-fast` 注入 `CompactionPort`；
+- `/compact`、`/compress-fast` 注入 `CompactionService`；
 - `/fork` 注入 `SessionService`；
 - 直接引用公开 Contract，不引用 Feature 私有实现。
 
@@ -336,7 +336,7 @@ infrastructure implementations
   - `loop.session_manager`、`loop.compaction` 等路径在生产依赖扫描中清零。
 
 - [x] **AC4：Service Owner 正确**
-  - `/compact` 使用 `CompactionPort`；`/fork` 使用 `SessionService`；不再通过完整
+  - `/compact` 使用 `CompactionService`；`/fork` 使用 `SessionService`；不再通过完整
     `AgentLoop` 闭包获得 Service。
 
 - [x] **AC5：Provider 类型化**

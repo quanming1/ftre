@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ftre.services.agent.config import AgentConfig
-from ftre.services.compaction import CompactionPort
+from ftre.services.compaction import CompactionService
 from ftre.services.session.entity.state import QueueItem
 
 
@@ -22,7 +22,7 @@ class ContextDecision:
 class ContextGate:
     """统一实现 70% 轮后预压缩和 80% 领取前强制压缩策略。"""
 
-    def __init__(self, compaction: CompactionPort) -> None:
+    def __init__(self, compaction: CompactionService) -> None:
         self._compaction = compaction
 
     async def before_claim(

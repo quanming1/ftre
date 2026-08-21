@@ -12,7 +12,7 @@ from ftre_agent_core.message import (
     UserMsg,
 )
 
-from ftre.features.compaction.service import (
+from ftre.services.compaction.service import (
     CompactionService,
     _build_prompt,
     _estimate_body_chars,

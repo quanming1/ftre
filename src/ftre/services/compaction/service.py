@@ -1,5 +1,5 @@
 """
-CompactionService — 上下文压缩 Feature 的公开 Service 实现
+CompactionService — 上下文压缩 Service 的唯一真实实现
 
 设计：
 - SessionLane 在领取下一条请求前做强制水位检查并等待压缩
@@ -90,7 +90,7 @@ def _select_compact_llm(config):
 
 
 class CompactionService:
-    """上下文压缩 Service（全异步），由 Compaction Feature 独占创建。"""
+    """上下文压缩 Service（全异步），由 Service Plugin 唯一创建。"""
 
     def __init__(
         self,
@@ -612,6 +612,48 @@ class CompactionService:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._compact_tasks.clear()
+
+    async def close(self) -> None:
+        """Release all in-flight compaction work before Service unload."""
+        await self.cancel_all_compact_tasks()
+
+
+class NullCompactionService:
+    """Explicit no-op fallback for tests and disabled embedded runtimes.
+
+    This is a concrete fallback, not a second public contract. The default
+    Gateway always provides the real ``CompactionService`` through its plugin.
+    """
+
+    async def should_compact(self, *_args, **_kwargs) -> bool:
+        return False
+
+    async def compact(self, *_args, **_kwargs) -> str | None:
+        return None
+
+    async def compact_if_needed(self, *_args, **_kwargs) -> bool:
+        return False
+
+    async def compact_now(self, *_args, **_kwargs) -> str | None:
+        return None
+
+    async def compress_fast(self, *_args, **_kwargs) -> bool:
+        return False
+
+    def is_compacting(self, _session_id: str) -> bool:
+        return False
+
+    async def cancel_compact(self, _session_id: str) -> bool:
+        return False
+
+    async def cancel_all_compact_tasks(self) -> None:
+        return None
+
+    def bind_event_emitter(self, _emit_event) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
 
 
 # ─── 模块级纯函数（可单测） ───────────────────────────────────────────

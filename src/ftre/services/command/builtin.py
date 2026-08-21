@@ -13,7 +13,7 @@ from ftre_agent_core.message import ToolCallBlock, ToolCallState
 
 from ftre.services.agent import AgentService
 from ftre.services.agent.config import AgentConfig, load_config
-from ftre.services.compaction import CompactionPort
+from ftre.services.compaction import CompactionService
 from ftre.services.session import SessionService
 from ftre.services.session.message.converter import _as_msg
 
@@ -28,7 +28,7 @@ def register_builtin_commands(
     *,
     agents: AgentService,
     sessions: SessionService,
-    compaction: CompactionPort,
+    compaction: CompactionService,
     load_runtime_config: Callable[[], AgentConfig] = load_config,
 ) -> list[Callable[[], bool]]:
     """注册内置命令并返回所有 disposer。"""
