@@ -45,3 +45,10 @@ def test_new_hook_contract_is_the_single_runtime_hook_owner() -> None:
     assert hooks.is_file()
     assert "class AgentRunContext" in hooks.read_text(encoding="utf-8")
     assert "class MessagesBuildContext" in hooks.read_text(encoding="utf-8")
+
+
+def test_external_compatibility_entry_does_not_recreate_the_old_kernel() -> None:
+    entry = SOURCE / "ftre" / "plugin" / "__init__.py"
+    source = entry.read_text(encoding="utf-8")
+    for symbol in ("FtreContext", "PluginRegistry", "PluginLoader", "EventHub"):
+        assert symbol not in source

@@ -111,3 +111,4 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 | 2026-08-21 | 完成 Hook/Event 与 SessionTitle 的首批迁移；Cordis Fiber 增加失败回滚 | 先锁定新事件契约和可逆生命周期，再继续清理旧 Builtin 测试与实现 |
 | 2026-08-21 | 旧聚合 API 与图片路由测试迁移至 AttachmentService-owned Router | 删除全局 setter 和 aggregate router，保留图片预览兼容行为 |
 | 2026-08-21 | 删除旧 `ftre.plugin.kernel`、`ftre.plugin.builtin`、`ftre.plugin.api` 与兼容导出，加入架构导入门禁 | Cordis 与 platform Plugin Runtime 已覆盖依赖、事件、Effect、Loader 语义，旧实现不再需要保留 |
+| 2026-08-21 | 保留仅含 `Plugin` 标记类与 Hook 常量的 `ftre.plugin` 窄兼容入口 | 已安装 Octo 等外部旧式 `setup` 插件仍需完成渐进迁移；该入口不恢复 Kernel、Registry、Loader 或旧 Service |
