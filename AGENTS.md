@@ -46,7 +46,7 @@ src/
 - **Feature Plugin** 位于 `features/`，拥有 Skill、MCP、Team 等产品行为；它只能消费公开
   Service，不得访问 AgentLoop、Session 存储等私有实现。
 - `factory.py` 只允许表达内部对象组装（当前仅 Agent runtime 使用）；它不是 Service，也不是
-  Plugin 的入口。Plugin 入口统一是 `module:attribute` 指向 `apply` 或兼容类。
+  Plugin 的入口。Plugin 入口统一是 `module:attribute` 指向 `apply`。
 
 ## 启动与生命周期
 
@@ -67,7 +67,7 @@ ftre.main
 4. Plugin 的所有注册、路由、事件监听、后台任务和资源都必须绑定 `ctx.effect`，保证 unload/close
    可逆且幂等。
 5. 必选 Plugin 启动失败会产生诊断并阻止 Gateway 启动；可选 Plugin 失败只记录状态。
-6. `ftre.plugin.kernel`、`ftre.agent`、`ftre.api` 等旧目录仅用于迁移兼容。新代码不得依赖旧 Kernel，
+6. `ftre.plugin`、`ftre.agent`、`ftre.api` 等旧目录已退役。新代码不得依赖旧 Kernel 或兼容入口，
    新的 Service/Feature 必须放入四层目录。
 
 ## Agent 数据面不变量
@@ -95,7 +95,7 @@ def apply(ctx: PluginContext, config: dict | None = None):
 ```
 
 - 公共 Service key、Manifest id 和路由路径必须稳定；冲突由 Runtime 拒绝。
-- Plugin 入口优先使用 `module:attribute`；旧 `module.Class` 仅为兼容格式。
+- Plugin 入口必须使用 `module:attribute`；旧 `module.Class` 和 `setup(ctx, config)` 入口不再支持。
 - 注释要求：每个新模块说明层级职责；每个公共 Service/Plugin、生命周期方法和非显然并发/清理逻辑
   必须有 docstring 或近邻注释，解释“为什么”和边界，不重复代码字面含义。
 - 不在 Plugin 中创建全局 FastAPI；通过 `HttpService.register_router` 贡献路由。

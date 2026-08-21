@@ -1,6 +1,6 @@
 # PRD-F3-旧 Plugin Kernel 与兼容入口退役
 
-> F2 已完成核心数据面迁移。F3 处理 AC16 留下的兼容窗口：迁移旧 Kernel/Builtin/API 的测试与调用面，确认新 Cordis Runtime 和 Feature Plugin 已覆盖后删除旧实现。外部插件仍通过 F1/F2 定义的 `LegacyPluginContext` 或公开 Service 接入，不重新引入旧 Kernel。
+> F2 已完成核心数据面迁移。F3 处理 AC16 留下的兼容窗口：迁移旧 Kernel/Builtin/API 的测试与调用面，确认新 Cordis Runtime 和 Feature Plugin 已覆盖后删除旧实现。本阶段不保留外部旧插件兼容入口，所有 Plugin 统一使用公开 Cordis `apply` 契约。
 
 ## 元信息
 
@@ -29,7 +29,7 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 1. 不修改 Desktop、`ftre-agent-core`、Octo 独立仓库或客户端协议。
 2. 不实现 Plugin Marketplace、远程安装、进程隔离、HMR 或完整 Desktop Extension。
 3. 不重写 F2 已迁移的 Agent、Session、Bus、Channel、Tool 算法。
-4. 不把 `LegacyPluginContext` 在本阶段扩展成第二套框架；它只保留历史 `setup(ctx, config)` 的窄兼容面。
+4. 不实现外部旧插件兼容；`setup(ctx, config)`、`module.Class` 和 `ftre.plugin` 入口均不在目标范围内。
 
 ## 2. 需求范围
 
@@ -39,14 +39,14 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 - [x] **FR2：旧 Builtin Plugin 迁移。** Skill、MCP、Plan、Team、Schedule、ContextGovern、SessionTitle 的测试改为验证 `features/*` 或 `services/*` 的新 Plugin/Service，删除 `src/ftre/plugin/builtin`。
 - [x] **FR3：旧 Kernel 测试迁移。** 旧 FtreContext/EventHub/PluginRegistry/PluginLoader 测试替换为 Cordis Context/Fiber/PluginContext/Effect/PluginRuntime 测试，保留相同的依赖缺失、生命周期、事件过滤和失败诊断覆盖。
 - [x] **FR4：旧 aggregate API 退役。** `src/ftre/api/routes.py`、`api/app.py` 和旧 setter 测试迁移到 Service-owned Router，删除旧 API 包中不再被引用的实现。
-- [x] **FR5：旧 Plugin 公共入口收敛。** `ftre.plugin` 不再导出 FtreContext、EventHub、PluginLoader、PluginRegistry 等旧符号；公开入口只保留必要迁移说明或空兼容包，防止新代码误用。
+- [x] **FR5：旧 Plugin 公共入口删除。** `ftre.plugin` 包及其旧符号全部删除，防止新代码误用旧入口。
 - [x] **FR6：生产导入门禁。** `src/ftre/app`、`platform`、`services`、`features` 和 `cordis` 不得导入 `ftre.plugin`、`ftre.api` 或旧 Kernel/Builtin。
-- [x] **FR7：外部 Plugin 边界保持。** 外部 `setup(ctx, config)` Plugin 仍可通过 Cordis `LegacyPluginContext` 使用公开 Service；规范 `module:attribute` Plugin 使用 `PluginContext`。
-- [x] **FR8：删除旧实现。** 旧 Kernel、旧 Builtin、旧 aggregate API 和旧 `ftre.plugin.api` 在生产树中删除；仓库只保留新 Runtime 和明确的外部兼容说明。
+- [x] **FR7：Plugin 入口收敛。** 外部与内置 Plugin 统一使用 `module:attribute` + `apply(ctx, config)` + `PluginContext`；旧 `setup`/`module.Class` 入口明确拒绝。
+- [x] **FR8：删除旧实现。** 旧 Kernel、旧 Builtin、旧 aggregate API、旧 `ftre.plugin.api` 和旧外部兼容适配在生产树中删除。
 
 ### 2.2 非功能需求
 
-- **兼容性**：F2 的 HTTP/WS、Session、Tool、Agent 和外部 Octo test double 保持通过。
+- **回归**：F2 的 HTTP/WS、Session、Tool、Agent 行为保持通过；外部旧插件兼容不在本阶段保证。
 - **可审计性**：每个被删除的旧模块必须有新 Owner、迁移测试或兼容说明；禁止无测试裸删。
 - **安全性**：删除旧 aggregate API 后，不得恢复模块全局 setter 或配置导入副作用。
 - **可回滚**：按 Hook、Builtin、API、Kernel 四个切片独立提交。
@@ -91,7 +91,7 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 - [x] **AC4：HTTP 旧表面删除。** `ftre.api.routes`、旧 setter 和 `ftre.api.app` 不再存在；Service-owned Router 路径基线保持。
 - [x] **AC5：旧目录删除。** `src/ftre/plugin/kernel`、`src/ftre/plugin/builtin` 和无用 `src/ftre/plugin/api.py` 删除。
 - [x] **AC6：生产导入清零。** 新四层和 Cordis 不导入旧 Plugin/API 包；架构测试阻止回归。
-- [x] **AC7：外部兼容。** Octo test double、synthetic audit Plugin、历史 `module:Class` 入口兼容测试通过。
+- [x] **AC7：入口严格化。** synthetic audit Plugin 使用 `module:attribute` + `apply` 通过；旧 `module.Class`、`setup` 和 `ftre.plugin` 入口被拒绝。
 - [x] **AC8：全量质量。** pytest、ruff、diff check、Gateway health、WebSocket attach 和正常 dispose 全部通过。
 - [x] **AC9：分支收尾。** F3 所有代码按切片提交，分支干净，执行报告完整。
 
@@ -111,5 +111,5 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 | 2026-08-21 | 完成 Hook/Event 与 SessionTitle 的首批迁移；Cordis Fiber 增加失败回滚 | 先锁定新事件契约和可逆生命周期，再继续清理旧 Builtin 测试与实现 |
 | 2026-08-21 | 旧聚合 API 与图片路由测试迁移至 AttachmentService-owned Router | 删除全局 setter 和 aggregate router，保留图片预览兼容行为 |
 | 2026-08-21 | 删除旧 `ftre.plugin.kernel`、`ftre.plugin.builtin`、`ftre.plugin.api` 与兼容导出，加入架构导入门禁 | Cordis 与 platform Plugin Runtime 已覆盖依赖、事件、Effect、Loader 语义，旧实现不再需要保留 |
-| 2026-08-21 | 保留仅含 `Plugin` 标记类与 Hook 常量的 `ftre.plugin` 窄兼容入口 | 已安装 Octo 等外部旧式 `setup` 插件仍需完成渐进迁移；该入口不恢复 Kernel、Registry、Loader 或旧 Service |
 | 2026-08-21 | 完成全量 pytest、ruff、diff、Gateway health、WebSocket attach 与 dispose 验证；F3 标记已验收 | 所有 FR/AC 已有代码、测试和手动证据，进入阶段收尾 |
+| 2026-08-21 | 按用户决策删除窄 `ftre.plugin.Plugin`、`LegacyPluginContext`、旧 `setup`/`module.Class` 解析路径；更新 AC7 为严格入口校验 | 不再考虑外部旧插件兼容，确保单一 Cordis `apply` Plugin 契约 |

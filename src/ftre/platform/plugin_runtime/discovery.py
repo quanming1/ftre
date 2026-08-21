@@ -39,15 +39,9 @@ class PluginDiscovery:
             if catalog.get(plugin_id) is not None:
                 # Builtin config entries are overrides, not a second candidate.
                 continue
-            entry = item.get("entry") or item.get("module")
+            entry = item.get("entry")
             if not entry:
-                # Existing ftre installs used a name-only Octo entry; resolve
-                # the known independent repository shim without importing it
-                # during discovery.
-                if plugin_id == "octo_channel" and self.plugins_dir is not None and (self.plugins_dir / "octo_plugin").is_dir():
-                    entry = "octo_plugin._plugin:OctoChannelPlugin"
-                else:
-                    raise ValueError(f"external plugin {plugin_id!r} requires entry/module")
+                raise ValueError(f"external plugin {plugin_id!r} requires entry")
             source = f"external:{plugin_id}"
             catalog.add(
                 PluginManifest(
@@ -71,10 +65,8 @@ class PluginDiscovery:
         if not isinstance(entry, str):
             return entry
         module_name, separator, attribute = entry.partition(":")
-        if not separator:
-            module_name, separator, attribute = entry.rpartition(".")
         if not separator or not module_name or not attribute:
-            raise ValueError(f"invalid plugin entry: {entry!r}")
+            raise ValueError(f"plugin entry must use 'module:attribute': {entry!r}")
         if self.plugins_dir is not None:
             candidate = (self.plugins_dir / module_name.split(".")[0]).resolve()
             root = self.plugins_dir.resolve()
@@ -83,8 +75,6 @@ class PluginDiscovery:
             if root.exists() and str(root) not in sys.path:
                 sys.path.insert(0, str(root))
             if candidate.is_dir() and str(candidate) not in sys.path:
-                # A few legacy standalone plugins use sibling absolute imports
-                # (e.g. ``_channel``) inside their package directory.
                 sys.path.insert(0, str(candidate))
         module = importlib.import_module(module_name)
         try:
@@ -95,10 +85,6 @@ class PluginDiscovery:
             for key in ("inject", "provide"):
                 if hasattr(module, key) and not hasattr(target, key):
                     setattr(target, key, getattr(module, key))
-            inject = tuple(getattr(target, "inject", ()) or ())
-            aliases = {"bus": "message_bus", "session_manager": "sessions", "channel_manager": "channels", "tool_registry": "tools", "command_manager": "commands"}
-            if inject:
-                target.inject = tuple(aliases.get(name, name) for name in inject)
             return target
         except AttributeError as exc:
             raise LookupError(f"plugin attribute not found: {entry!r}") from exc

@@ -3,9 +3,9 @@
 ## 1. 执行结论
 
 F3 已完成。旧 Plugin Kernel、旧 Builtin Plugin、旧 aggregate API 和无用
-`ftre.plugin.api` 已从生产树删除；Agent Runtime、Feature Plugin 和 HTTP
-路由测试全部改用 Cordis/Service-owned 契约。外部旧式 `setup(ctx, config)`
-插件仍可通过窄兼容入口和 `LegacyPluginContext` 渐进迁移。
+`ftre.plugin.api` 和整个 `ftre.plugin` 包已从生产树删除；Agent Runtime、Feature Plugin
+和 HTTP 路由测试全部改用 Cordis/Service-owned 契约。不再保留外部旧式
+`setup(ctx, config)`、`module.Class` 或 `LegacyPluginContext` 兼容路径。
 
 本阶段只修改 `E:\ftre`，未修改 Desktop、`ftre-agent-core`、Octo 仓库或客户端。
 
@@ -37,8 +37,8 @@ F3 已完成。旧 Plugin Kernel、旧 Builtin Plugin、旧 aggregate API 和无
 
 - 删除 `src/ftre/plugin/kernel/`、`src/ftre/plugin/builtin/` 和 `src/ftre/plugin/api.py`。
 - 新增 `tests/architecture/test_f3_no_legacy_imports.py`，阻止旧命名空间和旧模块回流。
-- `ftre.plugin` 仅保留 `Plugin` 标记类、Hook 常量和上下文类型，服务于已安装外部旧插件；
-  不再导出 `FtreContext`、`EventHub`、`PluginRegistry`、`PluginLoader` 等旧符号。
+- `ftre.plugin` 包已删除；Cordis 仅接受 `module:attribute` + `apply(ctx, config)` Plugin 入口。
+- `LegacyPluginContext`、旧 `setup` 调用和 `module.Class` 解析路径已删除。
 
 ## 3. 分阶段提交
 
@@ -48,7 +48,7 @@ F3 已完成。旧 Plugin Kernel、旧 Builtin Plugin、旧 aggregate API 和无
 | F3.2 | `d372b49` | Builtin Plugin、Kernel 语义和启动测试迁移 |
 | F3.3 | `53a04c9` | Aggregate API 删除与 Attachment Router 测试迁移 |
 | F3.4 | `b2afc8b` | 旧 Kernel/Builtin/API 删除与架构导入门禁 |
-| F3.4 兼容修正 | `3fac399` | 外部旧式 Plugin 的窄兼容入口 |
+| F3.4 入口收敛 | `3fac399` 后续修订 | 删除外部旧式 Plugin 兼容入口与 setup 适配 |
 | F3.5 | `601a48f`、`5416cbc` | 测试格式、文档、验收与执行报告 |
 
 ## 4. 验收矩阵
@@ -59,9 +59,9 @@ F3 已完成。旧 Plugin Kernel、旧 Builtin Plugin、旧 aggregate API 和无
 | FR2 / AC2 | 通过 | `tests/startup/test_builtin_features.py` 与 Feature/Service 行为测试 |
 | FR3 / AC3 | 通过 | `tests/contracts/test_f3_cordis_hooks.py`、`tests/lifecycle/test_f3_plugin_cleanup.py`、Cordis 依赖/Loader 测试 |
 | FR4 / AC4 | 通过 | `src/ftre/api/*.py` 删除；`tests/test_image_api.py` 使用 Attachment Router |
-| FR5 / AC5 | 通过 | 旧 Kernel/Builtin/api.py 删除；窄兼容入口架构测试 |
+| FR5 / AC5 | 通过 | 旧 Kernel/Builtin/api.py 与整个 ftre.plugin 包删除；架构门禁 |
 | FR6 / AC6 | 通过 | `tests/architecture/test_f3_no_legacy_imports.py` |
-| FR7 / AC7 | 通过 | Octo test double、synthetic Plugin、外部 module entry 测试 |
+| FR7 / AC7 | 通过 | synthetic Plugin 使用 module:attribute + apply；旧入口拒绝测试 |
 | FR8 / AC8 | 通过 | 全量测试、ruff、diff、Gateway/WS 手动验证 |
 | AC9 | 通过 | 分片提交、PRD/TODO/CHANGELOG/执行报告已收尾 |
 
@@ -69,7 +69,7 @@ F3 已完成。旧 Plugin Kernel、旧 Builtin Plugin、旧 aggregate API 和无
 
 ```text
 python -m pytest -q
-352 passed, 1 warning
+351 passed, 1 warning
 
 python -m ruff check src tests
 All checks passed!
@@ -92,9 +92,8 @@ git diff --check
 
 ## 7. 后续边界
 
-F3 只收敛旧控制面，不重写 F2 已迁移的数据面算法。外部插件后续应从
-`ftre.plugin.Plugin`/`setup` 兼容形态迁移到 `module:attribute` + `PluginContext` + 公共
-Service；该迁移属于后续独立阶段，不在本 PRD 内扩大范围。
+F3 只收敛旧控制面，不重写 F2 已迁移的数据面算法。外部插件必须直接使用
+`module:attribute` + `apply` + `PluginContext`；旧插件兼容不属于系统运行边界。
 
 ## 8. 收尾状态
 

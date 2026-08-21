@@ -283,10 +283,9 @@ stages:
           - src/ftre/services/agent/runtime/hooks.py
           - src/ftre/features/
           - src/ftre/api/
-          - src/ftre/plugin/
           - tests/architecture/
           - tests/contracts/
-        acceptance: 旧 Plugin Kernel、Builtin、aggregate API 删除；新 Cordis/Feature/Service 测试覆盖原有必要语义；生产导入清零；外部 Plugin、Gateway 和全量质量门禁通过
+        acceptance: 旧 Plugin Kernel、Builtin、aggregate API 和 ftre.plugin 兼容入口删除；新 Cordis/Feature/Service 测试覆盖必要语义；生产导入清零；Gateway 和全量质量门禁通过
         tasks:
           - id: F3.1
             title: Hook/Event 契约迁移

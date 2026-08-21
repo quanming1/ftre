@@ -15,6 +15,7 @@ def _python_files(root: Path):
 
 def test_retired_kernel_builtin_and_aggregate_api_have_no_python_modules() -> None:
     retired = (
+        SOURCE / "ftre" / "plugin",
         SOURCE / "ftre" / "plugin" / "kernel",
         SOURCE / "ftre" / "plugin" / "builtin",
         SOURCE / "ftre" / "api",
@@ -46,8 +47,8 @@ def test_new_hook_contract_is_the_single_runtime_hook_owner() -> None:
     assert "class MessagesBuildContext" in hooks.read_text(encoding="utf-8")
 
 
-def test_external_compatibility_entry_does_not_recreate_the_old_kernel() -> None:
-    entry = SOURCE / "ftre" / "plugin" / "__init__.py"
-    source = entry.read_text(encoding="utf-8")
-    for symbol in ("FtreContext", "PluginRegistry", "PluginLoader", "EventHub"):
-        assert symbol not in source
+def test_legacy_plugin_context_and_compatibility_entry_are_removed() -> None:
+    assert not (SOURCE / "ftre" / "plugin" / "__init__.py").exists()
+    cordis_source = (SOURCE / "cordis" / "__init__.py").read_text(encoding="utf-8")
+    assert "LegacyPluginContext" not in cordis_source
+    assert "setup(Legacy" not in cordis_source

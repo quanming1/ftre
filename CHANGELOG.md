@@ -20,7 +20,7 @@
 
 - Hook/Event、SessionTitle 和 Builtin Plugin 测试统一到 Cordis Context、Feature Plugin 与 Service-owned Router。
 - 删除旧 `ftre.plugin.kernel`、`ftre.plugin.builtin`、`ftre.plugin.api` 和 aggregate API；新增架构导入门禁。
-- 保留仅供已安装外部插件渐进迁移使用的窄 `ftre.plugin.Plugin` 标记入口，不恢复旧 Kernel 能力。
+- 删除 `ftre.plugin` 窄兼容入口、`LegacyPluginContext` 和旧 `setup`/`module.Class` Plugin 解析路径；Plugin 统一使用 Cordis `apply` 契约。
 - Cordis Plugin apply 失败时自动回滚已注册 Effect，避免启动半成品泄漏。
 
 ## [0.2.4] - 2026-08-20
