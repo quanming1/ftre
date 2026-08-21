@@ -7,8 +7,13 @@ from __future__ import annotations
 
 import pytest
 
-from ftre import config as ftre_config
-from ftre.config import AgentConfig, ContextConfig, LLMConfig, sanitize_agent_effort
+from ftre.services.agent import config as ftre_config
+from ftre.services.agent.config import (
+    AgentConfig,
+    ContextConfig,
+    LLMConfig,
+    sanitize_agent_effort,
+)
 
 
 @pytest.fixture
@@ -211,7 +216,7 @@ def test_context_invalid_payload_falls_back_to_defaults(fake_config):
 
 
 def test_load_config_with_no_data_returns_default_agent_config(monkeypatch):
-    monkeypatch.setattr(ftre_config, "load_config_file", lambda: {})
+    monkeypatch.setattr(ftre_config, "load_config_file", dict)
     cfg = ftre_config.load_config()
     assert isinstance(cfg, AgentConfig)
     assert isinstance(cfg.context, ContextConfig)

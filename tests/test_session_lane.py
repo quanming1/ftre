@@ -6,13 +6,16 @@ import json
 
 import pytest
 
-from ftre.agent.completion_registry import CompletionRegistry
-from ftre.agent.context_gate import ContextDecision
-from ftre.agent.mailbox_store import MailboxStore
-from ftre.agent.session_lane import SessionLane, SessionLaneRegistry
-from ftre.agent.turn_executor import TurnOutcome
-from ftre.bus import BusMessage
-from ftre.session import SessionManager
+from ftre.services.agent_loop.runtime.loop.completion_registry import CompletionRegistry
+from ftre.services.agent_loop.runtime.loop.context_gate import ContextDecision
+from ftre.services.agent_loop.runtime.loop.turn_executor import TurnOutcome
+from ftre.services.agent_loop.runtime.mailbox.lane import (
+    SessionLane,
+    SessionLaneRegistry,
+)
+from ftre.services.agent_loop.runtime.mailbox.store import MailboxStore
+from ftre.services.messaging.bus import BusMessage
+from ftre.services.session.service import SessionService as SessionManager
 
 
 class _PassGate:

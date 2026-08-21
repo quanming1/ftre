@@ -1,0 +1,2 @@
+"""Architecture contract test package."""
+

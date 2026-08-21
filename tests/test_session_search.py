@@ -6,8 +6,8 @@ import time
 import pytest
 from ftre_agent_core.message import Msg
 
-from ftre.session.entity.state import AgentStateFile, SessionState
-from ftre.session.search import MAX_HITS_PER_SESSION, search_sessions
+from ftre.services.session.entity.state import AgentStateFile, SessionState
+from ftre.services.session.search import MAX_HITS_PER_SESSION, search_sessions
 
 
 def _msg(mid: str, role: str, content, created: str = "2026-08-17T00:00:00+08:00") -> Msg:
@@ -173,7 +173,7 @@ def test_case_insensitive_ascii():
 @pytest.mark.asyncio
 async def test_manager_search_via_thread():
     """SessionManager 门面可用（线程池执行路径）。"""
-    from ftre.session.manager import SessionManager
+    from ftre.services.session.service import SessionService as SessionManager
 
     mgr = SessionManager(sessions_dir="unused-dir-for-test")
     # 直接注入内存态，绕过磁盘加载

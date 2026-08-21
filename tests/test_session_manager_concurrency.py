@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 from ftre_agent_core.message import MsgName, UserMsg
 
-from ftre.session import SessionManager
+from ftre.services.session.service import SessionService as SessionManager
 
 
 @pytest_asyncio.fixture
