@@ -346,3 +346,41 @@ stages:
           - id: F4.7
             title: 全量验收与执行报告
             status: done
+
+      - id: F5
+        title: Schedule Owner 收敛与调度生命周期治理
+        status: todo
+        date: 2026-08-21
+        prd: docs/prd/PRD-F5-schedule-owner-cleanup.md
+        prd_status: 草稿
+        modules:
+          - src/ftre/features/schedule/
+          - src/ftre/services/tools/builtin/cron.py
+          - src/ftre/app/gateway/bootstrap.py
+          - src/ftre/services/messaging/channel/
+          - tests/features/schedule/
+          - tests/startup/
+          - tests/lifecycle/
+        acceptance: Schedule Feature 拥有 CronService、CronScheduler、CronChannel 和 cron Tool；删除 schedule 空壳与 tools/builtin/cron.py；Plugin 负责启动/停止和 Effect 清理；全量回归通过
+        tasks:
+          - id: F5.1
+            title: Schedule 现状基线与接口冻结
+            status: todo
+          - id: F5.2
+            title: CronStore 与 ScheduleService 归位
+            status: todo
+          - id: F5.3
+            title: CronScheduler 与 CronChannel 迁移
+            status: todo
+          - id: F5.4
+            title: cron Tool 与 Router 统一 Feature Owner
+            status: todo
+          - id: F5.5
+            title: Plugin 生命周期接管与 Bootstrap 解耦
+            status: todo
+          - id: F5.6
+            title: 空壳删除、测试迁移与架构门禁
+            status: todo
+          - id: F5.7
+            title: 全量验收与执行报告
+            status: todo
