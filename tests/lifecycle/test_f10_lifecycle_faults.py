@@ -16,12 +16,13 @@ from ftre.platform.hooks import (
 )
 from ftre.services.agent.config import AgentConfig
 from ftre.services.agent.hooks import (
+    AGENT_AFTER_TURN_SPEC,
     AGENT_PRE_STEP_SPEC,
     AGENT_REQUEST_ERROR_SPEC,
+    RejectStep,
     RetryRequest,
 )
 from ftre.services.agent.registry import AgentRegistry
-from ftre.services.agent_loop.runtime.loop.context_gate import ContextDecision
 from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
 from ftre.services.agent_loop.runtime.loop.turn_executor import (
     Turn,
@@ -255,34 +256,29 @@ def _inbound(content: str, request_id: str = "") -> BusMessage:
     )
 
 
-class _PassGate:
-    async def before_claim(self, *_args):
-        return ContextDecision("pass")
-
-    async def after_turn(self, *_args):
-        return ContextDecision("pass")
-
-
-class _FailingCompactionGate:
-    async def before_claim(self, *_args):
-        return ContextDecision("compact", "pressure")
-
-    async def compact(self, *_args):
-        return ContextDecision("block", "compaction failed")
-
-
 @pytest.mark.asyncio
 async def test_compaction_failure_keeps_pending_until_explicit_cancel() -> None:
     item = QueueItem(request_id="pending-1", sequence=1, content="A")
     mailbox = _Mailbox(item)
     completion = _Completion()
+    hooks = HookRuntime(Context())
+
+    async def failing_compaction(_payload, _next_):
+        return RejectStep("keep", "compaction failed")
+
+    hooks.register(
+        AGENT_PRE_STEP_SPEC,
+        failing_compaction,
+        owner="failing-compaction",
+        global_listener=True,
+    )
     lane = SessionLane(
         "session-1",
         mailbox=mailbox,
-        context_gate=_FailingCompactionGate(),
         executor=_Executor(),
         completion=completion,
         publish_snapshot=lambda _sid: asyncio.sleep(0),
+        hooks=hooks,
     )
 
     await lane._drain()
@@ -320,7 +316,6 @@ async def test_pre_step_failure_retries_pending_once_without_duplicate_execution
     lane = SessionLane(
         "session-1",
         mailbox=mailbox,
-        context_gate=_PassGate(),
         executor=executor,
         completion=_Completion(),
         publish_snapshot=lambda _sid: asyncio.sleep(0),
@@ -338,6 +333,46 @@ async def test_pre_step_failure_retries_pending_once_without_duplicate_execution
         await worker
     assert executor.seen == ["A", "B"]
     assert calls == 3
+    await lane.close()
+    await _dispose_context(root)
+
+
+@pytest.mark.asyncio
+async def test_after_turn_failure_blocks_next_pending_without_rolling_back_turn() -> None:
+    root = Context()
+    hooks = HookRuntime(root)
+
+    async def failing_after_turn(_payload, _next_):
+        raise RuntimeError("after-turn maintenance failed")
+
+    hooks.register(
+        AGENT_AFTER_TURN_SPEC,
+        failing_after_turn,
+        owner="failing-after-turn",
+        global_listener=True,
+    )
+    mailbox = _Mailbox(
+        QueueItem(request_id="request-a", sequence=1, content="A"),
+        QueueItem(request_id="request-b", sequence=2, content="B"),
+    )
+    completion = _Completion()
+    executor = _Executor()
+    lane = SessionLane(
+        "session-1",
+        mailbox=mailbox,
+        executor=executor,
+        completion=completion,
+        publish_snapshot=lambda _sid: asyncio.sleep(0),
+        hooks=hooks,
+        agent_registry=AgentRegistry(),
+    )
+
+    await lane._drain()
+
+    assert executor.seen == ["A"]
+    assert [item.request_id for item in mailbox.items] == ["request-b"]
+    assert completion.results["request-a"].status == "completed"
+    assert isinstance(lane.operation, BlockedOperation)
     await lane.close()
     await _dispose_context(root)
 

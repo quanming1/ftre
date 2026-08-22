@@ -6,6 +6,7 @@
 
 from .diagnostics import HookDiagnostic, HookListenerSnapshot
 from .names import (
+    AGENT_AFTER_TURN,
     AGENT_CREATED,
     AGENT_DISPOSED,
     AGENT_ERROR,
@@ -37,6 +38,7 @@ from .scope import HookScopeCarrier, context_for_scope
 from .spec import HookFailurePolicy, HookMode, HookScope, HookSpec
 
 __all__ = [
+    "AGENT_AFTER_TURN",
     "AGENT_CREATED",
     "AGENT_DISPOSED",
     "AGENT_ERROR",

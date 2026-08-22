@@ -11,6 +11,7 @@ AGENT_INBOX_INSERTED = "agent/inbox/inserted"
 AGENT_INBOX_CLAIMED = "agent/inbox/claimed"
 AGENT_INBOX_DISCARDED = "agent/inbox/discarded"
 AGENT_PRE_STEP = "agent/pre-step"
+AGENT_AFTER_TURN = "agent/after-turn"
 AGENT_REQUEST = "agent/request"
 AGENT_REQUEST_ERROR = "agent/request-error"
 AGENT_SESSION_START = "agent/session-start"
@@ -41,6 +42,7 @@ PUBLIC_HOOK_NAMES = frozenset(
         AGENT_INBOX_CLAIMED,
         AGENT_INBOX_DISCARDED,
         AGENT_PRE_STEP,
+        AGENT_AFTER_TURN,
         AGENT_REQUEST,
         AGENT_REQUEST_ERROR,
         AGENT_SESSION_START,

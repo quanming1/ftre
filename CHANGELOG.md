@@ -1,6 +1,26 @@
 # Changelog
 
-## [未发布]
+## [0.2.6] - 2026-08-22
+
+### BUG 修复（2026-08-22）
+
+- 修复 Cron Scheduler 通过 `MessageBusService` 投递时的门面调用回归，并补充真实 Service
+  注入测试。
+- 修复 Agent 私有 MCP 配置未进入运行时的问题：Turn 前按 Agent profile 建立连接、注册
+  scoped 工具视图；公共连接复用，禁用配置隔离，卸载时清理连接和工具。
+- 修复工作区 `.gitignore` 为 GBK/非 UTF-8 编码时无法追加 `.ftre/` 的问题，写回保留原编码
+  和换行风格。
+
+### F11 上下文压缩门控 Hook 化
+
+- 新增 `agent/after-turn` 控制型 Hook；SessionLane 固定为
+  `peek → pre-step → claim → Turn → after-turn`，压缩不再进入 Lane/ContextGate 实现。
+- 删除核心 ContextGate 与 compaction Service/Feature 目录；保留通用 maintenance 状态桥，
+  pending、blocked、取消和客户端 `compacting` 协议不变。
+- 新增可独立构建的 `packages/ftre-compaction`，集中提供 CompactionService、三条 Hook、
+ `/compact` 和 `/compress-fast`；未启用时核心 Gateway 正常运行且命令稳定返回不可用。
+- 压缩配置迁入 ftre-compaction.config，核心 AgentConfig 不再拥有压缩阈值或摘要模型；
+  清理无消费者的历史配置示例，并为独立包补充中文架构与生命周期说明。
 
 ## [0.2.5] - 2026-08-22
 

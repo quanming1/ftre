@@ -104,19 +104,12 @@ class LLMConfig:
 
 @dataclass
 class ContextConfig:
-    """上下文管理（压缩）配置 —— 对应 config.json 的 agents.context。
+    """Agent 数据面运行配置。
 
-    所有字段都有默认值，缺省即沿用代码内常量；旧配置零改动可用。
-    详细设计见文档 docs/context-management.md。
+    压缩阈值、摘要模型和安全余量属于可选 ``ftre-compaction`` 包，不能
+    再放在核心 AgentConfig。核心这里只保留 Mailbox 的容量边界。
     """
-    # 轮后预压缩水位：本轮收尾且存在下一条 pending 时，≥ 此值先完成摘要再领取下一条。
-    precompact_threshold: float = 0.7
-    # 强制压缩水位：用户发消息时检查，≥ 此值时阻塞式压缩
-    compact_threshold: float = 0.8
-    # 压缩目标比例：target = budget * consolidation_ratio
-    consolidation_ratio: float = 0.5
-    # 预算安全垫：budget = context_window - max_output - safety_buffer
-    safety_buffer: int = 1024
+
     # 同一 session 可接纳的 pending 请求上限，防止离线入口无限占用磁盘。
     mailbox_capacity: int = 100
 
@@ -135,11 +128,7 @@ class AgentConfig:
     # 配置项：agents.title_generation = {"provider": "...", "model": "..."}
     # 设计动机：标题生成是高频小请求，独立挂到便宜/快的模型上，避免占用主对话的高级模型配额。
     title_llm: LLMConfig | None = None
-    # 上下文压缩专用 LLM；None 表示沿用主 llm 配置。
-    # 配置项：agents.compact_generation = {"provider": "...", "model": "..."}
-    # 设计动机：压缩是后台高频长上下文调用，可用便宜/大窗口模型降低成本。
-    compact_llm: LLMConfig | None = None
-    # 上下文管理配置（步骤 6）
+    # 数据面运行配置。压缩策略不属于核心 AgentConfig，见 ftre-compaction.config。
     context: ContextConfig = field(default_factory=ContextConfig)
 
 
@@ -168,7 +157,7 @@ def _find_model_entry(provider: dict, model_id: str) -> dict:
     return {}
 
 
-def _build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfig:
+def build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfig:
     """
     根据顶层 config dict + provider + model id，构造一个 LLMConfig。
 
@@ -236,7 +225,8 @@ def load_config() -> AgentConfig:
 
     配置来源：
     - model / provider / workspace → ~/.ftre/agents/default/agent.config.json
-    - title_generation / compact_generation / context → config.json 的 agents 顶层
+    - title_generation / context.mailboxCapacity → config.json 的 agents 顶层
+    - 压缩相关的 agents.context 字段由可选 ftre-compaction 包自行解析
     - system_prompt → system_prompt.md 文件
     """
     global _last_config, _last_sig
@@ -279,7 +269,7 @@ def load_config() -> AgentConfig:
     if not isinstance(workspace, str):
         workspace = ""
 
-    llm = _build_llm_config(data, provider_name, model_id)
+    llm = build_llm_config(data, provider_name, model_id)
     default_effort = _read_default_agent_reasoning_effort()
     if default_effort is not None:
         llm.reasoning_effort = sanitize_agent_effort(default_effort, llm)
@@ -291,42 +281,29 @@ def load_config() -> AgentConfig:
         t_provider = title_cfg.get("provider", "") or ""
         t_model = title_cfg.get("model", "") or ""
         if t_provider and t_model:
-            built = _build_llm_config(data, t_provider, t_model)
+            built = build_llm_config(data, t_provider, t_model)
             # 没找到 model 条目时 built.model 为空 —— 此时不启用，回到主 llm 兜底
             if built.model:
                 title_llm = built
 
-    # 上下文压缩模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
-    compact_llm: LLMConfig | None = None
-    compact_cfg = agents_cfg.get("compact_generation") or {}
-    if isinstance(compact_cfg, dict):
-        c_provider = compact_cfg.get("provider", "") or ""
-        c_model = compact_cfg.get("model", "") or ""
-        if c_provider and c_model:
-            built = _build_llm_config(data, c_provider, c_model)
-            if built.model:
-                compact_llm = built
-
     # 系统提示词：从 system_prompt.md 文件加载
     system_prompt = _load_system_prompt()
 
-    # 上下文管理配置：agents.context（缺省即代码内默认值）
+    # 核心只解析队列容量；压缩包自己解析 agents.context。
     ctx_raw = agents_cfg.get("context") or {}
     if not isinstance(ctx_raw, dict):
         ctx_raw = {}
 
-    def _f(key_camel: str, key_snake: str, default):
-        # 兼容 camelCase 与 snake_case，前者优先
-        if key_camel in ctx_raw:
-            return ctx_raw[key_camel]
-        return ctx_raw.get(key_snake, default)
-
     context_cfg = ContextConfig(
-        precompact_threshold=float(_f("precompactThreshold", "precompact_threshold", 0.7)),
-        compact_threshold=float(_f("compactThreshold", "compact_threshold", _f("threshold", "threshold", 0.8))),
-        consolidation_ratio=float(_f("consolidationRatio", "consolidation_ratio", 0.5)),
-        safety_buffer=int(_f("safetyBuffer", "safety_buffer", 1024)),
-        mailbox_capacity=max(1, int(_f("mailboxCapacity", "mailbox_capacity", 100))),
+        mailbox_capacity=max(
+            1,
+            int(
+                ctx_raw.get(
+                    "mailboxCapacity",
+                    ctx_raw.get("mailbox_capacity", 100),
+                )
+            ),
+        ),
     )
 
     # 配置日志统一降为 DEBUG，避免每次重新加载刷屏
@@ -337,10 +314,7 @@ def load_config() -> AgentConfig:
         f"context_window={llm.context_window}, max_output={llm.max_output}, "
         f"workspace={workspace or '(default)'}, "
         f"title_llm={title_llm.model if title_llm else '(fallback to main)'}, "
-        f"compact_llm={compact_llm.model if compact_llm else '(fallback to main)'}, "
-        f"context: ratio={context_cfg.consolidation_ratio}, "
-        f"precompact={context_cfg.precompact_threshold}, "
-        f"compact={context_cfg.compact_threshold}, "
+        f"mailbox_capacity={context_cfg.mailbox_capacity}, "
         + (" (重新加载)" if config_changed else "")
     )
 
@@ -349,7 +323,6 @@ def load_config() -> AgentConfig:
         system_prompt=system_prompt,
         workspace=workspace,
         title_llm=title_llm,
-        compact_llm=compact_llm,
         context=context_cfg,
     )
 

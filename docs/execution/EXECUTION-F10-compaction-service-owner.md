@@ -101,3 +101,10 @@ passed
 - `src/ftre` 空目录为 0，`tests` 空目录为 0；
 - `git diff --check` 通过；
 - 工作区未提交，保留本阶段改动，未声称为 clean branch。
+
+## F11 后续变更
+
+F11 已完成后续拆包：当前主包不再包含 `services/compaction` 或
+`features/compaction`，压缩 Service、Hook、命令和算法位于
+`packages/ftre-compaction`。本报告保留 F10 当时的验收证据；当前架构以 F11 PRD 和
+执行报告为准。

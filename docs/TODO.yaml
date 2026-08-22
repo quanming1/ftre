@@ -645,3 +645,55 @@ stages:
           - id: F10.8
             title: 全量验收、文档同步与执行报告
             status: done
+
+      - id: F11
+        title: 上下文压缩门控 Hook 化与 SessionLane 解耦
+        status: done
+        prd: docs/prd/PRD-F11-compaction-gate-hook.md
+        prd_status: 已验收
+        depends_on:
+          - F6
+          - F10
+        modules:
+          - pyproject.toml
+          - src/ftre/services/agent/hooks.py
+          - src/ftre/services/agent_loop/runtime/mailbox/lane.py
+          - src/ftre/services/session/events.py
+          - packages/ftre-compaction/
+          - packages/ftre-compaction/src/ftre_compaction/config.py
+          - packages/ftre-compaction/tests/
+          - tests/contracts/
+          - tests/architecture/
+          - tests/lifecycle/
+        acceptance: 新增 agent/after-turn 控制型 Hook；主动压缩策略由可选 ftre-compaction 包唯一负责；SessionLane 不直接依赖 CompactionService/ContextGate，但仍保证 peek→Hook→claim、压缩与 Turn 不并发、失败保留 pending、状态和生命周期清理；未安装/未启用压缩包时 Gateway 和普通 Agent 流程正常运行；安装后自动/手动/快速压缩、overflow recovery、客户端协议和全量质量门禁保持通过；压缩包可独立构建和洁净安装
+        tasks:
+          - id: F11.1
+            title: after-turn Hook 契约与失败语义冻结
+            status: done
+          - id: F11.2
+            title: pre-step 强制压缩门控迁移
+            status: done
+          - id: F11.3
+            title: after-turn 轮后预压缩接入
+            status: done
+          - id: F11.4
+            title: SessionLane 压缩依赖与 ContextGate 清理
+            status: done
+          - id: F11.5
+            title: 状态、取消与 in-flight 生命周期桥接
+            status: done
+          - id: F11.6
+            title: pending、并发、失败与回归测试
+            status: done
+          - id: F11.7
+            title: 架构门禁、文档同步与最终验收
+            status: done
+          - id: F11.8
+            title: ftre-compaction 独立发行物拆包与入口
+            status: done
+          - id: F11.9
+            title: 可选安装、禁用卸载与洁净环境验收
+            status: done
+          - id: F11.10
+            title: 压缩配置 Owner 收敛、历史死配置清理与中文注释
+            status: done
