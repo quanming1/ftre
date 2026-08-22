@@ -132,9 +132,6 @@ def _make_executor(agent) -> TurnExecutor:
     loop.agent_manager._default_agent_state = Mock(return_value=_FakeState())
     loop.channel_manager = None
     loop.tool_registry = None
-    loop.compact_manager = AsyncMock()
-    loop.compact_manager.is_compacting = Mock(return_value=False)
-    loop.compact_manager.should_compact = AsyncMock(return_value=False)
     loop.command_manager = Mock()
     loop.command_manager.try_dispatch_system = AsyncMock(return_value=False)
     loop.command_manager.match = Mock(return_value=None)
@@ -216,12 +213,10 @@ def _enable_builtin_commands(executor):
 
     agents = SimpleNamespace(resume_confirmation=resume_confirmation)
     sessions = executor._loop.session_manager
-    compaction = SimpleNamespace()
     register_builtin_commands(
         service.runtime,
         agents=agents,
         sessions=sessions,
-        compaction=compaction,
     )
     executor._loop.command_service = service
     return service

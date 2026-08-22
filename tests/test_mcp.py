@@ -6,8 +6,18 @@ MCP 模块单元测试
 - 工具名映射（adapter.py）
 - 参数转换（adapter.py）
 """
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+from ftre_agent_core.tool import Tool
+
 from ftre.features.mcp.adapter import _convert_parameters, _parse_tool_name, mcp_tool_id
 from ftre.features.mcp.config import parse_mcp_config
+from ftre.features.mcp.connection import McpManager
+from ftre.features.mcp.service import McpService
+from ftre.services.tools import ToolService
 
 # ============================================================
 # 配置解析
@@ -236,3 +246,119 @@ class TestConvertParameters:
         )
         params = _convert_parameters(mcp_tool)
         assert params == []
+
+
+@pytest.mark.asyncio
+async def test_private_agent_mcp_is_loaded_into_agent_scope(monkeypatch):
+    """Merged profile config must activate private MCP and expose scoped tools."""
+    global_tool = Tool(name="mcp__global__search", description="search", func=lambda: "ok")
+
+    class _GlobalManager:
+        attachment_service = None
+        registered_tool_names = frozenset({global_tool.name})
+
+        async def start_and_register(self, _raw):
+            return None
+
+        async def reload_and_register(self, _raw, source="unknown"):
+            del source
+
+        async def stop(self):
+            return None
+
+        async def list_tools_for_servers(self, _names):
+            return []
+
+    global_manager = _GlobalManager()
+    tools = ToolService()
+    tools.register(global_tool, owner="mcp", source="mcp")
+    service = McpService(global_manager, tool_service=tools)
+    await service.start_and_register({
+        "global": {"type": "local", "command": ["global-server"]},
+    })
+
+    private_calls = []
+
+    async def fake_private_start(manager, raw):
+        private_calls.append(raw)
+        manager._connections["private"] = SimpleNamespace(
+            is_connected=True,
+            disconnect=lambda: _done(),
+        )
+
+    async def _done():
+        return None
+
+    async def no_global_tools(*_args):
+        return []
+
+    monkeypatch.setattr("ftre.features.mcp.service.build_mcp_tools_for_servers", no_global_tools)
+    monkeypatch.setattr("ftre.features.mcp.connection.McpManager.start_and_register", fake_private_start)
+
+    await service.prepare_agent("worker", {
+        "global": {"type": "local", "command": ["global-server"]},
+        "private": {"type": "local", "command": ["private-server"]},
+    })
+
+    assert private_calls == [
+        {"private": {"type": "local", "command": ["private-server"]}}
+    ]
+    assert tools.snapshot("worker")
+    await service.prepare_agent("worker-2", {
+        "global": {"type": "local", "command": ["global-server"]},
+        "private": {"type": "local", "command": ["private-server"]},
+    })
+    assert len(private_calls) == 1
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_agent_mcp_scope_can_hide_disabled_global_server():
+    global_tool = Tool(name="mcp__global__search", description="search", func=lambda: "ok")
+
+    class _GlobalManager:
+        attachment_service = None
+        registered_tool_names = frozenset({global_tool.name})
+
+        async def start_and_register(self, _raw):
+            return None
+
+        async def stop(self):
+            return None
+
+        async def list_tools_for_servers(self, _names):
+            return []
+
+    tools = ToolService()
+    tools.register(global_tool, owner="mcp", source="mcp")
+    service = McpService(_GlobalManager(), tool_service=tools)
+    await service.start_and_register({
+        "global": {"type": "local", "command": ["global-server"]},
+    })
+    await service.prepare_agent("worker", {
+        "global": {"type": "local", "command": ["global-server"], "disabled": True},
+    })
+
+    assert global_tool.name not in {item.name for item in tools.snapshot("worker")}
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_mcp_manager_registers_and_disposes_scoped_tools(monkeypatch):
+    tool = Tool(name="mcp__private__search", description="search", func=lambda: "ok")
+    tools = ToolService()
+    manager = McpManager(
+        tool_service=tools,
+        tool_scope="agent:worker",
+        tool_owner="mcp:worker",
+    )
+
+    async def fake_build(_manager):
+        return [tool]
+
+    monkeypatch.setattr("ftre.features.mcp.adapter.build_mcp_tools", fake_build)
+    await manager._register_tools()
+    assert [item.name for item in tools.snapshot("worker")] == [tool.name]
+
+    await manager.stop()
+    assert tools.snapshot("worker") == ()

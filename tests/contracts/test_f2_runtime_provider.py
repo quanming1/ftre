@@ -36,6 +36,8 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         "channel_manager": "channels",
         "event_hub": "events",
         "tool_registry": "tools",
+        "tool_service": services.tools,
+        "mcp_service": None,
         "command_service": services.commands,
         "plugin_manager": "plugins",
             "agent_manager": "profiles",

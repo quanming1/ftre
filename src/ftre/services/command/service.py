@@ -25,6 +25,10 @@ class CommandService:
     def parse(self, data: Any) -> CommandDef | None:
         return self.runtime.parse(data)
 
+    def is_command_input(self, data: Any) -> bool:
+        """Return whether an inbound user message is slash-command shaped."""
+        return self.runtime.text_from(data) is not None
+
     def match(self, data: Any) -> CommandDef | None:
         return self.runtime.match(data)
 

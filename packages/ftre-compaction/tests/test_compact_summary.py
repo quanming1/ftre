@@ -15,8 +15,9 @@ import pytest
 import pytest_asyncio
 from ftre_agent_core.event import CustomEvent
 from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
+from ftre_compaction.config import CompactionConfig
+from ftre_compaction.service import CompactionService
 
-from ftre.services.compaction.service import CompactionService
 from ftre.services.session.projection import SessionProjection
 from ftre.services.session.service import SessionService as SessionManager
 
@@ -24,8 +25,6 @@ from ftre.services.session.service import SessionService as SessionManager
 def _config() -> SimpleNamespace:
     return SimpleNamespace(
         llm=SimpleNamespace(context_window=100000, model="main-model"),
-        compact_llm=SimpleNamespace(model="summary-model"),
-        context=SimpleNamespace(compact_threshold=0.7),
     )
 
 
@@ -40,7 +39,14 @@ async def env(tmp_path):
         emitted.append(event)
         return await projection.apply(session_id, event)
 
-    compact = CompactionService(session_manager=manager, emit_event=emit_event)
+    compact = CompactionService(
+        session_manager=manager,
+        emit_event=emit_event,
+        default_config=CompactionConfig(
+            compact_threshold=0.7,
+            llm=SimpleNamespace(model="summary-model"),
+        ),
+    )
     yield manager, emitted, projection, compact
     await manager.close()
 
@@ -48,7 +54,7 @@ async def env(tmp_path):
 @pytest.mark.asyncio
 async def test_compact_generation_passes_reasoning_effort_to_handler(monkeypatch):
     """Context compaction forwards the selected LLM configuration's effort."""
-    from ftre.services.compaction import service as compact_manager
+    from ftre_compaction import service as compact_manager
 
     captured = {}
 
@@ -69,11 +75,12 @@ async def test_compact_generation_passes_reasoning_effort_to_handler(monkeypatch
         api_type="completions",
         reasoning_effort="none",
     )
-    config = SimpleNamespace(llm=llm, compact_llm=None)
+    config = SimpleNamespace(llm=llm)
 
     assert await compact._run_compact_llm(
         [{"role": "user", "content": [{"type": "text", "text": "summarize this"}]}],
         config=config,
+        compaction_config=CompactionConfig(),
     ) is None
     assert captured["reasoning_effort"] == "none"
     assert captured["api_type"] == "completions"
@@ -156,7 +163,7 @@ async def test_compact_start_uses_main_model_without_compact_override(env, monke
     await _seed(manager, sid, 1)
     monkeypatch.setattr(compact, "_run_compact_llm", AsyncMock(return_value="摘要"))
     config = _config()
-    config.compact_llm = None
+    compact._default_config = CompactionConfig(compact_threshold=0.7)
 
     await compact.compact(sid, "ws", config=config)
 

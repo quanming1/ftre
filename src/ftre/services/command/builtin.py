@@ -12,8 +12,6 @@ from ftre_agent_core.event import UserConfirmResultEvent
 from ftre_agent_core.message import ToolCallBlock, ToolCallState
 
 from ftre.services.agent import AgentService
-from ftre.services.agent.config import AgentConfig, load_config
-from ftre.services.compaction import CompactionService
 from ftre.services.session import SessionService
 from ftre.services.session.message.converter import _as_msg
 
@@ -28,8 +26,6 @@ def register_builtin_commands(
     *,
     agents: AgentService,
     sessions: SessionService,
-    compaction: CompactionService,
-    load_runtime_config: Callable[[], AgentConfig] = load_config,
 ) -> list[Callable[[], bool]]:
     """注册内置命令并返回所有 disposer。"""
 
@@ -100,36 +96,6 @@ def register_builtin_commands(
     async def on_deny(ctx: CommandContext) -> CommandResult:
         return await confirm(ctx, approved=False)
 
-    async def on_compact(ctx: CommandContext) -> CommandResult:
-        try:
-            await compaction.compact_now(
-                ctx.session_id,
-                ctx.channel_id,
-                config=load_runtime_config(),
-                focus_hint=(ctx.args or "").strip(),
-            )
-        except Exception as exc:
-            logger.exception("[command] /compact failed session=%s", ctx.session_id)
-            return CommandResult.error(f"压缩失败：{exc}")
-        return CommandResult.success()
-
-    async def on_compress_fast(ctx: CommandContext) -> CommandResult:
-        arg = (ctx.args or "").strip()
-        keep_turns = int(arg) if arg.isdigit() else 0
-        try:
-            await compaction.compress_fast(
-                ctx.session_id,
-                ctx.channel_id,
-                config=load_runtime_config(),
-                keep_turns=keep_turns,
-            )
-        except Exception as exc:
-            logger.exception(
-                "[command] /compress-fast failed session=%s", ctx.session_id
-            )
-            return CommandResult.error(f"快速压缩失败：{exc}")
-        return CommandResult.success()
-
     async def on_fork(ctx: CommandContext) -> CommandResult:
         if not ctx.session_id:
             return CommandResult.error("无法确定当前会话")
@@ -164,20 +130,6 @@ def register_builtin_commands(
             on_deny,
             description="拒绝一个或多个待确认工具调用",
             args_hint="<tool_id> [tool_id...]",
-            persist_input=False,
-        ),
-        runtime.register(
-            "/compact",
-            on_compact,
-            description="压缩当前会话上下文（可附提示词强调优先保留的内容）",
-            args_hint="[强调保留的内容]",
-            persist_input=False,
-        ),
-        runtime.register(
-            "/compress-fast",
-            on_compress_fast,
-            description="快速压缩：裁剪旧工具输出，不调 LLM（可附轮数保护最近 N 轮）",
-            args_hint="[保护最近轮数]",
             persist_input=False,
         ),
         runtime.register(

@@ -6,6 +6,7 @@ import pytest
 
 from ftre.features.schedule.scheduler import CronScheduler
 from ftre.features.schedule.service import ScheduleService
+from ftre.services.messaging.bus import MessageBusService
 
 
 class _Sessions:
@@ -19,6 +20,14 @@ class _Sessions:
 
 
 class _Bus:
+    def __init__(self) -> None:
+        self.messages = []
+
+    async def publish_inbound(self, message) -> None:
+        self.messages.append(message)
+
+
+class _EventBus:
     def __init__(self) -> None:
         self.messages = []
 
@@ -75,3 +84,22 @@ async def test_scheduler_concurrent_ticks_do_not_duplicate_or_leave_task(tmp_pat
     await scheduler.stop()
     await scheduler.stop()
     assert scheduler._task is None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_uses_message_bus_service_facade(tmp_path) -> None:
+    """The real Gateway injects MessageBusService, not the raw EventBus."""
+    schedule = ScheduleService(tmp_path)
+    schedule.create({
+        "id": "job_due",
+        "cron": "* * * * *",
+        "title": "due",
+        "prompt": "do it",
+        "created_at": 0,
+    })
+    underlying = _EventBus()
+    sessions = _Sessions()
+    scheduler = CronScheduler(schedule, sessions, MessageBusService(underlying))
+
+    assert await scheduler.tick(now=120) == 1
+    assert len(underlying.messages) == 1

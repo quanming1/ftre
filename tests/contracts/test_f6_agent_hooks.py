@@ -9,6 +9,7 @@ from cordis import Context
 from ftre.platform.hooks import HookRuntime
 from ftre.services.agent.config import AgentConfig
 from ftre.services.agent.hooks import (
+    AGENT_AFTER_TURN_SPEC,
     AGENT_INBOX_CLAIMED_SPEC,
     AGENT_INBOX_INSERTED_SPEC,
     AGENT_PRE_STEP_SPEC,
@@ -22,6 +23,7 @@ from ftre.services.agent.hooks import (
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
 from ftre.services.agent_loop.runtime.mailbox.lane import (
+    MaintenanceOperation,
     RequestAdmission,
     SessionLane,
     TurnOutcome,
@@ -71,14 +73,6 @@ class FakeMailbox:
 
     async def snapshot(self, _session_id):
         return MailboxState(pending=list(self.items))
-
-
-class PassGate:
-    async def before_claim(self, *_args):
-        return type("Decision", (), {"action": "pass", "reason": ""})()
-
-    async def after_turn(self, *_args):
-        return type("Decision", (), {"action": "pass", "reason": ""})()
 
 
 class FakeCompletion:
@@ -141,7 +135,6 @@ async def test_pre_step_runs_before_claim_and_keep_reject_preserves_pending():
     lane = SessionLane(
         "session-1",
         mailbox=mailbox,
-        context_gate=PassGate(),
         executor=FakeExecutor(),
         completion=FakeCompletion(),
         publish_snapshot=_publish,
@@ -174,7 +167,6 @@ async def test_pre_step_enter_claims_after_hook_and_executes_once():
     lane = SessionLane(
         "session-1",
         mailbox=mailbox,
-        context_gate=PassGate(),
         executor=executor,
         completion=FakeCompletion(),
         publish_snapshot=_publish,
@@ -202,7 +194,6 @@ async def test_pre_step_discard_claims_nothing_and_completes_cancelled():
     lane = SessionLane(
         "session-1",
         mailbox=mailbox,
-        context_gate=PassGate(),
         executor=FakeExecutor(),
         completion=completion,
         publish_snapshot=_publish,
@@ -320,7 +311,6 @@ async def test_inbox_observations_follow_real_mutations():
     lane = SessionLane(
         "session-1",
         mailbox=mailbox,
-        context_gate=PassGate(),
         executor=FakeExecutor(),
         completion=FakeCompletion(),
         publish_snapshot=_publish,
@@ -359,7 +349,6 @@ async def test_pre_step_cancellation_signal_is_set_before_lane_close():
     lane = SessionLane(
         "session-1",
         mailbox=FakeMailbox(_item()),
-        context_gate=PassGate(),
         executor=FakeExecutor(),
         completion=FakeCompletion(),
         publish_snapshot=_publish,
@@ -372,3 +361,45 @@ async def test_pre_step_cancellation_signal_is_set_before_lane_close():
     await lane.close()
     await asyncio.gather(worker, return_exceptions=True)
     assert seen and seen[0].is_set()
+
+
+@pytest.mark.asyncio
+async def test_after_turn_hook_runs_after_completion_and_before_lane_exits():
+    context = Context()
+    hooks = HookRuntime(context)
+    mailbox = FakeMailbox(_item())
+    observed: list[tuple[str, str]] = []
+
+    async def after_turn(payload, next_):
+        observed.append((payload.request_id, payload.status))
+        return await next_()
+
+    hooks.register(
+        AGENT_AFTER_TURN_SPEC,
+        after_turn,
+        owner="after-turn-test",
+        global_listener=True,
+    )
+    lane = SessionLane(
+        "session-1",
+        mailbox=mailbox,
+        executor=FakeExecutor(),
+        completion=FakeCompletion(),
+        publish_snapshot=_publish,
+        hooks=hooks,
+        agent_registry=AgentRegistry(),
+    )
+    await lane._drain()
+
+    assert observed == [("request-1", "completed")]
+
+
+def test_maintenance_hook_state_preserves_client_compacting_phase():
+    loop = object.__new__(AgentLoop)
+    loop.lanes = type(
+        "Lanes",
+        (),
+        {"operation_for": lambda _self, _session_id: MaintenanceOperation("pressure")},
+    )()
+
+    assert loop.get_session_status("session-1") == "compacting"

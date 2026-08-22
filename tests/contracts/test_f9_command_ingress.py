@@ -1,10 +1,13 @@
 """F8/F9 Command Plane ingress contracts."""
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from ftre.services.agent_loop.runtime.loop.completion_registry import CompletionRegistry
+from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
 from ftre.services.agent_loop.runtime.mailbox.lane import SessionLane
 from ftre.services.command import CommandResult, CommandService
 from ftre.services.messaging.bus import BusMessage
@@ -61,10 +64,75 @@ async def test_non_command_is_not_parsed_or_dispatched() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unregistered_slash_input_stays_on_command_plane() -> None:
+    service = CommandService()
+    inbound = _inbound("/compact")
+
+    assert service.is_command_input({"inbound": inbound}) is True
+    assert service.parse({"inbound": inbound}) is None
+    result = AgentLoop._unavailable_command_result()
+    assert result.kind == "error"
+    assert result.text == "命令不可用或未启用"
+
+
+@pytest.mark.asyncio
+async def test_unknown_slash_message_is_not_admitted_to_agent_lane() -> None:
+    class _Bus:
+        def __init__(self, inbound):
+            self.inbound = inbound
+            self.resolved = asyncio.Event()
+            self.result = None
+
+        async def subscribe_inbound(self):
+            yield self.inbound
+            await asyncio.Event().wait()
+
+        def resolve_inbound(self, _message_id, result):
+            self.result = result
+            self.resolved.set()
+            return True
+
+        def reject_inbound(self, _message_id, _error):
+            self.resolved.set()
+            return True
+
+        def stop_inbound(self):
+            return None
+
+    inbound = _inbound("/compact")
+    bus = _Bus(inbound)
+    lanes = SimpleNamespace(
+        recover=AsyncMock(),
+        submit=AsyncMock(),
+        dispatch_command=AsyncMock(),
+        cancel_active=AsyncMock(),
+    )
+    loop = object.__new__(AgentLoop)
+    loop.bus = bus
+    loop.commands = CommandService()
+    loop.lanes = lanes
+    loop.hooks = None
+    loop.agent_registry = object()
+    loop._agent_created_emitted = set()
+    loop.completions = CompletionRegistry()
+    loop.publish_command_result = AsyncMock()
+
+    task = asyncio.create_task(loop._consume())
+    await bus.resolved.wait()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert bus.result.accepted is True
+    lanes.submit.assert_not_awaited()
+    lanes.dispatch_command.assert_not_awaited()
+    loop.publish_command_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_session_lane_command_does_not_admit_or_execute_turn() -> None:
     service = CommandService()
-    service.register("/compact", lambda _ctx: CommandResult.success())
-    inbound = _inbound("/compact")
+    service.register("/hello", lambda _ctx: CommandResult.success())
+    inbound = _inbound("/hello")
     command = service.parse({"inbound": inbound})
 
     mailbox = type("Mailbox", (), {})()
@@ -78,7 +146,6 @@ async def test_session_lane_command_does_not_admit_or_execute_turn() -> None:
     lane = SessionLane(
         "session-1",
         mailbox=mailbox,
-        context_gate=object(),
         executor=executor,
         completion=CompletionRegistry(),
         publish_snapshot=publish_snapshot,

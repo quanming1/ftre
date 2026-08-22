@@ -1,6 +1,6 @@
 [project]
 name = "ftre"
-version = "0.2.4"
+version = "0.2.6"
 description = "ftre - AI 编程助手"
 requires-python = ">=3.12"
 license = {text = "MIT"}
@@ -8,7 +8,7 @@ dependencies = [
     # The official Cordis runtime is installed as the cordis-py distribution;
     # ftre intentionally does not ship a same-name fallback implementation.
     "cordis-py==0.4.0",
-    "ftre-agent-core>=0.1.0",
+    "ftre-agent-core>=0.1.1",
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.20.0",
     "croniter>=2.0.0",

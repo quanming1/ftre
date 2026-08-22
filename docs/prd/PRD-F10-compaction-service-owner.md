@@ -289,3 +289,11 @@ service.bind_event_emitter(emit_event)
 | 2026-08-22 | 创建 F10 草稿：将 Compaction 实现迁入 Service，删除 CompactionPort，Feature 只保留 Hook 行为 | 当前只有一个压缩实现，Port 增加了不必要的跨层抽象和维护成本 |
 | 2026-08-22 | 完成 F10：Service Owner 迁移、Feature Hook 拆分、Port/旧实现删除；404 项全量测试、ruff、YAML、diff check 和 Composition 回归通过 | 让压缩能力回到公共 Service 层并减少抽象层级 |
 | 2026-08-22 | 收尾审计将 `NullCompactionService` 收紧为 Service 模块内部 fallback，并补充 unload 取消 in-flight Task 测试；最终全量 405 项通过 | 避免 No-op 类型成为第二个公共 Owner，并补齐生命周期证据 |
+
+### F11 后续架构变更说明
+
+F11 已将本 PRD 的 Service Owner 实现进一步移入可选发行物
+`packages/ftre-compaction`。因此本 PRD 中 `src/ftre/services/compaction`、
+`src/ftre/features/compaction`、ContextGate 以及“默认必选 compaction Plugin”的描述
+均为 F10 历史基线；当前实现和验收以
+[`PRD-F11-compaction-gate-hook.md`](PRD-F11-compaction-gate-hook.md) 为准。

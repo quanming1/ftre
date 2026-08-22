@@ -397,11 +397,15 @@ class TurnExecutor:
         # ── 创建本轮私有 Agent；取消由 SessionLane 持有的 Turn task 传播 ──
         assert loop.agent_manager is not None, "agent_manager must be provided"
         core_hooks, core_hook_context = self._core_hook_binding(turn)
+        agent_id = agent_profile.agent_id if agent_profile is not None else (
+            inbound.metadata.agent_id or "default"
+        )
+        tool_registry = await loop.tool_registry_for_agent(agent_id, agent_profile)
         agent = loop.agent_manager.create_agent(
             profile=agent_profile,
             config=hook_config,
             channel_manager=loop.channel_manager,
-            tool_registry=loop.tool_registry,
+            tool_registry=tool_registry,
             tracer=loop.tracer,
             channel_id=inbound.from_channel,
             session_id=session_id,
@@ -488,11 +492,15 @@ class TurnExecutor:
 
         assert loop.agent_manager is not None, "agent_manager must be provided"
         core_hooks, core_hook_context = self._core_hook_binding(turn)
+        agent_id = agent_profile.agent_id if agent_profile is not None else (
+            inbound.metadata.agent_id or "default"
+        )
+        tool_registry = await loop.tool_registry_for_agent(agent_id, agent_profile)
         agent = loop.agent_manager.create_agent(
             profile=agent_profile,
             config=hook_config,
             channel_manager=loop.channel_manager,
-            tool_registry=loop.tool_registry,
+            tool_registry=tool_registry,
             tracer=loop.tracer,
             channel_id=inbound.from_channel,
             session_id=session_id,
@@ -866,7 +874,7 @@ class TurnExecutor:
     async def resolve_inbound_config(
         self, inbound: BusMessage, *, turn_id: str
     ) -> tuple[AgentConfig, "AgentProfile | None"]:
-        """解析压缩门控和实际执行共同使用的精确配置快照。"""
+        """解析 Hook 门控和实际执行共同使用的精确配置快照。"""
         turn = Turn(
             turn_id=turn_id,
             inbound=inbound,
@@ -879,8 +887,8 @@ class TurnExecutor:
     ) -> tuple[AgentConfig, "AgentProfile | None"]:
         """取得并缓存本 Turn 真正使用的 Agent 配置。
 
-        context_window、模型调用和回复结束后的轮后压缩屏障必须来自同一份快照。
-        不能在 compact 判断时只读全局/default 配置，再在 _build 阶段才覆盖
+        context_window、模型调用和回复结束后的轮后 Hook 屏障必须来自同一份快照。
+        不能在 Hook 判断时只读全局/default 配置，再在 _build 阶段才覆盖
         per-agent LLM；否则不同窗口大小的 Agent 会产生错误压缩。
 
         profile 解析优先级：

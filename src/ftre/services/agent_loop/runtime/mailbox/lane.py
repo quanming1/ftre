@@ -1,7 +1,7 @@
 """AgentLoop 内部的 SessionLane。
 
 一个 Lane 对应一个 session，是“同 session 串行”的唯一所有者：它从 MailboxStore
-领取队首请求、穿过 ContextGate、交给 TurnExecutor，再领取下一条。
+领取队首请求、穿过 Agent Hook、交给 TurnExecutor，再领取下一条。
 Channel、Bus、HTTP 和工具都不能绕过它直接运行 Turn。
 """
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from ftre.platform.hooks import HookRuntime, HookSpec
 from ftre.services.agent.hooks import (
+    AGENT_AFTER_TURN_SPEC,
     AGENT_ERROR_SPEC,
     AGENT_INBOX_CLAIMED_SPEC,
     AGENT_INBOX_DISCARDED_SPEC,
@@ -23,6 +24,7 @@ from ftre.services.agent.hooks import (
     AGENT_PRE_STEP_SPEC,
     AGENT_SESSION_START_SPEC,
     AGENT_STATUS_SPEC,
+    AfterTurnPayload,
     AgentInboxPayload,
     AgentLifecyclePayload,
     AgentSubject,
@@ -39,7 +41,6 @@ from ftre.services.session.entity.state import MailboxState, QueueItem
 from ftre.services.session.service import RequestAdmission
 
 from ..loop.completion_registry import CompletionRegistry
-from ..loop.context_gate import ContextGate
 from ..loop.turn_executor import TurnExecutor, TurnOutcome
 from .store import MailboxStore
 
@@ -71,12 +72,12 @@ class TurnOperation:
     task: asyncio.Task | None
     cancellation: asyncio.Event
     # 运行态不写入 state.json。一个字段足以说明当前 Turn 是执行、取消还是手工压缩。
-    state: Literal["running", "cancelling", "compacting"] = "running"
+    state: Literal["running", "cancelling"] = "running"
 
 
 @dataclass
-class CompactOperation:
-    """Lane 正在等待的 ContextGate；与 TurnOperation 互斥。"""
+class MaintenanceOperation:
+    """Lane 正在等待一个由 Hook 托管的维护操作。"""
 
     reason: str
 
@@ -96,7 +97,6 @@ class SessionLane:
         session_id: str,
         *,
         mailbox: MailboxStore,
-        context_gate: ContextGate,
         executor: TurnExecutor,
         completion: CompletionRegistry,
         publish_snapshot: SnapshotPublisher,
@@ -107,7 +107,6 @@ class SessionLane:
     ) -> None:
         self.session_id = session_id
         self._mailbox = mailbox
-        self._context_gate = context_gate
         self._executor = executor
         self._completion = completion
         self._publish_snapshot = publish_snapshot
@@ -116,11 +115,10 @@ class SessionLane:
         self._hooks = hooks
         self._agent_registry = agent_registry or AgentRegistry()
         self._worker: asyncio.Task | None = None
-        self._operation: TurnOperation | CompactOperation | BlockedOperation | None = None
-        # Pre-step 尚未 claim，因此不算 active operation；仍保留它的独立 signal，
-        # 让 close 能通知正在等待策略的 Hook，而不取消整个 Lane worker。
-        self._pre_step_signal: asyncio.Event | None = None
-        self._pre_step_request_id = ""
+        self._operation: TurnOperation | MaintenanceOperation | BlockedOperation | None = None
+        # Hook 运行在 claim 前、Turn 中和 after-turn 维护阶段；同一个 signal
+        # 贯穿整个候选生命周期，close 可以在任一阶段通知 Hook 收尾。
+        self._turn_signal: asyncio.Event | None = None
         self._closed = False
         # admission_lock 同时保护 submit/close：close 一旦获锁后，不会再接纳新请求。
         self._admission_lock = asyncio.Lock()
@@ -130,7 +128,7 @@ class SessionLane:
         return self._closed
 
     @property
-    def operation(self) -> TurnOperation | CompactOperation | BlockedOperation | None:
+    def operation(self) -> TurnOperation | MaintenanceOperation | BlockedOperation | None:
         return self._operation
 
     async def submit(self, inbound: BusMessage) -> AdmissionResult:
@@ -341,6 +339,25 @@ class SessionLane:
                     self._operation = None
             await self._mailbox.advance_revision(self.session_id)
             await self._publish_snapshot(self.session_id)
+            try:
+                await self._after_turn(
+                    item,
+                    turn_id,
+                    cancellation,
+                    channel_id=inbound.from_channel,
+                    config=config,
+                    status=outcome.status,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[session-lane] confirmation after-turn failed session=%s",
+                    self.session_id,
+                )
+                self._operation = BlockedOperation(
+                    f"after-turn maintenance failed: {exc}"
+                )
+                await self._mailbox.advance_revision(self.session_id)
+                await self._publish_snapshot(self.session_id)
             return outcome
 
     @staticmethod
@@ -363,7 +380,7 @@ class SessionLane:
             )
 
     async def _drain(self) -> None:
-        """严格顺序：pending → ContextGate → 内存 Turn → 下一条。"""
+        """严格顺序：pending → agent/pre-step → claim → Turn → agent/after-turn。"""
         try:
             while not self._closed:
                 # 这里只查看队首，不立即 claim：队首仍属于 pending，
@@ -372,39 +389,26 @@ class SessionLane:
                 if item is None:
                     return
 
-                # 每条消息可能来自不同 agent 配置；必须先解析本条消息的上下文窗口，
-                # 再用对应的 80% 强制水位做领取前检查。
+                # 每条消息可能来自不同 agent 配置；具体维护策略由 Hook 决定，
+                # Lane 只负责在 claim 前提供完整上下文。
                 channel_id = await self._mailbox.channel_id(self.session_id)
                 inbound = self._to_inbound(item, channel_id)
                 config, profile = await self._executor.resolve_inbound_config(
                     inbound, turn_id=f"config_{item.request_id}"
                 )
-                before = await self._context_gate.before_claim(
-                    self.session_id, channel_id, config, item
-                )
-                if before.action == "compact":
-                    # 压缩完成前不领取队首，因此后续 pending 消息也不会被压缩遗漏。
-                    if not await self._compact_or_block(channel_id, config, before.reason):
-                        return
-                    # compact 后上下文已变化，重新对同一队首做安全判断。
-                    continue
-
                 turn_id = f"turn_{uuid.uuid4().hex[:12]}"
-                pre_step_signal = asyncio.Event()
-                self._pre_step_signal = pre_step_signal
-                self._pre_step_request_id = item.request_id
-                try:
-                    pre_step = await self._pre_step(
-                        item,
-                        turn_id,
-                        pre_step_signal,
-                        channel_id=channel_id,
-                        config=config,
-                    )
-                finally:
-                    self._pre_step_signal = None
-                    self._pre_step_request_id = ""
-                if pre_step_signal.is_set():
+                turn_signal = asyncio.Event()
+                self._turn_signal = turn_signal
+                pre_step = await self._pre_step(
+                    item,
+                    turn_id,
+                    turn_signal,
+                    channel_id=channel_id,
+                    config=config,
+                )
+                if isinstance(self._operation, MaintenanceOperation):
+                    await self.set_maintenance(False)
+                if turn_signal.is_set():
                     # 被 close/cancel signal 中断时，候选仍属于 pending；下一次
                     # admission 或 recovery 会重新进入状态机，不发生隐式丢弃。
                     return
@@ -454,7 +458,7 @@ class SessionLane:
                     item=item,
                     turn_id=turn_id,
                     task=None,
-                    cancellation=pre_step_signal,
+                    cancellation=turn_signal,
                 )
                 self._operation = operation
                 await self._emit_agent_observation(
@@ -474,7 +478,7 @@ class SessionLane:
                 # 旧测试替身和极窄的 Executor Protocol 可以不接收 signal；真实
                 # TurnExecutor 接收它并将同一个 Event 贯穿 request/error/stopping。
                 if "cancellation" in inspect.signature(self._executor.execute).parameters:
-                    execute_kwargs["cancellation"] = pre_step_signal
+                    execute_kwargs["cancellation"] = turn_signal
                 task = asyncio.create_task(
                     self._executor.execute(inbound, **execute_kwargs),
                     name=f"turn:{self.session_id}:{turn_id}",
@@ -509,16 +513,15 @@ class SessionLane:
                 await self._completion.complete(self.session_id, item.request_id, outcome)
                 await self._publish_snapshot(self.session_id)
 
-                # 70% 关口在 Turn 完整结束后：无论队列中是否还有等待请求都检查。
-                # 队列空也预压缩——空闲会话在收尾时把上下文清干净，下一条消息到达
-                # 时无需同步等待压缩，客户端气泡也在 turn 结束时立即出现（而不是
-                # 等用户再发一条消息触发 before_claim 的 80% 强制水位才压缩）。
-                after = await self._context_gate.after_turn(
-                    self.session_id, channel_id, config
+                await self._after_turn(
+                    item,
+                    turn_id,
+                    turn_signal,
+                    channel_id=channel_id,
+                    config=config,
+                    status=outcome.status,
                 )
-                if after.action == "compact" and not await self._compact_or_block(
-                    channel_id, config, after.reason
-                ):
+                if turn_signal.is_set() and self._closed:
                     return
         except Exception:
             logger.exception("[session-lane] worker 异常 session=%s", self.session_id)
@@ -534,6 +537,7 @@ class SessionLane:
             await self._mailbox.advance_revision(self.session_id)
             await self._publish_snapshot(self.session_id)
         finally:
+            self._turn_signal = None
             self._worker = None
 
     async def _pre_step(
@@ -557,11 +561,44 @@ class SessionLane:
             cancellation=cancellation,
             channel_id=channel_id,
             config=config,
+            set_maintenance=self.set_maintenance,
         )
         carrier = self._agent_registry.scope_carrier(item.agent_id)
         scope_context = self._hooks.context_for_scope(carrier)
         return await self._hooks.dispatch(
             AGENT_PRE_STEP_SPEC, payload, context=scope_context
+        )
+
+    async def _after_turn(
+        self,
+        item: QueueItem,
+        turn_id: str,
+        cancellation: asyncio.Event,
+        *,
+        channel_id: str,
+        config,
+        status: str,
+    ) -> None:
+        """等待所有 after-turn Hook 完成，再允许 Lane 领取下一条消息。"""
+        if self._hooks is None:
+            return
+        record = self._agent_registry.ensure(item.agent_id)
+        payload = AfterTurnPayload(
+            agent=AgentSubject(item.agent_id, record.identity),
+            session_id=self.session_id,
+            turn_id=turn_id,
+            request_id=item.request_id,
+            status=status,
+            cancellation=cancellation,
+            channel_id=channel_id,
+            config=config,
+            set_maintenance=self.set_maintenance,
+        )
+        carrier = self._agent_registry.scope_carrier(item.agent_id)
+        await self._hooks.dispatch(
+            AGENT_AFTER_TURN_SPEC,
+            payload,
+            context=self._hooks.context_for_scope(carrier),
         )
 
     async def _emit_agent_observation(
@@ -628,23 +665,16 @@ class SessionLane:
         except Exception:
             logger.exception("[session-lane] agent/error observation failed")
 
-    async def _compact_or_block(self, channel_id: str, config, reason: str) -> bool:
-        """压缩期间不 claim 用户请求，因此其内容绝不会提前进入 LLM 上下文。"""
-        self._operation = CompactOperation(reason)
-        # compacting 是瞬时状态，不保存为磁盘 active；revision 让客户端仍能
-        # 区分这张快照与相同 pending 内容下的 idle/running 快照。
+    async def set_maintenance(self, active: bool, reason: str = "") -> None:
+        """Hook 的通用维护状态桥；Lane 只负责状态和快照，不理解维护语义。"""
+        if active:
+            self._operation = MaintenanceOperation(reason or "agent maintenance")
+        elif isinstance(self._operation, MaintenanceOperation):
+            self._operation = None
+        else:
+            return
         await self._mailbox.advance_revision(self.session_id)
         await self._publish_snapshot(self.session_id)
-        decision = await self._context_gate.compact(self.session_id, channel_id, config)
-        if decision.action == "block":
-            self._operation = BlockedOperation(decision.reason)
-            await self._mailbox.advance_revision(self.session_id)
-            await self._publish_snapshot(self.session_id)
-            return False
-        self._operation = None
-        await self._mailbox.advance_revision(self.session_id)
-        await self._publish_snapshot(self.session_id)
-        return True
 
     def _to_inbound(self, item: QueueItem, channel_id: str) -> BusMessage:
         """从最小 QueueItem 恢复一次进程内 Bus 信封。
@@ -676,26 +706,12 @@ class SessionLane:
             return False
         if expected_request_id and operation.item.request_id != expected_request_id:
             return False
-        if operation.state == "compacting":
-            # 摘要是共享一致性操作；普通 /cancel 不允许留下“压缩仍跑、下一轮已开始”。
-            return False
         operation.state = "cancelling"
         operation.cancellation.set()
         if operation.task is None:
             return False
         operation.task.cancel()
         # cancelling 不改变 pending，必须单独推进快照版本。
-        await self._mailbox.advance_revision(self.session_id)
-        await self._publish_snapshot(self.session_id)
-        return True
-
-    async def set_turn_compacting(self, value: bool) -> bool:
-        """手工 /compact 仍属于当前 Turn，但客户端状态必须准确显示为 compacting。"""
-        operation = self._operation
-        if not isinstance(operation, TurnOperation):
-            return False
-        operation.state = "compacting" if value else "running"
-        # 手工 /compact 的状态也仅存在内存；同样使用版本推进通知客户端。
         await self._mailbox.advance_revision(self.session_id)
         await self._publish_snapshot(self.session_id)
         return True
@@ -720,7 +736,7 @@ class SessionLane:
 
     async def close(self) -> None:
         """关闭栅栏先立起，再停止 worker；close 与 submit 不会交错接纳。"""
-        # 关闭必须等待 worker/compaction 真正退出，不能只取消 Task 引用后立即删 session。
+        # 关闭必须等待 worker 与其当前 Hook 真正退出，不能只取消 Task 引用后立即删 session。
         async with self._admission_lock:
             self._closed = True
             worker = self._worker
@@ -728,17 +744,10 @@ class SessionLane:
             if isinstance(operation, TurnOperation) and operation.task is not None:
                 operation.cancellation.set()
                 operation.task.cancel()
-            if self._pre_step_signal is not None:
-                self._pre_step_signal.set()
+            if self._turn_signal is not None:
+                self._turn_signal.set()
             if worker is not None and worker is not asyncio.current_task():
                 worker.cancel()
-        # 共享压缩任务的普通等待使用 shield。会话关闭时，不论是队列门控压缩，
-        # 还是当前 Turn 发起的手工压缩，都必须取消真实任务，避免 worker 停止后
-        # 摘要任务仍在后台写入一个已经删除/关闭的会话。
-        if isinstance(operation, CompactOperation) or (
-            isinstance(operation, TurnOperation) and operation.state == "compacting"
-        ):
-            await self._context_gate.cancel(self.session_id)
         if worker is not None and worker is not asyncio.current_task():
             await asyncio.gather(worker, return_exceptions=True)
         # stop/close 不重放已经领取的任务；运行态随进程结束，messages 保留已落盘内容。
@@ -755,7 +764,6 @@ class SessionLaneRegistry:
         self,
         *,
         mailbox: MailboxStore,
-        context_gate: ContextGate,
         executor: TurnExecutor,
         completion: CompletionRegistry,
         publish_snapshot: SnapshotPublisher,
@@ -765,7 +773,6 @@ class SessionLaneRegistry:
         agent_registry: AgentRegistry | None = None,
     ) -> None:
         self._mailbox = mailbox
-        self._context_gate = context_gate
         self._executor = executor
         self._completion = completion
         self._publish_snapshot = publish_snapshot
@@ -847,7 +854,6 @@ class SessionLaneRegistry:
         return SessionLane(
             session_id,
             mailbox=self._mailbox,
-            context_gate=self._context_gate,
             executor=self._executor,
             completion=self._completion,
             publish_snapshot=self._publish_snapshot,
@@ -859,7 +865,7 @@ class SessionLaneRegistry:
 
     def operation_for(
         self, session_id: str
-    ) -> TurnOperation | CompactOperation | BlockedOperation | None:
+    ) -> TurnOperation | MaintenanceOperation | BlockedOperation | None:
         """同步读取 Lane 瞬时操作，供 AgentLoop 构造公开快照使用。"""
         lane = self._lanes.get(session_id)
         return lane.operation if lane is not None else None
@@ -878,10 +884,6 @@ class SessionLaneRegistry:
     async def cancel_active(self, session_id: str, expected_request_id: str = "") -> bool:
         lane = await self.lane_for(session_id)
         return await lane.cancel_active(expected_request_id) if lane is not None else False
-
-    async def set_turn_compacting(self, session_id: str, value: bool) -> bool:
-        lane = await self.lane_for(session_id)
-        return await lane.set_turn_compacting(value) if lane is not None else False
 
     async def cancel_pending(self, session_id: str, request_id: str) -> QueueItem | None:
         async with self._lock:
