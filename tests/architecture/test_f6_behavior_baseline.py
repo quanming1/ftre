@@ -23,8 +23,8 @@ BASELINE_TESTS = {
     ),
     "command": ("tests/test_confirm_commands.py", "tests/test_ws_control_commands.py"),
     "compaction": (
-        "tests/test_compact_algo.py",
-        "tests/test_compact_summary.py",
+        "packages/ftre-compaction/tests/test_compact_algo.py",
+        "packages/ftre-compaction/tests/test_compact_summary.py",
         "tests/test_turn_lifecycle.py",
     ),
 }

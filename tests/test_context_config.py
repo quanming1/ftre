@@ -123,7 +123,7 @@ def test_default_agent_effort_kept_for_model_with_reasoning_config(monkeypatch):
 
 
 def test_build_llm_config_reads_reasoning_effort_values():
-    """_build_llm_config 从模型条目读取 reasoning_effort_values。"""
+    """build_llm_config 从模型条目读取 reasoning_effort_values。"""
     data = {
         "providers": {
             "openai": {
@@ -136,83 +136,70 @@ def test_build_llm_config_reads_reasoning_effort_values():
             },
         },
     }
-    assert ftre_config._build_llm_config(data, "openai", "m1").reasoning_effort_values == (
+    assert ftre_config.build_llm_config(data, "openai", "m1").reasoning_effort_values == (
         "low",
         "high",
     )
-    assert ftre_config._build_llm_config(data, "openai", "m2").reasoning_effort_values == ()
+    assert ftre_config.build_llm_config(data, "openai", "m2").reasoning_effort_values == ()
 
 
 def test_context_defaults_when_missing(fake_config):
     cfg = fake_config({"agents": {"title_generation": {"provider": "x", "model": "y"}}})
     assert isinstance(cfg.context, ContextConfig)
-    assert cfg.context.precompact_threshold == 0.7
-    assert cfg.context.compact_threshold == 0.8
-    assert cfg.context.consolidation_ratio == 0.5
-    assert cfg.context.safety_buffer == 1024
+    assert cfg.context.mailbox_capacity == 100
 
 
 def test_context_camel_case(fake_config):
     cfg = fake_config({
         "agents": {
             "context": {
-                "precompactThreshold": 0.45,
-                "compactThreshold": 0.7,
-                "consolidationRatio": 0.4,
-                "safetyBuffer": 2048,
+                "mailboxCapacity": 42,
             }
         }
     })
-    assert cfg.context.precompact_threshold == 0.45
-    assert cfg.context.compact_threshold == 0.7
-    assert cfg.context.consolidation_ratio == 0.4
-    assert cfg.context.safety_buffer == 2048
+    assert cfg.context.mailbox_capacity == 42
 
 
 def test_context_snake_case_also_works(fake_config):
     cfg = fake_config({
         "agents": {
             "context": {
-                "precompact_threshold": 0.4,
-                "compact_threshold": 0.8,
-                "consolidation_ratio": 0.6,
-                "safety_buffer": 512,
+                "mailbox_capacity": 24,
             }
         }
     })
-    assert cfg.context.precompact_threshold == 0.4
-    assert cfg.context.compact_threshold == 0.8
-    assert cfg.context.consolidation_ratio == 0.6
-    assert cfg.context.safety_buffer == 512
+    assert cfg.context.mailbox_capacity == 24
 
 
-def test_context_legacy_threshold_maps_to_compact_threshold(fake_config):
+def test_context_compaction_fields_are_not_owned_by_core(fake_config):
     cfg = fake_config({
         "agents": {
             "context": {
-                "threshold": 0.75,
+                "compactThreshold": 0.75,
+                "safetyBuffer": 2048,
             }
         }
     })
-    assert cfg.context.precompact_threshold == 0.7
-    assert cfg.context.compact_threshold == 0.75
+    assert cfg.context.mailbox_capacity == 100
+    assert not hasattr(cfg.context, "compact_threshold")
+    assert not hasattr(cfg.context, "safety_buffer")
 
 
 def test_context_camel_takes_precedence_over_snake(fake_config):
     cfg = fake_config({
         "agents": {
             "context": {
-                "consolidationRatio": 0.5,
-                "consolidation_ratio": 0.9,  # 应被 camelCase 覆盖
+                "mailboxCapacity": 50,
+                "mailbox_capacity": 90,  # camelCase 优先
             }
         }
     })
-    assert cfg.context.consolidation_ratio == 0.5
+    assert cfg.context.mailbox_capacity == 50
 
 
 def test_context_invalid_payload_falls_back_to_defaults(fake_config):
     cfg = fake_config({"agents": {"context": "not-a-dict"}})
-    assert cfg.context.consolidation_ratio == 0.5  # 默认
+    assert cfg.context.mailbox_capacity == 100  # 默认
 
 
 def test_load_config_with_no_data_returns_default_agent_config(monkeypatch):

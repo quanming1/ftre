@@ -178,9 +178,17 @@ class McpManager:
         self,
         tool_registry: ToolRegistry | None = None,
         attachment_service: AttachmentService | None = None,
+        tool_service=None,
+        tool_scope: str = "global",
+        tool_owner: str = "mcp",
     ):
         self._connections: dict[str, McpConnection] = {}
         self._tool_registry = tool_registry
+        self._tool_service = tool_service
+        self._tool_scope = tool_scope
+        self._tool_owner = tool_owner
+        self._tool_disposers: list[object] = []
+        self._registered_tool_names: set[str] = set()
         self._attachments = attachment_service
         self._reload_lock = asyncio.Lock()
         self._watcher_task: asyncio.Task | None = None
@@ -202,10 +210,7 @@ class McpManager:
             return_exceptions=True,
         )
         self._connections.clear()
-        if self._tool_registry is not None:
-            for name in list(self._tool_registry.names):
-                if name.startswith("mcp__"):
-                    self._tool_registry.unregister(name)
+        self._dispose_registered_tools()
         logger.info("[mcp] 所有连接已断开")
 
     async def reload_and_register(self, raw_mcp: dict, source: str = "unknown") -> None:
@@ -323,22 +328,44 @@ class McpManager:
         )
 
     async def _register_tools(self) -> None:
-        """刷新 tool_registry 里的 MCP 工具（先移除旧的，再注册新的）。"""
-        if self._tool_registry is None:
+        """刷新当前作用域的 MCP 工具，并绑定可逆的 ToolService disposer。"""
+        if self._tool_registry is None and self._tool_service is None:
             return
-        from .adapter import MCP_TOOL_PREFIX, build_mcp_tools
+        self._dispose_registered_tools()
+        from .adapter import build_mcp_tools
 
-        # 移除旧的 MCP 工具（通过公共 API，同时清理 _tools 和 _inject_map）
-        for name in list(self._tool_registry.names):
-            if name.startswith(MCP_TOOL_PREFIX):
-                self._tool_registry.unregister(name)
         mcp_tools = await build_mcp_tools(self)
         for tool in mcp_tools:
-            try:
+            if self._tool_service is not None:
+                disposer = self._tool_service.register(
+                    tool,
+                    owner=self._tool_owner,
+                    scope=self._tool_scope,
+                    source="mcp",
+                )
+                self._tool_disposers.append(disposer)
+            else:
                 self._tool_registry.register(tool)
-            except ValueError:
-                pass  # 已注册则跳过
+            self._registered_tool_names.add(tool.name)
         logger.info(f"[mcp] 注册 {len(mcp_tools)} 个 MCP 工具")
+
+    def _dispose_registered_tools(self) -> None:
+        """Remove only tools owned by this manager; never clear another scope."""
+        for disposer in self._tool_disposers:
+            try:
+                disposer()
+            except Exception:
+                logger.debug("[mcp] tool disposer failed", exc_info=True)
+        self._tool_disposers.clear()
+        if self._tool_registry is not None:
+            for name in self._registered_tool_names:
+                self._tool_registry.unregister(name)
+        self._registered_tool_names.clear()
+
+    @property
+    def registered_tool_names(self) -> frozenset[str]:
+        """Return the MCP tools currently contributed by this manager."""
+        return frozenset(self._registered_tool_names)
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
         """调用指定服务器的工具"""

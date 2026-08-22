@@ -90,9 +90,6 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop.agent_manager.create_agent = Mock(return_value=agent)
     loop.channel_manager = None
     loop.tool_registry = None
-    loop.compact_manager = AsyncMock()
-    loop.compact_manager.is_compacting = Mock(return_value=False)
-    loop.compact_manager.should_compact = AsyncMock(return_value=False)
     loop.command_manager = Mock()
     loop.command_manager.try_dispatch_system = AsyncMock(return_value=False)
     loop.command_manager.match = Mock(return_value=None)
@@ -158,10 +155,9 @@ async def test_user_msg_is_persisted_before_agent_run():
 
 
 @pytest.mark.asyncio
-async def test_turn_executor_does_not_drop_message_when_compactor_is_busy(caplog):
+async def test_turn_executor_does_not_drop_message_when_maintenance_is_external(caplog):
     agent = FakeAgent()
     executor = _make_executor(agent)
-    executor._loop.compact_manager.is_compacting.return_value = True
 
     with caplog.at_level("WARNING"):
         await executor.execute(_inbound())
@@ -220,14 +216,11 @@ async def test_channel_mismatch_is_failed_instead_of_false_completed():
 
 
 @pytest.mark.asyncio
-async def test_turn_executor_no_longer_owns_critical_path_compaction():
+async def test_turn_executor_has_no_critical_path_compaction_owner():
     executor = _make_executor(FakeAgent())
-    executor._loop.compact_manager.should_compact = AsyncMock(return_value=True)
 
     await executor.execute(_inbound())
 
-    executor._loop.compact_manager.should_compact.assert_not_awaited()
-    executor._loop.compact_manager.compact.assert_not_awaited()
     executor._publish_session_status_async.assert_not_awaited()
 
 

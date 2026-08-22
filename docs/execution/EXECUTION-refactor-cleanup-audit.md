@@ -168,3 +168,69 @@ python -m vulture src/ftre --min-confidence 90: 无高置信度死代码
 
 - F6.12（cordis-py PyPI 发行物和脱离 `E:\cordis-py` 的洁净安装）仍按 PRD 保持 todo。
 - 本报告不执行 commit、push、merge 或跨仓库修改；保留用户当前分支的累计改动供后续分批提交。
+
+## F11 复审附录（2026-08-22）
+
+### 范围与基线
+
+- 仓库：`E:\\ftre`；分支：`feature/F11-compaction-gate-hook`。
+- 只审计并修改本仓库；未修改 `E:\\ftre-agent-core`、`E:\\cordis-py`、桌面端或用户运行数据。
+- 工作区本来就包含 F11 的累计未提交改动；本轮没有执行 commit、merge 或 push。
+- `E:\\ftre-agent-core` 工作区干净；`E:\\cordis-py` 的 `.gitignore` 修改为既有外部状态，本轮未触碰。
+
+### Owner、入口与引用复核
+
+| 检查项 | 结果 |
+|---|---|
+| 核心压缩 Owner | `src/ftre/services/compaction`、`src/ftre/features/compaction`、`ContextGate` 均不存在 |
+| 可选压缩 Owner | `packages/ftre-compaction/src/ftre_compaction` 唯一提供 Service、三条 Hook 和两个命令 |
+| Agent 数据面 | `SessionLane` 仅保留 `peek → Hook → claim → Turn → after-turn`，未导入压缩实现 |
+| 旧生产 import | AST 复核 `ftre.plugin/agent/session/bus/channel/command/tools/api/config/mcp`：0 条 |
+| 重复 Owner/通配导出 | 核心与可选包未发现重复 `provide("compaction")`、通配导入或兼容转发壳 |
+| 可选包公开边界 | 将消息估算和 OpenAI 转换提升为 `ftre.services.session.message` 公共导出；可选包不再直接 import `message.converter/token_counter` 私有模块 |
+
+### 生命周期与测试证据
+
+- `ftre-compaction` 的 Service、Hook Receipt 和 Command disposer 均绑定 Cordis Effect；Service
+  `close()` 会取消并等待所有 in-flight 压缩 Task，测试覆盖 unload 和重复清理。
+- `agent/pre-step` 失败保留队首 pending；`agent/after-turn` 失败不回滚已完成 Turn；overflow
+  只有 generation 前进才允许有界 Retry。
+- 全量：`python -m pytest -q` → **421 passed**。
+- 复审专项：压缩包、架构边界和生命周期 → **47 passed**；此前 F11 架构/契约/生命周期/启动专项
+  **149 passed**。
+- `python -m ruff check --no-cache src tests packages/ftre-compaction/src packages/ftre-compaction/tests`
+  → **All checks passed**。
+- `python -m vulture src/ftre packages/ftre-compaction/src --min-confidence 90` → 无高置信度死代码。
+- Root 和 `ftre-compaction` wheel/sdist 均构建成功；构建产物随后已清理。
+
+### 文档与生成物收尾
+
+- 修正 `README.md`、`docs/prd/README.md` 中仍把 `ContextGate/CompactManager` 描述为当前 Owner
+  的流程图和架构表，统一改为 `agent/pre-step`、`agent/after-turn` 与可选 `ftre-compaction`。
+- `docs/TODO.yaml` 解析通过；F11 PRD/TODO/CHANGELOG/执行报告状态一致。
+- 最终 `git diff --check` 通过。
+- 每次测试/构建后均按绝对路径清理本轮生成的缓存/构建文件；最终复核时源码、测试和 packages
+  范围内 `__pycache__`、`.pyc`、`.pytest_cache`、`.ruff_cache`、`.mypy_cache`、`build`、
+  `dist`、`*.egg-info` 数量均为 **0**；非 `.git` 空目录为 **0**。
+
+### 仍保留的后置债务
+
+1. `ftre-compaction/plugin.py` 通过 `ctx.get("session_events", strict=False)` 使用可选事件汇，
+   但当前 Cordis `inject` 声明没有“可选依赖”语法；这不会阻塞运行，却未被通用 Plugin 注入门禁
+   完整表达。后续应冻结 optional-inject 约定，或把 `SessionEventService` 提升为 Composition 默认 Service。
+结论：F11 的旧实现、重复 Owner、缓存和当前文档漂移已完成收尾；可选事件汇的 optional
+inject 表达仍是独立后置项，不影响本轮代码、生命周期和质量门禁结论。
+
+配置 Owner 的历史债务已在 F11.10 完成，详见下方收尾记录。
+
+### F11.10 配置 Owner 收尾（2026-08-22）
+
+本轮进一步完成了此前定位的压缩配置债务：
+
+- src/ftre/services/agent/config.py 删除 compact_llm 和所有压缩阈值字段；
+- ContextConfig 仅保留核心数据面的 mailbox_capacity；
+- packages/ftre-compaction/src/ftre_compaction/config.py 成为压缩配置的唯一解析 Owner；
+- Hook/Command 在边界读取 ConfigService.snapshot()，Service 使用不可变 CompactionConfig 快照；
+- 清理没有实际消费者的历史 consolidation_ratio、idle_compaction 和 silent 配置示例，
+  避免继续承诺不存在的行为；
+- 新增配置解析、核心 Owner 门禁和包级中文说明测试。

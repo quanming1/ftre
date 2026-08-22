@@ -59,10 +59,12 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     from ftre.services.messaging.channel.providers.websocket.channel import (
         WebSocketChannel,
     )
+    from ftre.services.session.events import SessionEventService
     from ftre.services.tools import ToolService
 
     config_data = config if config is not None else load_config_file()
     session_manager = None
+    session_events = SessionEventService()
     agent_loop = None
     agent_service = None
     channel_manager = None
@@ -95,6 +97,7 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
                 "commands": command_service,
                 "agent_profiles": profile_service,
                 "agents": agent_service,
+                "session_events": session_events,
             },
             plugins_dir=plugins_dir,
         )
@@ -114,8 +117,9 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
                 agents=composition.context.get("agents"),
                 attachments=composition.context.get("attachments"),
                 system_prompt=composition.context.get("system_prompt"),
+                mcp=composition.context.get("mcp"),
                 hook_runtime=composition.context.get("hook_runtime"),
-                compaction=composition.context.get("compaction"),
+                session_events=composition.context.get("session_events"),
             )
         )
         agent_runtime = runtime_provider.build()

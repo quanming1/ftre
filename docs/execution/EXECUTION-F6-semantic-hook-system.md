@@ -127,3 +127,9 @@ PRD 中的 FR/AC 已按上述结果更新；F6.12 的 PRE11–PRE16、AC31–AC3
 - 本次未执行 commit、push 或 merge；工作区仍包含 F6.1–F6.11 的累计未提交改动。当前未发现额外生成缓存或空目录。
 - F6.12 需要 `E:\cordis-py` owner 完成 TestPyPI/PyPI 发布后再执行；该任务不能在本仓库内伪造完成。
 - 业务层 `agent.steer()` 的 continuation API 单独后置，不影响当前 serial `agent/turn-stopping` 屏障和现有 Agent 数据面。
+
+## F11 后续变更
+
+F11 在本报告的 F6.8–F6.11 基线上新增 `agent/after-turn`，并把压缩实现、Hook、命令
+和算法迁入 `packages/ftre-compaction`；F6.8 中关于 `features/compaction` 或
+`CompactionPort` 的路径描述是历史记录，不代表当前主包结构。

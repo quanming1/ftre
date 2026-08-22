@@ -114,10 +114,16 @@ after its manifest is explicitly enabled in `~/.ftre/config.json`:
 ## Agent data plane
 
 ```text
-Channel → MessageBus → AgentLoop → SessionLane → ContextGate → TurnExecutor
+Channel → MessageBus → AgentLoop → SessionLane → TurnExecutor
+                                      ├─ agent/pre-step Hook → claim
+                                      ├─ agent/after-turn Hook → next pending
                                       ├─ MailboxStore (pending only)
-                                      ├─ CompactManager (no turn overlap)
                                       └─ messages (durable chat history)
+
+Context compaction is optional: when `ftre-compaction` is explicitly enabled,
+its Service owns the pre-step/after-turn gates and overflow recovery. The core
+SessionLane only provides the Hook barriers and generic maintenance state; it
+does not import or construct a compaction implementation.
 ```
 
 Different sessions run concurrently. A session has at most one active turn;

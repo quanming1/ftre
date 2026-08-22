@@ -8,7 +8,7 @@ from .builtin import register_builtin_commands
 from .service import CommandService
 
 provide = ("commands",)
-inject = ("agents", "sessions", "compaction")
+inject = ("agents", "sessions")
 
 
 def apply(ctx: Context, config=None):
@@ -22,7 +22,6 @@ def apply(ctx: Context, config=None):
         service.runtime,
         agents=ctx.agents,
         sessions=ctx.sessions,
-        compaction=ctx.compaction,
     )
     for index, disposer in enumerate(disposers):
         ctx.effect(lambda disposer=disposer: disposer, label=f"command:builtin:{index}")

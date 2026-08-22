@@ -31,16 +31,11 @@ def _service(messages):
         get_messages_by_session=AsyncMock(return_value=messages),
         fork_session=AsyncMock(),
     )
-    compaction = SimpleNamespace(
-        compact_now=AsyncMock(),
-        compress_fast=AsyncMock(),
-    )
     service = CommandService()
     register_builtin_commands(
         service.runtime,
         agents=agents,
         sessions=sessions,
-        compaction=compaction,
     )
     return service, agents
 
