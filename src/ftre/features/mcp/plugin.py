@@ -16,10 +16,10 @@ async def apply(ctx: Context, config=None):
     if ctx.get("mcp", strict=False) is not None:
         return
     manager = McpManager(
-        tool_registry=ctx.tools.registry,
+        tool_service=ctx.tools,
         attachment_service=ctx.attachments,
     )
-    service = McpService(manager)
+    service = McpService(manager, tool_service=ctx.tools)
     ctx.provide("mcp", service)
     raw = ctx.config.snapshot().value.get("mcp", {})
     if isinstance(raw, dict) and raw:

@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ._io import read_text, write_text_new, write_text_preserving
+
 if TYPE_CHECKING:
     from ftre.services.session import SessionService
 
@@ -71,15 +73,19 @@ def _ensure_gitignore_entry(base: Path, entry: str) -> None:
     gitignore = base / ".gitignore"
     try:
         if gitignore.exists():
-            content = gitignore.read_text(encoding="utf-8")
+            original = read_text(gitignore)
+            content = original.text
             lines = {ln.strip() for ln in content.splitlines()}
             if entry in lines:
                 return
             prefix = "" if content == "" or content.endswith("\n") else "\n"
-            with gitignore.open("a", encoding="utf-8") as f:
-                f.write(f"{prefix}{entry}\n")
+            write_text_preserving(
+                gitignore,
+                f"{content}{prefix}{entry}\n",
+                original,
+            )
         else:
-            gitignore.write_text(f"{entry}\n", encoding="utf-8")
+            write_text_new(gitignore, f"{entry}\n")
     except (OSError, UnicodeError) as e:
         logger.warning("[workspace] 更新 %s/.gitignore 失败: %s", base, e)
 

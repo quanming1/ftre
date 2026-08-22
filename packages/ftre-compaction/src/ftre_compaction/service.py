@@ -2,7 +2,7 @@
 CompactionService — 上下文压缩 Service 的唯一真实实现
 
 设计：
-- SessionLane 在领取下一条请求前做强制水位检查并等待压缩
+- agent/pre-step 在领取下一条请求前做强制水位检查并等待压缩
 - /compact 手动：立即压缩
 - /compress-fast：零 LLM 成本裁剪旧 ToolResultBlock 输出
 
@@ -27,7 +27,8 @@ from ftre_agent_core.event import CustomEvent
 from ftre_agent_core.llm import LLMError, TextDeltaChunk, create_llm_handler
 from ftre_agent_core.message import Msg, MsgName, TextBlock, ToolResultBlock
 
-from ftre.services.compaction.events import CompactEventName
+from .config import CompactionConfig, parse_compaction_config
+from .events import CompactEventName
 
 logger = logging.getLogger(__name__)
 
@@ -84,13 +85,23 @@ COMPACT_LLM_SYSTEM_PROMPT = """\
 </state_snapshot>"""
 
 
-def _select_compact_llm(config):
-    """返回本次摘要真实使用的 LLM 配置。"""
-    return getattr(config, "compact_llm", None) or config.llm
+def _select_compact_llm(config, compaction_config: CompactionConfig):
+    """返回摘要实际使用的模型。
+
+    专用摘要模型属于压缩包配置；没有配置时必须回退到“本轮请求”的主
+    Agent 模型，而不是重新调用全局 default。这样切换 Agent 或模型后，
+    压缩预算和摘要模型仍与当前 Turn 对齐。
+    """
+    return compaction_config.llm or config.llm
 
 
 class CompactionService:
-    """上下文压缩 Service（全异步），由 Service Plugin 唯一创建。"""
+    """上下文压缩 Service（全异步），由本包 Plugin 唯一创建。
+
+    Service 只依赖 ftre 的公开 Session 事件和 LLM 配置对象。它不认识
+    SessionLane、TurnExecutor 或 Gateway；这些对象通过 Hook/Command 在
+    外层调用它。这个边界是“卸载压缩包后核心仍可运行”的关键。
+    """
 
     def __init__(
         self,
@@ -98,10 +109,15 @@ class CompactionService:
         session_manager,
         emit_event=None,
         threshold: float = DEFAULT_COMPACT_THRESHOLD,
+        config_service=None,
+        default_config: CompactionConfig | None = None,
     ):
         self.session_manager = session_manager
         self._emit_event = emit_event or self._noop_event
-        self._threshold = threshold
+        self._config_service = config_service
+        self._default_config = default_config or CompactionConfig(
+            compact_threshold=threshold
+        )
         self._progress_generation: dict[str, int] = {}
 
         # session_id → 真正执行 _do_compact 的共享 Task。
@@ -112,7 +128,11 @@ class CompactionService:
         return None
 
     def bind_event_emitter(self, emit_event) -> None:
-        """Bind the Gateway event port after AgentLoop composition."""
+        """绑定公开的 Session 事件出口。
+
+        Service 不直接推送 WebSocket，也不直接写 Session projection；开始、
+        完成和失败都发成统一 CustomEvent，由 ftre 的事件出口负责投影及广播。
+        """
         if not callable(emit_event):
             raise TypeError("compaction event emitter must be callable")
         self._emit_event = emit_event
@@ -124,6 +144,19 @@ class CompactionService:
     def _mark_progress(self, session_id: str) -> None:
         self._progress_generation[session_id] = self.progress_generation(session_id) + 1
 
+    def config_for(self, _agent_config) -> CompactionConfig:
+        """在 Hook/Command 边界读取最新配置，生成不可变快照。
+
+        ``_agent_config`` 只保留在方法签名中用于表达调用边界：压缩配置从
+        本包注入的 ConfigService 读取，主 LLM 的 context_window/max_output
+        则继续从传入的 AgentConfig 读取。两类配置不能混成一个 Owner。
+        """
+        raw = {}
+        if self._config_service is not None:
+            snapshot = self._config_service.snapshot()
+            raw = snapshot.value if snapshot is not None else {}
+        return parse_compaction_config(raw, defaults=self._default_config)
+
     async def compact_if_needed(
         self,
         session_id: str,
@@ -134,13 +167,20 @@ class CompactionService:
         extra_tokens: int = 0,
         trigger: Literal["auto", "manual"] = "auto",
     ) -> bool:
-        """Compact only when the configured pressure threshold requires it."""
+        """按水位判断，必要时执行一次自动压缩。
+
+        这是 Hook 使用的组合入口：先只读判断，再等待共享压缩 Task，最后用
+        progress generation 判断是否真的产生持久化进展。手动命令使用
+        compact_now，不经过这个阈值门控。
+        """
+        compaction_config = self.config_for(config)
         needed = await self.should_compact(
             session_id,
             channel_id,
             config,
             threshold=threshold,
             extra_tokens=extra_tokens,
+            compaction_config=compaction_config,
         )
         if not needed:
             return False
@@ -150,6 +190,7 @@ class CompactionService:
             channel_id,
             config=config,
             trigger=trigger,
+            compaction_config=compaction_config,
         )
         return self.progress_generation(session_id) > before
 
@@ -161,7 +202,7 @@ class CompactionService:
         config,
         focus_hint: str = "",
     ) -> str | None:
-        """Explicit maintenance entry point used by the Command Service."""
+        """Command Plane 的显式维护入口，直接触发一次摘要压缩。"""
         return await self.compact(
             session_id,
             channel_id,
@@ -180,22 +221,24 @@ class CompactionService:
         *,
         threshold: float | None = None,
         extra_tokens: int = 0,
+        compaction_config: CompactionConfig | None = None,
     ) -> bool:
         """水位是否超过 threshold？只读 DB，不调 LLM。
 
         优先用 API 报告的真实 token（last_call_usage + pending 策略），
         全新 session 无 last_call_usage 时退化为字符估算。
         """
-        threshold = threshold if threshold is not None else getattr(
-            config.context, "compact_threshold", self._threshold
+        compaction_config = compaction_config or self.config_for(config)
+        threshold = (
+            threshold
+            if threshold is not None
+            else compaction_config.compact_threshold
         )
         cw = getattr(config.llm, "context_window", None)
         if not cw or cw <= 0:
             return False
         max_output = max(0, getattr(config.llm, "max_output", None) or 0)
-        safety_buffer = max(
-            0, getattr(config.context, "safety_buffer", 0) or 0
-        )
+        safety_buffer = max(0, compaction_config.safety_buffer)
         prompt_budget = cw - max_output - safety_buffer
         if prompt_budget <= 0:
             # 配置无效或不安全：输出预算和安全余量已经占满上下文窗口，
@@ -217,6 +260,7 @@ class CompactionService:
         config,
         trigger: Literal["auto", "manual"] = "auto",
         focus_hint: str = "",
+        compaction_config: CompactionConfig | None = None,
     ) -> str | None:
         """执行或等待该 session 当前唯一的压缩任务。
 
@@ -226,12 +270,14 @@ class CompactionService:
         ``focus_hint`` 为用户在 ``/compact`` 后附带的自然语言提示词，透传给
         摘要 LLM，强调必须优先完整保留的上下文（如「登录模块相关代码」）。
         """
+        compaction_config = compaction_config or self.config_for(config)
         task, created = self._get_or_create_compact_task(
             session_id,
             channel_id,
             config=config,
             trigger=trigger,
             focus_hint=focus_hint,
+            compaction_config=compaction_config,
         )
         if not created:
             logger.info(
@@ -249,6 +295,7 @@ class CompactionService:
         config,
         trigger: Literal["auto", "manual"],
         focus_hint: str = "",
+        compaction_config: CompactionConfig | None = None,
     ) -> tuple[asyncio.Task[str | None], bool]:
         """同步取得或创建共享压缩 Task；返回 ``(task, 是否新建)``。"""
         existing = self._compact_tasks.get(session_id)
@@ -262,6 +309,7 @@ class CompactionService:
                 config=config,
                 trigger=trigger,
                 focus_hint=focus_hint,
+                compaction_config=compaction_config or self.config_for(config),
             )
         )
         self._compact_tasks[session_id] = task
@@ -346,7 +394,7 @@ class CompactionService:
             return False
 
         # 估算压缩前后 token（只算活跃区间）
-        from ftre.services.session.message.token_counter import estimate_messages_tokens
+        from ftre.services.session.message import estimate_messages_tokens
         tokens_before = estimate_messages_tokens(active_records)
         changed_messages: dict[str, Msg] = {}
         for message, block in tool_results:
@@ -396,6 +444,7 @@ class CompactionService:
         config,
         trigger: Literal["auto", "manual"] = "auto",
         focus_hint: str = "",
+        compaction_config: CompactionConfig | None = None,
     ) -> str | None:
         """压缩主逻辑：读 Msg → LLM 摘要 → 发 context_compact_done 投影为 Msg。
 
@@ -432,11 +481,12 @@ class CompactionService:
             return None
         usage = await self.session_manager.get_token_usage(session_id)
         tokens_before = usage["total"]
-        tokens_before / cw
+
+        compaction_config = compaction_config or self.config_for(config)
 
         # 4. 通知前端开始（CustomEvent，不持久化）。模型必须显式随事件传递，
         #    不能让客户端从上一条 assistant 回复推断压缩实际使用的模型。
-        compact_llm = _select_compact_llm(config)
+        compact_llm = _select_compact_llm(config, compaction_config)
         await self._emit_event(session_id, channel_id, CustomEvent(
             name=CompactEventName.START,
             value={
@@ -450,6 +500,7 @@ class CompactionService:
         summary = await self._run_compact_llm(
             head_messages, config=config, previous_summary=previous_summary,
             session_id=session_id, focus_hint=focus_hint,
+            compaction_config=compaction_config,
         )
         if not summary:
             # 摘要为空（模型只输出思考、接口异常等）：默认重试一次
@@ -457,10 +508,11 @@ class CompactionService:
             summary = await self._run_compact_llm(
                 head_messages, config=config, previous_summary=previous_summary,
                 session_id=session_id, focus_hint=focus_hint,
+                compaction_config=compaction_config,
             )
         if not summary:
             # 重试仍失败：回退 compress_fast 兜底，避免直接放弃导致 Lane BLOCKED。
-            # （auto 路径的 ContextGate 也会再跑一次 compress_fast，但那是幂等
+            # （auto 路径的 Hook 也会再跑一次 compress_fast，但那是幂等
             # 无操作：可裁的工具输出已在这次被裁完。）
             logger.warning(
                 f"[compact] session={session_id} 重试后摘要仍为空，回退 compress_fast"
@@ -477,7 +529,7 @@ class CompactionService:
             return None
 
         # 6. 估算摘要后 token
-        from ftre.services.session.message.token_counter import estimate_messages_tokens
+        from ftre.services.session.message import estimate_messages_tokens
         tokens_after = estimate_messages_tokens([{
             "role": "user",
             "content": [{"type": "text", "text": summary}],
@@ -525,6 +577,7 @@ class CompactionService:
         previous_summary: str | None = None,
         session_id: str = "",
         focus_hint: str = "",
+        compaction_config: CompactionConfig | None = None,
     ) -> str | None:
         """调用 LLM 生成摘要（异步）。
 
@@ -532,6 +585,9 @@ class CompactionService:
         1. 序列化 Msg 为纯文本（截断 tool 输出至 2000 字符）
         2. buildPrompt() 返回多条 user message：对话记录 + 指令/模板
         3. 多条 user message 依次发给 LLM
+
+        这里是包内唯一的 LLM 摘要调用点。Hook 只决定“要不要调用”，不应
+        自己拼接 Prompt 或创建第二个摘要客户端。
         """
         try:
             context = _serialize_messages(head_messages)
@@ -551,9 +607,12 @@ class CompactionService:
                 *[{"role": "user", "content": p} for p in prompt_parts],
             ]
 
-            # 优先使用 compact_llm，未配置则回退到主 llm。
+            # 优先使用压缩包解析出的专用模型，未配置则回退到主 llm。
             # 与 START 事件使用同一选择函数，确保展示模型与真实调用一致。
-            llm_cfg = _select_compact_llm(config)
+            llm_cfg = _select_compact_llm(
+                config,
+                compaction_config or self.config_for(config),
+            )
             adapter = create_llm_handler(
                 llm_cfg.api_type,
                 model=llm_cfg.model,
@@ -614,46 +673,8 @@ class CompactionService:
         self._compact_tasks.clear()
 
     async def close(self) -> None:
-        """Release all in-flight compaction work before Service unload."""
+        """卸载前取消并等待所有 in-flight 压缩，保证资源可逆。"""
         await self.cancel_all_compact_tasks()
-
-
-class NullCompactionService:
-    """Explicit no-op fallback for tests and disabled embedded runtimes.
-
-    This is a concrete fallback, not a second public contract. The default
-    Gateway always provides the real ``CompactionService`` through its plugin.
-    """
-
-    async def should_compact(self, *_args, **_kwargs) -> bool:
-        return False
-
-    async def compact(self, *_args, **_kwargs) -> str | None:
-        return None
-
-    async def compact_if_needed(self, *_args, **_kwargs) -> bool:
-        return False
-
-    async def compact_now(self, *_args, **_kwargs) -> str | None:
-        return None
-
-    async def compress_fast(self, *_args, **_kwargs) -> bool:
-        return False
-
-    def is_compacting(self, _session_id: str) -> bool:
-        return False
-
-    async def cancel_compact(self, _session_id: str) -> bool:
-        return False
-
-    async def cancel_all_compact_tasks(self) -> None:
-        return None
-
-    def bind_event_emitter(self, _emit_event) -> None:
-        return None
-
-    async def close(self) -> None:
-        return None
 
 
 # ─── 模块级纯函数（可单测） ───────────────────────────────────────────
@@ -665,7 +686,7 @@ def _serialize_messages(
     tool_output_max_chars: int = 2000,
 ) -> str:
     """把 Msg 历史序列化为 LLM 可读的纯文本。"""
-    from ftre.services.session.message.converter import to_openai
+    from ftre.services.session.message import to_openai
 
     def content_text(content, *, include_thinking: bool = False) -> str:
         if isinstance(content, str):

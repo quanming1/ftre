@@ -67,6 +67,16 @@ class McpManager:
 | 公共 MCP | `config.json` 的 `mcp` 段 | 全局 `tool_registry` | 启动时 `start_and_register` + config watcher |
 | 私有 MCP | `agent.config.json` 的 `mcp` 段 | per-agent `agent_tool_registry` | `BEFORE_AGENT_RUN` hook 中 `ensure_connections` |
 
+### 3.1 当前实现（2026-08-22）
+
+F1-F11 的目录迁移后，以上旧路径和 `BEFORE_AGENT_RUN` 名称仅保留为历史设计记录；当前
+运行链路为：`features/mcp/plugin.py` 创建 `McpService`，公共服务器通过 `ToolService`
+注册到 global scope，Turn 开始前由 `AgentLoop.tool_registry_for_agent()` 调用
+`McpService.prepare_agent()`。匹配公共配置的服务器复用公共连接；新增或覆盖的私有配置按
+`server name + 配置` 共享连接池，并只把工具注册到 `agent:<id>` scope，随后由
+`ToolService.build_view()` 交给本轮 ReActAgent。禁用的公共服务器通过 Agent restriction
+从该 Agent 的视图中隐藏，不污染其他 Agent 或 global registry。
+
 ## 4. 接口与一致性边界
 
 - 公共配置来源是 `config.json`，私有配置来源是对应 agent 目录的 `agent.config.json`；两者不能互相写回。
@@ -94,3 +104,4 @@ class McpManager:
 | 2026-08-13 | 补充 MCP HTTP/config/hook/trace 边界和测试计划 | 使 C2 与 AgentLoop/TurnExecutor 的运行生命周期契约一致 |
 | 2026-08-13 | 影响复核：仅补充文档；AC1-AC3 未改变，现有 MCP 测试作为当前证据 | 记录协议边界修订不引入代码行为变化 |
 | 2026-08-17 | 修复：pyproject 补声明 mcp>=1.0.0,<2.0（此前未声明，CI 按 pyproject 装依赖导致 builtin 插件集成测试 ModuleNotFoundError）；manager.py 兼容 mcp SDK 2.0 的导入名变更（streamablehttp_client → streamable_http_client，try/except 双名导入） | CI 自 0.2.0 发布起连续失败 |
+| 2026-08-22 | 修复真实 Gateway 回归：恢复 Agent 私有 MCP 在 Turn 前的连接、工具注册和 per-agent 视图；公共/私有同配置连接复用，禁用项不再泄漏到 Agent；新增私有 scope、连接复用和 Gateway 注入回归测试 | BUG 报告发现 agent.config.json 的 `mcp` 只完成 profile 合并，未被 MCP Feature 消费 |

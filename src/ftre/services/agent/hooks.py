@@ -8,7 +8,7 @@ Hook payload 是进程内控制协议，不是 SessionEvent，也不进入 mailb
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
@@ -21,6 +21,7 @@ from ftre_agent_core.hooks import (
 )
 
 from ftre.platform.hooks import (
+    AGENT_AFTER_TURN,
     AGENT_CREATED,
     AGENT_DISPOSED,
     AGENT_ERROR,
@@ -82,6 +83,27 @@ class PreStepPayload:
     cancellation: asyncio.Event
     channel_id: str = ""
     config: AgentConfig | None = None
+    set_maintenance: Callable[[bool, str], Awaitable[None]] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AfterTurnPayload:
+    """Turn 完成后的可等待维护边界。
+
+    ``set_maintenance`` 是 Lane 提供的通用状态桥接；Hook 可以标记自己的维护阶段，
+    但不能访问 Mailbox 或改变 claim 顺序。压缩包因此可以拥有全部压缩逻辑，核心
+    仍只拥有串行状态和公开快照。
+    """
+
+    agent: AgentSubject
+    session_id: str
+    turn_id: str
+    request_id: str
+    status: str
+    cancellation: asyncio.Event
+    channel_id: str = ""
+    config: AgentConfig | None = None
+    set_maintenance: Callable[[bool, str], Awaitable[None]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +214,22 @@ AGENT_PRE_STEP_SPEC = HookSpec(
     scope=HookScope.AGENT,
 )
 
+
+async def _continue_after_turn(payload: AfterTurnPayload) -> None:
+    return None
+
+
+AGENT_AFTER_TURN_SPEC = HookSpec(
+    AGENT_AFTER_TURN,
+    "agent",
+    HookMode.WATERFALL,
+    failure_policy=HookFailurePolicy.PROPAGATE,
+    payload_type=AfterTurnPayload,
+    result_type=type(None),
+    default=_continue_after_turn,
+    scope=HookScope.AGENT,
+)
+
 AGENT_REQUEST_SPEC = HookSpec(
     AGENT_REQUEST,
     "agent",
@@ -253,6 +291,7 @@ AGENT_INBOX_DISCARDED_SPEC = _observation_spec(
 
 
 __all__ = [
+    "AGENT_AFTER_TURN_SPEC",
     "AGENT_CREATED_SPEC",
     "AGENT_DISPOSED_SPEC",
     "AGENT_ERROR_SPEC",
@@ -266,6 +305,7 @@ __all__ = [
     "AGENT_STATUS_SPEC",
     "AGENT_TURN_STOPPED_SPEC",
     "AGENT_TURN_STOPPING_SPEC",
+    "AfterTurnPayload",
     "AgentInboxPayload",
     "AgentLifecyclePayload",
     "AgentRequestPayload",

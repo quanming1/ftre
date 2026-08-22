@@ -1,0 +1,19 @@
+[project]
+name = "ftre-compaction"
+version = "0.1.0"
+description = "Optional context compaction hooks and service for ftre"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ftre>=0.2.5",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.entry-points."ftre.plugins"]
+compaction = "ftre_compaction.plugin:apply"
+
+[tool.setuptools.packages.find]
+where = ["src"]

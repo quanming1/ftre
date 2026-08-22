@@ -13,10 +13,10 @@ from ftre.services.agent.profile import AgentProfileService
 from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
 from ftre.services.attachment import AttachmentService
 from ftre.services.command import CommandService
-from ftre.services.compaction import CompactionService
 from ftre.services.messaging.bus import MessageBusService
 from ftre.services.messaging.channel import ChannelService
 from ftre.services.session import SessionService
+from ftre.services.session.events import SessionEventService
 from ftre.services.system_prompt import SystemPromptService
 from ftre.services.tools import ToolService
 
@@ -38,8 +38,9 @@ class AgentRuntimeServices:
     agents: AgentService | None = None
     attachments: AttachmentService | None = None
     system_prompt: SystemPromptService | None = None
+    mcp: object | None = None
     hook_runtime: HookRuntime | None = None
-    compaction: CompactionService | None = None
+    session_events: SessionEventService | None = None
 
 
 @dataclass
@@ -64,6 +65,8 @@ class AgentLoopProvider:
             "channel_manager": self.services.channels.manager,
             "event_hub": self.services.event_hub,
             "tool_registry": self.services.tools.registry,
+            "tool_service": self.services.tools,
+            "mcp_service": self.services.mcp,
             "command_service": self.services.commands,
             "plugin_manager": self.services.plugin_manager,
             "agent_manager": self.services.agent_profiles.manager,
@@ -77,11 +80,9 @@ class AgentLoopProvider:
             kwargs["system_prompt"] = self.services.system_prompt
         if self.services.hook_runtime is not None:
             kwargs["hook_runtime"] = self.services.hook_runtime
-        if self.services.compaction is not None:
-            kwargs["compaction"] = self.services.compaction
         loop = AgentLoop(**kwargs)
-        if self.services.compaction is not None:
-            self.services.compaction.bind_event_emitter(loop.emit_session_event)
+        if self.services.session_events is not None:
+            self.services.session_events.bind(loop.emit_session_event)
         return AgentLoopRuntime(loop=loop, driver=AgentLoopDriver(loop))
 
 

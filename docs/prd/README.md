@@ -15,7 +15,7 @@ flowchart LR
     A3["A3 工具入口<br/>task / send_message / team"]
     A4["A4 Bus 协议<br/>Pydantic Payload / WS frame"]
     B1["B1 SessionLane<br/>FIFO / admission / cancel"]
-    B2["B2 CompactManager<br/>70% / 80% / fast"]
+    B2["B2 历史压缩<br/>70% / 80% / fast"]
     B3["B3 TurnExecutor<br/>单轮状态机 / Projection"]
     D1["D1 测试与 CI<br/>pytest / trace / 回归"]
     A1 --> A4
@@ -36,7 +36,7 @@ flowchart LR
 | AgentLoop | `PRD-A1`、`PRD-B1` | 不直接实现单轮 Agent 逻辑、不复制 Session 状态 |
 | SessionLane | `PRD-B1` | 不实现 LLM 压缩算法、不聚合 Reply 内容 |
 | MailboxStore / state.json | `PRD-A2`、`PRD-B1` | 不保存 active Turn 或 CompletionRegistry 结果 |
-| ContextGate / CompactManager | `PRD-B1`、`PRD-B2` | 不领取队列、不直接向 WebSocket 发消息 |
+| `ftre-compaction`（可选 Service + Hook） | `PRD-F11`（取代 B1/B2 历史 Owner） | 不领取队列、不直接向 WebSocket 发消息 |
 | TurnExecutor / Projection | `PRD-B3` | 不决定下一条何时领取、不启动自动压缩 |
 | 测试与 CI | `PRD-D1` | 不新增业务行为；只验证各阶段契约 |
 
@@ -49,14 +49,14 @@ flowchart LR
     LOOP["AgentLoop._consume<br/>按 session 路由"]
     ADMIT["SessionLane.submit<br/>持久接纳"]
     PENDING["state.json<br/>mailbox.pending"]
-    GATE1["ContextGate.before_claim<br/>80% + 队首估算"]
-    COMPACT["CompactManager<br/>共享压缩 Task"]
+    GATE1["agent/pre-step Hook<br/>领取前门控"]
+    COMPACT["ftre-compaction<br/>CompactionService"]
     TAKE["MailboxStore.take<br/>pending → 内存 active"]
     TURN["TurnExecutor.execute<br/>COMMAND → BUILDING → RUNNING"]
     PROJ["SessionProjection<br/>Msg checkpoint"]
     EVENT["agent_event / mailbox_snapshot<br/>EventBus outbound"]
     DONE["TurnOutcome<br/>CompletionRegistry"]
-    GATE2["ContextGate.after_turn<br/>有 pending 时 70%"]
+    GATE2["agent/after-turn Hook<br/>轮后门控"]
 
     CH --> BUS --> LOOP --> ADMIT --> PENDING
     PENDING --> GATE1
@@ -72,7 +72,7 @@ flowchart LR
 
 1. **接纳成功**：`AdmissionResult.accepted=True`，表示 request 已原子写入
    `mailbox.pending`。这是 WS、HTTP、invoke、task、team_say 可以立即返回的成功。
-2. **执行开始**：队首通过 ContextGate 后被 `MailboxStore.take` 领取，形成内存
+2. **执行开始**：队首通过 `agent/pre-step` 后被 `MailboxStore.take` 领取，形成内存
    `TurnOperation`。此时它不再属于 pending，也不应再次执行。
 3. **执行完成**：TurnExecutor 返回 `TurnOutcome`，Reply/消息投影已收尾，
    CompletionRegistry 唤醒同进程等待者。它不是 Bus ACK，也不是 pending 快照。
@@ -140,7 +140,7 @@ flowchart LR
 | Session 关闭/删除 | `accepted=False / session_closing` | 保留至删除或显式处置 | 已有历史保留至删除 | failed ACK |
 | 取消 active | 当前 Turn `cancelled` | 不变，继续 FIFO | 已写 User/Reply 标记 interrupted | cancelling → 下一状态 |
 | 取消 queued | 指定 request `cancelled` | 删除该项 | 不写历史 UserMsg | 快照移除该项 |
-| 压缩失败但仍安全 | 由 ContextGate 尝试 fast 或继续 | 队首保持 pending | 不写错误摘要 | compacting/blocked 事件 |
+| 压缩失败但仍安全 | 由可选 `ftre-compaction` Hook 处理 | 队首保持 pending | 不写错误摘要 | compacting/blocked 事件 |
 | 压缩后仍超硬线 | `blocked` | 队首保留 | 历史不被盲跑 | blocked_reason |
 | Gateway 重启 | 恢复 pending，active 不重放 | pending 恢复 | messages/已 checkpoint Reply 恢复 | attach snapshot |
 
@@ -235,25 +235,28 @@ Service
 - `AgentLoopProvider` 可以装配内部 runtime，但业务 Handler 不得反向依赖 Loop；
 - unload/restart 后注入的 Listener、Task、Router、闭包和旧 Service 实例必须全部可逆清理。
 
-## 13. Compaction Service Owner 收敛（F10）
+## 13. Compaction Service Owner 收敛（F10/F11）
 
-F10 将上下文压缩的真实实现从 `features/compaction/service.py` 迁入
-`services/compaction/service.py`，删除 `CompactionPort`。压缩能力只有一个公共 Service：
+F10 的历史迁移先将实现收敛到一个 `CompactionService`；F11 又把该唯一 Owner、
+Hook、命令和算法移动到可选发行物 `packages/ftre-compaction`。当前关系是：
 
 ```text
-services/compaction/plugin.py
+ftre-compaction/plugin.py
   → 创建 CompactionService
   → provide("compaction")
-
-features/compaction/plugin.py
-  → inject("compaction")
-  → 注册 agent/pre-step、agent/request-error Hook
+  → 注册 agent/pre-step、agent/after-turn、agent/request-error
+  → 注册 /compact、/compress-fast
 ```
 
 不可违反的规则：
 
-- `CompactionService` 是唯一真实压缩状态和算法 Owner；
-- AgentLoop、ContextGate、Command、Provider 直接消费 `CompactionService`；
-- Feature 只能注册 Hook，不得创建或 `provide("compaction")`；
-- 不新增第二个 Port、Facade 或兼容别名；
-- `compaction` Service key、压缩事件、命令和客户端协议保持不变。
+- `ftre-compaction.CompactionService` 是唯一真实压缩状态和算法 Owner；
+- ftre 核心不 import、创建或要求 `compaction` Service；
+- `SessionLane` 只提供 `peek → Hook → claim`、通用 maintenance 状态和生命周期边界；
+- 不新增第二个 Port、Facade、No-op fallback 或兼容别名；
+- `compaction` Service key、压缩事件、命令和客户端协议保持不变；
+- 未安装/未启用 `ftre-compaction` 时核心 Gateway 和普通 Agent 流程正常运行。
+
+F10 中关于 `src/ftre/services/compaction`、`src/ftre/features/compaction` 和
+`ContextGate` 的路径描述是历史记录；当前实现以
+[`PRD-F11-compaction-gate-hook.md`](PRD-F11-compaction-gate-hook.md) 为准。

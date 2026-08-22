@@ -11,13 +11,13 @@ from ftre_agent_core.message import (
     ToolResultBlock,
     UserMsg,
 )
-
-from ftre.services.compaction.service import (
+from ftre_compaction.service import (
     CompactionService,
     _build_prompt,
     _estimate_body_chars,
     _serialize_messages,
 )
+
 from ftre.services.session.message.converter import to_openai
 
 

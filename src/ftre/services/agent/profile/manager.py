@@ -30,7 +30,7 @@ from pathlib import Path
 from ftre.services.agent.config import (
     AgentConfig,
     LLMConfig,
-    _build_llm_config,
+    build_llm_config,
     load_config_file,
     sanitize_agent_effort,
 )
@@ -154,7 +154,7 @@ class AgentManager:
         provider = agent_llm.get("provider", "") or global_provider
         model = agent_llm.get("model", "") or global_model
 
-        llm = _build_llm_config(global_data, provider, model)
+        llm = build_llm_config(global_data, provider, model)
         if "reasoning_effort" in agent_llm:
             effort = agent_llm["reasoning_effort"]
             raw_effort = effort if isinstance(effort, str) else ""
@@ -165,7 +165,7 @@ class AgentManager:
                 f"[agent-manager] agent '{agent_id}' 的 provider={provider} model={model} "
                 f"在全局配置中找不到，回退到全局默认"
             )
-            llm = _build_llm_config(global_data, global_provider, global_model)
+            llm = build_llm_config(global_data, global_provider, global_model)
 
         # ─── 合并 workspace ─────────────────────────────────
         workspace = agent_cfg.get("workspace", "") or global_workspace or ""

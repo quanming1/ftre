@@ -11,6 +11,7 @@ from ftre.services.config.service import ConfigConflictError, ConfigService
 from ftre.services.filesystem.local import LocalFilesystemService
 from ftre.services.filesystem.policy import PathPolicy, PathViolation
 from ftre.services.http.service import HttpService
+from ftre.services.messaging.bus import BusMessage, EventBus, MessageBusService
 from ftre.services.system_prompt.service import SystemPromptService
 from ftre.services.system_prompt.types import PromptSection
 from ftre.services.tools.service import ToolService
@@ -119,3 +120,13 @@ def test_tool_scope_shadow_and_restriction() -> None:
     agent_dispose()
     assert service.snapshot("worker")[0].owner == "global"
     global_dispose()
+
+
+@pytest.mark.asyncio
+async def test_message_bus_service_forwards_inbound_publicly() -> None:
+    service = MessageBusService(EventBus())
+    message = BusMessage(type="user_message", data={"content": "cron"})
+    await service.publish_inbound(message)
+
+    received = await anext(service.bus.subscribe_inbound())
+    assert received.id == message.id

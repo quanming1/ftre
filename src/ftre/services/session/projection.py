@@ -21,7 +21,7 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import AssistantMsg, Msg, MsgName, UserMsg
 
-from ftre.services.compaction.events import CompactEventName
+from ftre.services.session.events import SessionMaintenanceEvent
 
 if TYPE_CHECKING:
     from ftre.services.session import SessionService
@@ -84,7 +84,7 @@ class SessionProjection:
         # 不落盘的 session 级运行状态。它们不是 Msg，也没有 reply_id，但客户端
         # attach 时必须知道（例如正在进行的 context compact）。终态到达即清除。
         self._active_session_events: dict[
-            str, dict[CompactEventName, CustomEvent]
+            str, dict[SessionMaintenanceEvent, CustomEvent]
         ] = {}
         # 保护上述内存投影，避免 Event 流、attach snapshot 与取消路径并发修改同一 Reply。
         # 锁内只改内存；SessionManager 的磁盘 I/O 一律在锁外执行。
@@ -117,23 +117,23 @@ class SessionProjection:
         if not reply_id:
             # 非 Reply 生命周期事件。CustomEvent 可能携带 compact 投影语义。
             if isinstance(event, CustomEvent):
-                if event.name == CompactEventName.START:
+                if event.name == SessionMaintenanceEvent.COMPACTION_START:
                     async with self._lock:
                         self._active_session_events.setdefault(session_id, {})[
-                            CompactEventName.START
+                            SessionMaintenanceEvent.COMPACTION_START
                         ] = event
                     return ProjectionResult()
-                if event.name == CompactEventName.DONE:
+                if event.name == SessionMaintenanceEvent.COMPACTION_DONE:
                     # 先完成 Msg 落盘，再清除 start，避免 attach 落在两者之间时
                     # 既拿不到 active start，也读不到已完成摘要。
                     result = await self._project_compact_done(session_id, event)
                     await self._clear_active_session_event(
-                        session_id, CompactEventName.START
+                        session_id, SessionMaintenanceEvent.COMPACTION_START
                     )
                     return result
-                if event.name == CompactEventName.FAILED:
+                if event.name == SessionMaintenanceEvent.COMPACTION_FAILED:
                     await self._clear_active_session_event(
-                        session_id, CompactEventName.START
+                        session_id, SessionMaintenanceEvent.COMPACTION_START
                     )
             return ProjectionResult()
 
@@ -321,7 +321,7 @@ class SessionProjection:
             ]
 
     async def _clear_active_session_event(
-        self, session_id: str, key: CompactEventName
+        self, session_id: str, key: SessionMaintenanceEvent
     ) -> None:
         async with self._lock:
             events = self._active_session_events.get(session_id)
