@@ -155,12 +155,16 @@ class WebSocketChannel(Channel):
         plugin_manager=None,
         app: FastAPI | None = None,
         attachment_service: AttachmentService | None = None,
+        http_service=None,
+        session_projection=None,
+        inbox_provider=None,
+        status_provider=None,
     ):
         super().__init__(channel_id="ws", name="WebSocket Channel", bus=bus)
         self.host = host
         self.port = port
-        self.app = app or FastAPI(title="ftre-gateway")
-        if app is None:
+        self.app = app
+        if self.app is not None:
             self.app.add_middleware(
                 CORSMiddleware,
                 allow_origins=["*"],
@@ -174,34 +178,25 @@ class WebSocketChannel(Channel):
         self._ws_sessions: dict[WebSocket, set[str]] = {}
         # per-session 输出锁：保证 attach snapshot 与实时 Event 的 FIFO 顺序
         self._session_output_locks: dict[str, asyncio.Lock] = {}
-        # SessionProjection（由 main.py 注入），attach 时读取 reply/session 快照。
-        self._session_projection = None
-        # 可选 ftre-inbox 的客户端权威队列投影；Channel 不读取其内部 next-turn/next-step。
-        self._inbox_provider = None
-        self._status_provider = None
+        # 这些能力在 Plugin 构造时显式传入；Channel 不提供 setter，也不让
+        # Bootstrap 在 FastAPI 物化后回填旧 Service 引用。
+        self._session_projection = session_projection
+        self._inbox_provider = inbox_provider
+        self._status_provider = status_provider
+        self._http_service = http_service
         self._server = None
         self._server_task: asyncio.Task | None = None
         # Attachment persistence is a Service dependency; the channel never
         # reaches into the attachment store or constructs a global fallback.
         self._attachment_service = attachment_service
 
-        # Register the endpoint on the provisional app.  The Host may replace
-        # it with the shared HttpService app after all Plugin routes are built.
-        self._register_endpoint(self.app)
+        # Standalone tests may provide an app explicitly. Gateway production
+        # startup registers the handler through HttpService instead.
+        if self.app is not None:
+            self._register_endpoint(self.app)
 
         # HTTP routes are materialized by HttpService before this Channel is
         # created.  The Channel contributes only the WebSocket protocol path.
-
-    def set_session_projection(self, projection) -> None:
-        """注入 SessionProjection（由 main.py 在 AgentLoop 创建后调用）。"""
-        self._session_projection = projection
-
-    def attach_app(self, app: FastAPI) -> None:
-        """Attach the shared Host app after HttpService materialization."""
-        if app is self.app:
-            return
-        self.app = app
-        self._register_endpoint(app)
 
     def _register_endpoint(self, app: FastAPI) -> None:
         """Register this channel's endpoint exactly once on one app."""
@@ -211,25 +206,22 @@ class WebSocketChannel(Channel):
         app.websocket("/")(self._ws_endpoint)
         setattr(app.state, marker, True)
 
-    def set_inbox_provider(self, provider) -> None:
-        """绑定可选 Inbox provider 或返回当前实例的 resolver。"""
-        self._inbox_provider = provider
-
     def _current_inbox(self):
         provider = self._inbox_provider
         if callable(provider):
             return provider()
         return provider
 
-    def set_status_provider(self, provider) -> None:
-        """绑定 active Agent status 查询；状态不从 Queue 快照推导。"""
-        self._status_provider = provider
-
     async def start(self) -> None:
         """启动 WebSocket 服务"""
         import uvicorn
+        # HttpService owns the shared FastAPI Host.  The local app is only a
+        # standalone fallback for direct Channel embedding/tests.
+        app = self._http_service.app if self._http_service is not None else self.app
+        if app is None:
+            raise RuntimeError("WebSocket Host App is not materialized")
         config = uvicorn.Config(
-            self.app, host=self.host, port=self.port,
+            app, host=self.host, port=self.port,
             log_level="warning", log_config=None,
         )
         self._server = uvicorn.Server(config)

@@ -29,11 +29,17 @@ class HttpService:
         self._routes: list[RouteContribution] = []
         self._frozen = False
         self.restart_required = False
+        self._app = None
 
     @property
     def frozen(self) -> bool:
         """返回 Host 是否已经 materialize；冻结后新增路由需重启。"""
         return self._frozen
+
+    @property
+    def app(self):
+        """Return the materialized FastAPI Host, when a Gateway created one."""
+        return self._app
 
     def register_router(self, router: APIRouter, owner: str, prefix: str = "/api") -> Callable[[], bool]:
         """Register all paths in a router and return a Fiber-owned disposer."""
@@ -69,9 +75,25 @@ class HttpService:
 
         return self.register_route("GET", "/api/health", health, owner)
 
-    def register_websocket_path(self, path: str, owner: str) -> Callable[[], bool]:
-        """Register a WebSocket host surface and return its Fiber disposer."""
-        addition = RouteContribution(method="WS", path=path, owner=owner, kind="websocket")
+    def register_websocket_path(
+        self,
+        path: str,
+        owner: str,
+        handler: Callable[..., Any],
+    ) -> Callable[[], bool]:
+        """Register a WebSocket endpoint owned by a Plugin.
+
+        The HTTP Host materializes the endpoint together with the other route
+        contributions.  Keeping the handler in the contribution removes the
+        old post-materialization ``attach_app`` bridge from Bootstrap.
+        """
+        addition = RouteContribution(
+            method="WS",
+            path=path,
+            owner=owner,
+            kind="websocket",
+            handler=handler,
+        )
         self._check_conflicts([addition])
         self._routes.append(addition)
         disposed = False
@@ -141,9 +163,12 @@ class HttpService:
                     continue
                 included.add(identity)
                 app.include_router(route.router, prefix="/api")
+            elif route.kind == "websocket" and route.handler is not None:
+                app.websocket(route.path)(route.handler)
             elif route.handler is not None:
                 app.add_api_route(route.path, route.handler, methods=[route.method])
         app.state.http_service = self
+        self._app = app
         return app
 
     def freeze(self) -> tuple[dict[str, Any], ...]:

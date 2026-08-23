@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ftre.services.messaging.bus import BusMessage
+
+from ftre.services.messaging.bus import IngressResult
 
 from .hooks import (
     INBOX_BEFORE_CLAIM_SPEC,
@@ -44,15 +45,6 @@ def _content_text(value: Any) -> str:
         ]
         return "".join(parts)
     return str(value or "")
-
-
-@dataclass(frozen=True, slots=True)
-class InboxAdmission:
-    accepted: bool
-    session_id: str
-    request_id: str
-    created: bool
-    error: dict[str, Any] | None = None
 
 
 class InboxService:
@@ -118,13 +110,13 @@ class InboxService:
         self._hook_runtime = None
         self._agent = None
 
-    async def followup(self, message: InboundMessage) -> InboxAdmission:
+    async def followup(self, message: InboundMessage) -> IngressResult:
         return await self._admit(message, "next-turn")
 
-    async def steer(self, message: InboundMessage) -> InboxAdmission:
+    async def steer(self, message: InboundMessage) -> IngressResult:
         return await self._admit(message, "next-step")
 
-    async def inject(self, message: InboundMessage) -> InboxAdmission:
+    async def inject(self, message: InboundMessage) -> IngressResult:
         return await self._admit(message, "next-step", wake=False)
 
     async def snapshot(self, session_id: str) -> InboxSnapshot:
@@ -145,7 +137,7 @@ class InboxService:
                 self._receipts.pop(key, None)
         await self.repository.delete_session(session_id)
 
-    async def handle_bus_message(self, message: BusMessage) -> InboxAdmission:
+    async def handle_bus_message(self, message: BusMessage) -> IngressResult:
         """把通用 inbound 信封转换成 InboundMessage，再选择投递语义。"""
         session_id = str(message.data.get("session_id") or message.from_session)
         if message.type == "turn_cancel":
@@ -153,7 +145,7 @@ class InboxService:
                 session_id,
                 str(message.data.get("request_id") or "") or None,
             )
-            return InboxAdmission(
+            return IngressResult(
                 accepted=True,
                 session_id=session_id,
                 request_id=str(message.metadata.request_id or ""),
@@ -314,9 +306,9 @@ class InboxService:
         target: QueueTarget,
         *,
         wake: bool = True,
-    ) -> InboxAdmission:
+    ) -> IngressResult:
         if self._closed:
-            return InboxAdmission(False, message.session_id, message.request_id, False, error={
+            return IngressResult(False, message.session_id, message.request_id, False, error={
                 "code": "inbox-closed", "message": "Inbox 已关闭"
             })
         try:
@@ -333,11 +325,11 @@ class InboxService:
                 target,
             )
         except OverflowError as exc:
-            return InboxAdmission(False, message.session_id, message.request_id, False, error={
+            return IngressResult(False, message.session_id, message.request_id, False, error={
                 "code": "queue-full", "message": str(exc), "retryable": True
             })
         except ValueError as exc:
-            return InboxAdmission(False, message.session_id, message.request_id, False, error={
+            return IngressResult(False, message.session_id, message.request_id, False, error={
                 "code": "session-not-found", "message": str(exc), "retryable": False
             })
         await self._publish(message.session_id)
@@ -369,7 +361,7 @@ class InboxService:
         if wake and (await self.repository.snapshot(message.session_id)).has_pending:
             self._ensure_worker(message.session_id)
             self._wake_event(message.session_id).set()
-        return InboxAdmission(True, message.session_id, message.request_id, created)
+        return IngressResult(True, message.session_id, message.request_id, created)
 
     def _ensure_worker(self, session_id: str) -> None:
         if self._closed or self._agent is None:
@@ -436,7 +428,18 @@ class InboxService:
                 if session_id in self._blocked:
                     self._blocked.pop(session_id, None)
                     await self._publish_status_event(session_id, "idle")
-                claimed = await self._claim_candidates(session_id, snapshot, candidates)
+                try:
+                    claimed = await self._claim_candidates(session_id, snapshot, candidates)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - keep pending on durable claim failure
+                    # Claim/commit 失败时不能让 worker Task 以未处理异常结束：
+                    # pending 仍属于 Inbox，记录 blocked 并等待下一次 admission
+                    # 或显式 wake，保证既不丢消息也不忙循环重试。
+                    self._blocked[session_id] = str(exc)
+                    await self._publish_status_event(session_id, "blocked")
+                    await event.wait()
+                    continue
                 if not claimed:
                     continue
                 try:

@@ -36,15 +36,10 @@ from ftre.services.messaging.bus import (
     InboundMetadata,
 )
 from ftre.services.session import SessionService
-from ftre.services.session.hooks import (
-    SESSION_EVENT_SPEC,
-    SessionEventPayload,
-)
 from ftre.services.session.message.multimodal import (
     build_user_content,
     normalize_stored_user_content,
 )
-from ftre.services.session.projection import ProjectionResult
 
 from .completion import CompletionRegistry
 from .turn_executor import TurnExecutor, TurnOutcome
@@ -580,36 +575,16 @@ class AgentLoop:
         event,
         *,
         metadata: InboundMetadata | None = None,
-    ) -> "ProjectionResult":
-        """统一事件出口：先投影落盘，再实时广播。
-
-        Maintenance Service 与 TurnExecutor 共用此入口，保证"Projection 落盘成功 →
-        广播 WebSocket"的顺序。dispatch 序列化的是 core Event 本身，不嵌套私有
-        {type, data} 协议。
-        """
-        session_events = getattr(self, "session_events", None)
-        if session_events is not None:
-            return await session_events.emit(
-                session_id,
-                channel_id,
-                event,
-                metadata=metadata,
-            )
-
-        result = await self.session_projection.apply(session_id, event)
-        await self._emit_session_event_hook(session_id, event, result)
-        await self.bus.publish_outbound(
-            BusMessage(
-                type="agent_event",
-                from_channel=channel_id,
-                to_channel=channel_id,
-                from_session=session_id,
-                to_session=session_id,
-                data=event.model_dump(mode="json"),
-                metadata=metadata or InboundMetadata(),
-            )
+    ):
+        """Delegate Session event persistence and broadcast to its sole Owner."""
+        if self.session_events is None:
+            raise RuntimeError("SessionEventService is not available")
+        return await self.session_events.emit(
+            session_id,
+            channel_id,
+            event,
+            metadata=metadata,
         )
-        return result
 
     async def resume_confirmation(
         self,
@@ -667,24 +642,6 @@ class AgentLoop:
                 await self._publish_session_status_async(session_id, "idle")
             except Exception:
                 logger.debug("[agent-loop] confirmation idle status publish failed", exc_info=True)
-
-    async def _emit_session_event_hook(self, session_id: str, event, result) -> None:
-        """Notify observers only after SessionProjection has committed the fact."""
-        hooks = self.hooks
-        if hooks is None:
-            return
-        payload = SessionEventPayload(
-            session_id=session_id,
-            event=event,
-            persisted_ids=tuple(message.id for message in result.persisted_messages),
-            completed_id=(result.completed_message.id if result.completed_message else ""),
-        )
-        try:
-            await hooks.dispatch(SESSION_EVENT_SPEC, payload)
-        except Exception:
-            logger.exception(
-                "[agent-loop] session/event observer failed session=%s", session_id
-            )
 
     async def _publish_session_status_async(self, session_id: str, status: str) -> None:
         """发布独立于 pending 的 Session activity 状态。"""

@@ -10,11 +10,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Literal
 
-try:  # ftre Gateway 运行时提供真实 HookSpec；独立包导入不应强依赖 Gateway。
-    from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
-except ModuleNotFoundError:  # pragma: no cover - 仅用于独立 wheel 的 import smoke
-    HookSpec = None  # type: ignore[assignment,misc]
-    HookFailurePolicy = HookMode = HookScope = None  # type: ignore[assignment,misc]
+from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
 
 from .models import QueueItem, QueueTarget
 
@@ -80,60 +76,53 @@ async def _enter(payload: BeforeClaimPayload) -> EnterClaim:
     return EnterClaim(payload.candidate.request_id)
 
 
-INBOX_BEFORE_CLAIM_SPEC = (
-    HookSpec(
-        INBOX_BEFORE_CLAIM,
-        "inbox",
-        HookMode.WATERFALL,
-        failure_policy=HookFailurePolicy.PROPAGATE,
-        payload_type=BeforeClaimPayload,
-        result_type=(EnterClaim, RejectClaim),
-        default=_enter,
-        scope=HookScope.GLOBAL,
-    )
-    if HookSpec is not None
-    else None
+INBOX_BEFORE_CLAIM_SPEC = HookSpec(
+    INBOX_BEFORE_CLAIM,
+    "inbox",
+    HookMode.WATERFALL,
+    failure_policy=HookFailurePolicy.PROPAGATE,
+    payload_type=BeforeClaimPayload,
+    result_type=(EnterClaim, RejectClaim),
+    default=_enter,
+    scope=HookScope.GLOBAL,
 )
 
-if HookSpec is not None:
-    def _observe_spec(name: str):
-        return HookSpec(
-            name,
-            "inbox",
-            HookMode.EMIT,
-            failure_policy=HookFailurePolicy.OBSERVE,
-            payload_type=InboxMutationPayload,
-            result_type=type(None),
-            default=_observe,
-            scope=HookScope.GLOBAL,
-        )
+def _observe_spec(name: str):
+    return HookSpec(
+        name,
+        "inbox",
+        HookMode.EMIT,
+        failure_policy=HookFailurePolicy.OBSERVE,
+        payload_type=InboxMutationPayload,
+        result_type=type(None),
+        default=_observe,
+        scope=HookScope.GLOBAL,
+    )
 
-    INBOX_INSERTED_SPEC = _observe_spec(INBOX_INSERTED)
-    INBOX_CLAIMED_SPEC = _observe_spec(INBOX_CLAIMED)
-    INBOX_DISCARDED_SPEC = _observe_spec(INBOX_DISCARDED)
-    INBOX_CHANGED_SPEC = HookSpec(
-        INBOX_CHANGED,
-        "inbox",
-        HookMode.EMIT,
-        failure_policy=HookFailurePolicy.OBSERVE,
-        payload_type=InboxChangedPayload,
-        result_type=type(None),
-        default=lambda _payload: None,
-        scope=HookScope.GLOBAL,
-    )
-    INBOX_STATUS_CHANGED_SPEC = HookSpec(
-        INBOX_STATUS_CHANGED,
-        "inbox",
-        HookMode.EMIT,
-        failure_policy=HookFailurePolicy.OBSERVE,
-        payload_type=InboxStatusPayload,
-        result_type=type(None),
-        default=lambda _payload: None,
-        scope=HookScope.GLOBAL,
-    )
-else:  # pragma: no cover - independent import fallback
-    INBOX_INSERTED_SPEC = INBOX_CLAIMED_SPEC = INBOX_DISCARDED_SPEC = None
-    INBOX_CHANGED_SPEC = INBOX_STATUS_CHANGED_SPEC = None
+
+INBOX_INSERTED_SPEC = _observe_spec(INBOX_INSERTED)
+INBOX_CLAIMED_SPEC = _observe_spec(INBOX_CLAIMED)
+INBOX_DISCARDED_SPEC = _observe_spec(INBOX_DISCARDED)
+INBOX_CHANGED_SPEC = HookSpec(
+    INBOX_CHANGED,
+    "inbox",
+    HookMode.EMIT,
+    failure_policy=HookFailurePolicy.OBSERVE,
+    payload_type=InboxChangedPayload,
+    result_type=type(None),
+    default=lambda _payload: None,
+    scope=HookScope.GLOBAL,
+)
+INBOX_STATUS_CHANGED_SPEC = HookSpec(
+    INBOX_STATUS_CHANGED,
+    "inbox",
+    HookMode.EMIT,
+    failure_policy=HookFailurePolicy.OBSERVE,
+    payload_type=InboxStatusPayload,
+    result_type=type(None),
+    default=lambda _payload: None,
+    scope=HookScope.GLOBAL,
+)
 
 __all__ = [
     "INBOX_BEFORE_CLAIM",

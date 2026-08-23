@@ -26,10 +26,6 @@ async def start_gateway(*, config: dict[str, Any] | None = None, plugins_dir=Non
         from .http.app import create_app
 
         composition.http_app = create_app(http_service)
-        channels = composition.context.get("channels", strict=False)
-        websocket = channels.manager.get("ws") if channels is not None else None
-        if websocket is not None and hasattr(websocket, "attach_app"):
-            websocket.attach_app(composition.http_app)
         http_service.freeze()
     return composition
 

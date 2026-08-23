@@ -47,7 +47,10 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("workspaces", "ftre.services.workspace.plugin:apply", "builtin", True, True, description="workspace boundary"),
         PluginManifest("channels", "ftre.services.messaging.channel.plugin:apply", "builtin", True, True, description="channel registry"),
         PluginManifest("attachments", "ftre.services.attachment.plugin:apply", "builtin", True, True, description="attachment storage"),
-        PluginManifest("traces", "ftre.plugins.builtin.trace.plugin:apply", "builtin", True, True, description="trace persistence"),
+        # MCP 在 Agent Provider 之前装载，使 Runtime 构造时能拿到可选的
+        # MCP Service；Trace 是独立观察能力，失败不能阻断基础 Agent。
+        PluginManifest("mcp", "ftre.plugins.builtin.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
+        PluginManifest("traces", "ftre.plugins.builtin.trace.plugin:apply", "builtin", False, True, description="trace persistence"),
         # Agent Provider 同时发布 agents 和私有执行 Runtime；可选 Inbox
         # 在它之后接管 pending/worker。
         PluginManifest("agents", "ftre.services.agent.plugin:apply", "builtin", True, True, description="agent service and private runtime"),
@@ -60,7 +63,6 @@ def default_manifests() -> list[PluginManifest]:
         # 这些 Plugin 只消费上面的公开 Service key，不访问私有实现；
         # required=False 表示能力缺失（如 MCP 未配置）不应阻止 Gateway 启动。
         PluginManifest("skill", "ftre.plugins.builtin.skill.plugin:apply", "builtin", False, True, description="skill catalog and tool"),
-        PluginManifest("mcp", "ftre.plugins.builtin.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
         PluginManifest("plan", "ftre.plugins.builtin.plan.plugin:apply", "builtin", False, True, description="plan behavior"),
         PluginManifest("team", "ftre.plugins.builtin.team.plugin:apply", "builtin", False, True, description="team lifecycle"),
         PluginManifest("schedule", "ftre.plugins.builtin.schedule.plugin:apply", "builtin", False, True, description="cron persistence"),

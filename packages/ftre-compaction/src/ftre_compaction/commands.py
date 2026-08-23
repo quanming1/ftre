@@ -10,8 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from ftre.plugins.builtin.command import CommandService
-from ftre.plugins.builtin.command.types import CommandContext, CommandResult
+from ftre.plugins.builtin.command import CommandContext, CommandResult, CommandService
 from ftre.services.agent.config import AgentConfig, load_config
 
 logger = logging.getLogger(__name__)

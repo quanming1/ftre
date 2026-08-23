@@ -25,21 +25,12 @@ provide = ()
 def apply(ctx: Context, config=None):
     """创建并注册 WebSocket Channel，但不在 apply 中偷偷启动监听 Server。"""
     options = config if isinstance(config, dict) else {}
-    channel = WebSocketChannel(
-        ctx.message_bus.bus,
-        host=options.get("host", "127.0.0.1"),
-        port=int(options.get("port", 48650)),
-        attachment_service=ctx.attachments,
-    )
     projection = getattr(ctx.sessions, "projection", None)
-    if projection is not None:
-        channel.set_session_projection(projection)
+
     def current_inbox():
         # Inbox may be restarted independently; resolving through Context keeps
         # this protocol provider from retaining a disposed Service instance.
         return ctx.get("inbox", strict=False)
-
-    channel.set_inbox_provider(current_inbox)
 
     async def publish_snapshot(session_id: str) -> None:
         inbox = current_inbox()
@@ -104,10 +95,23 @@ def apply(ctx: Context, config=None):
         queue_status = inbox.status(session_id) if inbox is not None else None
         return queue_status or ctx.agents.status(session_id)
 
-    channel.set_status_provider(status_provider)
+    channel = WebSocketChannel(
+        ctx.message_bus.bus,
+        host=options.get("host", "127.0.0.1"),
+        port=int(options.get("port", 48650)),
+        attachment_service=ctx.attachments,
+        http_service=ctx.http,
+        session_projection=projection,
+        inbox_provider=current_inbox,
+        status_provider=status_provider,
+    )
     disposer = ctx.channels.register(channel, owner="websocket-channel")
     ctx.effect(lambda: disposer, label="channel:websocket")
-    route_disposer = ctx.http.register_websocket_path("/", "websocket-channel")
+    route_disposer = ctx.http.register_websocket_path(
+        "/",
+        "websocket-channel",
+        channel._ws_endpoint,
+    )
     ctx.effect(lambda: route_disposer, label="http:websocket")
 
 

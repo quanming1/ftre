@@ -657,10 +657,6 @@ class TurnExecutor:
         ):
             turn.final_content = message.get_text_content() or turn.final_content
 
-    async def _publish_session_status_async(self, session_id: str, status: str) -> None:
-        """兼容旧调用点；Session 权威状态仍然只能由 Coordinator 发布。"""
-        await self._loop._publish_session_status_async(session_id, status)
-
     async def _request_config(self, turn: Turn, config: AgentConfig) -> AgentConfig:
         """Run the typed request waterfall before creating/running ReActAgent."""
         loop = self._loop
