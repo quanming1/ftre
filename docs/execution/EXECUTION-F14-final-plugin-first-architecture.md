@@ -419,7 +419,7 @@ git diff --check                              → passed
 - 生产树最终为 `src/ftre/{app,kernel,services,plugins}`；旧生产路径和私有 import 扫描为 0，
   空目录/缓存/字节码/build/dist 扫描为 0；用户数据 `data/sessions.db`、`.ftre-inbox` 未触碰。
 - F14 分片提交：`5501fc1`、`489eaa0`、`a6f87d4`、`85895a9`、`6942d80`、`c83a9b8`、
-  `1486c75`、`430f16d`、`5609b48`。
+  `1486c75`、`430f16d`、`5609b48`、`31da49f`。
 - 最终 `git status --short` 为空；当前分支为 `feature/F14-final-plugin-first-architecture`，
   未 push、未创建 PR、未 merge、未发布。
 
