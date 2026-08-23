@@ -2,13 +2,14 @@
 
 ## [Unreleased] - 2026-08-23
 
-### F14 轻内核 + Plugin-first（进行中）
+### F14 轻内核 + Plugin-first（已验收）
 
 - F14.6 收敛 Host Service：Session/Command/Inbox/SessionEvent/Compaction 改为构造注入或公开
   Hook，删除运行时 callback setter；Agent Runtime 继续只处理已接纳的 `InboundMessage`。
 - F14.7 为 `ftre-inbox`、`ftre-compaction` 增加独立 wheel/entry point 和 Host `inbox`、
   `compaction`、`full` extras；Plugin discovery 支持安装发行物，未安装可选包时 Host 仍能启动。
 - F14.8 增加无可选包的最小 Composition 与 Builtin Plugin unload 生命周期回归覆盖。
+- 收尾审计删除 WebSocket 临时 Host App、Agent Runtime 的重复 Session 事件出口和 Inbox Hook fallback；补充 claim 失败保留 pending 的生命周期门禁。
 
 ### F13 Plugin-first 内核收敛与消息交接（已验收）
 
