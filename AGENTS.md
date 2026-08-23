@@ -39,15 +39,15 @@ Team、MCP、Skill、WebSocket payload、Agent prompt、Tool policy 等产品或
 
 Agent Runtime 是最小执行能力，但仍是由 Provider Plugin 装配的业务 Service，不属于 Cordis
 Kernel。它只负责 `InboundMessage → Turn → Reasoning/Tool → Assistant Output`，不负责
-Queue、Command、Compaction、Channel 协议和 Feature 行为。
+Queue、Command、Compaction、Channel 协议和 Plugin 行为。
 
 ### Plugin-first
 
 - 每项完整业务能力必须有唯一 Plugin Owner。Plugin 负责创建、注册、启停和清理能力。
 - 有状态、可复用能力通过稳定 Service key 提供；消费者只能通过 Cordis `inject` 获取公开
   Service，不得 import/实例化另一个能力的 Provider、Repository 或 Runtime 私有实现。
-- 可选时机行为通过 Hook 注册；核心执行方只发布通用生命周期边界，不检查某个 Feature
-  是否安装，也不持有 Feature 实现。
+- 可选时机行为通过 Hook 注册；核心执行方只发布通用生命周期边界，不检查某个 Plugin
+  是否安装，也不持有 Plugin 实现。
 - “内置”只表示默认 Composition 会加载该 Plugin；必选能力同样必须经过 Plugin 生命周期，
   不能由 Bootstrap 手工 `new` 后绕开 Loader、Fiber 和 Effect。
 - 一个 Plugin 可以包含多个内部模块并提供一个 Service；Plugin-first 不等于每个文件、类或
@@ -61,7 +61,7 @@ Queue、Command、Compaction、Channel 协议和 Feature 行为。
   的窄公开方法。只有两个真实实现、跨包稳定契约或明确测试替身需求时才引入 Protocol。
 - 禁止全局 setter、`bind_legacy_*`、Service Bag、静态 Builder、兼容 alias 和第二
   Composition Owner。
-- Bootstrap 只负责进程启动/关闭和调用 Composition，不承载业务装配、Feature 判断或
+- Bootstrap 只负责进程启动/关闭和调用 Composition，不承载业务装配、Plugin 判断或
   Service 之间的手工绑定。
 - Composition Root 只声明 Plugin 清单和 required/optional 关系，不直接构造业务对象图。
 - Plugin 的 Route、Hook、Listener、Task、Thread 和资源必须全部绑定 Effect；卸载一个 Plugin

@@ -33,7 +33,7 @@ and owns the reversible shutdown path.
 | Service | `src/ftre/services/<name>/service.py` | Stateful capability with a stable public key, such as `sessions`, `tools`, `http` or `message_bus` |
 | Provider Plugin | beside the Service in `plugin.py` | Declares `inject`/`provide`, creates or binds the Service, and registers cleanup effects |
 | Builtin Plugin | `src/ftre/plugins/builtin/<name>/` | Product behavior and concrete adapters such as Command, Skill, MCP, Channel or Schedule |
-| Platform Runtime | `src/ftre/kernel/plugins/` | Manifest validation, explicit discovery, Cordis loading, status and failure diagnostics |
+| Kernel Runtime | `src/ftre/kernel/plugins/` | Manifest validation, installed entry point discovery, Cordis loading, status and failure diagnostics |
 | App Host | `src/ftre/app/` | Process boundaries only: CLI, Gateway bootstrap, FastAPI and uvicorn |
 
 `services/agent/runtime/` is the private implementation behind the single
@@ -58,13 +58,13 @@ ftre/
 │     │     └─ http/               # FastAPI Host and uvicorn adapter
 │     ├─ kernel/
 │     │  └─ plugins/                # Catalog → Discovery → Loader → Manager
-│     ├─ services/                 # public stateful runtime capabilities
+│     ├─ services/                 # public stable runtime capabilities
 │     │  ├─ config/ filesystem/ http/
 │     │  ├─ messaging/{bus,channel}/
 │     │  ├─ session/ agent/ tools/ workspace/
-│     │  ├─ attachment/ messaging/
+│     │  ├─ attachment/ agent/runtime/
 │     │  └─ system_prompt/
-│     ├─ plugins/builtin/               # product behavior + adapters
+│     ├─ plugins/builtin/          # product behavior + adapters
 │     │  ├─ command/ trace/ session_title/
 │     │  ├─ channels/{websocket,subagent}/
 │     │  └─ skill/ mcp/ plan/ team/ schedule/ context_govern/
@@ -87,7 +87,7 @@ boundary rather than importing private ftre modules.
 2. `build_composition()` builds the default manifest list and creates a
    `PluginManager` over a public Cordis `Context`.
 3. Required Service Plugins are activated first through declared dependencies;
-   optional Feature and external Plugins are activated when enabled.
+   optional Builtin, Package and external Plugins are activated when enabled.
 4. Each Plugin contributes Services, routes, hooks, tools or channels through
    the official `cordis.Context`; every cleanup is registered with a Cordis
    Effect factory such as `ctx.effect(lambda: disposer)`.
@@ -115,10 +115,10 @@ after its manifest is explicitly enabled in `~/.ftre/config.json`:
 ## Agent data plane
 
 ```text
-Channel → MessageBus → ftre-inbox → AgentLoop → TurnExecutor → ftre-agent-core
-                         ├─ inbox/before-claim → atomic claim
-                         ├─ agent/before-turn → one Turn admission
-                         └─ agent/before-reasoning → next-step message injection
+Channel → MessageBus → messaging/inbound Hook
+                         ├─ Command Plugin → CommandResult（不创建 Turn）
+                         ├─ Inbox Package → pending → claim
+                         └─ AgentService.run(InboundMessage) → Agent Runtime → core
 
 Context compaction is optional: when `ftre-compaction` is explicitly enabled,
 its Service owns the `inbox/before-claim`/`agent/after-turn` gates and overflow recovery. The core
@@ -136,7 +136,7 @@ invariants are covered by the Inbox, protocol and lifecycle tests.
 - **Services:** configuration, filesystem policy/IO, HTTP route registry,
   message bus, channels, sessions, agents/profiles, tools, workspaces,
   commands, attachments, traces and system prompts.
-- **Features:** Skill catalog/loading, global/private MCP, Plan tool, Team
+- **Builtin Plugins:** Skill catalog/loading, global/private MCP, Plan tool, Team
   orchestration, Schedule persistence and context governance hooks.
 - **Extension boundary:** external plugins are loaded only through explicit
   `module:attribute` manifests; they do not import private ftre modules or

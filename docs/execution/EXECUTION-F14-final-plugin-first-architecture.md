@@ -332,6 +332,62 @@ python -m ruff check --no-cache src tests packages
 F14.6/F14.7 已完成；下一批输入是 F14.8 的生命周期、故障、最小 Composition 和 Package
 restart/in-flight Hook 组合验证。
 
+## F14.8 生命周期、故障与最小 Composition（2026-08-24）
+
+新增 `tests/lifecycle/test_f14_lifecycle_matrix.py`：
+
+- 关闭 Inbox、MCP、Skill、Plan、Schedule、Team、Session Title 后，Host 仍可建立真实
+  Composition，`agents` ACTIVE，缺失 Inbox 不会生成 fallback Service；Composition.close 可重复调用。
+- Session Title Plugin unload 后，其 Hook listener 完成 dispose，Agent Service 和其他基础 Service
+  仍可用；Inbox 的 restart/unload、Worker cancel、pending 恢复由 F10 lifecycle tests 覆盖。
+- Plugin Loader 的 required failure、missing dependency/PENDING、Fiber effect LIFO 和 Context
+  dispose 幂等由既有 architecture/lifecycle tests 覆盖；Command 旁路、Agent Turn、Hook 取消和
+  Package restart 由 contracts/Package tests 与隔离 venv smoke 覆盖。
+
+本批专项结果：
+
+```text
+python -m pytest -q tests/lifecycle/test_f14_lifecycle_matrix.py
+→ 2 passed
+python -m pytest -q
+→ 453 passed in 113.65s
+python -m ruff check --no-cache src tests packages
+→ All checks passed
+```
+
+F14.8 已完成；F14.9 进入旧路径、陈旧文档、生成物和空目录的最终审计。
+
+## F14.9 旧路径、死代码与生成物清理（2026-08-24）
+
+### 清理结果
+
+- `src/ftre` 生产代码、Package 源码和测试中旧 `platform/features/services.agent_loop` import、
+  `ServiceBag`、`AgentControlPort`、`CompactionPort`、callback setter 和第二 Agent Runtime key
+  均为 0；保留在历史 PRD/执行记录和负向架构断言中的文字是审计证据，不是运行时引用。
+- `README.md`、`README.zh-CN.md`、`AGENTS.md`、`services/README.md`、Kernel/App/Plugin README
+  已统一使用 Kernel / Service / Builtin Plugin / Package 术语；中文 README 的旧目录树、
+  `SessionLane/MailboxStore/ContextGate/CompactManager` 数据流已删除。
+- 本批涉及的 Compaction Package 旧 F1 行内注释已改为当前事件出口原因；Package 的 no-op
+  Hook fallback 和 Service callback setter 已删除。其他历史执行记录中的注释只作为审计证据，
+  不属于运行时入口。
+- 测试/构建后生成的 `__pycache__`、`.pyc`、Package `build/`、`.pytest_cache`、`.ruff_cache`
+  只在最终验证后清理；`data/sessions.db` 属于执行前已有的用户运行数据，保留不纳入提交。
+
+### 最终源树快照
+
+```text
+src/ftre/{app,kernel,services,plugins}
+packages/{ftre-inbox,ftre-compaction}
+tests/{architecture,contracts,lifecycle,startup,plugins}
+```
+
+F14.9 已完成；F14.10 只剩最终文档状态、全量门禁复跑、Gateway smoke 和干净工作树核对。
+
+## F14.10 最终验收（待最后门禁）
+
+本报告在最后一次测试、缓存清理和提交后更新 AC 逐条证据、提交列表、Gateway smoke 输出和
+最终 `git status --short`。在此之前 PRD/TODO 阶段仍保持 `in_progress`，避免用中间状态宣称终局完成。
+
 ## 后续批次精确输入
 
 - F14.2：将 `platform` 迁为 `kernel`，并把 Package/业务 Hook 的 import 改到 Owner；

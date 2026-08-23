@@ -855,7 +855,8 @@ stages:
             date: 2026-08-24
           - id: F14.8
             title: 生命周期、故障与最小 Composition 验证
-            status: todo
+            status: done
+            date: 2026-08-24
           - id: F14.9
             title: 旧路径、兼容壳、死代码与生成物清理
             status: todo

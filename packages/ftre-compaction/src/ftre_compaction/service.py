@@ -637,7 +637,7 @@ class CompactionService:
                 name=CompactEventName.FAILED,
                 value={"reason": reason},
             ))
-        except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
+        except Exception:  # noqa: BLE001 - 事件出口失败不能掩盖压缩任务本身的结果
             logger.debug(f"[compact] 通知失败失败: {reason}")
 
     async def cancel_compact(self, session_id: str) -> bool:
