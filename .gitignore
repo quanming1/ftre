@@ -25,3 +25,4 @@ debug_*.py
 
 # Gateway 运行时会在当前工作目录创建 Skill/MCP 扩展目录；这些运行产物不进入版本库。
 /.ftre/
+.ftre/
