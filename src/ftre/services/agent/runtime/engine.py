@@ -38,9 +38,7 @@ from ftre.services.messaging.bus import (
 from ftre.services.session import SessionService
 from ftre.services.session.hooks import (
     SESSION_EVENT_SPEC,
-    SESSION_FLUSH_SPEC,
     SessionEventPayload,
-    SessionFlushPayload,
 )
 from ftre.services.session.message.multimodal import (
     build_user_content,
@@ -85,6 +83,7 @@ class AgentLoop:
         system_prompt=None,
         hook_runtime: HookRuntime | None = None,
         traces=None,
+        session_events=None,
     ):
         self.bus = bus
         self.session_manager = session_manager
@@ -99,7 +98,7 @@ class AgentLoop:
         self.attachments = attachments
         self.agent_registry = agent_registry or AgentRegistry()
         self.system_prompt = system_prompt
-        self._flush_unbind = None
+        self.session_events = session_events
         self._agent_created_emitted: set[str] = set()
         self.hooks = hook_runtime or (
             HookRuntime(event_hub) if isinstance(event_hub, Context) else None
@@ -116,7 +115,6 @@ class AgentLoop:
         self._direct_completion_events: dict[str, asyncio.Event] = {}
         self._direct_parent_tasks: dict[str, asyncio.Task | None] = {}
         self._direct_reservations: set[str] = set()
-        self.session_event_unbind = None
         build_tracer = getattr(traces, "build_tracer", None)
         self.tracer = build_tracer() if callable(build_tracer) else Tracer([])
 
@@ -135,9 +133,6 @@ class AgentLoop:
         # SessionService is the sole projection owner. The Agent runtime only
         # consumes its public projection capability and never constructs a peer.
         self.session_projection = session_manager.projection
-        bind_flush = getattr(session_manager, "bind_flush_dispatcher", None)
-        if callable(bind_flush):
-            self._flush_unbind = bind_flush(self._flush_session_hooks)
 
         self.completions = CompletionRegistry()
 
@@ -525,12 +520,6 @@ class AgentLoop:
         await self.completions.close()
 
         await self._dispose_agent_scopes()
-        if self._flush_unbind is not None:
-            self._flush_unbind()
-            self._flush_unbind = None
-        if self.session_event_unbind is not None:
-            self.session_event_unbind()
-            self.session_event_unbind = None
 
     async def _dispose_agent_scopes(self) -> None:
         """Close Agent scope observations before the Provider detaches its driver."""
@@ -598,6 +587,14 @@ class AgentLoop:
         广播 WebSocket"的顺序。dispatch 序列化的是 core Event 本身，不嵌套私有
         {type, data} 协议。
         """
+        session_events = getattr(self, "session_events", None)
+        if session_events is not None:
+            return await session_events.emit(
+                session_id,
+                channel_id,
+                event,
+                metadata=metadata,
+            )
 
         result = await self.session_projection.apply(session_id, event)
         await self._emit_session_event_hook(session_id, event, result)
@@ -688,15 +685,6 @@ class AgentLoop:
             logger.exception(
                 "[agent-loop] session/event observer failed session=%s", session_id
             )
-
-    async def _flush_session_hooks(self, session_id: str, reason: str) -> None:
-        hooks = self.hooks
-        if hooks is None:
-            return
-        await hooks.dispatch(
-            SESSION_FLUSH_SPEC,
-            SessionFlushPayload(session_id, reason, asyncio.Event()),
-        )
 
     async def _publish_session_status_async(self, session_id: str, status: str) -> None:
         """发布独立于 pending 的 Session activity 状态。"""

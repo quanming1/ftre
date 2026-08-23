@@ -15,7 +15,6 @@ import copy
 import logging
 import shutil
 import uuid
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +23,7 @@ from typing import Any
 from ftre_agent_core.message import Msg, MsgName
 from ftre_agent_core.types import ReplyFinishedReason
 
+from ftre.kernel.hooks import HookRuntime
 from ftre.services.session.entity.models import (
     ExternalSessionModel,
     MessageModel,
@@ -31,6 +31,13 @@ from ftre.services.session.entity.models import (
     StatePageModel,
 )
 from ftre.services.session.entity.state import AgentStateFile, SessionState
+from ftre.services.session.hooks import (
+    SESSION_CREATED_SPEC,
+    SESSION_DISPOSED_SPEC,
+    SESSION_FLUSH_SPEC,
+    SessionFlushPayload,
+    SessionLifecyclePayload,
+)
 from ftre.services.session.persistence.repository import SessionRepository
 from ftre.services.session.projection import SessionProjection
 
@@ -57,68 +64,40 @@ class SessionService:
     """
     key = "sessions"
 
-    def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
+    def __init__(
+        self,
+        db_path: str | None = None,
+        *,
+        sessions_dir: str | None = None,
+        hook_runtime: HookRuntime | None = None,
+    ):
         self._repo = SessionRepository(db_path, sessions_dir=sessions_dir)
         # 流式 Reply 投影属于 Session 数据面；把它放在 SessionService 内部，
         # 避免 Agent Runtime 变成 WebSocket 的第二个 Projection Owner。
         self._projection = SessionProjection(self)
-        self._flush_dispatcher: Callable[[str, str], Awaitable[None]] | None = None
-        self._lifecycle_dispatcher: Callable[[str, str, str], Awaitable[None]] | None = None
-
-    def bind_flush_dispatcher(
-        self, dispatcher: Callable[[str, str], Awaitable[None]]
-    ) -> Callable[[], bool]:
-        """Bind the single runtime flush barrier owner and return an idempotent unbinder."""
-        if not callable(dispatcher):
-            raise TypeError("flush dispatcher must be callable")
-        previous = self._flush_dispatcher
-        self._flush_dispatcher = dispatcher
-        disposed = False
-
-        def dispose() -> bool:
-            nonlocal disposed
-            if disposed:
-                return False
-            disposed = True
-            if self._flush_dispatcher is dispatcher:
-                self._flush_dispatcher = previous
-            return True
-
-        return dispose
+        # Session 是 flush/lifecycle Hook 的语义 Owner；Agent Runtime 不再通过
+        # setter 把回调塞进来。未接入 Runtime 的嵌入式 Session 仍可持久化，
+        # 只是没有运行时观察者。
+        self._hook_runtime = hook_runtime
 
     async def flush(self, session_id: str = "", *, reason: str = "manual") -> None:
-        """Run the unique session persistence barrier after durable writes settle."""
-        dispatcher = self._flush_dispatcher
-        if dispatcher is not None:
-            await dispatcher(session_id, reason)
-
-    def bind_lifecycle_dispatcher(
-        self, dispatcher: Callable[[str, str, str], Awaitable[None]]
-    ) -> Callable[[], bool]:
-        """Bind the post-commit session created/disposed Hook bridge."""
-        if not callable(dispatcher):
-            raise TypeError("session lifecycle dispatcher must be callable")
-        previous = self._lifecycle_dispatcher
-        self._lifecycle_dispatcher = dispatcher
-        disposed = False
-
-        def dispose() -> bool:
-            nonlocal disposed
-            if disposed:
-                return False
-            disposed = True
-            if self._lifecycle_dispatcher is dispatcher:
-                self._lifecycle_dispatcher = previous
-            return True
-
-        return dispose
+        """Run the public Session flush Hook after durable writes settle."""
+        if self._hook_runtime is not None:
+            await self._hook_runtime.dispatch(
+                SESSION_FLUSH_SPEC,
+                SessionFlushPayload(session_id, reason, asyncio.Event()),
+            )
 
     async def _emit_lifecycle(
         self, kind: str, session_id: str, channel_id: str = ""
     ) -> None:
-        dispatcher = self._lifecycle_dispatcher
-        if dispatcher is not None:
-            await dispatcher(kind, session_id, channel_id)
+        if self._hook_runtime is None:
+            return
+        spec = SESSION_CREATED_SPEC if kind == "created" else SESSION_DISPOSED_SPEC
+        await self._hook_runtime.dispatch(
+            spec,
+            SessionLifecyclePayload(session_id, channel_id),
+        )
 
     async def search_sessions(
         self,

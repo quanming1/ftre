@@ -18,8 +18,13 @@ class CommandService:
 
     key = "commands"
 
-    def __init__(self, runtime: CommandRuntime | None = None) -> None:
-        self.runtime = runtime or CommandRuntime()
+    def __init__(
+        self,
+        runtime: CommandRuntime | None = None,
+        *,
+        lifecycle=None,
+    ) -> None:
+        self.runtime = runtime or CommandRuntime(lifecycle=lifecycle)
 
     def register(self, command: str, handler: Handler, **kwargs: Any) -> Callable[[], bool]:
         """注册一个命令并返回可逆 disposer，供 Provider 绑定到 Fiber。"""
@@ -58,10 +63,6 @@ class CommandService:
             system=system,
             definition=definition,
         )
-
-    def bind_lifecycle(self, callback):
-        """绑定命令生命周期观察者，并返回幂等解绑函数。"""
-        return self.runtime.bind_lifecycle(callback)
 
     def list(self) -> list[dict[str, Any]]:
         """返回命令定义摘要，不暴露 handler 对象。"""

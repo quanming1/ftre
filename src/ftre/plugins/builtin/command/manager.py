@@ -21,31 +21,15 @@ logger = logging.getLogger(__name__)
 class CommandRuntime:
     """命令注册与执行的唯一 Owner。"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        lifecycle: Callable[[str, dict[str, Any]], Any] | None = None,
+    ) -> None:
         self._system_entries: list[tuple[CommandDef, Handler]] = []
         self._entries: list[tuple[CommandDef, Handler]] = []
-        self._lifecycle: Callable[[str, dict[str, Any]], Any] | None = None
+        self._lifecycle = lifecycle
         self._sequence = 0
         self._request_results: dict[str, CommandResult] = {}
-
-    def bind_lifecycle(
-        self, callback: Callable[[str, dict[str, Any]], Any] | None
-    ) -> Callable[[], bool]:
-        """绑定命令生命周期观察者；返回幂等解绑函数。"""
-        previous = self._lifecycle
-        self._lifecycle = callback
-        disposed = False
-
-        def dispose() -> bool:
-            nonlocal disposed
-            if disposed:
-                return False
-            disposed = True
-            if self._lifecycle is callback:
-                self._lifecycle = previous
-            return True
-
-        return dispose
 
     def register(
         self,

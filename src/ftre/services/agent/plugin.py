@@ -20,6 +20,7 @@ inject = (
     "tools",
     "system_prompt",
     "hook_runtime",
+    "session_events",
     "plugin_manager",
 )
 provide = ("agents",)

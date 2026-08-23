@@ -22,6 +22,7 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         agent_profiles = SimpleNamespace(manager="profiles")
         system_prompt = "prompt"
         hook_runtime = "hooks"
+        session_events = None
 
         def get(self, key, strict=False):
             return {
@@ -50,4 +51,5 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         "traces": None,
         "system_prompt": "prompt",
         "hook_runtime": "hooks",
+        "session_events": None,
     }

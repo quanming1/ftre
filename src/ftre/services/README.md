@@ -61,7 +61,7 @@ Channel
 ## 生命周期口诀
 
 ```text
-provide → bind/start → use → stop/unbind → dispose
+provide → start → use → stop → dispose
 ```
 
 Provider 的 `apply()` 不应偷偷启动另一个全局进程，也不应在模块 import 时创建

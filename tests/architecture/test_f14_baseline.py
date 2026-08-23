@@ -66,6 +66,35 @@ def test_builtin_provider_keys_have_one_source_owner() -> None:
             assert previous == path, f"duplicate provide owner {key!r}: {previous} / {path}"
 
 
+def test_host_service_keys_have_declared_provider_owners() -> None:
+    """Host Service 表必须能反查到唯一 Provider，而不是依赖隐藏手工装配。"""
+    expected = {
+        "config": "config",
+        "filesystem": "filesystem",
+        "http": "http-service",
+        "system_prompt": "system-prompt",
+        "message_bus": "message-bus",
+        "tools": "tools",
+        "agent_profiles": "agent-profiles",
+        "sessions": "sessions",
+        "agents": "agents",
+        "channels": "channels",
+        "workspaces": "workspaces",
+        "attachments": "attachments",
+    }
+    manifests = {manifest.id: manifest for manifest in default_manifests()}
+    providers: dict[str, list[Path]] = {}
+    for path in _plugin_files():
+        for key in _literal_names(path, "provide"):
+            providers.setdefault(key, []).append(path)
+    for key, owner_id in expected.items():
+        assert owner_id in manifests, (key, owner_id)
+        assert len(providers.get(key, [])) == 1, key
+        module_name = manifests[owner_id].entry_text.partition(":")[0]
+        module = importlib.import_module(module_name)
+        assert Path(module.__file__).resolve() == providers[key][0].resolve()
+
+
 def test_plugin_declarations_are_literal_and_have_stable_entry_shape() -> None:
     """Plugin 元数据必须可静态审计，不能靠运行时动态拼接依赖图。"""
     assert _plugin_files(), "expected builtin provider plugins"
@@ -109,7 +138,25 @@ def test_packages_do_not_import_host_private_runtime() -> None:
 def test_known_legacy_escape_hatches_are_not_reintroduced() -> None:
     """F14 后续切片不能重新引入已退役的双 Owner 入口。"""
     forbidden = ("bind_legacy", "ServiceBag", "AgentControlPort", "CompactionPort")
-    for root in (SRC, PACKAGES):
+    roots = (SRC, *(package / "src" for package in PACKAGES.iterdir() if package.is_dir()))
+    for root in roots:
+        for path in root.rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            assert not any(item in source for item in forbidden), path
+
+
+def test_runtime_services_do_not_expose_callback_setter_bridges() -> None:
+    """跨 Owner 协作必须在构造/Inject/Hook 边界完成，不能靠 bind setter。"""
+    forbidden = (
+        "def bind_",
+        ".bind_lifecycle(",
+        ".bind_hook_runtime(",
+        ".bind_flush_dispatcher(",
+        "session_event_unbind",
+        "_flush_unbind",
+    )
+    roots = (SRC, *(package / "src" for package in PACKAGES.iterdir() if package.is_dir()))
+    for root in roots:
         for path in root.rglob("*.py"):
             source = path.read_text(encoding="utf-8")
             assert not any(item in source for item in forbidden), path

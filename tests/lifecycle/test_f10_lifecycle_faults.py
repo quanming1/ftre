@@ -54,13 +54,12 @@ async def test_close_cancels_worker_and_keeps_claimed_state_out_of_pending(tmp_p
 @pytest.mark.asyncio
 async def test_before_claim_keep_preserves_pending_and_remove_is_explicit(tmp_path):
     repo = InboxRepository(tmp_path / "inbox")
-    service = InboxService(repo)
-    await service.followup(InboundMessage("s1", "r1", "ws", "hello"))
 
     async def keep(_item, _snapshot):
         return False
 
-    service.bind_before_claim(keep)
+    service = InboxService(repo, before_claim=keep)
+    await service.followup(InboundMessage("s1", "r1", "ws", "hello"))
     # 没有 Agent 时不会启动 worker，直接验证 pending 仍可被 remove。
     assert (await service.snapshot("s1")).pending[0].request_id == "r1"
     assert await service.remove("s1", "r1") is True

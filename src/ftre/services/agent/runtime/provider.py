@@ -37,13 +37,9 @@ def build_runtime(
         "traces": ctx.get("traces", strict=False),
         "system_prompt": ctx.system_prompt,
         "hook_runtime": ctx.hook_runtime,
+        "session_events": ctx.session_events,
     }
-    loop = AgentLoop(**kwargs)
-    session_events = ctx.get("session_events", strict=False)
-    if session_events is not None:
-        # The Agent Provider owns this bridge and releases it with the runtime.
-        loop.session_event_unbind = session_events.bind(loop.emit_session_event)
-    return loop
+    return AgentLoop(**kwargs)
 
 
 __all__ = ["build_runtime"]

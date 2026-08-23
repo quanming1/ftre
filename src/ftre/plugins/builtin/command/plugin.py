@@ -22,24 +22,11 @@ from .service import CommandService
 from .types import CommandResult
 
 provide = ("commands",)
-inject = ("sessions", "http", "hook_runtime", "message_bus")
+inject = ("sessions", "http", "hook_runtime", "message_bus", "agents")
 
 
 def apply(ctx: Context, config=None):
     """发布 CommandService，并把内置命令注册到当前 Fiber 的生命周期中。"""
-    service = ctx.get("commands", strict=False)
-    if service is None:
-        service = CommandService()
-        ctx.provide("commands", service)
-
-    disposers = register_builtin_commands(
-        service.runtime,
-        agents=lambda: ctx.get("agents", strict=False),
-        sessions=ctx.sessions,
-    )
-    for index, disposer in enumerate(disposers):
-        ctx.effect(lambda disposer=disposer: disposer, label=f"command:builtin:{index}")
-
     async def persist_command_event(event_type, payload):
         session_id = payload.get("session_id") or ""
         if not session_id:
@@ -49,8 +36,18 @@ def apply(ctx: Context, config=None):
             {"type": event_type, **payload},
         )
 
-    lifecycle_disposer = service.bind_lifecycle(persist_command_event)
-    ctx.effect(lambda: lifecycle_disposer, label="command:lifecycle")
+    service = ctx.get("commands", strict=False)
+    if service is None:
+        service = CommandService(lifecycle=persist_command_event)
+        ctx.provide("commands", service)
+
+    disposers = register_builtin_commands(
+        service.runtime,
+        agents=ctx.agents,
+        sessions=ctx.sessions,
+    )
+    for index, disposer in enumerate(disposers):
+        ctx.effect(lambda disposer=disposer: disposer, label=f"command:builtin:{index}")
 
     from .router import build_router
 

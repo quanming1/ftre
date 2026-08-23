@@ -74,7 +74,7 @@ def test_turn_executor_is_not_user_message_owner() -> None:
 def test_session_plugin_owns_the_session_event_service() -> None:
     source = _source("services/session/plugin.py")
     assert 'provide = ("sessions", "session_events")' in source
-    assert "SessionEventService()" in source
+    assert "SessionEventService(service, ctx.message_bus.bus, ctx.hook_runtime)" in source
 
 
 def test_builtin_tools_use_public_channel_names_not_provider_modules() -> None:
