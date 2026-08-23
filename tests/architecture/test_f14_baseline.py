@@ -105,6 +105,26 @@ def test_plugin_declarations_are_literal_and_have_stable_entry_shape() -> None:
         assert all(provide), path
 
 
+def test_optional_runtime_capabilities_are_ready_before_agent_provider() -> None:
+    """Agent Runtime 构造时必须能看到已声明的可选 MCP/Trace 能力。"""
+    manifests = default_manifests()
+    positions = {manifest.id: index for index, manifest in enumerate(manifests)}
+    assert positions["mcp"] < positions["agents"]
+    assert positions["traces"] < positions["agents"]
+    assert next(manifest for manifest in manifests if manifest.id == "traces").required is False
+
+
+def test_agent_runtime_delegates_session_events_to_the_session_owner() -> None:
+    """Agent Runtime 不能保留 Projection/Hook/Bus 的第二事件出口。"""
+    source = (SRC / "services" / "agent" / "runtime" / "engine.py").read_text(
+        encoding="utf-8"
+    )
+    assert "self.session_events.emit(" in source
+    assert "self.session_projection.apply(" not in source
+    assert "_emit_session_event_hook" not in source
+    assert "SESSION_EVENT_SPEC" not in source
+
+
 def test_kernel_mechanism_layer_is_business_free_at_baseline() -> None:
     """当前 platform 机制层不应认识产品 Service 或可选 Package。"""
     roots = [SRC / "kernel" / "hooks", SRC / "kernel" / "plugins"]
@@ -180,3 +200,32 @@ def test_builtin_plugin_tree_has_no_legacy_feature_or_adapter_roots() -> None:
         SRC / "plugins" / "builtin" / "channels" / "subagent" / "plugin.py",
     ):
         assert expected.is_file(), expected
+
+
+def test_websocket_channel_has_no_post_composition_dependency_setters() -> None:
+    """Concrete Channel 的依赖必须在同一 Plugin 构造时确定。
+
+    这条门禁专门防止 Bootstrap 或 Plugin 先创建半成品 Channel，再用
+    ``attach_*``/``set_*`` 回填 projection、Inbox、状态和 FastAPI App；
+    WebSocket handler 现在作为 HttpService 路由贡献一起物化。
+    """
+    channel = (SRC / "plugins" / "builtin" / "channels" / "websocket" / "channel.py").read_text(
+        encoding="utf-8"
+    )
+    plugin = (SRC / "plugins" / "builtin" / "channels" / "websocket" / "plugin.py").read_text(
+        encoding="utf-8"
+    )
+    bootstrap = (SRC / "app" / "gateway" / "bootstrap.py").read_text(encoding="utf-8")
+    forbidden = (
+        "def set_session_projection",
+        "def set_inbox_provider",
+        "def set_status_provider",
+        "def attach_app",
+        ".attach_app(",
+        ".set_session_projection(",
+        ".set_inbox_provider(",
+        ".set_status_provider(",
+    )
+    assert not any(item in channel or item in plugin or item in bootstrap for item in forbidden)
+    assert "register_websocket_path(" in plugin
+    assert "channel._ws_endpoint" in plugin

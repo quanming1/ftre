@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ftre.plugins.builtin.channels.websocket.channel import WebSocketChannel
@@ -54,10 +55,13 @@ def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
         )
 
     bus.request_inbound = request_inbound
-    channel = WebSocketChannel(bus)
     inbox = FakeInbox()
-    channel.set_inbox_provider(inbox)
-    channel.set_status_provider(lambda _session_id: "idle")
+    channel = WebSocketChannel(
+        bus,
+        app=FastAPI(title="ftre-test"),
+        inbox_provider=inbox,
+        status_provider=lambda _session_id: "idle",
+    )
 
     with TestClient(channel.app) as client:
         with client.websocket_connect("/") as websocket:

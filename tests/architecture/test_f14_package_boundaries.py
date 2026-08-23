@@ -120,3 +120,12 @@ def test_package_source_tree_has_no_generated_artifacts() -> None:
             path = ROOT / raw.decode()
             assert path.name not in forbidden_names, path
             assert path.suffix not in {".pyc", ".pyo", ".sqlite", ".db"}, path
+
+
+def test_inbox_package_uses_host_hook_contract_without_noop_fallback() -> None:
+    """Inbox 已声明 ftre 运行时依赖，不应再保留假的 HookSpec 分支。"""
+    source = (PACKAGES / "ftre-inbox" / "src" / "ftre_inbox" / "hooks.py").read_text(
+        encoding="utf-8"
+    )
+    assert "except ModuleNotFoundError" not in source
+    assert "HookSpec = None" not in source

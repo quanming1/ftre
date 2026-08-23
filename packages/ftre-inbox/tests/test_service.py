@@ -8,6 +8,7 @@ from ftre_inbox.service import InboxService
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.contracts import InboundMessage
+from ftre.services.messaging.bus import IngressResult
 
 
 class FakeAgent:
@@ -158,6 +159,29 @@ async def test_before_claim_failure_keeps_entire_batch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_claim_failure_blocks_worker_without_unhandled_task(tmp_path):
+    """持久化 claim 失败时 pending 保留，worker 进入 blocked 而不泄漏异常。"""
+    agent = FakeAgent()
+    repository = InboxRepository(tmp_path)
+
+    async def fail_claim(*_args, **_kwargs):
+        raise PermissionError("transient replace failure")
+
+    repository.claim = fail_claim
+    service = InboxService(repository, agent)
+    await service.followup(InboundMessage("s1", "r1", "ws", "hello"))
+    for _ in range(100):
+        if service.status("s1") == "blocked":
+            break
+        await asyncio.sleep(0.01)
+    assert service.status("s1") == "blocked"
+    assert [item.request_id for item in (await service.snapshot("s1")).pending] == ["r1"]
+    worker = service._workers.get("s1")
+    assert worker is not None and not worker.done()
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_bus_prompt_accepts_structured_text_content(tmp_path):
     service = InboxService(InboxRepository(tmp_path))
     message = type(
@@ -176,6 +200,8 @@ async def test_bus_prompt_accepts_structured_text_content(tmp_path):
         },
     )()
     admission = await service.handle_bus_message(message)
+    # Inbox 只实现 Messaging 的公开返回契约，不再定义平行的 Admission DTO。
+    assert isinstance(admission, IngressResult)
     assert admission.accepted is True
     assert (await service.snapshot("s1")).pending[0].content == "你好，世界"
     await service.close()
@@ -229,13 +255,10 @@ async def test_discard_hook_removes_only_explicit_candidate(tmp_path):
         owner="test-policy",
         global_listener=True,
     )
+    await service.start()
     await service.followup(InboundMessage("s1", "drop", "ws", "drop"))
     await service.followup(InboundMessage("s1", "keep", "ws", "keep"))
-    await service.start()
-    for _ in range(100):
-        if [item.request_id for item in agent.received] == ["keep"]:
-            break
-        await asyncio.sleep(0.01)
+    await asyncio.wait_for(agent.done.wait(), timeout=5)
     assert [item.request_id for item in agent.received] == ["keep"]
     for _ in range(100):
         if not (await service.snapshot("s1")).has_pending:

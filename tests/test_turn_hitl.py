@@ -35,6 +35,7 @@ from ftre.services.agent.registry import AgentRegistry
 from ftre.services.agent.runtime.engine import AgentLoop
 from ftre.services.agent.runtime.turn_executor import TurnExecutor
 from ftre.services.messaging.bus import BusMessage
+from ftre.services.session.events import SessionEventService
 from ftre.services.session.projection import SessionProjection
 from ftre.services.system_prompt.hooks import (
     SYSTEM_PROMPT_ASSEMBLE_SPEC,
@@ -142,6 +143,11 @@ def _make_executor(agent) -> TurnExecutor:
     loop.tracer = Mock()
 
     loop.session_projection = SessionProjection(loop.session_manager)
+    loop.session_events = SessionEventService(
+        SimpleNamespace(projection=loop.session_projection),
+        loop.bus,
+        HookRuntime(Context()),
+    )
 
     async def emit_session_event(session_id, channel_id, event, *, metadata=None):
         return await AgentLoop.emit_session_event(

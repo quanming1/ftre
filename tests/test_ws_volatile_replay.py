@@ -47,13 +47,16 @@ class _Inbox:
 
 @pytest.mark.asyncio
 async def test_attach_reads_inbox_queue_and_status_baseline():
-    channel = WebSocketChannel(EventBus())
-    channel._session_projection = SimpleNamespace(
+    projection = SimpleNamespace(
         snapshot=AsyncMock(return_value=[]),
         session_event_snapshot=AsyncMock(return_value=[]),
     )
-    channel.set_inbox_provider(_Inbox())
-    channel.set_status_provider(lambda _sid: "idle")
+    channel = WebSocketChannel(
+        EventBus(),
+        session_projection=projection,
+        inbox_provider=_Inbox(),
+        status_provider=lambda _sid: "idle",
+    )
     ws = FakeWebSocket()
     await channel._on_message(
         json.dumps({"type": "attach", "payload": {"session_id": "s1"}}), ws
@@ -104,8 +107,7 @@ async def test_prompt_without_request_id_is_rejected_before_bus():
 
 @pytest.mark.asyncio
 async def test_update_queue_steer_returns_unified_ack():
-    channel = WebSocketChannel(EventBus())
-    channel.set_inbox_provider(_Inbox())
+    channel = WebSocketChannel(EventBus(), inbox_provider=_Inbox())
     ws = FakeWebSocket()
     await channel._on_message(
         json.dumps({

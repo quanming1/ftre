@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from cordis import Context
 from ftre_agent_core.agent.runner import RunState, RunStatus
 from ftre_agent_core.event import (
     ReplyEndEvent,
@@ -14,12 +15,14 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import Msg
 
+from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.config import AgentConfig, LLMConfig
 from ftre.services.agent.contracts import InboundMessage
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.agent.runtime.engine import AgentLoop
 from ftre.services.agent.runtime.turn_executor import TurnExecutor
 from ftre.services.messaging.bus import BusMessage, InboundMetadata
+from ftre.services.session.events import SessionEventService
 from ftre.services.session.projection import SessionProjection
 
 
@@ -101,6 +104,11 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop.tracer = Mock()
 
     loop.session_projection = SessionProjection(loop.session_manager)
+    loop.session_events = SessionEventService(
+        SimpleNamespace(projection=loop.session_projection),
+        loop.bus,
+        HookRuntime(Context()),
+    )
 
     executor = TurnExecutor(loop, sessions=loop.session_manager)
     executor._build_messages = AsyncMock(
