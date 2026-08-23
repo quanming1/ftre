@@ -181,7 +181,7 @@ Plugin/Service 实现，AgentLoop 不读取 QueueItem，也不决定 claim 时�
 
 | 能力 | Owner | 形态 | 消费方式 |
 |---|---|---|---|
-| Cordis Context、Loader、Hook 生命周期 | `platform/plugin_runtime` | Kernel mechanism | Composition 使用 |
+| Cordis Context、Loader、Hook 生命周期 | `kernel/plugins` | Kernel mechanism | Composition 使用 |
 | Session 历史 | Session Provider Plugin | `sessions` Service | `inject=("sessions",)` |
 | Agent 执行 | Agent Provider Plugin | `agent` Service | `inject=("agent",)` |
 | Pending 队列 | `ftre-inbox` Plugin | `inbox` Service + worker + wire contribution | Inject 或 Hook |

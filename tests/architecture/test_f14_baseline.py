@@ -78,7 +78,7 @@ def test_plugin_declarations_are_literal_and_have_stable_entry_shape() -> None:
 
 def test_kernel_mechanism_layer_is_business_free_at_baseline() -> None:
     """当前 platform 机制层不应认识产品 Service 或可选 Package。"""
-    roots = [SRC / "platform" / "hooks", SRC / "platform" / "plugin_runtime"]
+    roots = [SRC / "kernel" / "hooks", SRC / "kernel" / "plugins"]
     forbidden = (
         "ftre.services",
         "ftre.features",

@@ -6,16 +6,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from ftre.platform.hooks import (
-    SESSION_CREATED,
-    SESSION_DISPOSED,
-    SESSION_EVENT,
-    SESSION_FLUSH,
-    HookFailurePolicy,
-    HookMode,
-    HookScope,
-    HookSpec,
-)
+from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
+
+# SessionService owns persistence lifecycle names; they are not Kernel concepts.
+SESSION_CREATED = "session/created"
+SESSION_DISPOSED = "session/disposed"
+SESSION_EVENT = "session/event"
+SESSION_FLUSH = "session/flush"
 
 
 @dataclass(frozen=True, slots=True)

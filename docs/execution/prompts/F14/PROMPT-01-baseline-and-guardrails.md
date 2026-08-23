@@ -40,7 +40,7 @@ imports、tests 和生命周期实现反推证据。
 
 建立“当前路径 → F14 目标路径 → 唯一 Owner → 所属批次”映射，至少覆盖：
 
-- `src/ftre/platform`；
+- `src/ftre/kernel`；
 - `src/ftre/services/agent_loop`；
 - `src/ftre/features`；
 - Command、Trace、Session Title；

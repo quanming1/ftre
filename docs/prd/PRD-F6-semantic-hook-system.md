@@ -52,7 +52,7 @@ DSH 的核心做法不是建立一个拥有所有业务的 `HookManager`，而�
 
 - ftre 不再包含 `src/cordis`；运行时 `cordis.__file__` 来自 `cordis-py 0.4.0` 安装 distribution。
 - ftre 只使用官方 Cordis 的 `Context`、`Fiber`、`Service`、`Inject`、`Effect`、`Events` 及其正式生命周期 API。
-- `platform/plugin_runtime` 只做 Manifest、Discovery、Loader、Manager、Diagnostics 薄适配，不复制 Cordis 状态机。
+- `kernel/plugins` 只做 Manifest、Discovery、Loader、Manager、Diagnostics 薄适配，不复制 Cordis 状态机。
 - Cordis Runtime 提供真正的 continuation waterfall 与明确的五种调度模式。
 - Hook 契约类型化、可诊断，并声明所属领域、调度模式、默认行为和失败策略。
 - 每个 Agent 拥有独立 Hook scope，父子 Agent scope 可继承，全局 Plugin 可显式观察全部 Agent。
@@ -144,7 +144,7 @@ Plugin 只有调用 `next()` 才会委托给后续监听器及默认行为；不
 - [x] PRE1：`pyproject.toml` 必须锁定 `cordis-py==0.4.0`，本地开发文档必须明确先安装/链接 `E:\cordis-py`；不得通过 `src/cordis`、`sys.modules` 或 import fallback 阻断官方包。
 - [x] PRE2：删除 `src/cordis/__init__.py` 及其整个本地同名包；ftre 源码树中不得出现第二套 `cordis` 实现。
 - [x] PRE3：所有 Plugin 入口的类型注解和运行时对象统一使用官方 `cordis.Context`；不得继续导入不存在于官方包的 `PluginContext`、`ServiceAccessError` 等简化 API。
-- [x] PRE4：`platform/plugin_runtime` 适配官方 `Context.plugin()`、`Fiber.await_()`、`Fiber.dispose()`、`Fiber.restart()`、`Fiber.state` 和 `Context.registry` 等真实 API；不得向官方 Context 传递 `id`、`parent` 等不存在参数。
+- [x] PRE4：`kernel/plugins` 适配官方 `Context.plugin()`、`Fiber.await_()`、`Fiber.dispose()`、`Fiber.restart()`、`Fiber.state` 和 `Context.registry` 等真实 API；不得向官方 Context 传递 `id`、`parent` 等不存在参数。
 - [x] PRE5：Plugin Loader 的 required/optional、PENDING/ACTIVE/FAILED、依赖重载和卸载诊断必须基于官方 Fiber/Registry 状态，不得在 ftre 再复制 Fiber 状态机。
 - [x] PRE6：官方 Cordis 的 `EventsService`、`Context.on/once/emit/parallel/serial/bail/waterfall` 必须由 ftre 直接消费；当前 Hook/Filter 迁移不得建立第三套 EventHub。
 - [x] PRE7：生产导入、测试和 Gateway 启动必须证明 `cordis.__file__` 不位于 `E:\ftre\src\cordis`，且 `importlib.metadata.version("cordis-py") == "0.4.0"`。

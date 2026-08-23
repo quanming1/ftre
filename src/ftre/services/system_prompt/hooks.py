@@ -8,16 +8,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ftre.platform.hooks import (
-    SYSTEM_PROMPT_ASSEMBLE,
-    HookFailurePolicy,
-    HookMode,
-    HookScope,
-    HookSpec,
-)
+from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
 from ftre.services.agent.hooks import AgentSubject
 
 from .types import PromptAssembly
+
+SYSTEM_PROMPT_ASSEMBLE = "system-prompt/assemble"
 
 
 @dataclass(frozen=True, slots=True)

@@ -35,7 +35,7 @@ Kernel
 
 Kernel 不得识别或 import Queue、pending、Compaction、Command、Session title、Schedule、
 Team、MCP、Skill、WebSocket payload、Agent prompt、Tool policy 等产品或业务概念。
-`platform/` 中出现这些词汇或实现依赖时，默认视为分层错误。
+`kernel/` 中出现这些词汇或实现依赖时，默认视为分层错误。
 
 Agent Runtime 是最小执行能力，但仍是由 Provider Plugin 装配的业务 Service，不属于 Cordis
 Kernel。它只负责 `InboundMessage → Turn → Reasoning/Tool → Assistant Output`，不负责
@@ -90,7 +90,7 @@ src/
    │     ├─ bootstrap.py            # 启动/关闭顺序；不承载业务规则
    │     └─ http/                   # Host 与服务器适配
    ├─ platform/                    # 轻内核：运行时机制，不承载产品能力
-   │  └─ plugin_runtime/            # Manifest、Discovery、Loader、Manager、Diagnostics
+   │  └─ plugins/            # Manifest、Discovery、Loader、Manager、Diagnostics
    ├─ services/                    # 有状态公共能力；每个能力由 Service + Provider Plugin 组成
    │  ├─ config/ filesystem/ http/
    │  ├─ messaging/{bus,channel}/

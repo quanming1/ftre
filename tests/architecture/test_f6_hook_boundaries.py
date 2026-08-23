@@ -4,7 +4,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ftre.platform.hooks import PUBLIC_HOOK_NAMES
+from ftre.services.agent.hooks import (
+    AGENT_AFTER_TURN_SPEC,
+    AGENT_BEFORE_REASONING_SPEC,
+    AGENT_BEFORE_TURN_SPEC,
+)
+from ftre.services.session.hooks import SESSION_EVENT_SPEC
+from ftre.services.system_prompt.hooks import SYSTEM_PROMPT_ASSEMBLE_SPEC
+from ftre.services.tools.hooks import TOOLS_PRE_EXECUTE_SPEC
+
+PUBLIC_HOOK_NAMES = {
+    AGENT_AFTER_TURN_SPEC.name,
+    AGENT_BEFORE_REASONING_SPEC.name,
+    AGENT_BEFORE_TURN_SPEC.name,
+    SESSION_EVENT_SPEC.name,
+    SYSTEM_PROMPT_ASSEMBLE_SPEC.name,
+    TOOLS_PRE_EXECUTE_SPEC.name,
+}
 
 ROOT = Path(__file__).parents[2]
 SRC = ROOT / "src" / "ftre"
@@ -26,7 +42,7 @@ def test_public_hook_names_exclude_legacy_filter_names():
 
 
 def test_new_platform_hooks_do_not_import_legacy_runtime_module():
-    for path in (SRC / "platform" / "hooks").rglob("*.py"):
+    for path in (SRC / "kernel" / "hooks").rglob("*.py"):
         assert LEGACY_IMPORT not in path.read_text(encoding="utf-8")
 
 

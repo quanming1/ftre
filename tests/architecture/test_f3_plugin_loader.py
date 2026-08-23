@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from cordis import Context, FiberState
 
-from ftre.platform.plugin_runtime import PluginDiscovery, PluginManager, PluginManifest
+from ftre.kernel.plugins import PluginDiscovery, PluginManager, PluginManifest
 
 
 @pytest.mark.asyncio
@@ -16,7 +16,7 @@ async def test_required_plugin_failure_is_reported_and_context_is_cleaned() -> N
     def broken(_ctx):
         raise RuntimeError("broken entry")
 
-    from ftre.platform.plugin_runtime import PluginStartupError
+    from ftre.kernel.plugins import PluginStartupError
 
     with pytest.raises(PluginStartupError):
         await manager.load([PluginManifest("required-broken", broken, required=True)], {})

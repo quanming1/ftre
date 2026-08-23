@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from cordis import Context
 
-from ftre.platform.plugin_runtime.manager import PluginManager
+from ftre.kernel.plugins.manager import PluginManager
 from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
 
 

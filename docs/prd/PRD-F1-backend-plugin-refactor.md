@@ -908,7 +908,7 @@ F1 不顺便改变 CORS 对 Desktop 的可连接行为；安全收紧若会影�
 |---|---|
 | `main.py` | `app/cli` + `app/gateway/bootstrap.py` |
 | `gateway/runtime.py` | `app/cli/gateway_process.py` |
-| `plugin/kernel/*` | 由 `cordis-py` 替代；项目薄适配进入 `platform/plugin_runtime` |
+| `plugin/kernel/*` | 由 `cordis-py` 替代；项目薄适配进入 `kernel/plugins` |
 | `config.py` | `services/config` |
 | `system_prompt.md` 与 `AgentManager._compose_system_prompt` | `services/system_prompt`；Agent Factory 只消费最终组装结果 |
 | `bus/*` | `services/messaging/bus` |
@@ -1275,7 +1275,7 @@ http frozen + restart_required
 
 | 测试层 | 覆盖内容 |
 |---|---|
-| `tests/unit/platform/plugin_runtime` | Manifest、Catalog、入口解析、冲突和诊断 |
+| `tests/unit/kernel/plugins` | Manifest、Catalog、入口解析、冲突和诊断 |
 | `tests/contracts/test_config_service.py` | revision、expected-revision、原子写、watcher 去重、unknown field round-trip |
 | `tests/contracts/test_filesystem_workspace.py` | PathPolicy、symlink/escape、大小上限、workspace 持久化 |
 | `tests/contracts/test_tool_skill_prompt.py` | agent scope、schema provenance、Skill shadow、Prompt Receipt |

@@ -59,8 +59,8 @@
 
 | 当前路径/能力 | F14 目标 | Owner | 计划批次 |
 |---|---|---|---|
-| `src/ftre/platform/hooks` | `src/ftre/kernel/hooks` | Kernel mechanism | F14.2 |
-| `src/ftre/platform/plugin_runtime` | `src/ftre/kernel/plugins` | Plugin Runtime | F14.2 |
+| `src/ftre/kernel/hooks` | `src/ftre/kernel/hooks` | Kernel mechanism | F14.2 |
+| `src/ftre/kernel/plugins` | `src/ftre/kernel/plugins` | Plugin Runtime | F14.2 |
 | `src/ftre/services/agent_loop` | `src/ftre/services/agent/runtime` | Agent Provider | F14.3 |
 | `src/ftre/features/*` | `src/ftre/plugins/builtin/*` | 各行为 Plugin | F14.5 |
 | `services/command` | `plugins/builtin/command` | Command Plugin | F14.4/F14.5 |
@@ -85,13 +85,13 @@
 
 | 债务 | 证据 | Owner | 清理批次 |
 |---|---|---|---|
-| `platform` 名称仍承载 Kernel 机制 | `src/ftre/platform/` | Kernel | F14.2 |
+| `platform` 名称仍承载 Kernel 机制 | `src/ftre/kernel/` | Kernel | F14.2 |
 | `features` 名称隐藏 Plugin 生命周期 | `src/ftre/features/*` | Builtin Plugins | F14.5 |
 | `agent_runtime` 与 `agents` 双 Service/Provider | `composition.py`、`services/agent_loop/plugin.py` | Agent | F14.3 |
 | AgentLoop 仍拥有 Bus 分流、Command/Inbox binding | `services/agent_loop/runtime/loop/engine.py` | Messaging/Agent | F14.3/F14.4 |
 | concrete Channel 深嵌在 Service 目录 | `services/messaging/channel/providers/*` | Channel Plugin | F14.5 |
 | Command/Trace Service 仍位于 Host services | `services/command`、`services/observability/trace` | Builtin Plugins | F14.5 |
-| Package 仍引用旧 `ftre.platform` 测试/入口 | `packages/ftre-inbox`、`ftre-compaction` | Package | F14.2/F14.7 |
+| Package 仍引用旧 `ftre.kernel` 测试/入口 | `packages/ftre-inbox`、`ftre-compaction` | Package | F14.2/F14.7 |
 | 多处 `ctx.get(..., strict=False)` 作为可选依赖查找 | 各 Provider Plugin | 各 Owner | F14.6 |
 | 多处 `bind_*` 生命周期桥接 | Session、Command、Inbox、AgentLoop | 各 Owner | F14.3-F14.6 |
 
@@ -132,6 +132,40 @@ git diff --check -- <F14 基线文件>
 基线提交：`5501fc1 chore(agent): 固化 F12 F13 迁移基线`。
 
 F14.1 已完成；后续迁移仍必须以本报告记录的债务为输入，不得把债务清单当作已修复证据。
+
+## F14.2 Kernel 命名与业务零知识迁移（2026-08-24）
+
+### 已完成
+
+- `src/ftre/platform` 已整体迁移为 `src/ftre/kernel`；`plugin_runtime` 已迁移为
+  `kernel/plugins`，生产代码、测试和当前架构文档统一使用新路径。
+- 删除 `src/ftre/kernel/hooks/names.py`；Kernel Hook 导出现在只包含 Runtime、Spec、Scope、
+  Receipt 和 Diagnostics 机制，不再导出 Agent/Session/Tool/Prompt 业务名称或 `PUBLIC_HOOK_NAMES`。
+- Agent Hook 名称由 `services/agent/hooks.py` 持有；Session、System Prompt、LLM、Tool Hook
+  名称分别由对应 Owner 或 `ftre-agent-core` 持有；测试从语义 Owner 读取 Spec 名称。
+- Kernel README 已改为机制边界说明，不再维护业务 Hook 名称总表。
+- Package、Gateway、Service 和测试的 `ftre.platform` import 已全部切换为 `ftre.kernel`。
+
+### 验证
+
+```text
+python -m pytest -q tests/architecture/test_f14_baseline.py tests/architecture/test_f13_plugin_first.py tests/architecture/test_f3_no_legacy_imports.py tests/architecture/test_f3_plugin_loader.py tests/architecture/test_f6_hook_boundaries.py tests/hooks/test_hook_runtime.py tests/contracts/test_f7_hook_pipeline.py
+→ 48 passed in 5.37s
+
+python -m pytest -q
+→ 445 passed in 115.67s
+
+python -m ruff check --no-cache src tests packages/ftre-inbox packages/ftre-compaction
+→ All checks passed
+```
+
+### 仍待后续批次处理
+
+- `services/agent_loop`、`features` 和 concrete Channel 目录仍按 F14.3-F14.5 迁移；
+- 历史阶段文档中仍有 `platform/features` 旧树描述，F14.9 统一审计后清理；
+- F14.2 没有引入兼容 alias 或第二 Kernel 实现。
+
+提交将在 F14.2 的代码与文档完成后按职责分批创建。
 
 ## 后续批次精确输入
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from cordis import Context, FiberState
 
-from ftre.platform.plugin_runtime import (
+from ftre.kernel.plugins import (
     PluginManager,
     PluginManifest,
     PluginStartupError,

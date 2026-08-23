@@ -44,7 +44,7 @@ def test_runtime_source_does_not_import_retired_namespaces() -> None:
 
 
 def test_new_hook_contract_is_the_single_runtime_hook_owner() -> None:
-    hooks = SOURCE / "ftre" / "platform" / "hooks"
+    hooks = SOURCE / "ftre" / "kernel" / "hooks"
     assert hooks.is_dir()
     assert (hooks / "runtime.py").is_file()
     retired = SOURCE / "ftre" / "services" / "agent_loop" / "runtime" / "hooks.py"

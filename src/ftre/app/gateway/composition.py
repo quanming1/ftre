@@ -17,8 +17,8 @@ from typing import Any
 
 from cordis import Context
 
-from ftre.platform.hooks import HookRuntime
-from ftre.platform.plugin_runtime import PluginManager, PluginManifest
+from ftre.kernel.hooks import HookRuntime
+from ftre.kernel.plugins import PluginManager, PluginManifest
 from ftre.services.config.loader import load_config_file
 
 

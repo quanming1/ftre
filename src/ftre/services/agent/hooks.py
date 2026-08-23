@@ -22,23 +22,22 @@ from ftre_agent_core.hooks import (
     TurnStoppingPayload,
 )
 
-from ftre.platform.hooks import (
-    AGENT_AFTER_TURN,
-    AGENT_BEFORE_TURN,
-    AGENT_CREATED,
-    AGENT_DISPOSED,
-    AGENT_ERROR,
-    AGENT_REQUEST,
-    AGENT_REQUEST_ERROR,
-    AGENT_SESSION_START,
-    AGENT_STATUS,
-    AGENT_TURN_STOPPED,
-    HookFailurePolicy,
-    HookMode,
-    HookScope,
-    HookSpec,
-)
+from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
 from ftre.services.agent.config import AgentConfig
+
+# Agent Service owns lifecycle and active-turn names; Kernel only dispatches them.
+AGENT_CREATED = "agent/created"
+AGENT_DISPOSED = "agent/disposed"
+AGENT_ERROR = "agent/error"
+AGENT_BEFORE_TURN = "agent/before-turn"
+AGENT_AFTER_TURN = "agent/after-turn"
+AGENT_REQUEST = "agent/request"
+AGENT_REQUEST_ERROR = "agent/request-error"
+AGENT_SESSION_START = "agent/session-start"
+AGENT_STATUS = "agent/status"
+AGENT_TURN_STOPPED = "agent/turn-stopped"
+AGENT_BEFORE_REASONING = AGENT_BEFORE_REASONING_SPEC.name
+AGENT_TURN_STOPPING = AGENT_TURN_STOPPING_SPEC.name
 
 
 @dataclass(frozen=True, slots=True)

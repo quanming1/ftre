@@ -33,7 +33,7 @@ and owns the reversible shutdown path.
 | Service | `src/ftre/services/<name>/service.py` | Stateful capability with a stable public key, such as `sessions`, `tools`, `http` or `message_bus` |
 | Provider Plugin | beside the Service in `plugin.py` | Declares `inject`/`provide`, creates or binds the Service, and registers cleanup effects |
 | Feature Plugin | `src/ftre/features/<name>/` | Optional product behavior such as Skill, MCP, Plan, Team, Schedule or context governance |
-| Platform Runtime | `src/ftre/platform/plugin_runtime/` | Manifest validation, explicit discovery, Cordis loading, status and failure diagnostics |
+| Platform Runtime | `src/ftre/kernel/plugins/` | Manifest validation, explicit discovery, Cordis loading, status and failure diagnostics |
 | App Host | `src/ftre/app/` | Process boundaries only: CLI, Gateway bootstrap, FastAPI and uvicorn |
 
 `services/agent_loop/provider.py` is the internal object-construction boundary
@@ -57,7 +57,7 @@ ftre/
 │     │     ├─ bootstrap.py       # startup/close orchestration
 │     │     └─ http/               # FastAPI Host and uvicorn adapter
 │     ├─ platform/
-│     │  └─ plugin_runtime/       # Catalog → Discovery → Loader → Manager
+│     │  └─ plugins/       # Catalog → Discovery → Loader → Manager
 │     ├─ services/                 # public stateful runtime capabilities
 │     │  ├─ config/ filesystem/ http/
 │     │  ├─ messaging/{bus,channel}/
@@ -76,7 +76,7 @@ ftre/
 ```
 
 The retired root packages (`agent`, `api`, `bus`, `channel`, `plugin`, `session`,
-etc.) are intentionally absent. New code belongs in `app`, `platform`,
+etc.) are intentionally absent. New code belongs in `app`, `kernel`,
 `services` or `features`; external plugins use the explicit runtime manifest
 boundary rather than importing private ftre modules.
 

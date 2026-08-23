@@ -2,4 +2,6 @@
 
 from ftre_agent_core.hooks import LLM_STREAM_SPEC, LLMStreamPayload
 
-__all__ = ["LLM_STREAM_SPEC", "LLMStreamPayload"]
+LLM_STREAM = LLM_STREAM_SPEC.name
+
+__all__ = ["LLM_STREAM", "LLM_STREAM_SPEC", "LLMStreamPayload"]

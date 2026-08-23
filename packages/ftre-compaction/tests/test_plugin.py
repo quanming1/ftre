@@ -8,7 +8,7 @@ import pytest
 from cordis import Context
 from ftre_compaction.plugin import apply
 
-from ftre.platform.hooks import HookRuntime
+from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.hooks import (
     AGENT_REQUEST_ERROR_SPEC,
     AgentSubject,

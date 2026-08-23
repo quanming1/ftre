@@ -15,7 +15,7 @@ from ftre_inbox.hooks import (
 )
 from ftre_inbox.models import QueueItem
 
-from ftre.platform.hooks import HookRuntime
+from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.hooks import (
     AGENT_AFTER_TURN_SPEC,
     AfterTurnPayload,

@@ -27,7 +27,7 @@ from ftre_agent_core.message import (
     ToolCallState,
 )
 
-from ftre.platform.hooks import HookRuntime
+from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.config import AgentConfig, LLMConfig
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.agent_loop.runtime.loop.engine import AgentLoop

@@ -51,8 +51,8 @@ Gateway Composition Root
 
 ### 3.1 核心实现
 
-- `src/ftre/platform/hooks/runtime.py`：Fiber companion Effect、生命周期标记、in-flight quiescence、异步 emit observer 调度。
-- `src/ftre/platform/hooks/names.py`：补充 `session/created`、`session/disposed`。
+- `src/ftre/kernel/hooks/runtime.py`：Fiber companion Effect、生命周期标记、in-flight quiescence、异步 emit observer 调度。
+- `src/ftre/kernel/hooks/names.py`：补充 `session/created`、`session/disposed`。
 - `src/ftre/services/session/`：Session lifecycle Hook、flush barrier、post-commit 事件。
 - `src/ftre/services/agent_loop/`：AgentLoop Provider、SessionLane、TurnExecutor 和 Mailbox 数据面。
 - `src/ftre/features/compaction/`：独立 CompactionService 与 Hook Feature。

@@ -17,7 +17,7 @@ from ftre_agent_core.event import UserMessageEvent
 from ftre_agent_core.message import from_openai_message
 from ftre_agent_core.tool import ToolRegistry
 
-from ftre.platform.hooks import HookRuntime, HookSpec
+from ftre.kernel.hooks import HookRuntime, HookSpec
 from ftre.services.agent.config import AgentConfig
 from ftre.services.agent.contracts import InboundMessage
 from ftre.services.agent.hooks import (

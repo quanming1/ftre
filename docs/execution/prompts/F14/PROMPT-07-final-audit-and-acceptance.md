@@ -31,7 +31,7 @@
 
 使用 `rg --files`、`rg`、AST/import 扫描、测试覆盖证据和可用的死代码工具，至少检查：
 
-- `ftre.platform`、`ftre.features`、`ftre.services.agent_loop` 旧引用和旧目录；
+- `ftre.kernel`、`ftre.features`、`ftre.services.agent_loop` 旧引用和旧目录；
 - compatibility/re-export/legacy/fallback/no-op/bind setter/Service Bag/Locator；
 - 重复 Plugin id、Service key、Owner、HookSpec、Route、Tool、Command、Channel、Exporter；
 - Plugin A import Plugin B 私有 Repository/Runtime/Adapter；

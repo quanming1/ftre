@@ -16,6 +16,11 @@ from ftre_agent_core.hooks import (
     ToolResultPayload,
 )
 
+TOOL_PRE_EXECUTE = TOOLS_PRE_EXECUTE_SPEC.name
+TOOL_EXECUTE = TOOLS_EXECUTE_SPEC.name
+TOOL_POST_EXECUTE = TOOLS_POST_EXECUTE_SPEC.name
+TOOL_RESULT = TOOLS_RESULT_SPEC.name
+
 __all__ = [
     "TOOLS_EXECUTE_SPEC",
     "TOOLS_POST_EXECUTE_SPEC",

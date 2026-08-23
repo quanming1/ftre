@@ -11,7 +11,7 @@ import inspect
 from collections.abc import Callable
 from typing import Any
 
-from ftre.platform.hooks import HookScopeCarrier
+from ftre.kernel.hooks import HookScopeCarrier
 
 from .contracts import AgentDriver, AgentListener, InboundMessage
 from .registry import AgentRegistry

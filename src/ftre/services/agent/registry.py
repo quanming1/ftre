@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ftre.platform.hooks import HookScopeCarrier
+from ftre.kernel.hooks import HookScopeCarrier
 
 
 @dataclass(slots=True)

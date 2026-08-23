@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 try:  # ftre Gateway 运行时提供真实 HookSpec；独立包导入不应强依赖 Gateway。
-    from ftre.platform.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
+    from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
 except ModuleNotFoundError:  # pragma: no cover - 仅用于独立 wheel 的 import smoke
     HookSpec = None  # type: ignore[assignment,misc]
     HookFailurePolicy = HookMode = HookScope = None  # type: ignore[assignment,misc]

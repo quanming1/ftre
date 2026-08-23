@@ -14,7 +14,7 @@ Queue/Compaction 模型。
 
 ### 1. 轻内核与唯一 Composition
 
-- `src/ftre/platform/plugin_runtime/` 继续只提供 Context、Manifest、Discovery、Loader、
+- `src/ftre/kernel/plugins/` 继续只提供 Context、Manifest、Discovery、Loader、
   Manager、Hook、Fiber/Effect 和诊断机制，不导入产品 Service。
 - `src/ftre/app/gateway/composition.py` 只声明并装载 Plugin；不再创建业务对象图，
   不再手工注册业务 HTTP 路由。

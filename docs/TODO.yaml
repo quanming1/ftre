@@ -214,7 +214,7 @@ stages:
           - pyproject.toml
           - src/ftre/main.py
           - src/ftre/app/
-          - src/ftre/platform/
+          - src/ftre/kernel/
           - src/ftre/services/
           - src/ftre/features/
           - tests/
@@ -278,8 +278,8 @@ stages:
         prd: docs/prd/PRD-F3-plugin-kernel-retirement.md
         prd_status: 已验收
         modules:
-          - src/ftre/platform/plugin_runtime/
-          - src/ftre/platform/hooks/
+          - src/ftre/kernel/plugins/
+          - src/ftre/kernel/hooks/
           - src/ftre/features/
           - src/ftre/api/
           - tests/architecture/
@@ -391,7 +391,7 @@ stages:
         prd_status: 已验收
         modules:
           - pyproject.toml
-          - src/ftre/platform/hooks/
+          - src/ftre/kernel/hooks/
           - src/ftre/services/agent/
           - src/ftre/services/agent_loop/
           - src/ftre/services/tools/
@@ -447,7 +447,7 @@ stages:
             status: done
             date: 2026-08-21
             modules:
-              - src/ftre/platform/hooks/runtime.py
+              - src/ftre/kernel/hooks/runtime.py
               - tests/lifecycle/test_f10_lifecycle_faults.py
               - tests/hooks/test_hook_runtime.py
               - tests/contracts/test_f6_agent_hooks.py
@@ -475,7 +475,7 @@ stages:
           - F6.1-F6.11
         external_dependency: E:\ftre-agent-core（C1 独立 PR；两个仓库分别验证）
         modules:
-          - src/ftre/platform/hooks/
+          - src/ftre/kernel/hooks/
           - src/ftre/services/agent/hooks.py
           - src/ftre/services/tools/hooks.py
           - src/ftre/services/llm/hooks.py
@@ -565,7 +565,7 @@ stages:
           - F7
           - F8
         modules:
-          - src/ftre/platform/plugin_runtime/
+          - src/ftre/kernel/plugins/
           - src/ftre/app/gateway/
           - src/ftre/services/
           - src/ftre/features/
@@ -766,7 +766,7 @@ stages:
           - F12
         external_consumer: E:\\binn\\ftre-desktop（只消费既有 USER_MESSAGE、session/queue、session/status 语义）
         modules:
-          - src/ftre/platform/plugin_runtime/
+          - src/ftre/kernel/plugins/
           - src/ftre/app/gateway/composition.py
           - src/ftre/app/gateway/bootstrap.py
           - packages/ftre-inbox/
@@ -831,7 +831,8 @@ stages:
             date: 2026-08-24
           - id: F14.2
             title: Kernel 命名与业务零知识迁移
-            status: todo
+            status: done
+            date: 2026-08-24
           - id: F14.3
             title: Agent Runtime 内聚与唯一 Agent Service
             status: todo

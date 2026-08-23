@@ -65,7 +65,7 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 | `ftre.plugin.builtin.team_plugin` | `features/team/plugin.py` |
 | `ftre.plugin.builtin.title_gen` | `services/session/title/plugin.py` |
 | `ftre.api.routes` | `services/session/router.py`、`services/agent/router.py`、`services/attachment/router.py`、`services/command/router.py`、Feature Router |
-| `ftre.plugin.kernel` | `cordis` + `platform/plugin_runtime` |
+| `ftre.plugin.kernel` | `cordis` + `kernel/plugins` |
 
 ### 3.2 测试迁移规则
 

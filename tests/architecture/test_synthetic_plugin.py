@@ -4,7 +4,7 @@ import pytest
 from cordis import Context, FiberState
 from ftre_agent_core.tool import ToolRegistry
 
-from ftre.platform.plugin_runtime import PluginManager
+from ftre.kernel.plugins import PluginManager
 from ftre.services.system_prompt import SystemPromptService
 from ftre.services.tools import ToolService
 

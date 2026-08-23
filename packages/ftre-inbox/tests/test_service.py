@@ -6,7 +6,7 @@ from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, RejectClaim
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
 
-from ftre.platform.hooks import HookRuntime
+from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.contracts import InboundMessage
 
 

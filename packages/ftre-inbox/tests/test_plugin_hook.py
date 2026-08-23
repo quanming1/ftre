@@ -17,7 +17,7 @@ from ftre_agent_core.tool import Tool
 from ftre_inbox.plugin import apply
 from ftre_inbox.protocol import InboundMessage
 
-from ftre.platform.hooks import HookRuntime
+from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.registry import AgentRegistry
 
 

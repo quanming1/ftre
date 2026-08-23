@@ -48,7 +48,7 @@ Hook 注册与结果转换，Hook 语义、错误策略和生命周期容易漂�
 
 1. 不把全部 ftre Hook 迁入 Agent Core；Session、Mailbox、Compaction、Plugin 生命周期、
    Session flush/created/disposed 等仍属于 Gateway。
-2. 不让 `ftre-agent-core` 直接 import `ftre.platform.hooks` 或 Cordis，避免反向依赖和
+2. 不让 `ftre-agent-core` 直接 import `ftre.kernel.hooks` 或 Cordis，避免反向依赖和
    包循环；Core 只依赖无 ftre 业务状态的 Core-facing 契约。
 3. 不修改 Desktop、WebSocket wire 协议、Session JSON、Agent Core 以外的客户端或仓库。
 4. 不把 ftre/Cordis 依赖反向引入 `E:\ftre-agent-core`；Core 改动必须在 Core 自己的

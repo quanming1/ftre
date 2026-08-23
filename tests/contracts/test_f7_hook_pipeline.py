@@ -25,7 +25,7 @@ from ftre_agent_core.hooks import (
 )
 from ftre_agent_core.types import ReplyFinishedReason
 
-from ftre.platform.hooks import HookRuntime
+from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.hooks import AGENT_TURN_STOPPING_SPEC, AgentSubject
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.llm import LLM_STREAM_SPEC

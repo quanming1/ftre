@@ -17,8 +17,8 @@ def _source(relative: str) -> str:
 
 def test_lightweight_kernel_has_no_product_imports() -> None:
     kernel_files = [
-        *sorted((SRC / "platform" / "plugin_runtime").glob("*.py")),
-        *sorted((SRC / "platform" / "hooks").glob("*.py")),
+        *sorted((SRC / "kernel" / "plugins").glob("*.py")),
+        *sorted((SRC / "kernel" / "hooks").glob("*.py")),
     ]
     forbidden = (
         "ftre.services",
