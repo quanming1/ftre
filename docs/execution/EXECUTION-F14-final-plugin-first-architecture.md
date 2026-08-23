@@ -113,7 +113,25 @@ python -m pytest -q
 → 439 passed in 125.13s
 ```
 
-F14.1 的架构专项、ruff、diff check 和新增门禁将在基线提交前执行并补入本报告。
+F14.1 的架构专项、ruff、diff check 和新增门禁已在基线提交前执行：
+
+```text
+python -m pytest -q tests/architecture/test_f14_baseline.py tests/architecture/test_f13_plugin_first.py tests/architecture/test_import_boundaries.py tests/architecture/test_f9_service_injection.py
+→ 26 passed in 4.75s
+
+python -m pytest -q
+→ 439 passed in 125.13s
+
+python -m ruff check --no-cache src tests packages/ftre-inbox packages/ftre-compaction
+→ All checks passed
+
+git diff --check -- <F14 基线文件>
+→ passed
+```
+
+基线提交：`5501fc1 chore(agent): 固化 F12 F13 迁移基线`。
+
+F14.1 已完成；后续迁移仍必须以本报告记录的债务为输入，不得把债务清单当作已修复证据。
 
 ## 后续批次精确输入
 

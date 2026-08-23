@@ -827,7 +827,8 @@ stages:
         tasks:
           - id: F14.1
             title: 终局目录、Owner 与依赖基线
-            status: todo
+            status: done
+            date: 2026-08-24
           - id: F14.2
             title: Kernel 命名与业务零知识迁移
             status: todo
