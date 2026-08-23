@@ -330,6 +330,33 @@ python -m ruff check --no-cache src tests packages
 → All checks passed
 ```
 
+### 本轮最终复核
+
+```text
+python -m pytest -q
+→ 461 passed in 152.46s (0:02:32)
+python -m pytest -q packages/ftre-inbox/tests
+→ 23 passed（连续两次）
+python -m pytest -q tests/architecture/test_f14_baseline.py tests/architecture/test_f14_package_boundaries.py
+→ 18 passed
+python -m ruff check --no-cache src tests packages
+→ All checks passed
+python -m pip wheel --no-deps --no-cache-dir . packages/ftre-inbox packages/ftre-compaction --wheel-dir E:\\ftre-audit-wheels-2
+→ Host 与两个 Package wheel 构建成功；内容无缓存、字节码、tests、数据库或 build/dist
+Gateway smoke（`python -m ftre.main gateway --foreground --port 48799`）
+→ `/api/health` HTTP 200 `{"status":"ok"}`；正常停止
+```
+
+另外将 Inbox discard 回归测试调整为遵循真实生命周期“先 `start()`、后 admission”，消除测试自身
+在 Windows 下的 worker 恢复竞态；未放宽断言，仍验证只丢弃显式 candidate、保留 `keep`。
+
+### 已知边界
+
+`AgentConfig` 与 `AgentProfileManager` 仍通过 Config Owner 的只读 `load_config_file()` 辅助函数
+读取原始配置；它们没有各自的持久化或缓存事实源。本轮未把这条读取链改成 `ConfigService`
+快照注入，以避免扩大到 Agent 配置契约重构；若后续要求所有 Service 消费者只走 Inject，
+应单独建立配置注入阶段并覆盖多 Agent profile/热更新语义。
+
 F14.6/F14.7 已完成；下一批输入是 F14.8 的生命周期、故障、最小 Composition 和 Package
 restart/in-flight Hook 组合验证。
 
@@ -424,6 +451,115 @@ git diff --check                              → passed
   未 push、未创建 PR、未 merge、未发布。
 
 F14.1-F14.10、FR1-FR12 和 AC1-AC13 均已按上述证据验收完成。
+
+## F14 收尾复审：refactor-cleanup-audit（2026-08-24）
+
+### 审计范围
+
+- 仓库：`E:\ftre`；分支：`feature/F14-final-plugin-first-architecture`。
+- 未修改 `E:\binn\ftre-desktop`、`E:\ftre-agent-core`、`E:\cordis-py`、用户配置和用户会话数据。
+- 按 `scope → baseline → owner-map → migrate-audit → lifecycle-audit → entrypoint-audit → test-audit → artifact-cleanup → final-gates` 顺序复核。
+
+### 本轮发现与修复
+
+1. WebSocket Channel 原来由 Bootstrap 调用 `attach_app()`，并由 Plugin 通过多个 `set_*` 方法回填
+   Projection、Inbox、Status；Channel 还会把自己的临时 FastAPI App 用于真实监听。
+   现在依赖在 WebSocket Plugin 构造时一次性传入，HttpService 路由贡献携带真实 handler，
+   `build_app()` 保存共享 Host App，Channel 启动时只读取该公开 App；Bootstrap 不再持有或回填
+   Channel。新增 `test_websocket_channel_has_no_post_composition_dependency_setters` 和共享 App
+   启动回归测试。
+2. MCP 原先在 Agent Provider 之后装载，Agent Runtime 构造时永远拿不到已经启用的 MCP Service；
+   现在 MCP/Trace 在 Agent 前装载，Trace 失败不会阻断基础 Agent。新增 Manifest 顺序/required
+   架构门禁。
+3. `ftre-inbox` 已声明对 ftre Hook Runtime 的发行依赖，但仍保留 `HookSpec=None` 的 no-op
+   导入 fallback；现在直接使用稳定 Host Hook 契约，避免“包已安装但 Hook 静默失效”。
+4. Inbox durable claim 的原子提交失败原来会让 worker Task 以未处理异常结束；现在保留 pending、
+   发布 blocked 状态并等待下一次唤醒，新增回归测试，避免消息丢失和后台 Task 泄漏。
+5. 删除 Agent Runtime 中未被生产调用的旧 `_publish_session_status_async` 转发方法，并将
+   Compaction Command 的公开类型从 Builtin 私有子模块收敛到其根公开导出。
+6. 复核发现 Agent Runtime 仍保留 `SessionProjection → Hook → Bus` fallback；现在 Runtime
+   只委托注入的 `SessionEventService`，删除重复事件出口和相关旧 imports，并让运行时单测
+   fixture 使用真实 SessionEventService 契约。
+
+### 复审验证
+
+```text
+python -m pytest -q tests/architecture/test_f14_baseline.py tests/architecture/test_f14_package_boundaries.py
+→ 17 passed
+python -m pytest -q tests/startup/test_composition.py
+→ 2 passed
+python -m pytest -q packages/ftre-inbox/tests
+→ 23 passed
+python -m pytest -q tests/startup/test_f12_ws_smoke.py tests/test_ws_volatile_replay.py tests/lifecycle/test_agent_runtime_plugin.py
+→ 8 passed
+python -m ruff check --no-cache src tests packages
+→ All checks passed
+git diff --check
+→ passed
+python -m pip wheel --no-deps --no-cache-dir . packages/ftre-inbox packages/ftre-compaction --wheel-dir E:\\ftre-audit-wheels
+→ `ftre-0.2.6`、`ftre_inbox-0.1.0`、`ftre_compaction-0.1.0` 构建成功；三者均无缓存、字节码、tests、数据库或 build/dist 内容
+Gateway smoke（`python -m ftre.main gateway --foreground --port 48799`）
+→ `/api/health` HTTP 200 `{"status":"ok"}`；Ctrl+C 后 Channel/Plugin 资源正常停止
+```
+
+最终全量测试在本轮最后一次代码修改后通过 `460 passed in 152.30s (0:02:32)`；最终删除了工作区内
+55 个本轮生成的缓存/build 目录，并删除 3 个明确创建的外部临时目录；用户数据未触碰。当前审计修改尚未
+提交，原因是本轮未收到 commit 授权。提交前仍需按仓库规范分片提交并在提交后重新确认工作树卫生。
+
+### 二次复核
+
+针对复审后进一步移除 WebSocket Channel 生产临时 FastAPI App 的修改再次执行：
+
+```text
+python -m pytest -q
+→ 460 passed in 159.24s (0:02:39)
+python -m pytest -q tests/startup/test_f12_ws_smoke.py tests/test_ws_volatile_replay.py
+→ 5 passed
+python -m pytest -q tests/startup/test_composition.py tests/lifecycle/test_agent_runtime_plugin.py
+→ 5 passed
+python -m pytest -q tests/architecture/test_f14_baseline.py tests/architecture/test_f14_package_boundaries.py
+→ 17 passed
+python -m ruff check --no-cache src tests packages
+→ All checks passed
+Gateway smoke（`python -m ftre.main gateway --foreground --port 48799`）
+→ `/api/health` HTTP 200 `{"status":"ok"}`；停止日志完整
+```
+
+二次复核后再次清理生成物，`src/tests/packages` 下缓存、build/dist 和空目录均为 0。
+
+### 三次复核：Session 事件 Owner 收敛
+
+```text
+python -m pytest -q tests/test_turn_lifecycle.py tests/test_turn_hitl.py tests/architecture/test_f14_baseline.py
+→ 27 passed
+python -m pytest -q tests/lifecycle/test_f10_lifecycle_faults.py
+→ 7 passed
+python -m ruff check --no-cache src tests packages
+→ All checks passed
+```
+
+### 真实 Gateway E2E：Messaging 入站契约回归（2026-08-24）
+
+首次使用真实 Gateway 进程、HTTP 会话创建和真实 WebSocket 客户端执行 E2E 时，发现
+`messaging/inbound` 的 Hook 契约要求 `IngressResult | None`，而可选 `ftre-inbox`
+返回了包内重复定义的 `InboxAdmission`，导致 prompt/cancel ACK 被 Hook Runtime 拒绝。
+修复为 Inbox 直接返回 Host 的公开 `IngressResult`，并移除平行 DTO 及其导出；新增包级
+契约回归断言，确保可选 Package 不再越过稳定 Service 协议。
+
+```text
+python -m pytest -q packages/ftre-inbox/tests tests/architecture/test_f14_package_boundaries.py
+→ 29 passed
+python -m pytest -q
+→ 461 passed in 156.99s (0:02:36)
+python -m ruff check --no-cache src tests packages
+→ All checks passed
+git diff --check
+→ passed
+Gateway E2E（真实进程 :48799）
+→ HTTP health=200；HTTP 创建 Session 成功；WS attach 收到
+  reply_snapshot/session/queue/session/status；session.prompt ACK=ok；
+  session.cancel(expected_request_id) ACK=ok；最终 Session status=idle、queue_items=0。
+```
 
 ## 后续批次精确输入
 
