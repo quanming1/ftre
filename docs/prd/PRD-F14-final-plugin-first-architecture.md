@@ -6,10 +6,10 @@
 |---|---|
 | 阶段 | F14 |
 | 名称 | 轻内核 + Plugin-first 最终目标架构 |
-| 状态 | 开发中 |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-24 |
 | 定稿日期 | 2026-08-24 |
-| 验收日期 | — |
+| 验收日期 | 2026-08-24 |
 | 前置阶段 | F13（Plugin-first 内核收敛与消息交接） |
 | 关联文档 | `AGENTS.md`、`docs/TODO.yaml`、`PRD-F12`、`PRD-F13`、`docs/execution/prompts/F14/` |
 
@@ -452,64 +452,64 @@ Gateway Composition
 
 ## 11. 功能需求
 
-- [ ] **FR1：终局目录收敛**
+- [x] **FR1：终局目录收敛**
   - `platform/ → kernel/`、`plugins/builtin/ → plugins/builtin/`；
   - `services/agent_loop/ → services/agent/runtime/`；
   - 删除旧目录、兼容导出、空 `__init__` 聚合和陈旧文档路径。
 
-- [ ] **FR2：Kernel 业务零知识**
+- [x] **FR2：Kernel 业务零知识**
   - Kernel 只实现第 4.1 节机制；
   - 业务 HookSpec 与业务模型由各自 Owner 定义；
   - 架构门禁阻止业务 import 和业务词汇回流。
 
-- [ ] **FR3：唯一 Agent Service**
+- [x] **FR3：唯一 Agent Service**
   - `agents` 是唯一公开 Agent key；
   - AgentService 只执行 `InboundMessage`、管理 active Turn 和取消；
   - AgentLoop/TurnExecutor/CompletionRegistry 仅为私有 Runtime，不被业务 Plugin import。
 
-- [ ] **FR4：消息接入 Plugin 化**
+- [x] **FR4：消息接入 Plugin 化**
   - MessageBus 发布 transport-neutral inbound Hook；
   - Command 与 Inbox 分别消费适用输入；
   - Agent Runtime 不进行 Command/Queue 分流；
   - 无消费者时返回稳定 capability error。
 
-- [ ] **FR5：Host Service 收敛**
+- [x] **FR5：Host Service 收敛**
   - 第 5.2 节 Service 均有唯一 Provider Plugin、Service key 和 Effect；
   - Service 只持有 Inject 的公开依赖，不使用 Context Locator；
   - Repository/Adapter/Runtime 不跨 Owner 泄漏。
 
-- [ ] **FR6：内置能力 Plugin 化**
+- [x] **FR6：内置能力 Plugin 化**
   - 第 5.3 节每项能力有唯一 Plugin Owner；
   - Service、Route、Hook、Tool、Task、Channel 和资源均随 Plugin 可逆清理；
   - 不加载能力时行为与表中降级语义一致。
 
-- [ ] **FR7：独立 Package 边界**
+- [x] **FR7：独立 Package 边界**
   - `ftre-inbox` 与 `ftre-compaction` 满足第 4.5 节全部门禁；
   - Host 无 concrete import、无 no-op fallback、无隐式 hard dependency；
   - wheel 构建、洁净安装、禁用、卸载、restart 均可验证。
 
-- [ ] **FR8：Hook 所有权和语义**
+- [x] **FR8：Hook 所有权和语义**
   - Kernel 只提供 Hook 机制；
   - Agent、Session、Tool、Prompt、Messaging、Inbox 分别拥有自己的 HookSpec；
   - 控制型 Hook 有类型化 Decision、故障策略和有界重试；
   - 直接必选协作仍使用 Service，不为“看起来解耦”滥用 Hook。
 
-- [ ] **FR9：Inject/Provide 唯一跨能力依赖**
+- [x] **FR9：Inject/Provide 唯一跨能力依赖**
   - Plugin 声明依赖并创建自己的实现；
   - 业务代码不从 AgentLoop、Composition、PluginManager、全局变量反查 Service；
   - 禁止单实现 Port、透传 Facade、Coordinator 和重复 Owner。
 
-- [ ] **FR10：配置与发现**
+- [x] **FR10：配置与发现**
   - required、default_enabled、配置来源和缺失能力语义明确；
   - 外部 Plugin 显式 allowlist；
   - extras 与 entry point 支持 Host、最小安装和完整安装。
 
-- [ ] **FR11：生命周期完整性**
+- [x] **FR11：生命周期完整性**
   - load/unload/restart、依赖 pending/recovery 和 in-flight drain 行为可验证；
   - Route、Hook、Task、Thread、Listener、Channel、数据库和文件 watcher 无残留；
   - restart 后消费者只解析当前 Service 实例，不持有旧闭包。
 
-- [ ] **FR12：可理解性与文档**
+- [x] **FR12：可理解性与文档**
   - 目标树、能力表、依赖图和默认 Composition 与代码一致；
   - 每个公共 Service/Plugin 和非显然生命周期代码有中文边界注释；
   - 架构执行报告列出迁移映射、删除项、保留项和 Package 审计结论。
@@ -583,30 +583,30 @@ Gateway Composition
 
 ## 13. 验收标准
 
-- [ ] **AC1**：仓库实际目录与第 6 节目标树一致；生产代码不存在旧 `platform`、`features`、
+- [x] **AC1**：仓库实际目录与第 6 节目标树一致；生产代码不存在旧 `platform`、`features`、
   `services.agent_loop` import 或兼容 alias。
-- [ ] **AC2**：架构测试证明 Kernel 对业务实现零依赖，且 Kernel 中不存在业务 HookSpec 名称。
-- [ ] **AC3**：Composition Root 只建立 Kernel 骨架、声明 Manifest 和启动/关闭 PluginManager；
+- [x] **AC2**：架构测试证明 Kernel 对业务实现零依赖，且 Kernel 中不存在业务 HookSpec 名称。
+- [x] **AC3**：Composition Root 只建立 Kernel 骨架、声明 Manifest 和启动/关闭 PluginManager；
   不实例化业务 Service、不注册业务贡献。
-- [ ] **AC4**：只有 `agents` 一个 Agent Service key；AgentService/私有 Runtime 不包含 QueueItem、
+- [x] **AC4**：只有 `agents` 一个 Agent Service key；AgentService/私有 Runtime 不包含 QueueItem、
   pending、Command parser、CompactionService 或 WebSocket payload。
-- [ ] **AC5**：普通输入、slash command、无 Inbox、无 Command 四条接入路径均符合第 8 节，
+- [x] **AC5**：普通输入、slash command、无 Inbox、无 Command 四条接入路径均符合第 8 节，
   且 Command 不创建 Turn、Inbox claim 后只交付 `InboundMessage`。
-- [ ] **AC6**：第 5.2 节每个 Host Service 只有一个 Provider Plugin；跨能力依赖均可从
+- [x] **AC6**：第 5.2 节每个 Host Service 只有一个 Provider Plugin；跨能力依赖均可从
   `inject` 声明追踪，没有 Context Locator、全局 setter 或私有实现 import。
-- [ ] **AC7**：第 5.3 节每个内置 Plugin 均可单独 unload/restart；对应 Hook、Route、Task、
+- [x] **AC7**：第 5.3 节每个内置 Plugin 均可单独 unload/restart；对应 Hook、Route、Task、
   Channel、Tool、Service 和资源完整消失，基础 Turn 按缺失语义继续运行。
-- [ ] **AC8**：`ftre-inbox`、`ftre-compaction` 可分别构建 wheel、在洁净环境安装和运行测试；
+- [x] **AC8**：`ftre-inbox`、`ftre-compaction` 可分别构建 wheel、在洁净环境安装和运行测试；
   Host 未安装二者仍可导入、启动最小 Composition 和完成直接 Agent Turn。
-- [ ] **AC9**：HookSpec 均由语义 Owner 定义；控制型 Hook 的 Decision、错误策略和重试边界有
+- [x] **AC9**：HookSpec 均由语义 Owner 定义；控制型 Hook 的 Decision、错误策略和重试边界有
   契约测试，不存在重复旧 Hook 或字符串散落注册。
-- [ ] **AC10**：最小 Agent Composition、Gateway Composition、默认完整 Composition 均有启动/
+- [x] **AC10**：最小 Agent Composition、Gateway Composition、默认完整 Composition 均有启动/
   关闭测试，关闭后无 pending Task、旧 Service 闭包、监听端口或数据库句柄。
-- [ ] **AC11**：全盘扫描无死代码、兼容壳、重复 Owner、空目录、`__pycache__`、`.pyc` 和
+- [x] **AC11**：全盘扫描无死代码、兼容壳、重复 Owner、空目录、`__pycache__`、`.pyc` 和
   迁移临时文件；`git diff --check` 通过。
-- [ ] **AC12**：`python -m pytest -q`、`python -m ruff check src tests packages`、各 Package
+- [x] **AC12**：`python -m pytest -q`、`python -m ruff check src tests packages`、各 Package
   独立测试、wheel build、洁净安装和 Gateway smoke 全部通过，执行报告记录实际结果。
-- [ ] **AC13**：AGENTS.md、README、Service/Plugin 文档和 Composition 清单与最终树一致；每个
+- [x] **AC13**：AGENTS.md、README、Service/Plugin 文档和 Composition 清单与最终树一致；每个
   公共能力均可用“Owner / Service 或 Hook / inject / 缺失行为”四项说明。
 
 ## 14. 测试计划
@@ -680,3 +680,4 @@ F14 只有在以下事实同时成立时才可以标记“已验收”：
 | 2026-08-24 | 完成 F14.3/F14.4：Agent Runtime 归入 `services/agent/runtime` 并由唯一 Agent Provider 拥有；MessageBus 接管 `messaging/inbound`，Command/Inbox Plugin 旁路裁决；全量测试 445 passed | 消除 `agent_runtime` 第二 Owner 和 AgentLoop 的 Bus/Command/Inbox 业务负担 | AC4、AC5、AC6 已部分验证；AC1、AC7、AC10 待后续批次 |
 | 2026-08-24 | 完成 F14.5：features、Command、Trace、Session Title 和 concrete Channel 全部归位 `plugins/builtin`；删除旧目录并新增文件树门禁 | 让产品行为和适配器在文件系统上直接表达 Plugin 生命周期，避免 Service/Feature 身份混淆 | AC1、AC3、AC7 已部分验证；AC6、AC12 待 Package 门禁 |
 | 2026-08-24 | 完成 F14.6/F14.7：核对 12 个 Host Service 的唯一 Provider/inject/effect，删除 Session/Command/Inbox/SessionEvent/Compaction 的 callback setter；新增 `inbox`、`compaction`、`full` extras、`ftre.plugins` entry point discovery、wheel/洁净 venv 门禁 | 让 Service 依赖可静态追踪，并证明 Inbox/Compaction 是可选发行物；MCP/Skill/Schedule/Team 保持 Builtin Plugin 不强拆包 | F14.6/F14.7 已完成；AC6、AC8、AC12 的对应证据已写入执行报告，终局 AC 仍待 F14.8-F14.10 |
+| 2026-08-24 | 完成 F14.8-F14.10：最小/默认 Composition 与可选 Plugin 生命周期矩阵通过；清理旧生产路径、空目录、生成物和陈旧 README；完成架构/契约/生命周期/启动/全量 pytest、ruff、wheel、洁净 venv 和 Gateway 组合 smoke | 终局架构、包发行边界、生命周期和文档均有可复现证据；`data/sessions.db` 与 `.ftre-inbox` 用户数据按边界保留 | FR1-FR12、AC1-AC13 全部验收通过，提交和验证明细见 F14 执行报告 |

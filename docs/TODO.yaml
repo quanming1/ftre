@@ -806,9 +806,10 @@ stages:
 
       - id: F14
         title: 轻内核 + Plugin-first 最终目标架构
-        status: in_progress
+        status: done
+        date: 2026-08-24
         prd: docs/prd/PRD-F14-final-plugin-first-architecture.md
-        prd_status: 开发中
+        prd_status: 已验收
         depends_on:
           - F13
         modules:
@@ -859,7 +860,9 @@ stages:
             date: 2026-08-24
           - id: F14.9
             title: 旧路径、兼容壳、死代码与生成物清理
-            status: todo
+            status: done
+            date: 2026-08-24
           - id: F14.10
             title: 最终验收与执行报告
-            status: todo
+            status: done
+            date: 2026-08-24

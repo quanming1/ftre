@@ -6,7 +6,7 @@
 |---|---|
 | 阶段 | F14 |
 | PRD | `docs/prd/PRD-F14-final-plugin-first-architecture.md` |
-| 当前状态 | 开发中 |
+| 当前状态 | 已验收 |
 | 分支 | `feature/F14-final-plugin-first-architecture` |
 | 范围 | `E:\ftre` 后端及仓库内 `packages/` |
 | 外部仓库 | Desktop、`E:\ftre-agent-core`、`E:\cordis-py` 只读，不修改 |
@@ -306,7 +306,8 @@ Plugin Discovery 读取已安装的 `ftre.plugins` 元数据但延迟 import；�
 ```text
 python -m pip wheel --no-deps --no-cache-dir . packages/ftre-inbox packages/ftre-compaction --wheel-dir E:\ftre-f14-package-wheel
 → ftre-0.2.6、ftre_inbox-0.1.0、ftre_compaction-0.1.0 全部构建成功
-wheel 内容检查 → 12 files/个；无 __pycache__、.pyc、数据库、tests；均有 entry_points.txt
+wheel 内容检查 → Host 188 files、两个 Package 各 12 files；无 __pycache__、.pyc、数据库、tests；
+均有 entry_points.txt（Host 仅含 CLI entry point）。
 洁净 venv + 仅 Host → inbox=FAILED/entry_import_failed（可选缺失），agents=ACTIVE，AgentService 可用
 洁净 venv + 两个 wheel → inbox=ACTIVE、compaction=ACTIVE；compaction restart=True、unload=True，卸载后 Service=None
 ```
@@ -350,7 +351,7 @@ restart/in-flight Hook 组合验证。
 python -m pytest -q tests/lifecycle/test_f14_lifecycle_matrix.py
 → 2 passed
 python -m pytest -q
-→ 453 passed in 113.65s
+→ 455 passed in 140.79s
 python -m ruff check --no-cache src tests packages
 → All checks passed
 ```
@@ -371,7 +372,8 @@ F14.8 已完成；F14.9 进入旧路径、陈旧文档、生成物和空目录�
   Hook fallback 和 Service callback setter 已删除。其他历史执行记录中的注释只作为审计证据，
   不属于运行时入口。
 - 测试/构建后生成的 `__pycache__`、`.pyc`、Package `build/`、`.pytest_cache`、`.ruff_cache`
-  只在最终验证后清理；`data/sessions.db` 属于执行前已有的用户运行数据，保留不纳入提交。
+  已在最终验证后清理；`data/sessions.db` 与 `.ftre-inbox` 属于执行前已有的用户运行数据，
+  保留不纳入提交。
 
 ### 最终源树快照
 
@@ -381,17 +383,48 @@ packages/{ftre-inbox,ftre-compaction}
 tests/{architecture,contracts,lifecycle,startup,plugins}
 ```
 
-F14.9 已完成；F14.10 只剩最终文档状态、全量门禁复跑、Gateway smoke 和干净工作树核对。
+F14.9 已完成。
 
-## F14.10 最终验收（待最后门禁）
+## F14.10 最终验收（2026-08-24）
 
-本报告在最后一次测试、缓存清理和提交后更新 AC 逐条证据、提交列表、Gateway smoke 输出和
-最终 `git status --short`。在此之前 PRD/TODO 阶段仍保持 `in_progress`，避免用中间状态宣称终局完成。
+### 分组门禁结果
+
+```text
+python -m pytest -q tests/architecture       → 91 passed
+python -m pytest -q tests/contracts          → 25 passed
+python -m pytest -q tests/lifecycle          → 17 passed
+python -m pytest -q tests/startup             → 6 passed
+python -m pytest -q packages/ftre-inbox/tests → 22 passed
+python -m pytest -q packages/ftre-compaction/tests → 37 passed
+python -m pytest -q                           → 455 passed in 140.79s
+python -m ruff check --no-cache src tests packages → All checks passed
+git diff --check                              → passed
+```
+
+### Wheel、洁净安装与 Gateway smoke
+
+- 最终 wheel 构建：`ftre-0.2.6`（188 个文件）、`ftre_inbox-0.1.0`（12 个文件）、
+  `ftre_compaction-0.1.0`（12 个文件）全部成功；压缩包无 `tests/`、缓存、字节码或数据库，
+  两个 Package 均含 `entry_points.txt`。
+- 无可选 Package 的隔离 venv：`inbox=FAILED/entry_import_failed`（可选缺失诊断）、
+  `agents=ACTIVE`、`AgentService` 可 import/组合；未创建 no-op Service。
+- 安装两个最终 wheel 的隔离 venv：`inbox=ACTIVE`、`compaction=ACTIVE`；
+  `compaction restart=True`、`unload=True`，卸载后 `context.get("compaction", strict=False) is None`。
+- Gateway smoke：`python -m ftre.main gateway --foreground --port 48799` 成功监听；
+  `curl http://127.0.0.1:48799/api/health` 返回 HTTP 200 `{"status":"ok"}`；Ctrl+C 后
+  WebSocket、Subagent、Cron、Command、MCP、Schedule 和 Agent 资源均输出 stop/unregister 日志。
+
+### 最终静态卫生与提交
+
+- 生产树最终为 `src/ftre/{app,kernel,services,plugins}`；旧生产路径和私有 import 扫描为 0，
+  空目录/缓存/字节码/build/dist 扫描为 0；用户数据 `data/sessions.db`、`.ftre-inbox` 未触碰。
+- F14 分片提交：`5501fc1`、`489eaa0`、`a6f87d4`、`85895a9`、`6942d80`、`c83a9b8`、
+  `1486c75`、`430f16d`、`5609b48`。
+- 最终 `git status --short` 为空；当前分支为 `feature/F14-final-plugin-first-architecture`，
+  未 push、未创建 PR、未 merge、未发布。
+
+F14.1-F14.10、FR1-FR12 和 AC1-AC13 均已按上述证据验收完成。
 
 ## 后续批次精确输入
 
-- F14.2：将 `platform` 迁为 `kernel`，并把 Package/业务 Hook 的 import 改到 Owner；
-- F14.3：合并 `agent_runtime`/`AgentLoop` 为 `services/agent/runtime` 私有实现；
-- F14.4：移除 AgentLoop inbound 分流，建立 Messaging inbound Hook；
-- F14.5：逐个迁移 `features`、Command、Trace、concrete Channel 到 `plugins/builtin`；
-- F14.6/F14.7：收紧 Service inject 并完成 Package clean-install 门禁。
+无。F14 已完成；后续 MCP/Skill/Schedule/Team 是否包化需另开阶段并重新通过 Package 七条门禁。
