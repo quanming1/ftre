@@ -66,13 +66,12 @@ async def apply(ctx: Context, config=None):
         request_seen=request_seen,
         legacy_root=legacy_root,
     )
-    service = InboxService(repository, ctx.agents)
-    unbind_hook_runtime = service.bind_hook_runtime(ctx.hook_runtime)
+    service = InboxService(
+        repository,
+        ctx.agents,
+        hook_runtime=ctx.hook_runtime,
+    )
     ctx.provide("inbox", service)
-    # effect receives a factory and executes it immediately; return the
-    # unbind function only during Fiber disposal, not while loading.
-    ctx.effect(lambda: unbind_hook_runtime, label="inbox:hook-runtime")
-    service.attach_agent(ctx.agents)
 
     async def on_inbound(message, next_):
         """接管未被 Command 消费的普通输入，并转换为 Queue admission。"""

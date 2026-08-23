@@ -73,64 +73,23 @@ class InboxService:
         """Expose lifecycle state without leaking the private flag to Providers."""
         return self._closed
 
-    def __init__(self, repository: InboxRepository, agent=None) -> None:
+    def __init__(
+        self,
+        repository: InboxRepository,
+        agent=None,
+        *,
+        hook_runtime=None,
+        before_claim=None,
+    ) -> None:
         self.repository = repository
         self._agent = agent
         self._workers: dict[str, asyncio.Task] = {}
         self._wake: dict[str, asyncio.Event] = {}
         self._receipts: dict[tuple[str, str], asyncio.Future] = {}
         self._closed = False
-        self._publish_snapshot = None
-        self._publish_status = None
-        self._before_claim = None
-        self._hook_runtime = None
+        self._before_claim = before_claim
+        self._hook_runtime = hook_runtime
         self._blocked: dict[str, str] = {}
-
-    def attach_agent(self, agent) -> None:
-        self._agent = agent
-
-    def bind_snapshot_publisher(self, callback):
-        self._publish_snapshot = callback
-
-        def unbind() -> None:
-            if self._publish_snapshot is callback:
-                self._publish_snapshot = None
-
-        return unbind
-
-    def bind_status_publisher(self, callback):
-        """绑定独立 status 事件出口；不把 blocked 混进 queue 快照。"""
-        self._publish_status = callback
-
-        def unbind() -> None:
-            if self._publish_status is callback:
-                self._publish_status = None
-
-        return unbind
-
-    def bind_before_claim(self, callback):
-        self._before_claim = callback
-
-        def unbind() -> None:
-            if self._before_claim is callback:
-                self._before_claim = None
-
-        return unbind
-
-    def bind_hook_runtime(self, runtime):
-        """绑定 Hook Runtime，并返回可逆解绑函数。
-
-        Inbox 由可选 Plugin 管理；如果只替换 Fiber 而不解除这个引用，旧
-        HookRuntime 会继续被 worker 持有，重启后就会出现跨实例回调。
-        """
-        previous = self._hook_runtime
-        self._hook_runtime = runtime
-
-        def unbind() -> None:
-            if self._hook_runtime is runtime:
-                self._hook_runtime = previous
-
-        return unbind
 
     async def start(self) -> None:
         await self.repository.load_all()
@@ -153,10 +112,8 @@ class InboxService:
             if not future.done():
                 future.cancel()
         self._receipts.clear()
-        # 这些回调通常闭包捕获 Bus、Session 和当前 Composition；必须在
-        # unload/restart 时清空，避免已关闭的 Fiber 被旧实例继续保活。
-        self._publish_snapshot = None
-        self._publish_status = None
+        # Hook Runtime 和 Agent 都是本实例构造时注入的依赖；关闭时解除引用，
+        # 避免旧 Fiber/Task 被队列实例继续保活。
         self._before_claim = None
         self._hook_runtime = None
         self._agent = None
@@ -600,10 +557,6 @@ class InboxService:
         return "enter", ()
 
     async def _publish(self, session_id: str) -> None:
-        if self._publish_snapshot is not None:
-            result = self._publish_snapshot(session_id)
-            if inspect.isawaitable(result):
-                await result
         if self._hook_runtime is not None and INBOX_CHANGED_SPEC is not None:
             await self._emit_mutation(
                 INBOX_CHANGED_SPEC,
@@ -628,11 +581,6 @@ class InboxService:
         return "blocked" if session_id in self._blocked else None
 
     async def _publish_status_event(self, session_id: str, status: str) -> None:
-        callback = self._publish_status
-        if callback is not None:
-            result = callback(session_id, status)
-            if inspect.isawaitable(result):
-                await result
         if self._hook_runtime is not None and INBOX_STATUS_CHANGED_SPEC is not None:
             await self._emit_mutation(
                 INBOX_STATUS_CHANGED_SPEC,

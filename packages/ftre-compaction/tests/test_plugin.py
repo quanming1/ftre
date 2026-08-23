@@ -25,6 +25,11 @@ class _Sessions:
         return {"channel_id": "ws"}
 
 
+class _SessionEvents:
+    async def emit(self, *_args, **_kwargs):
+        return None
+
+
 class _Config:
     """最小 ConfigService 替身：插件只需要读取 snapshot。"""
 
@@ -45,12 +50,14 @@ async def test_compaction_service_and_feature_hooks_register_separately():
     context.provide("hook_runtime", runtime)
     context.provide("config", _Config())
     context.provide("sessions", _Sessions())
+    context.provide("session_events", _SessionEvents())
+    context.provide("inbox", object())
     context.provide("commands", type("Commands", (), {"register": lambda *_args, **_kwargs: lambda: True})())
     apply(context)
 
     assert context.get("compaction") is not None
     hooks = {item.hook for item in runtime.snapshot()}
-    assert hooks == {"agent/after-turn", "agent/request-error"}
+    assert hooks == {"agent/after-turn", "agent/request-error", "inbox/before-claim"}
     await context.dispose()
 
 
@@ -61,6 +68,8 @@ async def test_overflow_hook_retries_only_after_generation_advances():
     context.provide("hook_runtime", runtime)
     context.provide("config", _Config())
     context.provide("sessions", _Sessions())
+    context.provide("session_events", _SessionEvents())
+    context.provide("inbox", object())
     context.provide("commands", type("Commands", (), {"register": lambda *_args, **_kwargs: lambda: True})())
     apply(context)
     service = context.get("compaction")
@@ -112,6 +121,8 @@ async def test_compaction_service_effect_cancels_inflight_tasks_on_unload():
     context.provide("hook_runtime", runtime)
     context.provide("config", _Config())
     context.provide("sessions", _Sessions())
+    context.provide("session_events", _SessionEvents())
+    context.provide("inbox", object())
     context.provide("commands", type("Commands", (), {"register": lambda *_args, **_kwargs: lambda: True})())
     apply(context)
     service = context.get("compaction")
@@ -132,6 +143,8 @@ async def test_compaction_commands_execute_directly_without_turn():
     context.provide("hook_runtime", runtime)
     context.provide("config", _Config())
     context.provide("sessions", _Sessions())
+    context.provide("session_events", _SessionEvents())
+    context.provide("inbox", object())
     context.provide("commands", commands)
     apply(context)
     service = context.get("compaction")

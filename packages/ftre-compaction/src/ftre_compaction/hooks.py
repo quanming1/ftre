@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, EnterClaim, RejectClaim
+
 from ftre.services.agent.config import load_config
 from ftre.services.agent.hooks import (
     AGENT_AFTER_TURN_SPEC,
@@ -161,22 +163,15 @@ def register_hooks(ctx, service) -> list[object]:
             global_listener=True,
         ),
     ]
-    inbox = ctx.get("inbox", strict=False)
-    try:
-        from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, EnterClaim, RejectClaim
-    except ModuleNotFoundError:
-        EnterClaim = RejectClaim = None
-        INBOX_BEFORE_CLAIM_SPEC = None
-    if inbox is not None and INBOX_BEFORE_CLAIM_SPEC is not None:
-        receipts.append(
-            ctx.hook_runtime.register(
-                INBOX_BEFORE_CLAIM_SPEC,
-                on_inbox_before_claim,
-                owner="ftre-compaction",
-                context=ctx,
-                global_listener=True,
-            )
+    receipts.append(
+        ctx.hook_runtime.register(
+            INBOX_BEFORE_CLAIM_SPEC,
+            on_inbox_before_claim,
+            owner="ftre-compaction",
+            context=ctx,
+            global_listener=True,
         )
+    )
     return receipts
 
 

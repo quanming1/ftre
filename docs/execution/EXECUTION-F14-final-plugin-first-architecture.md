@@ -242,6 +242,96 @@ python -m ruff check --no-cache src tests packages/ftre-inbox packages/ftre-comp
 
 F14.5 已完成；F14.6/F14.7 继续审计 Host Service 依赖和独立 Package 发行门禁。
 
+## F14.6/F14.7 Host Service 与 Package 发行边界（2026-08-24）
+
+### Host Service Owner 审计
+
+以下表格由 `default_manifests()`、各 Provider 的字面量 `provide`/`inject` 和真实
+实现路径反推，并由 `tests/architecture/test_f14_baseline.py` 的唯一 Owner 门禁锁定：
+
+| Service key | 唯一 Provider | 真实实现 | inject/生命周期结论 |
+|---|---|---|---|
+| `config` | `services.config.plugin` | `ConfigService` + `config/store.py` | `http`；路由 disposer 绑定 Fiber |
+| `filesystem` | `services.filesystem.plugin` | `LocalFilesystemService` + `policy.py` | 无必选依赖；路径策略只在 Owner 内 |
+| `http` | `services.http.plugin` | `HttpService` | 无必选依赖；health 注册随 Fiber 清理 |
+| `system_prompt` | `services.system_prompt.plugin` | `SystemPromptService` | 无必选依赖；行为由 Plugin 注册 |
+| `message_bus` | `services.messaging.bus.plugin` | `MessageBusService` + `EventBus` | `hook_runtime`；inbound consumer 由 effect 关闭 |
+| `tools` | `services.tools.plugin` | `ToolService` + `ToolRegistry` | 无必选依赖；贡献由各 Plugin effect 清理 |
+| `agent_profiles` | `services.agent.profile.plugin` | `AgentProfileService` + `AgentManager` | `http`；profile 路由 disposer 随 Fiber 清理 |
+| `sessions` | `services.session.plugin` | `SessionService` + 私有 Repository/Projection | `hook_runtime,http,message_bus`；Session 自己发布 lifecycle/flush Hook |
+| `agents` | `services.agent.plugin` | `AgentService` + `services/agent/runtime` 私有实现 | `agent_profiles,sessions,message_bus,channels,tools,system_prompt,hook_runtime,plugin_manager`；Runtime 与 Service 同 Fiber 关闭 |
+| `channels` | `services.messaging.channel.plugin` | `ChannelService` + `ChannelManager` | `message_bus`；Manager stop effect 归 registry Owner |
+| `workspaces` | `services.workspace.plugin` | `WorkspaceService` | `sessions`；不复制 Session 状态 |
+| `attachments` | `services.attachment.plugin` | `AttachmentService` | `http`；附件路由 disposer 随 Fiber 清理 |
+
+LLM 没有虚构的 `llm` Service key：请求/stream 由 `ftre-agent-core` 适配，Agent Runtime
+消费 `AgentConfig`。PRD 5.2 已同步为“外部 LLM 适配，无新增单实现 Host Service”。
+Command/Trace 虽然提供 `commands`/`traces` key，但它们是 `plugins/builtin` 的行为/控制面
+Plugin，不冒充 Host Service；具体实现分别见 `plugins/builtin/command` 和 `trace`。
+
+审计发现并已修复的债务：
+
+- `SessionService` 不再暴露 `bind_flush_dispatcher`/`bind_lifecycle_dispatcher`；构造时注入
+  `HookRuntime`，直接发布 `session/flush`、`session/created`、`session/disposed`。
+- `CommandRuntime` 生命周期 sink 在构造时传入；删除 `bind_lifecycle` setter，Command Plugin
+  不再运行时回填回调。
+- `InboxService` 的 Agent、Hook Runtime 和 before-claim 策略在构造时注入；删除
+  `attach_agent`、`bind_*` 以及 WebSocket 快照/status 回调。队列事实只发 `inbox/*` Hook。
+- `SessionEventService` 在 Session Provider 中一次性注入 Projection、MessageBus、Hook Runtime，
+  自己完成“投影 → Hook → outbound”顺序；Agent Provider 不再绑定/解绑 Loop emitter。
+- Compaction Package 的 `session_events`、`inbox` 改为显式 `inject`，删除事件 sink setter 和
+  缺失 Inbox 的 no-op/fallback 分支。未安装/未启用 Package 时由 Plugin 状态保持缺失，不污染 Host。
+
+仍保留的 `ctx.get(..., strict=False)` 只有两类：Composition `initial_services` 覆盖 Provider
+默认实例，或 Session/WS/Agent Runtime 的可选能力晚绑定（这些能力存在依赖环，不能伪造必选
+`inject`）。Command、Compaction 和 Package 内部的必选依赖均已改为显式 `inject`/属性读取。
+
+### Package 发行门禁
+
+`ftre` 的 `pyproject.toml` 现在提供 `inbox`、`compaction`、`full` extras；主包依赖列表不含
+两个可选发行物。两个 Package 均具备完整 build-system、版本、README、唯一
+`ftre.plugins` entry point，并声明其公开宿主契约依赖：
+
+| Package | entry point | 关键依赖 | 独立结果 |
+|---|---|---|---|
+| `ftre-inbox==0.1.0` | `inbox = ftre_inbox.plugin:apply` | `ftre>=0.2.6`、`cordis-py==0.4.0`、`ftre-agent-core>=0.1.2` | wheel 无缓存/测试/Host 私有源码；无包 Host 仍可启动 |
+| `ftre-compaction==0.1.0` | `compaction = ftre_compaction.plugin:apply` | Inbox + ftre 公共 Service/Hook + core | 安装后可 discovery/load/restart/unload；不安装时 Host 不出现该候选 |
+
+Plugin Discovery 读取已安装的 `ftre.plugins` 元数据但延迟 import；内置同名 Manifest 优先，
+避免重复 id。新增 `test_f14_package_boundaries.py` 覆盖 extras、entry point、Host 私有 import、
+生成物和 discovery 延迟导入；新增 Host Service key/provider 唯一性与 callback setter 门禁。
+
+隔离验证（临时目录在仓库外，完成后清理）：
+
+```text
+python -m pip wheel --no-deps --no-cache-dir . packages/ftre-inbox packages/ftre-compaction --wheel-dir E:\ftre-f14-package-wheel
+→ ftre-0.2.6、ftre_inbox-0.1.0、ftre_compaction-0.1.0 全部构建成功
+wheel 内容检查 → 12 files/个；无 __pycache__、.pyc、数据库、tests；均有 entry_points.txt
+洁净 venv + 仅 Host → inbox=FAILED/entry_import_failed（可选缺失），agents=ACTIVE，AgentService 可用
+洁净 venv + 两个 wheel → inbox=ACTIVE、compaction=ACTIVE；compaction restart=True、unload=True，卸载后 Service=None
+```
+
+### 包化候选审计
+
+MCP、Skill、Schedule、Team 均已是 `plugins/builtin/*` 边界完整的 Builtin Plugin，但本批均为
+`not-ready`：仍依赖 Host 配置/Tool/Session/Filesystem 具体实现，缺少独立 pyproject、发行物
+entry point、洁净安装和独立复用场景。按 PRD 4.5 不创建空 Package 壳；后续若出现独立发布或
+按需安装价值，单独阶段逐项通过七条门禁。
+
+### F14.6/F14.7 验证
+
+```text
+python -m pytest -q tests/contracts/test_f7_hook_pipeline.py tests/startup/test_composition.py tests/lifecycle/test_agent_runtime_plugin.py tests/architecture/test_f13_plugin_first.py packages/ftre-inbox/tests packages/ftre-compaction/tests
+→ 76 passed
+python -m pytest -q tests/architecture/test_f14_package_boundaries.py tests/architecture/test_f14_baseline.py
+→ 12 passed
+python -m ruff check --no-cache src tests packages
+→ All checks passed
+```
+
+F14.6/F14.7 已完成；下一批输入是 F14.8 的生命周期、故障、最小 Composition 和 Package
+restart/in-flight Hook 组合验证。
+
 ## 后续批次精确输入
 
 - F14.2：将 `platform` 迁为 `kernel`，并把 Package/业务 Hook 的 import 改到 Owner；

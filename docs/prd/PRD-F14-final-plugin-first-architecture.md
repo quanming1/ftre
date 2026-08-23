@@ -153,7 +153,7 @@ Repository、Adapter、Runtime、Driver、Projection 和数据模型属于 Owner
 | HttpService | `http` | Router 贡献、冲突、冻结、dispose | 业务 Route 实现 |
 | SessionService | `sessions` | Session 身份、正式消息历史、持久化 | pending 队列、Agent active Turn |
 | AgentService | `agents` | `InboundMessage → TurnOutcome`、active Turn、取消 | Queue、Command、Compaction、Channel |
-| LlmService | `llm` | 模型适配、请求和 stream | Prompt 产品行为、Agent 队列 |
+| LLM 适配（`ftre-agent-core`） | 无 ftre Service key | 模型适配、请求和 stream；由 Agent Runtime 通过稳定 core 契约调用 | Prompt 产品行为、Agent 队列；F14 不新增只有一个实现的 Host Service |
 | ToolService | `tools` | Tool 注册、scope、执行视图 | 静态拥有全部具体 Tool |
 | SystemPromptService | `system_prompt` | 结构化 section 注册和组装 | 在自身写死 Feature 文本 |
 | MessageBusService | `message_bus` | transport-neutral inbound/outbound 分发 | 持久化、队列、命令实现 |
@@ -679,3 +679,4 @@ F14 只有在以下事实同时成立时才可以标记“已验收”：
 | 2026-08-24 | 完成 F14.2：`platform → kernel`、`plugin_runtime → kernel/plugins`，删除 Kernel 业务 Hook 名称目录并将名称归还各语义 Owner；全量测试 445 passed、ruff 通过 | 让 Kernel 真正业务零知识，避免继续形成中央 Hook 名称表 | AC2、AC9 已部分验证；AC1、AC12 待后续目录/发行门禁 |
 | 2026-08-24 | 完成 F14.3/F14.4：Agent Runtime 归入 `services/agent/runtime` 并由唯一 Agent Provider 拥有；MessageBus 接管 `messaging/inbound`，Command/Inbox Plugin 旁路裁决；全量测试 445 passed | 消除 `agent_runtime` 第二 Owner 和 AgentLoop 的 Bus/Command/Inbox 业务负担 | AC4、AC5、AC6 已部分验证；AC1、AC7、AC10 待后续批次 |
 | 2026-08-24 | 完成 F14.5：features、Command、Trace、Session Title 和 concrete Channel 全部归位 `plugins/builtin`；删除旧目录并新增文件树门禁 | 让产品行为和适配器在文件系统上直接表达 Plugin 生命周期，避免 Service/Feature 身份混淆 | AC1、AC3、AC7 已部分验证；AC6、AC12 待 Package 门禁 |
+| 2026-08-24 | 完成 F14.6/F14.7：核对 12 个 Host Service 的唯一 Provider/inject/effect，删除 Session/Command/Inbox/SessionEvent/Compaction 的 callback setter；新增 `inbox`、`compaction`、`full` extras、`ftre.plugins` entry point discovery、wheel/洁净 venv 门禁 | 让 Service 依赖可静态追踪，并证明 Inbox/Compaction 是可选发行物；MCP/Skill/Schedule/Team 保持 Builtin Plugin 不强拆包 | F14.6/F14.7 已完成；AC6、AC8、AC12 的对应证据已写入执行报告，终局 AC 仍待 F14.8-F14.10 |

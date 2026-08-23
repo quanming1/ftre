@@ -847,10 +847,12 @@ stages:
             date: 2026-08-24
           - id: F14.6
             title: Host Service 边界和私有实现收敛
-            status: todo
+            status: done
+            date: 2026-08-24
           - id: F14.7
             title: Inbox/Compaction Package 与发行门禁
-            status: todo
+            status: done
+            date: 2026-08-24
           - id: F14.8
             title: 生命周期、故障与最小 Composition 验证
             status: todo

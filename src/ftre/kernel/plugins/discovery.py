@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import os
 import sys
 from pathlib import Path
@@ -20,8 +21,14 @@ class PluginDiscovery:
         self.plugins_dir = Path(plugins_dir) if plugins_dir else default_root
 
     def catalog(self, builtins: list[PluginManifest], config: dict[str, Any] | None = None) -> PluginCatalog:
-        """Merge external declarations with built-ins without importing modules."""
+        """Merge built-ins and installed entry points without importing modules.
+
+        ``ftre.plugins`` 是发行物的发现边界：读取 entry point 只拿元数据，
+        真正的模块导入仍延迟到用户显式启用之后。内置同名 Manifest 优先，
+        这样仓库内的默认 Composition 与已安装 wheel 不会产生第二个 Plugin id。
+        """
         catalog = PluginCatalog(builtins)
+        self._add_installed_entry_points(catalog)
         raw = (config or {}).get("plugins", [])
         if raw is None:
             raw = []
@@ -63,6 +70,30 @@ class PluginDiscovery:
                 )
             )
         return catalog
+
+    @staticmethod
+    def _add_installed_entry_points(catalog: PluginCatalog) -> None:
+        """把已安装发行物登记为可选候选，不在发现阶段 import 代码。"""
+        entries = importlib.metadata.entry_points()
+        # Python 3.12 返回 SelectableGroups；旧版本/测试替身可能直接返回列表。
+        selected = entries.select(group="ftre.plugins") if hasattr(entries, "select") else entries
+        for entry in selected:
+            plugin_id = str(entry.name).strip()
+            if not plugin_id or catalog.get(plugin_id) is not None:
+                continue
+            distribution = getattr(entry, "dist", None)
+            metadata = getattr(distribution, "metadata", {}) if distribution else {}
+            catalog.add(
+                PluginManifest(
+                    id=plugin_id,
+                    entry=str(entry.value),
+                    source=f"external:{plugin_id}",
+                    required=False,
+                    default_enabled=False,
+                    version=getattr(distribution, "version", None),
+                    description=str(metadata.get("Summary", "")),
+                )
+            )
 
     def resolve(self, manifest: PluginManifest) -> Any:
         """Resolve a selected entry.  This is intentionally called post-enable."""

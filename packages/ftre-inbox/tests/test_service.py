@@ -144,13 +144,11 @@ async def test_duplicate_followup_does_not_create_receipt_after_original_complet
 @pytest.mark.asyncio
 async def test_before_claim_failure_keeps_entire_batch(tmp_path):
     agent = FakeAgent()
-    service = InboxService(InboxRepository(tmp_path), agent)
-    service._hook_runtime = None
 
     async def reject(_item, _snapshot):
         return False
 
-    service.bind_before_claim(reject)
+    service = InboxService(InboxRepository(tmp_path), agent, before_claim=reject)
     await service.steer(InboundMessage("s1", "step", "ws", "step"))
     await service.followup(InboundMessage("s1", "turn", "ws", "turn"))
     await asyncio.sleep(0.05)
@@ -197,18 +195,17 @@ async def test_close_releases_pending_memory_but_keeps_recovery_file(tmp_path):
 @pytest.mark.asyncio
 async def test_close_clears_host_callbacks_and_agent_reference(tmp_path):
     agent = FakeAgent()
-    service = InboxService(InboxRepository(tmp_path), agent)
     runtime = object()
-    service.bind_snapshot_publisher(lambda _session_id: None)
-    service.bind_status_publisher(lambda _session_id, _status: None)
-    service.bind_before_claim(lambda _item, _snapshot: True)
-    service.bind_hook_runtime(runtime)
+    service = InboxService(
+        InboxRepository(tmp_path),
+        agent,
+        hook_runtime=runtime,
+        before_claim=lambda _item, _snapshot: True,
+    )
 
     await service.close()
 
     assert service.is_closed is True
-    assert service._publish_snapshot is None
-    assert service._publish_status is None
     assert service._before_claim is None
     assert service._hook_runtime is None
     assert service._agent is None
@@ -219,8 +216,7 @@ async def test_discard_hook_removes_only_explicit_candidate(tmp_path):
     context = Context()
     runtime = HookRuntime(context)
     agent = FakeAgent()
-    service = InboxService(InboxRepository(tmp_path))
-    service.bind_hook_runtime(runtime)
+    service = InboxService(InboxRepository(tmp_path), agent, hook_runtime=runtime)
 
     async def policy(payload, next_):
         if payload.candidate.request_id == "drop":
@@ -235,13 +231,16 @@ async def test_discard_hook_removes_only_explicit_candidate(tmp_path):
     )
     await service.followup(InboundMessage("s1", "drop", "ws", "drop"))
     await service.followup(InboundMessage("s1", "keep", "ws", "keep"))
-    service.attach_agent(agent)
     await service.start()
     for _ in range(100):
         if [item.request_id for item in agent.received] == ["keep"]:
             break
         await asyncio.sleep(0.01)
     assert [item.request_id for item in agent.received] == ["keep"]
+    for _ in range(100):
+        if not (await service.snapshot("s1")).has_pending:
+            break
+        await asyncio.sleep(0.01)
     assert not (await service.snapshot("s1")).has_pending
     receipt.dispose()
     cleanup = context.dispose()
@@ -253,10 +252,9 @@ async def test_discard_hook_removes_only_explicit_candidate(tmp_path):
 @pytest.mark.asyncio
 async def test_cancel_active_preserves_both_pending_targets(tmp_path):
     agent = CancellableAgent()
-    service = InboxService(InboxRepository(tmp_path))
+    service = InboxService(InboxRepository(tmp_path), agent)
     await service.inject(InboundMessage("s1", "context", "ws", "ctx", source="plugin"))
     await service.followup(InboundMessage("s1", "queued", "ws", "queued"))
-    service.attach_agent(agent)
     assert await service.cancel("s1") is True
     snapshot = await service.snapshot("s1")
     assert {item.request_id for item in snapshot.pending} == {"context", "queued"}

@@ -127,16 +127,6 @@ class CompactionService:
     async def _noop_event(self, _session_id: str, _channel_id: str, _event) -> None:
         return None
 
-    def bind_event_emitter(self, emit_event) -> None:
-        """绑定公开的 Session 事件出口。
-
-        Service 不直接推送 WebSocket，也不直接写 Session projection；开始、
-        完成和失败都发成统一 CustomEvent，由 ftre 的事件出口负责投影及广播。
-        """
-        if not callable(emit_event):
-            raise TypeError("compaction event emitter must be callable")
-        self._emit_event = emit_event
-
     def progress_generation(self, session_id: str) -> int:
         """Return the in-process generation advanced by durable compaction progress."""
         return self._progress_generation.get(session_id, 0)
