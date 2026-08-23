@@ -78,7 +78,6 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         plugin_entries.append({"id": "websocket-channel", "config": ws_config})
     config_data["plugins"] = plugin_entries
     # 预置变量：None 哨兵供 finally 判断"是否已创建、是否需要释放"
-    agent_runtime = None
     channel_service = None
     composition = None
     try:
@@ -90,12 +89,8 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         )
         context = composition.context
         channel_service = context.channels
-        # 读取 Agent Runtime Provider Plugin 的公开句柄。
-        agent_runtime = context.agent_runtime
-        # agent-runtime Plugin 已完成 Driver、Inbox admission 和生命周期绑定；
-        # Bootstrap 不重复接线，也不保存第二份业务对象图。
-        # ── 第四步：启动已由 Channel Provider Plugins 注册的通道 ──
-        agent_runtime.start()  # Plugin-owned AgentLoop consumes inbound
+        # Agent Provider Plugin 已完成 AgentService 与私有 Runtime 装配；
+        # Bootstrap 只启动 Host 通道，不保存第二份 Agent 对象图。
         await channel_service.start_all()
         composition.context.get("http").freeze()  # 冻结路由：此后不可再注册
         # 常驻：直到外部取消（Ctrl+C / 进程信号）
@@ -103,8 +98,6 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
             await asyncio.sleep(1)
     finally:
         # ── 逆序关停（与启动顺序相反，保证依赖方先停）──
-        if agent_runtime is not None:
-            await agent_runtime.close()  # 由 Agent Runtime Plugin 收拢 Loop/Driver
         if channel_service is not None:
             await channel_service.stop_all()  # 停通道接收循环
         if composition is not None:

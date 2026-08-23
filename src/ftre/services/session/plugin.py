@@ -17,7 +17,7 @@ from .hooks import (
 )
 from .service import SessionService
 
-inject = ("hook_runtime", "http", "agents")
+inject = ("hook_runtime", "http")
 provide = ("sessions", "session_events")
 
 
@@ -50,7 +50,11 @@ async def apply(ctx: Context, config=None):
     from .router import build_router
 
     disposer = ctx.http.register_router(
-        build_router(service, ctx.agents, ctx.get("inbox", strict=False)),
+        build_router(
+            service,
+            lambda: ctx.get("agents", strict=False),
+            lambda: ctx.get("inbox", strict=False),
+        ),
         owner="sessions",
     )
     ctx.effect(lambda: disposer, label="http:sessions")

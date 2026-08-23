@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
 import pytest
 
-from ftre.services.agent_loop.runtime.loop.completion_registry import CompletionRegistry
-from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
 from ftre.services.command import CommandResult, CommandService
 from ftre.services.messaging.bus import BusMessage
 
@@ -65,19 +61,17 @@ async def test_unknown_slash_is_command_plane_error_not_agent_input() -> None:
     inbound = _inbound("/compact")
     assert service.is_command_input({"inbound": inbound}) is True
     assert service.parse({"inbound": inbound}) is None
-    result = AgentLoop._unavailable_command_result()
+    result = CommandResult.error("命令不可用或未启用")
     assert result.kind == "error"
 
 
 @pytest.mark.asyncio
-async def test_direct_command_dispatch_does_not_call_agent_driver() -> None:
+async def test_direct_command_dispatch_stays_inside_command_service() -> None:
     service = CommandService()
     service.register("/hello", lambda _ctx: CommandResult.success("ok"))
     inbound = _inbound("/hello")
-    loop = object.__new__(AgentLoop)
-    loop.commands = service
-    loop.completions = CompletionRegistry()
-    loop.publish_command_result = AsyncMock()
-    result = await loop._dispatch_command_direct(inbound, service.parse({"inbound": inbound}))
-    assert result.accepted is True
-    loop.publish_command_result.assert_awaited_once()
+    result = await service.dispatch_inbound(
+        inbound,
+        definition=service.parse({"inbound": inbound}),
+    )
+    assert result == CommandResult.success("ok")

@@ -32,6 +32,7 @@ from ftre.services.session.entity.models import (
 )
 from ftre.services.session.entity.state import AgentStateFile, SessionState
 from ftre.services.session.persistence.repository import SessionRepository
+from ftre.services.session.projection import SessionProjection
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,9 @@ class SessionService:
 
     def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
         self._repo = SessionRepository(db_path, sessions_dir=sessions_dir)
+        # 流式 Reply 投影属于 Session 数据面；把它放在 SessionService 内部，
+        # 避免 Agent Runtime 变成 WebSocket 的第二个 Projection Owner。
+        self._projection = SessionProjection(self)
         self._flush_dispatcher: Callable[[str, str], Awaitable[None]] | None = None
         self._lifecycle_dispatcher: Callable[[str, str, str], Awaitable[None]] | None = None
 
@@ -136,9 +140,13 @@ class SessionService:
         await self._sweep_orphan_session_dirs()
 
     async def close(self) -> None:
-        """安全幂等：JSON Store 无长连接，仅清理内存状态。"""
-        # 幂等 no-op：保留磁盘状态，重复调用安全
-        return
+        """安全幂等：保留磁盘数据并清理流式投影内存状态。"""
+        await self._projection.close()
+
+    @property
+    def projection(self) -> SessionProjection:
+        """Return the Session-owned live projection used by adapters and Agent Runtime."""
+        return self._projection
 
     # ============================================================
     # Session CRUD（委托 storage）

@@ -9,7 +9,7 @@
 
 API：
 - get(): 返回当前 session 的 workspace 绝对路径；DB 中为空 / 路径不存在
-  时回退到 fallback_cwd（agent_loop 传入，通常是 config 默认 / 进程 cwd）。
+  时回退到 fallback_cwd（Agent Runtime 传入，通常是 config 默认 / 进程 cwd）。
 - set(path): 写入 DB，返回旧值。
 
 调用约束：

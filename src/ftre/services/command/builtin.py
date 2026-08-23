@@ -24,13 +24,19 @@ logger = logging.getLogger(__name__)
 def register_builtin_commands(
     runtime: CommandRuntime,
     *,
-    agents: AgentService,
+    agents: AgentService | Callable[[], AgentService | None],
     sessions: SessionService,
 ) -> list[Callable[[], bool]]:
     """注册内置命令并返回所有 disposer。"""
 
+    def current_agents() -> AgentService:
+        value = agents() if callable(agents) else agents
+        if value is None:
+            raise RuntimeError("AgentService runtime is not ready")
+        return value
+
     async def on_cancel(ctx: CommandContext) -> CommandResult:
-        await agents.cancel(ctx.session_id)
+        await current_agents().cancel(ctx.session_id)
         return CommandResult.success()
 
     async def confirm(ctx: CommandContext, *, approved: bool) -> CommandResult:
@@ -79,7 +85,7 @@ def register_builtin_commands(
             for tool_id in tool_call_ids
         ]
         try:
-            await agents.resume_confirmation(
+            await current_agents().resume_confirmation(
                 ctx.session_id,
                 ctx.channel_id,
                 events,

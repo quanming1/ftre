@@ -15,7 +15,6 @@ inject = (
     "channels",
     "attachments",
     "sessions",
-    "agent_runtime",
     "agents",
     "http",
     "hook_runtime",
@@ -32,8 +31,9 @@ def apply(ctx: Context, config=None):
         port=int(options.get("port", 48650)),
         attachment_service=ctx.attachments,
     )
-    runtime = ctx.agent_runtime
-    channel.set_session_projection(runtime.loop.session_projection)
+    projection = getattr(ctx.sessions, "projection", None)
+    if projection is not None:
+        channel.set_session_projection(projection)
     def current_inbox():
         # Inbox may be restarted independently; resolving through Context keeps
         # this protocol provider from retaining a disposed Service instance.

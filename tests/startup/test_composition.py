@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 from cordis import FiberState
 from ftre_agent_core.tool import ToolRegistry
@@ -29,11 +27,6 @@ async def test_default_composition_has_required_public_services(tmp_path) -> Non
             "commands": CommandService(),
             "agent_profiles": object(),
             "agents": object(),
-            # The channel provider consumes the public runtime handle to bind
-            # the session projection; keep the test double at that boundary.
-            "agent_runtime": SimpleNamespace(
-                loop=SimpleNamespace(session_projection=None),
-            ),
             "traces": object(),
         },
     )

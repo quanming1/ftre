@@ -93,6 +93,12 @@ class SessionProjection:
         # 锁内只改内存；SessionManager 的磁盘 I/O 一律在锁外执行。
         self._lock = asyncio.Lock()
 
+    async def close(self) -> None:
+        """Drop in-memory Reply/maintenance state during Session shutdown."""
+        async with self._lock:
+            self._replies.clear()
+            self._active_session_events.clear()
+
     async def apply(self, session_id: str, event) -> ProjectionResult:
         """应用一个 Event，返回投影结果。
 

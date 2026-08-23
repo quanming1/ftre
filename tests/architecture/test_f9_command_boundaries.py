@@ -11,7 +11,7 @@ def _text(relative: str) -> str:
 
 
 def test_turn_executor_has_no_command_matching_or_legacy_filter_path() -> None:
-    source = _text("services/agent_loop/runtime/loop/turn_executor.py")
+    source = _text("services/agent/runtime/turn_executor.py")
     forbidden = (
         "ftre.services.command",
         "command_manager",
@@ -30,12 +30,14 @@ def test_turn_executor_has_no_command_matching_or_legacy_filter_path() -> None:
     assert not any(item in source for item in forbidden)
 
 
-def test_agent_loop_parses_commands_before_inbox_admission() -> None:
-    source = _text("services/agent_loop/runtime/loop/engine.py")
-    assert "_parse_ingress_command" in source
-    assert "self.commands.parse({\"inbound\": msg})" in source
-    assert "_inbound_handler" in source
-    assert "self.lanes" not in source
+def test_message_bus_dispatches_commands_before_inbox_admission() -> None:
+    agent_source = _text("services/agent/runtime/engine.py")
+    bus_source = _text("services/messaging/bus/ingress.py")
+    command_source = _text("services/command/plugin.py")
+    assert "_parse_ingress_command" not in agent_source
+    assert "_inbound_handler" not in agent_source
+    assert '"messaging/inbound"' in bus_source
+    assert "MESSAGING_INBOUND_SPEC" in command_source
 
 
 def test_command_layer_does_not_import_private_agent_runtime() -> None:

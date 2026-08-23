@@ -167,6 +167,50 @@ python -m ruff check --no-cache src tests packages/ftre-inbox packages/ftre-comp
 
 提交将在 F14.2 的代码与文档完成后按职责分批创建。
 
+## F14.3 Agent Runtime 内聚（2026-08-24）
+
+### 已完成
+
+- `services/agent_loop` 已删除；Loop、Driver、TurnExecutor、CompletionRegistry 和 Runtime
+  provider 归入 `services/agent/runtime/`，不再形成顶层 Service 目录。
+- `services/agent/plugin.py` 是唯一 Agent Provider：只 provide `agents`，在同一 Fiber 内
+  创建 AgentService 和私有 Runtime，并以一个 Effect 负责停止/解绑。
+- 删除 `agent-runtime` Manifest、`agent_runtime` Service、`AgentRuntimeService`、
+  `AgentLoopProvider` 公共入口和 Bootstrap 的 Runtime 句柄；AgentService 仍只公开
+  `InboundMessage → TurnOutcome`、active 状态和取消。
+- SessionProjection 归还 SessionService；Agent Runtime 不再创建 Projection，WebSocket 只
+  消费 SessionService 的 projection capability。
+
+## F14.4 Messaging Ingress 与 Command/Inbox 交接（2026-08-24）
+
+### 已完成
+
+- 新增 `services/messaging/bus/ingress.py`，由 Messaging Owner 定义
+  `messaging/inbound` HookSpec，并复用原有 `IngressResult` ACK 语义。
+- MessageBusService 成为唯一 inbound consumer，拥有 request/reply resolve、错误唤醒和关闭；
+  Agent Runtime 不再订阅 Bus、不解析 Command、不绑定 Inbox。
+- Command Plugin 在 inbound Hook 中旁路执行 slash command；纯 Command 不创建 Turn、不进入
+  Inbox；结果继续使用现有 typed Session command envelope。
+- Inbox Package 在同一 Hook 中接管未消费的普通输入和 cancel，并通过 AgentService 交付
+  `InboundMessage`；未安装 Inbox 时由 MessageBus 返回稳定 capability error。
+- 删除 AgentLoop 的 `_consume`、Command parser/dispatcher、Inbox binding 和 Command result
+  publisher；同步更新 WS、Command、Inbox、Session 路由和生命周期测试。
+
+### 验证
+
+```text
+python -m pytest -q tests/contracts/test_f9_command_ingress.py tests/lifecycle/test_agent_runtime_plugin.py tests/lifecycle/test_f10_lifecycle_faults.py tests/contracts/test_f2_runtime_provider.py tests/architecture/test_f6_agent_layer.py tests/architecture/test_f9_command_boundaries.py tests/architecture/test_f13_plugin_first.py tests/startup/test_composition.py
+→ 33 passed in 69.18s
+
+python -m pytest -q
+→ 445 passed in 114.69s
+
+python -m ruff check --no-cache src tests packages/ftre-inbox packages/ftre-compaction
+→ All checks passed
+```
+
+F14.3/F14.4 已完成；F14.5 继续处理 Builtin Plugin 目录和 concrete Channel 归位。
+
 ## 后续批次精确输入
 
 - F14.2：将 `platform` 迁为 `kernel`，并把 Package/业务 Hook 的 import 改到 Owner；

@@ -24,7 +24,7 @@ PUBLIC_HOOK_NAMES = {
 
 ROOT = Path(__file__).parents[2]
 SRC = ROOT / "src" / "ftre"
-LEGACY_IMPORT = "ftre.services.agent_loop.runtime.hooks"
+LEGACY_IMPORT = "ftre.services.agent.runtime.hooks"
 
 
 def test_public_hook_names_exclude_legacy_filter_names():
@@ -47,7 +47,7 @@ def test_new_platform_hooks_do_not_import_legacy_runtime_module():
 
 
 def test_legacy_hook_module_and_imports_are_removed():
-    assert not (SRC / "services" / "agent_loop" / "runtime" / "hooks.py").exists()
+    assert not (SRC / "services" / "agent" / "runtime" / "hooks.py").exists()
     hits: set[Path] = set()
     for path in SRC.rglob("*.py"):
         if LEGACY_IMPORT in path.read_text(encoding="utf-8"):

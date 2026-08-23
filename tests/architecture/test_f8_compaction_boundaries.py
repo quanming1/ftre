@@ -13,8 +13,8 @@ def test_core_has_no_compaction_owner_or_context_gate():
     assert not (SRC / "services" / "agent_loop" / "runtime" / "loop" / "context_gate.py").exists()
 
     for path in (
-        SRC / "services" / "agent_loop" / "runtime" / "loop" / "engine.py",
-        SRC / "services" / "agent_loop" / "provider.py",
+        SRC / "services" / "agent" / "runtime" / "engine.py",
+        SRC / "services" / "agent" / "runtime" / "provider.py",
         SRC / "services" / "command" / "builtin.py",
     ):
         source = path.read_text(encoding="utf-8")

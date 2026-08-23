@@ -677,3 +677,4 @@ F14 只有在以下事实同时成立时才可以标记“已验收”：
 | 2026-08-24 | 用户授权按七批提示词进入开发，PRD 状态由草稿推进为开发中；F14.1 先建立 Owner、依赖和债务基线 | 开始执行完整 F14，不跳过前置审计 | AC1-AC13 待逐批验证 |
 | 2026-08-24 | 完成 F14.1：建立 Manifest/Service/Hook/Package Owner 清单、目标映射、债务基线和架构扫描；提交 `5501fc1`，全量测试 439 passed、ruff 通过 | 为后续路径迁移提供可复现的事实基线和防回归门禁 | AC1、AC3、AC6、AC8 的基线证据已建立，终局 AC 仍待后续批次 |
 | 2026-08-24 | 完成 F14.2：`platform → kernel`、`plugin_runtime → kernel/plugins`，删除 Kernel 业务 Hook 名称目录并将名称归还各语义 Owner；全量测试 445 passed、ruff 通过 | 让 Kernel 真正业务零知识，避免继续形成中央 Hook 名称表 | AC2、AC9 已部分验证；AC1、AC12 待后续目录/发行门禁 |
+| 2026-08-24 | 完成 F14.3/F14.4：Agent Runtime 归入 `services/agent/runtime` 并由唯一 Agent Provider 拥有；MessageBus 接管 `messaging/inbound`，Command/Inbox Plugin 旁路裁决；全量测试 445 passed | 消除 `agent_runtime` 第二 Owner 和 AgentLoop 的 Bus/Command/Inbox 业务负担 | AC4、AC5、AC6 已部分验证；AC1、AC7、AC10 待后续批次 |

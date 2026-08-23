@@ -46,19 +46,19 @@ def test_gateway_bootstrap_does_not_construct_business_services() -> None:
         "AgentRuntimeServices(",
     )
     assert not any(item in source for item in forbidden_constructors)
-    plugin = (SRC / "services" / "agent_loop" / "plugin.py").read_text(encoding="utf-8")
-    assert "AgentLoopProvider.from_context(" in plugin
+    plugin = (SRC / "services" / "agent" / "plugin.py").read_text(encoding="utf-8")
+    assert "build_runtime(" in plugin
 
 
 def test_agent_loop_history_handoff_precedes_turn_execution() -> None:
-    source = _source("services/agent_loop/runtime/loop/engine.py")
+    source = _source("services/agent/runtime/engine.py")
     handoff = source.index("_persist_inbound_user_message(")
     execution = source.index("self._executor.execute(")
     assert handoff < execution
 
 
 def test_turn_executor_is_not_user_message_owner() -> None:
-    source = _source("services/agent_loop/runtime/loop/turn_executor.py")
+    source = _source("services/agent/runtime/turn_executor.py")
     forbidden = (
         "_persist_user_message",
         "persist_input",
@@ -85,8 +85,8 @@ def test_builtin_tools_use_public_channel_names_not_provider_modules() -> None:
 
 
 def test_agent_runtime_uses_trace_service_owner() -> None:
-    engine = _source("services/agent_loop/runtime/loop/engine.py")
-    provider = _source("services/agent_loop/provider.py")
+    engine = _source("services/agent/runtime/engine.py")
+    provider = _source("services/agent/runtime/provider.py")
     trace_service = _source("services/observability/trace/service.py")
     assert "SQLiteTraceExporter" not in engine
     assert "TRACE_DB_PATH" not in engine

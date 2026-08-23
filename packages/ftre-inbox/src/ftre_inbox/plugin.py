@@ -6,6 +6,8 @@ from pathlib import Path
 
 from cordis import Context
 
+from ftre.services.messaging.bus import MESSAGING_INBOUND_SPEC
+
 from .repository import InboxRepository
 from .service import InboxService
 
@@ -13,7 +15,7 @@ from .service import InboxService
 # independent Fibers in parallel; declaring this dependency prevents a race in
 # which Inbox becomes ACTIVE before it can bind its admission handler to the
 # AgentLoop, leaving the runtime on its ``inbox-unavailable`` fallback.
-inject = ("sessions", "agents", "hook_runtime", "agent_runtime")
+inject = ("sessions", "agents", "hook_runtime")
 provide = ("inbox",)
 
 
@@ -70,14 +72,23 @@ async def apply(ctx: Context, config=None):
     # effect receives a factory and executes it immediately; return the
     # unbind function only during Fiber disposal, not while loading.
     ctx.effect(lambda: unbind_hook_runtime, label="inbox:hook-runtime")
-    runtime = ctx.get("agent_runtime", strict=False)
-    if runtime is not None and hasattr(runtime, "loop"):
-        service.attach_agent(ctx.agents)
-        runtime.loop.bind_inbox(service)
-        ctx.effect(
-            lambda: (lambda: runtime.loop.bind_inbox(None)),
-            label="inbox:agent-runtime-binding",
-        )
+    service.attach_agent(ctx.agents)
+
+    async def on_inbound(message, next_):
+        """接管未被 Command 消费的普通输入，并转换为 Queue admission。"""
+        result = await next_()
+        if result is not None:
+            return result
+        return await service.handle_bus_message(message)
+
+    inbound_receipt = ctx.hook_runtime.register(
+        MESSAGING_INBOUND_SPEC,
+        on_inbound,
+        owner="ftre-inbox",
+        context=ctx,
+        global_listener=True,
+    )
+    ctx.effect(lambda: inbound_receipt.dispose, label="inbox:messaging-inbound")
     await service.start()
     # SessionService emits the public disposed Hook; Inbox only reacts to that
     # fact and never replaces SessionService's lifecycle dispatcher.

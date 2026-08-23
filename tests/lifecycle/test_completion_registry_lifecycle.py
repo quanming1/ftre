@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from ftre.services.agent_loop.runtime.loop.completion_registry import CompletionRegistry
+from ftre.services.agent.runtime.completion import CompletionRegistry
 
 
 @pytest.mark.asyncio

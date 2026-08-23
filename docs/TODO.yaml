@@ -835,10 +835,12 @@ stages:
             date: 2026-08-24
           - id: F14.3
             title: Agent Runtime 内聚与唯一 Agent Service
-            status: todo
+            status: done
+            date: 2026-08-24
           - id: F14.4
             title: Messaging Ingress 与 Command/Inbox Plugin 交接
-            status: todo
+            status: done
+            date: 2026-08-24
           - id: F14.5
             title: Builtin Plugin 目录与 Owner 迁移
             status: todo

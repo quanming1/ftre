@@ -11,7 +11,7 @@ from ftre_inbox.service import InboxService
 
 from ftre.app.gateway.composition import build_composition
 from ftre.services.agent.contracts import InboundMessage
-from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
+from ftre.services.agent.runtime.engine import AgentLoop
 
 
 class _Agent:
@@ -89,15 +89,11 @@ async def test_inbox_plugin_restart_replaces_closed_service_without_duplicate_li
     try:
         first = composition.context.get("inbox")
         assert first is not None and first._closed is False
-        # Cordis settles independent Fibers concurrently.  Inbox must declare
-        # Agent Runtime as a dependency so its admission handler is bound
-        # before the Gateway starts consuming Bus messages.
-        assert composition.context.get("agent_runtime").loop.inbox is first
+        assert composition.context.get("agents").driver is not None
         assert await composition.plugins.restart("inbox") is True
         second = composition.context.get("inbox")
         assert second is not first
         assert second._closed is False
-        assert composition.context.get("agent_runtime").loop.inbox is second
         assert composition.context.get("channels").manager.get("ws")._current_inbox() is second
         entries = composition.context.get("hook_runtime").snapshot("session/disposed")
         assert len([entry for entry in entries if not entry.disposed]) == 1
@@ -113,7 +109,7 @@ async def test_inbox_plugin_unload_releases_worker_state_and_listener():
         assert await composition.plugins.unload("inbox") is True
         assert service._closed is True
         assert service.repository._states == {}
-        assert composition.context.get("agent_runtime").loop.inbox is None
+        assert composition.context.get("agent_runtime", strict=False) is None
         assert not [
             entry
             for entry in composition.context.get("hook_runtime").snapshot("session/disposed")

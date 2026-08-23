@@ -1,7 +1,7 @@
 """Agent Service 的公开契约。
 
 这些 Protocol 是 Gateway、HTTP、Channel 和 Feature 可依赖的边界；它们不暴露
-Inbox、TurnExecutor 或 AgentLoop 对象。具体数据面由 agent_loop Provider 实现
+Inbox、TurnExecutor 或 AgentLoop 对象。具体数据面由 Agent Provider 的私有 Runtime 实现
 ``AgentDriver``。
 """
 

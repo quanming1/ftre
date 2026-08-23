@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from ftre.services.agent_loop import AgentLoopProvider, provider
+from ftre.services.agent.runtime import provider
+from ftre.services.agent.runtime.provider import build_runtime
 
 
 def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
@@ -18,21 +19,20 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         message_bus = SimpleNamespace(bus="bus")
         channels = SimpleNamespace(manager="channels")
         tools = SimpleNamespace(registry="tools")
-        commands = SimpleNamespace(manager="commands")
         agent_profiles = SimpleNamespace(manager="profiles")
+        system_prompt = "prompt"
+        hook_runtime = "hooks"
 
         def get(self, key, strict=False):
             return {
-                "agents": None,
                 "mcp": None,
                 "attachments": None,
-                "system_prompt": None,
-                "hook_runtime": None,
                 "session_events": None,
             }.get(key)
 
     context = FakeContext()
-    AgentLoopProvider.from_context(context, "plugins").build()
+    agent_service = SimpleNamespace(registry="registry")
+    build_runtime(context, "plugins", agent_service)
 
     assert captured == {
         "bus": "bus",
@@ -42,11 +42,12 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         "tool_registry": "tools",
         "tool_service": context.tools,
         "mcp_service": None,
-        "command_service": context.commands,
         "plugin_manager": "plugins",
-            "agent_manager": "profiles",
-            "agent_registry": None,
-            "agent_service": None,
-            "attachments": None,
-            "traces": None,
-        }
+        "agent_manager": "profiles",
+        "agent_registry": "registry",
+        "agent_service": agent_service,
+        "attachments": None,
+        "traces": None,
+        "system_prompt": "prompt",
+        "hook_runtime": "hooks",
+    }

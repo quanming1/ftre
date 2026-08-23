@@ -1,6 +1,7 @@
 """业务消息 Bus、协议模型和 MessageBusService。"""
 
 from .bus import EventBus
+from .ingress import MESSAGING_INBOUND_SPEC, IngressResult
 from .message import (
     GLOBAL_CHANNEL,
     GLOBAL_SESSION,
@@ -22,12 +23,14 @@ from .service import MessageBusService
 __all__ = [
     "GLOBAL_CHANNEL",
     "GLOBAL_SESSION",
+    "MESSAGING_INBOUND_SPEC",
     "AgentRef",
     "BusMessage",
     "CommandMessagePayload",
     "EventBus",
     "InboundData",
     "InboundMetadata",
+    "IngressResult",
     "MessageBusService",
     "MessageType",
     "OutboundMetadata",

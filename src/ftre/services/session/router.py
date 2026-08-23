@@ -16,6 +16,10 @@ def build_router(sessions, agents, inbox=None) -> APIRouter:
     """Build the session HTTP surface from public Service handles."""
     router = APIRouter()
 
+    def current(value):
+        """Resolve a late-loaded optional Service at request time."""
+        return value() if callable(value) else value
+
     @router.post("/sessions")
     async def create_session(channel_id: str, title: str = "", workspace: str = ""):
         session_id = await sessions.create_session(channel_id, title, workspace)
@@ -36,9 +40,10 @@ def build_router(sessions, agents, inbox=None) -> APIRouter:
         offset = max(offset, 0)
         items = await sessions.list_sessions(limit, offset, channel_id, workspace)
         total = await sessions.count_sessions(channel_id=channel_id, workspace=workspace)
+        agent_service = current(agents)
         for item in items:
-            item["running"] = agents.is_session_busy(item["id"])
-            item["activity"] = agents.get_session_status(item["id"])
+            item["running"] = agent_service.is_session_busy(item["id"])
+            item["activity"] = agent_service.get_session_status(item["id"])
         return {"sessions": items, "total": total, "limit": limit, "offset": offset}
 
     @router.get("/sessions/search")
@@ -75,7 +80,7 @@ def build_router(sessions, agents, inbox=None) -> APIRouter:
     async def delete_session(session_id: str):
         if await sessions.get_session(session_id) is None:
             raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
-        await agents.delete_session(session_id)
+        await current(agents).delete_session(session_id)
         return {"status": "deleted", "session_id": session_id}
 
     @router.post("/sessions/{session_id}/fork")
@@ -91,8 +96,10 @@ def build_router(sessions, agents, inbox=None) -> APIRouter:
         limit_turns: int | None = None,
         before_ts: float | None = None,
     ):
-        status = agents.get_session_status(session_id)
-        queue = await inbox.wire_snapshot(session_id) if inbox is not None else None
+        agent_service = current(agents)
+        inbox_service = current(inbox)
+        status = agent_service.get_session_status(session_id)
+        queue = await inbox_service.wire_snapshot(session_id) if inbox_service is not None else None
         session = await sessions.get_session(session_id)
         metadata = session["metadata"] if session else {}
         if limit_turns is not None and limit_turns > 0:

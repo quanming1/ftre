@@ -29,8 +29,8 @@ def default_manifests() -> list[PluginManifest]:
     # PluginManifest 位置参数：id, entry, source, required, default_enabled, description
     #   - required=True：必选 Plugin，启动失败会阻止 Gateway 启动（fail loud）；
     #   - required=False：可选 Plugin（features/*），失败只记录状态、不阻塞启动；
-    #   - 顺序即装载顺序：先 services（核心能力），后 features（产品行为），
-    #     因为 features 依赖 services 提供的 Service key。
+        #   - 顺序即装载顺序：先 Host Service，再 Agent Provider，最后是可选 Plugin；
+        #     每个 Provider 的 inject 必须在自身 apply 前已经存在。
     return [
         # ── 基础服务层（services，全部必选）──
         # 按依赖顺序排列：config 是配置事实源，filesystem 是 IO 策略，
@@ -42,16 +42,17 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("message-bus", "ftre.services.messaging.bus.plugin:apply", "builtin", True, True, description="business message plane"),
         PluginManifest("tools", "ftre.services.tools.plugin:apply", "builtin", True, True, description="scoped tool registry"),
         PluginManifest("agent-profiles", "ftre.services.agent.profile.plugin:apply", "builtin", True, True, description="agent profile merge"),
-        PluginManifest("agents", "ftre.services.agent.plugin:apply", "builtin", True, True, description="public agent facade"),
         PluginManifest("sessions", "ftre.services.session.plugin:apply", "builtin", True, True, description="session persistence facade"),
         PluginManifest("commands", "ftre.services.command.plugin:apply", "builtin", True, True, description="command registry"),
         PluginManifest("workspaces", "ftre.services.workspace.plugin:apply", "builtin", True, True, description="workspace boundary"),
         PluginManifest("channels", "ftre.services.messaging.channel.plugin:apply", "builtin", True, True, description="channel registry"),
         PluginManifest("attachments", "ftre.services.attachment.plugin:apply", "builtin", True, True, description="attachment storage"),
         PluginManifest("traces", "ftre.services.observability.trace.plugin:apply", "builtin", True, True, description="trace persistence"),
+        # Agent Provider 同时发布 agents 和私有执行 Runtime；可选 Inbox
+        # 在它之后接管 pending/worker。
+        PluginManifest("agents", "ftre.services.agent.plugin:apply", "builtin", True, True, description="agent service and private runtime"),
         # 可选独立队列包：未安装时 AgentService 仍可直接执行 InboundMessage；
         # 安装后由该 Package 接管 pending、worker 和 session queue 协议。
-        PluginManifest("agent-runtime", "ftre.services.agent_loop.plugin:apply", "builtin", True, True, description="agent execution runtime"),
         PluginManifest("inbox", "ftre_inbox.plugin:apply", "builtin", False, True, description="optional durable inbox package"),
         PluginManifest("subagent-channel", "ftre.services.messaging.channel.providers.subagent.plugin:apply", "builtin", True, True, description="internal subagent channel"),
         PluginManifest("websocket-channel", "ftre.services.messaging.channel.providers.websocket.plugin:apply", "builtin", True, True, description="desktop WebSocket channel"),

@@ -25,16 +25,15 @@ def test_command_and_feature_code_never_uses_loop_as_service_locator() -> None:
 
 
 def test_agent_runtime_provider_has_no_unbounded_service_any() -> None:
-    source = _source("services/agent_loop/provider.py")
+    source = _source("services/agent/runtime/provider.py")
     assert "Any" not in source
-    assert "from_context" in source
+    assert "build_runtime" in source
     assert "AgentRuntimeServices" not in source
     assert "ctx.sessions" in source
-    assert "ctx.commands" in source
 
 
 def test_turn_executor_receives_data_plane_services_explicitly() -> None:
-    source = _source("services/agent_loop/runtime/loop/turn_executor.py")
+    source = _source("services/agent/runtime/turn_executor.py")
     for forbidden in (
         'getattr(loop, "agent_service"',
         'getattr(loop, "attachments"',
@@ -54,7 +53,7 @@ def test_plugins_declare_context_service_attributes() -> None:
     ignored = {"get", "provide", "effect", "events", "fiber", "parent", "scope"}
     optional_get = {
         "inbox", "mcp", "attachments", "system_prompt", "session_events",
-        "agent_runtime", "plugin_manager",
+        "plugin_manager", "agents",
     }
     plugin_paths = list((SRC / "services").rglob("plugin.py")) + list(
         (SRC / "features").rglob("plugin.py")
