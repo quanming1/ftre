@@ -8,12 +8,12 @@ Effect 自动注销。
 from ftre.platform.hooks import HookMode, HookRuntime, HookSpec
 
 spec = HookSpec(
-    "agent/pre-step",
+    "agent/before-turn",
     "agent",
     HookMode.WATERFALL,
-    payload_type=PreStepPayload,
-    result_type=StepDecision,
-    default=enter_step,
+    payload_type=BeforeTurnPayload,
+    result_type=AllowTurn | RejectTurn,
+    default=continue_step,
 )
 runtime = HookRuntime(ctx)
 receipt = runtime.register(
@@ -42,13 +42,14 @@ receipt = runtime.register(
 
 | Hook | Owner | 模式 | Payload → Result | 失败策略 / Scope | 副作用边界 |
 |---|---|---|---|---|---|
-| `agent/pre-step` | AgentLoop / Compaction | waterfall | `PreStepPayload → EnterStep/RejectStep` | propagate / Agent | 只能决定 pending 是否进入 Step；不得提前 claim |
+| `agent/before-turn` | ftre AgentLoop | waterfall | `BeforeTurnPayload → AllowTurn/RejectTurn` | propagate / Agent | 一次 InboundMessage 的 Turn 级准入，不读取 Inbox pending |
+| `agent/before-reasoning` | ftre-agent-core / Plugin | waterfall | `BeforeReasoningPayload → BeforeReasoningResult` | propagate / Agent | 每次真正调用 LLM 前贡献普通消息；运行中 steer 由 Inbox 监听 |
 | `agent/request` | AgentLoop / 路由 Plugin | waterfall | `AgentRequestPayload → AgentConfig` | propagate / Agent | 只能替换配置快照，不修改消息历史 |
 | `agent/request-error` | AgentLoop / Recovery Plugin | waterfall | `RequestErrorPayload → RetryRequest/None` | propagate / Agent | 只有产生持久进展才允许 Retry |
 | `agent/turn-stopping` | Agent Core / Agent Policy | waterfall | `TurnStoppingPayload → StopTurn/ContinueTurn` | propagate / Agent | finalize 前停止决策；continuation 必须有界 |
 | `agent/turn-stopped` | AgentLoop | emit | `TurnStoppedPayload → None` | observe / Agent | finalize 后只读通知 |
 | `agent/created`, `agent/disposed`, `agent/status`, `agent/session-start`, `agent/error` | AgentLoop | emit | `AgentLifecyclePayload → None` | observe / Agent | 只观察生命周期，不改变 Registry |
-| `agent/inbox/inserted`, `claimed`, `discarded` | SessionLane | emit | `AgentInboxPayload → None` | observe / Agent | 只在对应 mailbox mutation 后通知 |
+| `inbox/before-claim`, `inbox/inserted`, `claimed`, `discarded` | ftre-inbox | waterfall / emit | `BeforeClaimPayload / InboxMutationPayload → decision/None` | observe / global | 只在 Inbox Package 内做 claim 门控和观察 |
 | `tools/pre-execute`, `tools/execute`, `tools/post-execute`, `tools/result` | Tool Adapter | waterfall / emit | `Tool*Payload → Tool*Result` | 见各 Spec / Agent | 不伪造 Tool call identity |
 | `session/created`, `session/disposed`, `session/event` | SessionService | emit | `SessionLifecycle/EventPayload → None` | observe / global | 事实提交后通知，不回滚持久化 |
 | `session/flush` | SessionService | parallel | `SessionFlushPayload → None` | propagate / global | 唯一持久化屏障，调用者必须走 `SessionService.flush()` |

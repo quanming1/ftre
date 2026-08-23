@@ -7,13 +7,11 @@
 from .diagnostics import HookDiagnostic, HookListenerSnapshot
 from .names import (
     AGENT_AFTER_TURN,
+    AGENT_BEFORE_REASONING,
+    AGENT_BEFORE_TURN,
     AGENT_CREATED,
     AGENT_DISPOSED,
     AGENT_ERROR,
-    AGENT_INBOX_CLAIMED,
-    AGENT_INBOX_DISCARDED,
-    AGENT_INBOX_INSERTED,
-    AGENT_PRE_STEP,
     AGENT_REQUEST,
     AGENT_REQUEST_ERROR,
     AGENT_SESSION_START,
@@ -39,13 +37,11 @@ from .spec import HookFailurePolicy, HookMode, HookScope, HookSpec
 
 __all__ = [
     "AGENT_AFTER_TURN",
+    "AGENT_BEFORE_REASONING",
+    "AGENT_BEFORE_TURN",
     "AGENT_CREATED",
     "AGENT_DISPOSED",
     "AGENT_ERROR",
-    "AGENT_INBOX_CLAIMED",
-    "AGENT_INBOX_DISCARDED",
-    "AGENT_INBOX_INSERTED",
-    "AGENT_PRE_STEP",
     "AGENT_REQUEST",
     "AGENT_REQUEST_ERROR",
     "AGENT_SESSION_START",

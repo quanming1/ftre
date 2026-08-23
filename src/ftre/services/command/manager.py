@@ -1,6 +1,9 @@
 """CommandRuntime：注册、匹配和执行命令。
 
 Runtime 只负责 Command Plane。它不会创建 Turn，也不会解释 Agent 数据面结果。
+它是 CommandService 的内部实现，不是 AgentLoop；命令 handler 只能通过显式
+``CommandContext`` 消费公开 Service。生命周期事件写入 Session metadata，方便
+诊断，但命令正文不会自动进入聊天历史。
 """
 from __future__ import annotations
 
@@ -180,6 +183,7 @@ class CommandRuntime:
         args: str | None,
         inbound: Any,
     ) -> CommandResult:
+        """按定义执行一次命令并记录成对的 command/run、command/done 事件。"""
         request_id = inbound.metadata.request_id
         if request_id and request_id in self._request_results:
             return self._request_results[request_id]

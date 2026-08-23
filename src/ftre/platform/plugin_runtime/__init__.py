@@ -1,4 +1,5 @@
 """Project-level plugin runtime adapters."""
+# 中文说明：Plugin Runtime 公共导出：Manifest、Discovery、Loader、Manager 和诊断对象的统一入口。
 
 from .catalog import PluginCatalog
 from .diagnostics import PluginStartupError, PluginStatus

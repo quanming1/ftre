@@ -1,31 +1,35 @@
-"""
-AgentLoop - 全局单例，消费所有 session 的 inbound 消息
+"""AgentLoop：Bus 分流、Agent active Turn 和生命周期边界。
 
-职责：
-- 从 Bus 全局 inbound 队列消费消息
-- 对不同 session 并发执行；同一 session 由唯一 mailbox worker 串行消费
-- 系统级指令走高优先级 control lane，不进入普通 FIFO
-- Agent 执行全在主事件循环，Task.cancel() 在 LLM stream 的 await 处立即生效
-
-Turn 执行逻辑（状态机驱动）已拆到 TurnExecutor，
-AgentLoop 只管消费循环 + 并发控制 + 生命周期。
+队列、pending 持久化和 worker 不属于本模块；它们由可选的 ``ftre-inbox`` Package
+通过 ``bind_inbound_handler`` 接管。Loop 收到的普通消息只有两条合法路径：交给 Inbox
+admission，或在 Inbox 未启用时明确返回 capability error。Command 始终旁路执行。
 """
 
 import asyncio
 import inspect
 import logging
+import uuid
+from dataclasses import dataclass
 
 from cordis import Context
 from ftre_agent_core import Tracer
+from ftre_agent_core.event import UserMessageEvent
+from ftre_agent_core.message import from_openai_message
 from ftre_agent_core.tool import ToolRegistry
 
 from ftre.platform.hooks import HookRuntime, HookSpec
 from ftre.services.agent.config import AgentConfig
+from ftre.services.agent.contracts import InboundMessage
 from ftre.services.agent.hooks import (
+    AGENT_AFTER_TURN_SPEC,
+    AGENT_BEFORE_TURN_SPEC,
     AGENT_CREATED_SPEC,
     AGENT_DISPOSED_SPEC,
+    AfterTurnPayload,
     AgentLifecyclePayload,
     AgentSubject,
+    BeforeTurnPayload,
+    RejectTurn,
 )
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.messaging.bus import (
@@ -33,13 +37,8 @@ from ftre.services.messaging.bus import (
     CommandMessagePayload,
     EventBus,
     InboundMetadata,
-    MailboxItemPayload,
-    MailboxPhase,
     SessionCommandMessage,
-    SessionMailboxSnapshotMessage,
-    SessionMailboxSnapshotPayload,
 )
-from ftre.services.observability.trace.store import TRACE_DB_PATH, SQLiteTraceExporter
 from ftre.services.session import SessionService
 from ftre.services.session.hooks import (
     SESSION_EVENT_SPEC,
@@ -47,29 +46,41 @@ from ftre.services.session.hooks import (
     SessionEventPayload,
     SessionFlushPayload,
 )
+from ftre.services.session.message.multimodal import (
+    build_user_content,
+    normalize_stored_user_content,
+)
 from ftre.services.session.projection import ProjectionResult, SessionProjection
 
-from ..mailbox.lane import AdmissionResult, SessionLaneRegistry
-from ..mailbox.store import MailboxStore
 from .completion_registry import CompletionRegistry
 from .turn_executor import TurnExecutor, TurnOutcome
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class IngressResult:
+    """Bus admission/command response；不表达任何队列内部模型。"""
+
+    accepted: bool
+    session_id: str
+    request_id: str = ""
+    created: bool = False
+    error: dict | None = None
+
+
 class AgentLoop:
     """
-    全局单例，消费所有 session 的消息。
+    全局单例，消费所有 session 的 Bus 消息。
 
     并发模型：
-    - _consume：把 inbound 耐久接纳进目标 session 的 Mailbox
-    - SessionLane：每个 session 唯一 worker，负责 FIFO/Hook barrier/状态
-    - TurnExecutor.execute：只执行一个已经 claim 的 Turn
+    - _consume：把普通 inbound 交给 Inbox Package，把 Command 交给 CommandService
+    - run_inbound：只执行一个已被上游交付的 InboundMessage
     - 所有 Agent 执行在主事件循环，Task.cancel() 可在 LLM stream 的 await 处立即生效
 
     生命周期：
     - start()  → 启动消费协程
-    - stop()   → 关闭接纳入口 + 中断各 Lane + 等待 Hook 维护结束
+    - stop()   → 关闭接纳入口 + 中断 active Turn + 等待 Hook 维护结束
     """
 
     def __init__(
@@ -90,6 +101,8 @@ class AgentLoop:
         attachments=None,
         system_prompt=None,
         hook_runtime: HookRuntime | None = None,
+        inbox=None,
+        traces=None,
     ):
         self.bus = bus
         self.session_manager = session_manager
@@ -113,7 +126,20 @@ class AgentLoop:
         self._injected_config = config
         self._task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
-        self.tracer = Tracer([SQLiteTraceExporter(TRACE_DB_PATH)])
+        # 直接 AgentService.run 的 active guard。它只记录运行中的 Turn，绝不保存
+        # pending；队列由可选 ftre-inbox Package 独立拥有。
+        self._direct_tasks: dict[str, asyncio.Task] = {}
+        self._direct_signals: dict[str, asyncio.Event] = {}
+        # run_inbound 的父协程还要执行 after-turn/Inbox 唤醒；删除必须等这段
+        # 收尾也完成，不能只等待 TurnExecutor 子任务。
+        self._direct_completion_events: dict[str, asyncio.Event] = {}
+        self._direct_parent_tasks: dict[str, asyncio.Task | None] = {}
+        self._direct_reservations: set[str] = set()
+        self._inbound_handler = None
+        self.inbox = inbox
+        self.session_event_unbind = None
+        build_tracer = getattr(traces, "build_tracer", None)
+        self.tracer = build_tracer() if callable(build_tracer) else Tracer([])
 
         # ─── Turn 执行器 ──────────────────────────────────────
         self._executor = TurnExecutor(
@@ -124,6 +150,7 @@ class AgentLoop:
             system_prompt=system_prompt,
             hooks=self.hooks,
             agent_registry=self.agent_registry,
+            inbox=inbox,
         )
 
         # ─── 进行中 Reply 快照注册表 ──────────────────────────
@@ -132,34 +159,49 @@ class AgentLoop:
         if callable(bind_flush):
             self._flush_unbind = bind_flush(self._flush_session_hooks)
 
-        # SessionLane 的协作对象各只做一件事：持久化、上下文门控、完成等待、串行调度。
-        self.mailbox_store = MailboxStore(
-            self.session_manager,
-            capacity=self._initial_context_cfg().mailbox_capacity,
-        )
         self.completions = CompletionRegistry()
-        self.lanes = SessionLaneRegistry(
-            mailbox=self.mailbox_store,
-            executor=self._executor,
-            completion=self.completions,
-            publish_snapshot=self.publish_mailbox_snapshot,
-            publish_command_result=self.publish_command_result,
-            emit_session_event=self.emit_session_event,
-            hooks=self.hooks,
-            agent_registry=self.agent_registry,
-        )
-        # 依赖关系固定为：Lane 编排 → Mailbox 持久化、Agent Hook、
-        # TurnExecutor 执行、CompletionRegistry 精确等待；这些组件不反向持有 AgentLoop。
 
     def agent_subject(self, agent_id: str) -> AgentSubject:
         """Resolve a stable Agent identity for Hook scope dispatch."""
         record = self.agent_registry.ensure(agent_id)
         return AgentSubject(agent_id=record.agent_id, identity=record.identity)
 
+    def bind_inbound_handler(self, handler) -> None:
+        """绑定可选 Inbox Package 的 admission handler。"""
+        if self._inbound_handler is not None and self._inbound_handler is not handler:
+            raise RuntimeError("AgentLoop inbound handler already bound")
+        self._inbound_handler = handler
+
+    def bind_inbox(self, inbox) -> None:
+        """Attach the current optional Inbox capability for tools and idle wakeups.
+
+        Inbox owns admission and claim; this method only refreshes the runtime
+        capability when the independent Package is loaded or restarted.  The
+        old instance is explicitly detached so a disposed Package is never
+        retained by the Loop or TurnExecutor.
+        """
+        self.inbox = inbox
+        self._executor._inbox = inbox
+        handler = inbox.handle_bus_message if inbox is not None else self.reject_inbound_without_inbox
+        self._inbound_handler = handler
+
+    async def reject_inbound_without_inbox(self, message: BusMessage) -> IngressResult:
+        """Inbox Package 未安装时的明确能力错误，不退回旧 Lane。"""
+        return IngressResult(
+            accepted=False,
+            session_id=str(message.data.get("session_id") or message.from_session),
+            request_id=str(message.metadata.request_id or ""),
+            error={
+                "code": "inbox-unavailable",
+                "message": "ftre-inbox 未安装或未启用",
+                "retryable": False,
+            },
+        )
+
     async def tool_registry_for_agent(self, agent_id: str, profile=None):
         """Build the isolated tool registry consumed by one ReActAgent turn."""
-        mcp_service = getattr(self, "mcp_service", None)
-        tool_service = getattr(self, "tool_service", None)
+        mcp_service = self.mcp_service
+        tool_service = self.tool_service
         if mcp_service is not None and profile is not None:
             await mcp_service.prepare_agent(agent_id, profile.mcp_config)
         if tool_service is not None:
@@ -204,17 +246,6 @@ class AgentLoop:
         scope_context = hooks.context_for_scope(carrier)
         return await hooks.dispatch(spec, payload, context=scope_context)
 
-    def _initial_context_cfg(self):
-        """实例化时读一次 ContextConfig 用于默认上下文门控参数。"""
-        try:
-            cfg = self._load_current_config()
-            return cfg.context
-        except Exception:
-            logger.debug("[agent-loop] 使用默认 ContextConfig", exc_info=True)
-            from ftre.services.agent.config import ContextConfig
-
-            return ContextConfig()
-
     def start(self) -> None:
         """启动消费循环"""
         if self._task is not None and not self._task.done():
@@ -224,26 +255,20 @@ class AgentLoop:
 
     def is_session_running(self, session_id: str) -> bool:
         """该 session 是否有正在跑的 ReActAgent。"""
-        return self.lanes.operation_for(session_id) is not None
+        return session_id in self._direct_tasks or session_id in self._direct_reservations
+
+    def is_active_session(self, session_id: str) -> bool:
+        """只判断 AgentService active Turn，不读取任何 pending 队列。"""
+        return self.is_session_running(session_id) or session_id in self._direct_tasks
 
     def is_session_busy(self, session_id: str) -> bool:
-        """是否有 Turn、压缩或尚未消费的请求。"""
-        if self.lanes.operation_for(session_id) is not None:
-            return True
-        return self.session_manager.has_mailbox_work(session_id)
+        """是否有 active Turn；pending 由独立 InboxService 查询。"""
+        return self.is_active_session(session_id)
 
     def get_session_status(self, session_id: str) -> str:
-        """返回 SessionLane 推导出的公开 activity。"""
-        operation = self.lanes.operation_for(session_id)
-        if operation is not None:
-            if type(operation).__name__ == "TurnOperation":
-                return operation.state
-            return {
-                "TurnOperation": "running",
-                "MaintenanceOperation": "compacting",
-                "BlockedOperation": "blocked",
-            }.get(type(operation).__name__, "running")
-        # pending 是 mailbox 内容，不是第二种运行态；没有 active 时就是 idle。
+        """返回 Agent active Turn 的公开 activity；不读取 Inbox pending。"""
+        if session_id in self._direct_tasks:
+            return "running"
         return "idle"
 
     async def cancel_session(
@@ -253,10 +278,276 @@ class AgentLoop:
 
         必须在事件循环线程调用（cancel_nowait 触达 asyncio.Task）。
         """
-        return await self.lanes.cancel_active(session_id, expected_request_id)
+        if session_id in self._direct_tasks:
+            signal = self._direct_signals.get(session_id)
+            if signal is not None:
+                signal.set()
+            task = self._direct_tasks.get(session_id)
+            if task is not None and not task.done():
+                task.cancel()
+            return True
+        return False
+
+    async def _cancel_session_and_wait(self, session_id: str) -> bool:
+        """取消 active Turn 并等待其所有收尾持久化完成。
+
+        普通 ``session.cancel`` 需要快速返回 ACK，因此 ``cancel_session`` 保持
+        "发出取消即返回" 的协议语义。删除 Session 则不同：如果此时直接删掉
+        state.json，正在收尾的 Reply 仍可能执行 ``update_message``，最终把已
+        完成的助手消息变成 ``message 不存在``。删除路径必须使用这个等待版本，
+        确认 Turn 的 ``PIPELINE_END``、Hook 和消息投影都结束后再删除历史。
+        """
+        task = self._direct_tasks.get(session_id)
+        if task is None:
+            return False
+
+        signal = self._direct_signals.get(session_id)
+        if signal is not None:
+            signal.set()
+        if task is asyncio.current_task():
+            # 防止未来某个内部调用从 active Turn 自身触发删除时自等待死锁。
+            return True
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        completion = getattr(self, "_direct_completion_events", {}).get(session_id)
+        parent = getattr(self, "_direct_parent_tasks", {}).get(session_id)
+        if completion is not None and parent is not asyncio.current_task():
+            await completion.wait()
+        return True
+
+    async def run_inbound(self, message: InboundMessage) -> TurnOutcome:
+        """执行一个已由 Inbox Package 交付的输入。
+
+        这个入口只执行已交付的 ``InboundMessage``；Inbox Package 决定消息何时到达这里。
+        """
+        session_id = message.session_id
+        if self.is_active_session(session_id):
+            return TurnOutcome(
+                turn_id="",
+                status="error",
+                error={
+                    "code": "agent-busy",
+                    "message": "Session 当前已有 active Turn",
+                    "retryable": True,
+                },
+            )
+        if self._event_loop is None:
+            self._event_loop = asyncio.get_running_loop()
+        self._direct_reservations.add(session_id)
+        metadata_values = dict(message.metadata or {})
+        metadata_values["request_id"] = message.request_id
+        metadata = InboundMetadata.model_validate(metadata_values)
+        inbound = BusMessage(
+            type="user_message",
+            from_channel=message.channel_id,
+            from_session=session_id,
+            to_channel="agent",
+            to_session=session_id,
+            data={
+                "session_id": session_id,
+                "content": message.content,
+                "attachments": [dict(item) for item in message.attachments],
+            },
+            metadata=metadata,
+        )
+        turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        cancellation = asyncio.Event()
+        executed = False
+        completion = asyncio.Event()
+        self._direct_completion_events[session_id] = completion
+        self._direct_parent_tasks[session_id] = asyncio.current_task()
+        try:
+            validation_error = await self._validate_inbound(message)
+            if validation_error is not None:
+                return TurnOutcome(
+                    turn_id=turn_id,
+                    status="error",
+                    error=validation_error,
+                )
+            config, profile = await self._executor.resolve_inbound_config(inbound, turn_id=turn_id)
+            agent_id = metadata.agent_id or "default"
+            current = self.agent_registry.ensure(agent_id)
+            step_decision = await self._dispatch_agent_hook(
+                AGENT_BEFORE_TURN_SPEC,
+                BeforeTurnPayload(
+                    agent=AgentSubject(agent_id, current.identity),
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    cancellation=cancellation,
+                    channel_id=message.channel_id,
+                    config=config,
+                    context={},
+                ),
+                agent_id=agent_id,
+            )
+            if isinstance(step_decision, RejectTurn):
+                return TurnOutcome(
+                    turn_id=turn_id,
+                    status="error",
+                    error={
+                        "code": "agent-step-rejected",
+                        "message": step_decision.reason,
+                        "retryable": True,
+                    },
+                )
+            # UserMessage belongs to the Session history boundary, not to the
+            # TurnExecutor state machine. Persist it after admission and the
+            # before-turn policy, but before any expensive Agent construction
+            # or LLM work, so the client receives the durable echo promptly.
+            user_message_id = await self._persist_inbound_user_message(
+                inbound,
+                turn_id=turn_id,
+            )
+            task = asyncio.create_task(
+                self._executor.execute(
+                    inbound,
+                    turn_id=turn_id,
+                    config=config,
+                    agent_profile=profile,
+                    cancellation=cancellation,
+                    user_message_id=user_message_id,
+                ),
+                name=f"direct-turn:{session_id}:{turn_id}",
+            )
+            executed = True
+            self._direct_tasks[session_id] = task
+            self._direct_signals[session_id] = cancellation
+            await self._publish_session_status_async(session_id, "running")
+            outcome = await task
+            if message.request_id:
+                await self.completions.complete(session_id, message.request_id, outcome)
+            return outcome
+        except asyncio.CancelledError:
+            outcome = TurnOutcome(turn_id=turn_id, status="cancelled")
+            if message.request_id:
+                await self.completions.complete(session_id, message.request_id, outcome)
+            return outcome
+        except Exception as exc:
+            logger.exception(
+                "[agent-loop] inbound history admission failed session=%s request=%s",
+                session_id,
+                message.request_id,
+            )
+            outcome = TurnOutcome(
+                turn_id=turn_id,
+                status="error",
+                error={
+                    "code": "user-message-persist-failed",
+                    "message": str(exc),
+                    "retryable": True,
+                },
+            )
+            if message.request_id:
+                await self.completions.complete(session_id, message.request_id, outcome)
+            return outcome
+        finally:
+            self._direct_reservations.discard(session_id)
+            self._direct_tasks.pop(session_id, None)
+            self._direct_signals.pop(session_id, None)
+            if executed:
+                try:
+                    record = self.agent_registry.ensure(metadata.agent_id or "default")
+                    await self._dispatch_agent_hook(
+                        AGENT_AFTER_TURN_SPEC,
+                        AfterTurnPayload(
+                            agent=AgentSubject(metadata.agent_id or "default", record.identity),
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            request_id=message.request_id,
+                            status=(outcome.status if "outcome" in locals() else "cancelled"),
+                            cancellation=cancellation,
+                            channel_id=message.channel_id,
+                        ),
+                        agent_id=metadata.agent_id or "default",
+                    )
+                except Exception:
+                    logger.exception("[agent-loop] direct agent/after-turn failed session=%s", session_id)
+            inbox = self.inbox
+            if inbox is not None and hasattr(inbox, "notify_agent_idle"):
+                try:
+                    inbox.notify_agent_idle(session_id)
+                except Exception:
+                    logger.exception(
+                        "[agent-loop] Inbox idle notification failed session=%s",
+                        session_id,
+                    )
+            try:
+                await self._publish_session_status_async(session_id, "idle")
+            except Exception:
+                logger.debug("[agent-loop] status idle publish failed", exc_info=True)
+            completion.set()
+            if self._direct_completion_events.get(session_id) is completion:
+                self._direct_completion_events.pop(session_id, None)
+                self._direct_parent_tasks.pop(session_id, None)
+
+    async def _persist_inbound_user_message(
+        self,
+        inbound: BusMessage,
+        *,
+        turn_id: str,
+    ) -> str:
+        """Commit the admitted user input before the TurnExecutor starts.
+
+        Session history is a data-plane fact owned by the Session projection;
+        the AgentLoop only coordinates the existing event sink. Keeping this
+        boundary here means TurnExecutor remains a pure Turn/Reply/Tool state
+        machine and cannot accidentally persist the same input twice.
+        """
+        session_id = inbound.from_session or str(inbound.data.get("session_id") or "")
+        content = inbound.data.get("content", "")
+        if not session_id or not content:
+            return ""
+        attachments = inbound.data.get("attachments") or []
+        user_metadata = {
+            "hide": False,
+            "agent_id": inbound.metadata.agent_id or "default",
+        }
+        if inbound.metadata.request_id:
+            user_metadata["request_id"] = inbound.metadata.request_id
+        persisted_content = build_user_content(
+            normalize_stored_user_content(content),
+            attachments,
+            include_images=True,
+        )
+        user_event = UserMessageEvent(
+            reply_id=turn_id,
+            content=from_openai_message({"role": "user", "content": persisted_content}),
+            message_metadata=user_metadata,
+            data={**inbound.data},
+        )
+        result = await self.emit_session_event(
+            session_id,
+            inbound.from_channel,
+            user_event,
+            metadata=inbound.metadata,
+        )
+        if not result.persisted_messages:
+            raise RuntimeError("Session 未返回已持久化的 UserMessage")
+        return result.persisted_messages[0].id
+
+    async def _validate_inbound(self, message: InboundMessage) -> dict | None:
+        """Validate the public delivery boundary before writing history."""
+        session = await self.session_manager.get_session(message.session_id)
+        if session is None:
+            return {
+                "code": "session_not_found",
+                "message": f"会话不存在: {message.session_id}",
+                "retryable": False,
+            }
+        if session["channel_id"] != message.channel_id:
+            return {
+                "code": "channel_mismatch",
+                "message": (
+                    f"会话通道为 {session['channel_id']}，消息路由通道为 "
+                    f"{message.channel_id}"
+                ),
+                "retryable": False,
+            }
+        return None
 
     async def delete_session(self, session_id: str) -> None:
-        """删除编排归 AgentLoop 所有：先关闭 Lane，再让 SessionManager 删除持久数据。"""
+        """删除 active Turn 后交给 SessionService；Inbox 监听 disposed Hook 清理自身。"""
         meta = await self.session_manager.get_session_metadata(session_id)
         member_ids: list[str] = []
         teams = meta.get("teams") if isinstance(meta, dict) else None
@@ -264,29 +555,12 @@ class AgentLoop:
             for team in teams.values():
                 if isinstance(team, dict) and isinstance(team.get("members"), dict):
                     member_ids.extend(str(sid) for sid in team["members"])
-        # 先一次性竖起 leader/成员的关闭栅栏，避免并发提交在逐个 close 的间隙
-        # 重新创建 Lane；栅栏之后才删除各自 state.json。
-        await self.lanes.close_sessions((session_id, *member_ids))
+        # AgentService 只拥有 active Turn；pending 的清理由 ftre-inbox Package
+        # 在 Session 删除事件中负责。这里必须先取消并等待当前 active 完整收尾，
+        # 再删除历史，否则 Reply 的最终 update_message 会访问已删除的索引。
+        for member_id in (session_id, *member_ids):
+            await self._cancel_session_and_wait(member_id)
         await self.session_manager.delete_session(session_id)
-
-    async def submit_inbound(self, inbound: BusMessage) -> AdmissionResult:
-        """供 send_message 等可信内部生产者直接调用的可靠入队接口。"""
-        # 内部工具也必须走 Bus request/reply，不能直接调用 Lane，否则会绕过统一路由与停止栅栏。
-        return await self.bus.request_inbound(inbound)
-
-    async def wait_request(self, session_id: str, request_id: str):
-        """等待某一个精确 request 的持久化终态。"""
-        return await self.completions.wait(session_id, request_id)
-
-    async def wait_session_quiescent(self, session_id: str) -> dict:
-        """等待当前 Turn、Hook 维护任务和已接纳 FIFO 全部清空。"""
-        while self.is_session_busy(session_id):
-            await asyncio.sleep(0.02)
-        return {"session_id": session_id, "status": "quiescent"}
-
-    async def cancel_queued_message(self, session_id: str, request_id: str):
-        """取消一条尚未开始执行的队列消息。"""
-        return await self.lanes.cancel_pending(session_id, request_id)
 
     async def stop(self) -> None:
         """优雅关闭：取消消费循环 + 中断所有 Agent。"""
@@ -297,11 +571,27 @@ class AgentLoop:
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
 
-        await self.lanes.stop()
+        direct_tasks = tuple(self._direct_tasks.values())
+        for task in direct_tasks:
+            task.cancel()
+        if direct_tasks:
+            await asyncio.gather(*direct_tasks, return_exceptions=True)
+        self._direct_tasks.clear()
+        self._direct_signals.clear()
+        for completion in self._direct_completion_events.values():
+            completion.set()
+        self._direct_completion_events.clear()
+        self._direct_parent_tasks.clear()
+        self._direct_reservations.clear()
+        await self.completions.close()
+
         await self._dispose_agent_scopes()
         if self._flush_unbind is not None:
             self._flush_unbind()
             self._flush_unbind = None
+        if self.session_event_unbind is not None:
+            self.session_event_unbind()
+            self.session_event_unbind = None
 
     async def _dispose_agent_scopes(self) -> None:
         """Close Agent scope observations before the Provider detaches its driver."""
@@ -329,34 +619,32 @@ class AgentLoop:
     # ─── 消费循环 ────────────────────────────────────────────
 
     async def _consume(self) -> None:
-        """消费循环：按 Bus 到达顺序把消息接纳进每个 session 的 Mailbox。"""
-        # 这里不执行 Agent；这里只负责“全局消息 → 对应 Lane 的 durable admission”。
-        # 真正的 FIFO 和并发边界由每个 SessionLane 自己维护。
+        """消费循环：按 Bus 到达顺序把消息交给公开的输入边界。"""
+        # 普通输入由 Inbox Package 做 durable admission；Loop 不保存 pending。
         try:
             await self._emit_existing_agent_created()
-            # 恢复持久化 Mailbox（并安全终止上次进程遗留的 active 请求）后才
-            # 开放新消息消费；恢复期间 EventBus 会继续保留到达消息。
-            await self.lanes.recover()
+            # Inbox 在自己的 start() 中恢复 pending；恢复期间 EventBus 会继续
+            # 保留到达消息，直到这里开始分流。
             async for msg in self.bus.subscribe_inbound():
                 try:
                     # 取消是独立的控制 BusMessage，不伪装成一条 /cancel 用户消息，
-                    # 因而既不会写入 messages，也不会占用 mailbox 队列。
-                    if msg.type == "turn_cancel":
-                        result = AdmissionResult(
-                            accepted=True,
+                    # 因而既不会写入 messages，也不会占用 Inbox 队列。
+                    if msg.type == "turn_cancel" and self._inbound_handler is not None:
+                        result = await self._inbound_handler(msg)
+                    elif msg.type == "turn_cancel":
+                        result = IngressResult(
+                            accepted=False,
                             session_id=str(
                                 msg.data.get("session_id") or msg.from_session
                             ),
-                            created=await self.lanes.cancel_active(
-                                str(msg.data.get("session_id") or msg.from_session),
-                                str(msg.data.get("expected_request_id") or ""),
-                            ),
+                            request_id=str(msg.metadata.request_id or ""),
+                            error={"code": "inbox-unavailable", "message": "ftre-inbox 未启用"},
                         )
                     else:
                         command = self._parse_ingress_command(msg)
                         if command is not None and command.system:
                             await self._dispatch_system_command(msg)
-                            result = AdmissionResult(
+                            result = IngressResult(
                                 accepted=True,
                                 session_id=str(
                                     msg.data.get("session_id") or msg.from_session
@@ -365,9 +653,7 @@ class AgentLoop:
                                 created=True,
                             )
                         elif command is not None:
-                            result = await self.lanes.dispatch_command(
-                                msg, command, self.commands
-                            )
+                            result = await self._dispatch_command_direct(msg, command)
                         elif self.commands is not None and self.commands.is_command_input(
                             {"inbound": msg}
                         ):
@@ -390,7 +676,7 @@ class AgentLoop:
                                         },
                                     ),
                                 )
-                            result = AdmissionResult(
+                            result = IngressResult(
                                 accepted=True,
                                 session_id=str(
                                     msg.data.get("session_id") or msg.from_session
@@ -398,8 +684,15 @@ class AgentLoop:
                                 request_id=msg.metadata.request_id,
                                 created=True,
                             )
+                        elif self._inbound_handler is not None:
+                            result = await self._inbound_handler(msg)
                         else:
-                            result = await self.lanes.submit(msg)
+                            result = IngressResult(
+                                accepted=False,
+                                session_id=str(msg.data.get("session_id") or msg.from_session),
+                                request_id=str(msg.metadata.request_id or ""),
+                                error={"code": "inbox-unavailable", "message": "ftre-inbox 未启用"},
+                            )
                     self.bus.resolve_inbound(msg.id, result)
                 except Exception:
                     logger.exception("[agent-loop] inbound 接纳失败 message=%s", msg.id)
@@ -408,7 +701,7 @@ class AgentLoop:
             pass
 
     def _parse_ingress_command(self, msg: BusMessage):
-        """Parse commands before they enter Mailbox/Turn execution."""
+        """在进入 Inbox/Turn 之前解析 Command。"""
         if self.commands is None:
             return None
         return self.commands.parse({"inbound": msg})
@@ -420,10 +713,41 @@ class AgentLoop:
         return CommandResult.error("命令不可用或未启用")
 
     async def _dispatch_system_command(self, msg: BusMessage) -> bool:
-        """Run a system command on the control lane without mailbox admission."""
+        """在控制面旁路执行 system Command，不进入 Inbox。"""
         if self.commands is None:
             return False
         return (await self.commands.dispatch_inbound(msg, system=True)) is not None
+
+    async def _dispatch_command_direct(self, msg: BusMessage, command) -> IngressResult:
+        """旁路执行 Command，不触碰 Inbox 或 Agent Turn。"""
+        result = await self.commands.dispatch_inbound(msg, definition=command)
+        if result is None:
+            from ftre.services.command.types import CommandResult
+
+            result = CommandResult.error("命令未执行")
+        await self.publish_command_result(msg, result)
+        request_id = msg.metadata.request_id or ""
+        if request_id:
+            await self.completions.complete(
+                str(msg.data.get("session_id") or msg.from_session),
+                request_id,
+                TurnOutcome(
+                    turn_id="",
+                    status="command",
+                    final_content=result.text,
+                    error=(
+                        {"code": "command_error", "message": result.text, "retryable": False}
+                        if result.kind == "error"
+                        else None
+                    ),
+                ),
+            )
+        return IngressResult(
+            accepted=True,
+            session_id=str(msg.data.get("session_id") or msg.from_session),
+            request_id=request_id,
+            created=True,
+        )
 
     async def _emit_existing_agent_created(self) -> None:
         """Publish created once for identities supplied by AgentService at startup."""
@@ -517,7 +841,48 @@ class AgentLoop:
             data={"session_id": session_id, "content": ""},
             metadata=metadata,
         )
-        return await self.lanes.resume_confirmation(inbound, events)
+        if not events:
+            return TurnOutcome(
+                turn_id="",
+                status="error",
+                error={"code": "confirmation_events_required", "message": "缺少确认事件"},
+            )
+        if self.is_active_session(session_id):
+            return TurnOutcome(
+                turn_id="",
+                status="error",
+                error={"code": "agent-busy", "message": "Session 当前仍在执行", "retryable": True},
+            )
+        turn_id = f"confirm_{uuid.uuid4().hex[:12]}"
+        cancellation = asyncio.Event()
+        config, profile = await self._executor.resolve_inbound_config(inbound, turn_id=turn_id)
+        task = asyncio.create_task(
+            self._executor.execute(
+                inbound,
+                turn_id=turn_id,
+                config=config,
+                agent_profile=profile,
+                cancellation=cancellation,
+                confirm_event=events[-1],
+            ),
+            name=f"confirmation:{session_id}:{turn_id}",
+        )
+        self._direct_tasks[session_id] = task
+        self._direct_signals[session_id] = cancellation
+        try:
+            return await task
+        except asyncio.CancelledError:
+            return TurnOutcome(turn_id=turn_id, status="cancelled")
+        finally:
+            self._direct_tasks.pop(session_id, None)
+            self._direct_signals.pop(session_id, None)
+            inbox = self.inbox
+            if inbox is not None and hasattr(inbox, "notify_agent_idle"):
+                inbox.notify_agent_idle(session_id)
+            try:
+                await self._publish_session_status_async(session_id, "idle")
+            except Exception:
+                logger.debug("[agent-loop] confirmation idle status publish failed", exc_info=True)
 
     async def _emit_session_event_hook(self, session_id: str, event, result) -> None:
         """Notify observers only after SessionProjection has committed the fact."""
@@ -547,71 +912,32 @@ class AgentLoop:
         )
 
     async def _publish_session_status_async(self, session_id: str, status: str) -> None:
-        """命令处理器只触发刷新；状态始终由 SessionLane 的 operation 推导。"""
-        del status
-        await self.publish_mailbox_snapshot(session_id)
-
-    async def _build_mailbox_snapshot(
-        self, session_id: str
-    ) -> tuple[str, SessionMailboxSnapshotPayload]:
-        """在一个地方把持久 Mailbox 与瞬时 Lane operation 合成为对外快照。"""
-        # Mailbox 只提供 pending；Lane operation 是运行中状态的唯一内存事实源。
-        # 两者合成后才是客户端可用的完整状态，避免客户端自己猜测后台阶段。
-        mailbox = await self.lanes.snapshot(session_id)
-        operation = self.lanes.operation_for(session_id)
-        phase = MailboxPhase.IDLE
-        blocked_reason = None
-        can_cancel_active = False
-        if operation is not None:
-            name = type(operation).__name__
-            if name == "TurnOperation":
-                phase = MailboxPhase(operation.state)
-                can_cancel_active = operation.state == "running"
-            elif name == "MaintenanceOperation":
-                phase = MailboxPhase.COMPACTING
-            elif name == "BlockedOperation":
-                phase = MailboxPhase.BLOCKED
-                blocked_reason = operation.reason
+        """发布独立于 pending 的 Session activity 状态。"""
         session = await self.session_manager.get_session(session_id)
-        channel_id = session["channel_id"] if session else ""
-        pending = [
-            MailboxItemPayload(
-                request_id=item.request_id,
-                # 当前桌面端尚未迁移 request_id 字段，这里在 WS 只做同值别名。
-                # 存储和执行逻辑均只有 request_id 一个业务标识。
-                sequence=item.sequence,
-                content=item.content,
-                attachments=item.attachments,
-                source="user",
+        if not session:
+            # 删除 Session 后，active Turn 的 finally 仍可能运行到这里；历史已
+            # 经不存在时没有合法的目标 Channel，也不应向空 to_channel 投递消息。
+            logger.debug(
+                "[agent-loop] skip session status for deleted session=%s status=%s",
+                session_id,
+                status,
             )
-            for item in mailbox.pending
-        ]
-        return channel_id, SessionMailboxSnapshotPayload(
-            session_id=session_id,
-            revision=mailbox.revision,
-            phase=phase,
-            pending=pending,
-            capacity=self.mailbox_store.capacity,
-            accepting_messages=phase
-            not in {MailboxPhase.COMPACTING, MailboxPhase.BLOCKED},
-            can_cancel_active=can_cancel_active,
-            blocked_reason=blocked_reason,
-        )
-
-    async def publish_mailbox_snapshot(self, session_id: str) -> None:
-        """发布由 SessionLane 唯一所有的 mailbox 完整快照。"""
-        channel_id, payload = await self._build_mailbox_snapshot(session_id)
+            return
+        channel_id = session.get("channel_id", "")
+        if not channel_id:
+            logger.debug(
+                "[agent-loop] skip session status without channel session=%s status=%s",
+                session_id,
+                status,
+            )
+            return
         await self.bus.publish_outbound(
-            SessionMailboxSnapshotMessage(
+            BusMessage(
+                type="session/status",
                 from_channel=channel_id,
                 to_channel=channel_id,
                 from_session=session_id,
                 to_session=session_id,
-                data=payload,
+                data={"session_id": session_id, "status": status},
             )
         )
-
-    async def get_mailbox_snapshot(self, session_id: str) -> dict:
-        """给 HTTP/WS attach 的窄只读查询口；外部无需知道 SessionLane 实例。"""
-        _channel_id, payload = await self._build_mailbox_snapshot(session_id)
-        return payload.model_dump(mode="json")

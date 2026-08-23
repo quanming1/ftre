@@ -1,10 +1,15 @@
-"""AgentLoop 到公开 AgentDriver 的单向适配。"""
+"""AgentLoop 到公开 ``AgentDriver`` 的单向适配。
+
+Driver 有意只保留 AgentService 需要的动作。它不是第二个业务层，也不负责改变
+Loop 的并发语义；作用是把具体 Loop 隔离在组合根内，防止 HTTP/Feature 直接持有
+运行时对象。
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from ftre.services.agent.contracts import AgentDriver
+from ftre.services.agent.contracts import AgentDriver, InboundMessage
 
 
 class AgentLoopDriver(AgentDriver):
@@ -19,23 +24,17 @@ class AgentLoopDriver(AgentDriver):
     def get_session_status(self, session_id: str) -> str:
         return self._loop.get_session_status(session_id)
 
-    async def submit(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._loop.submit_inbound(*args, **kwargs)
+    def is_busy(self, session_id: str) -> bool:
+        return self._loop.is_active_session(session_id)
+
+    async def run(self, message: InboundMessage) -> Any:
+        return await self._loop.run_inbound(message)
 
     async def cancel(self, *args: Any, **kwargs: Any) -> Any:
         return await self._loop.cancel_session(*args, **kwargs)
 
-    async def wait(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._loop.wait_request(*args, **kwargs)
-
     async def delete_session(self, session_id: str) -> Any:
         return await self._loop.delete_session(session_id)
-
-    async def cancel_queued_message(self, session_id: str, request_id: str) -> Any:
-        return await self._loop.cancel_queued_message(session_id, request_id)
-
-    async def get_mailbox_snapshot(self, session_id: str) -> Any:
-        return await self._loop.get_mailbox_snapshot(session_id)
 
     async def resume_confirmation(
         self,
@@ -50,9 +49,6 @@ class AgentLoopDriver(AgentDriver):
             events,
             metadata,
         )
-
-    async def wait_session_quiescent(self, session_id: str) -> Any:
-        return await self._loop.wait_session_quiescent(session_id)
 
 
 __all__ = ["AgentLoopDriver"]

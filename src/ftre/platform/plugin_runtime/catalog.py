@@ -1,4 +1,5 @@
 """Manifest catalog with explicit duplicate detection."""
+# 中文说明：PluginCatalog：校验 Manifest id 唯一性并提供快照，不负责导入或启动插件。
 
 from __future__ import annotations
 

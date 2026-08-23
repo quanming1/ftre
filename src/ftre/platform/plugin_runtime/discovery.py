@@ -1,4 +1,5 @@
 """Safe candidate discovery: external modules are not imported until enabled."""
+# 中文说明：Plugin Discovery：只读取候选 Manifest；未显式启用的外部模块不会被 import。
 
 from __future__ import annotations
 

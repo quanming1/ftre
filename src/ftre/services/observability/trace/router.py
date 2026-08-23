@@ -1,4 +1,5 @@
 """Read-only HTTP routes for Agent traces."""
+# 中文说明：Trace HTTP 路由：只通过 TraceService 查询 SQLite 轨迹，避免 API 依赖表结构。
 
 from __future__ import annotations
 

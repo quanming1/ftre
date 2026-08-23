@@ -5,6 +5,7 @@ from cordis import Context, FiberState
 from ftre_agent_core.tool import ToolRegistry
 
 from ftre.features.schedule.plugin import apply, inject, provide
+from ftre.services.http.service import HttpService
 from ftre.services.messaging.bus import EventBus, MessageBusService
 from ftre.services.messaging.channel import ChannelService
 from ftre.services.messaging.channel.manager import ChannelManager
@@ -34,6 +35,7 @@ async def test_schedule_plugin_owns_channel_tool_scheduler_and_cleanup(tmp_path)
     root.provide("sessions", _Sessions())
     root.provide("channels", channels)
     root.provide("tools", tools)
+    root.provide("http", HttpService())
     fiber = root.plugin(schedule_plugin, {"root": str(tmp_path), "scan_interval": 60})
     await fiber
 

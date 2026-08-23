@@ -1,4 +1,5 @@
 """Stable ftre metadata around a Cordis plugin entry."""
+# 中文说明：PluginManifest：稳定描述插件 id、入口、依赖和必选性，供 Catalog/Loader 在启动前校验。
 
 from __future__ import annotations
 

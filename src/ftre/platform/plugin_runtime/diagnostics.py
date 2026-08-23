@@ -1,4 +1,5 @@
 """Lifecycle diagnostics exposed to startup and health tooling."""
+# 中文说明：Plugin 诊断模型：记录状态、错误和依赖缺失，供启动日志、健康路由和测试使用。
 
 from __future__ import annotations
 

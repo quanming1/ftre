@@ -27,9 +27,10 @@ def test_command_and_feature_code_never_uses_loop_as_service_locator() -> None:
 def test_agent_runtime_provider_has_no_unbounded_service_any() -> None:
     source = _source("services/agent_loop/provider.py")
     assert "Any" not in source
-    assert "AgentRuntimeServices" in source
-    assert "SessionService" in source
-    assert "CommandService" in source
+    assert "from_context" in source
+    assert "AgentRuntimeServices" not in source
+    assert "ctx.sessions" in source
+    assert "ctx.commands" in source
 
 
 def test_turn_executor_receives_data_plane_services_explicitly() -> None:
@@ -38,17 +39,23 @@ def test_turn_executor_receives_data_plane_services_explicitly() -> None:
         'getattr(loop, "agent_service"',
         'getattr(loop, "attachments"',
         'getattr(loop, "system_prompt"',
+        'getattr(loop, "inbox"',
         'getattr(loop, "hooks"',
         "loop.session_manager",
     ):
         assert forbidden not in source
     assert "self._attachments" in source
     assert "self._system_prompt" in source
+    assert "self._inbox" in source
     assert '"sessions": self._sessions' in source
 
 
 def test_plugins_declare_context_service_attributes() -> None:
     ignored = {"get", "provide", "effect", "events", "fiber", "parent", "scope"}
+    optional_get = {
+        "inbox", "mcp", "attachments", "system_prompt", "session_events",
+        "agent_runtime", "plugin_manager",
+    }
     plugin_paths = list((SRC / "services").rglob("plugin.py")) + list(
         (SRC / "features").rglob("plugin.py")
     )
@@ -88,7 +95,11 @@ def test_plugins_declare_context_service_attributes() -> None:
                 continue
             key = node.args[0]
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                assert key.value in provide, (path, key.value, provide)
+                assert key.value in provide or key.value in optional_get, (
+                    path,
+                    key.value,
+                    provide,
+                )
 
 
 def test_builtin_command_owner_dependencies_are_explicit() -> None:
@@ -112,7 +123,7 @@ def test_builtin_tools_use_public_agent_service_key() -> None:
 def test_title_plugin_disposes_background_workers() -> None:
     source = _source("services/session/title/plugin.py")
     generator = _source("services/session/title/generator.py")
-    assert "ctx.effect(generator.close" in source
+    assert "ctx.effect(lambda: generator.close" in source
     assert "self._stopping" in generator
 
 

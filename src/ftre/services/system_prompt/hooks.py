@@ -1,4 +1,5 @@
 """Structured system-prompt assembly Hook contract."""
+# 中文说明：System Prompt assemble Hook 契约：传递结构化 PromptAssembly 和 receipt，不让监听器修改 Service 内部列表。
 
 from __future__ import annotations
 

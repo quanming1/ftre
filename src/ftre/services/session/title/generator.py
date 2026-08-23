@@ -1,5 +1,4 @@
-"""
-title_gen — 首条消息自动生成会话标题
+"""title_gen：首条消息自动生成会话标题的行为 Plugin。
 
 通过 system-prompt/assemble hook 判断是否首条消息：
 - messages 中只有本轮这一条可见 user Msg
@@ -12,6 +11,9 @@ title_gen — 首条消息自动生成会话标题
 - system_prompt: 标题生成的 system prompt
 - input_truncate: 用户消息截断长度（默认 1000）
 - max_chars: 标题最大字符数（默认 40）
+
+它不是 SessionService 的第二个 Owner：只通过 ``sessions`` Service 读取/写入标题，
+通过 system-prompt Hook 判断首条消息，并在卸载时停止后台线程。
 """
 
 import asyncio
@@ -31,6 +33,7 @@ DEFAULT_MAX_CHARS = 40
 
 
 class TitleGenConfig(BaseModel):
+    """标题生成行为的可校验配置。"""
     model_config = ConfigDict(extra="forbid")
 
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
@@ -39,6 +42,7 @@ class TitleGenConfig(BaseModel):
 
 
 class TitleGenPlugin:
+    """监听 prompt assemble 并异步更新首条会话标题的 Feature Plugin。"""
     name = "title_gen"
     version = "1.0.0"
     inject = ("sessions",)

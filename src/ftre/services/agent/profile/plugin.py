@@ -1,4 +1,8 @@
-"""Provider Plugin for persisted Agent profile configuration."""
+"""Agent Profile Service 的 Provider Plugin。
+
+它创建唯一的 ``AgentManager``，确保默认 profile 存在，然后把 Manager 包在
+``AgentProfileService`` 中发布；其他 Service 只依赖公开 key。
+"""
 
 from __future__ import annotations
 
@@ -9,15 +13,21 @@ from ftre.services.config.paths import AGENTS_DIR
 from .manager import AgentManager
 from .service import AgentProfileService
 
-inject = ()
+inject = ("http",)
 provide = ("agent_profiles",)
 
 
 def apply(ctx: Context, config=None):
-    """Build the profile manager and publish it as ``agent_profiles``."""
-    if ctx.get("agent_profiles", strict=False) is not None:
-        return
-    options = config if isinstance(config, dict) else {}
-    manager = AgentManager(agents_dir=options.get("agents_dir", AGENTS_DIR))
-    manager.ensure_default()
-    ctx.provide("agent_profiles", AgentProfileService(manager))
+    """创建 profile Owner 并发布；路径可由插件配置覆盖。"""
+    service = ctx.get("agent_profiles", strict=False)
+    if service is None:
+        options = config if isinstance(config, dict) else {}
+        manager = AgentManager(agents_dir=options.get("agents_dir", AGENTS_DIR))
+        manager.ensure_default()
+        service = AgentProfileService(manager)
+        ctx.provide("agent_profiles", service)
+
+    from ..router import build_router
+
+    disposer = ctx.http.register_router(build_router(service), owner="agent-profiles")
+    ctx.effect(lambda: disposer, label="http:agent-profiles")

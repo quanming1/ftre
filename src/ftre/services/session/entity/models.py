@@ -16,6 +16,7 @@ from typing import Any, TypedDict
 class SessionModel(TypedDict):
     """会话元信息"""
     id: str              # 会话唯一标识（格式: '<channel_id>_sess_<hex12>'）
+    agent_id: str        # 该 Session 固定使用的 Agent 配置
     channel_id: str      # 来源 channel（如 'ws' / 'cron' / 'cli'）
     title: str           # 对话标题
     workspace: str       # 当前工作区绝对路径（cwd 来源；为空表示未设置）
@@ -43,6 +44,7 @@ class MessageModel(TypedDict):
 
 
 class ExternalSessionModel(TypedDict):
+    """外部 Channel key 与内部 Session id 的持久化绑定投影。"""
     channel_id: str
     external_key: str
     session_id: str

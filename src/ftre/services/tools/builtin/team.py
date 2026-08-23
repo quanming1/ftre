@@ -50,11 +50,10 @@ from datetime import UTC, datetime
 
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
+from ftre.services.agent.contracts import InboundMessage
 from ftre.services.agent.profile import sub_agent as sub_agent_profile
-from ftre.services.messaging.bus import AgentRef, BusMessage, InboundMetadata
-from ftre.services.messaging.channel.providers.subagent.channel import (
-    SUBAGENT_CHANNEL_ID,
-)
+from ftre.services.messaging.bus import AgentRef, InboundMetadata
+from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
 
 # team_add_agent 的 profile 对象允许的字段（与全局 agent.config.json 同名同义）
 _PROFILE_ALLOWED_KEYS = frozenset({
@@ -85,11 +84,12 @@ def _dispatch_to_member(
     leader_session_id: str,
     member_session_id: str,
     content: str,
+    inbox=None,
 ) -> object:
     """向团队成员投递一条 inbound user_message（团队内发消息的唯一入口）。
 
-    通过 AgentService.submit()，返回时 request 已耐久接纳；
-    与 send_message invoke 使用同一个 SessionLane 入口。
+    通过 InboxService.followup()，返回时 request 已耐久接纳；
+    与 send_message invoke 使用同一个 InboxService 入口。
     统一携带 agent_ref 定位标记（成员据此加载自己的 profile）。
 
     Raises:
@@ -101,19 +101,19 @@ def _dispatch_to_member(
         raise RuntimeError(f"未注册 channel: {SUBAGENT_CHANNEL_ID}")
     if agent_service is None:
         raise RuntimeError("runtime context 未注入 agent")
-    inbound = BusMessage(
-        type="user_message",
-        from_channel=SUBAGENT_CHANNEL_ID,
-        from_session=member_session_id,
-        to_channel=SUBAGENT_CHANNEL_ID,
-        to_session=member_session_id,
-        data={
-            "content": content,
-            "session_id": member_session_id,
-        },
-        metadata=_agent_ref_metadata(leader_session_id, member_session_id),
-    )
-    return _run_async(agent_service.submit(inbound), event_loop)
+    if inbox is not None:
+        return _run_async(
+            inbox.followup(InboundMessage(
+                session_id=member_session_id,
+                request_id=f"team_{uuid.uuid4().hex}",
+                channel_id=SUBAGENT_CHANNEL_ID,
+                content=content,
+                source="plugin",
+                metadata=_agent_ref_metadata(leader_session_id, member_session_id).model_dump(mode="json"),
+            )),
+            event_loop,
+        )
+    raise RuntimeError("ftre-inbox 未启用")
 
 
 def _run_async(coro, event_loop, timeout: float | None = 10.0):
@@ -274,6 +274,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
+        inbox=Injected("inbox"),  # noqa: B008 - optional ftre-inbox Package
         caller_channel: str = Injected("channel_id"),
         workspace=Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str:
@@ -395,7 +396,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         try:
             _dispatch_to_member(
                 channel_manager, event_loop, agent_service,
-                session_id, member_sid, invoke.strip()
+                session_id, member_sid, invoke.strip(), inbox,
             )
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return (
@@ -466,9 +467,10 @@ def _create_team_say_tool(channel_manager) -> Tool:
         event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
+        inbox=Injected("inbox"),  # noqa: B008 - optional ftre-inbox Package
         caller_channel: str = Injected("channel_id"),
     ) -> str:
-        if not parent_session_id or event_loop is None or session_manager is None:
+        if not parent_session_id or event_loop is None or session_manager is None or inbox is None:
             return "[error] runtime context 未注入完整"
         guard = _guard_not_subagent(caller_channel)
         if guard:
@@ -500,7 +502,7 @@ def _create_team_say_tool(channel_manager) -> Tool:
         try:
             ack = _dispatch_to_member(
                 channel_manager, event_loop, agent_service,
-                parent_session_id, session_id.strip(), content,
+                parent_session_id, session_id.strip(), content, inbox,
             )
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 投递失败: {type(e).__name__}: {e}"
@@ -511,8 +513,8 @@ def _create_team_say_tool(channel_manager) -> Tool:
             )
 
         return (
-            f"已向成员 '{member.get('name')}'（{session_id}）排队消息 "
-            f"(request_id={ack.request_id}, position={ack.queue_position})。"
+            f"已向成员 '{member.get('name')}'（{session_id}）提交消息 "
+            f"(request_id={ack.request_id})。"
             f"用 wait_agent 等待完成，或 team_agent_status 查看进展。"
         )
 
@@ -742,9 +744,10 @@ def _create_wait_agent_tool() -> Tool:
         event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
+        inbox=Injected("inbox"),  # noqa: B008 - optional ftre-inbox Package
         caller_channel: str = Injected("channel_id"),
     ) -> str:
-        if not parent_session_id or event_loop is None or agent_service is None or session_manager is None:
+        if not parent_session_id or event_loop is None or agent_service is None or session_manager is None or inbox is None:
             return "[error] runtime context 未注入完整"
         guard = _guard_not_subagent(caller_channel)
         if guard:
@@ -771,7 +774,7 @@ def _create_wait_agent_tool() -> Tool:
         for sid in sids:
             try:
                 _run_async(
-                    agent_service.wait_session_quiescent(sid),
+                    inbox.wait_session_quiescent(sid),
                     event_loop,
                     timeout=None,
                 )

@@ -1,4 +1,9 @@
-"""Public facade for the in-process business EventBus."""
+"""消息总线 Service：进程内业务 EventBus 的稳定门面。
+
+Service 只负责把 Channel/Agent 的发布请求交给拥有队列的 ``EventBus``；它不保存
+Session 状态、不执行命令，也不决定消息如何持久化。这样 Bus 可以在组合根替换，
+而上层仍依赖稳定的 ``message_bus`` key。
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,7 @@ from .bus import EventBus
 
 
 class MessageBusService:
-    """Expose the bus as a Service so channels do not construct global buses."""
+    """暴露总线 Service，避免各 Channel 自己创建全局 Bus。"""
     key = "message_bus"
 
     def __init__(self, bus: EventBus | None = None) -> None:

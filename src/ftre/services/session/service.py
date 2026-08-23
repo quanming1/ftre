@@ -1,10 +1,12 @@
 """SessionService —— Session 业务门面。
 
 存储依赖 SessionRepository（纯 CRUD / 索引 / 原子提交 / 锁），
-业务规则（上下文裁剪 / token 用量 / 前端投影 / 启动修复）直接实现在本模块。
+业务规则（token 用量 / 前端投影 / 启动修复）直接实现在本模块；Inbox pending
+由独立 Package 持有。
 
 对外唯一入口，方法签名与历史版本一致；调用方不应直接读写 state.json，
-也不应绕过本门面直接使用 repository。
+也不应绕过本门面直接使用 repository。它拥有 Session 身份和消息历史，但不拥有
+Inbox pending 或 AgentLoop 的执行任务。
 """
 from __future__ import annotations
 
@@ -22,19 +24,13 @@ from typing import Any
 from ftre_agent_core.message import Msg, MsgName
 from ftre_agent_core.types import ReplyFinishedReason
 
-from ftre.services.messaging.bus import BusMessage
 from ftre.services.session.entity.models import (
     ExternalSessionModel,
     MessageModel,
     SessionModel,
     StatePageModel,
 )
-from ftre.services.session.entity.state import (
-    AgentStateFile,
-    MailboxState,
-    QueueItem,
-    SessionState,
-)
+from ftre.services.session.entity.state import AgentStateFile, SessionState
 from ftre.services.session.persistence.repository import SessionRepository
 
 logger = logging.getLogger(__name__)
@@ -46,28 +42,18 @@ def _now_iso() -> str:
 
 @dataclass
 class ForkResult:
+    """创建分叉 Session 后返回的新身份和工作区信息。"""
     fork_session_id: str
     title: str
     workspace: str
 
 
-@dataclass(frozen=True)
-class RequestAdmission:
-    """一条入站消息的持久化接纳结果（存储层语义）。
-
-    由 ``SessionManager.admit_inbound()`` 返回，回答"这次接纳尝试发生了什么"：
-    - ``created`` 为 False 表示 request_id 已在 pending 或 UserMessage 中出现；
-    - ``queue_position`` 是 pending 中的 1-based 位置，已领取的历史请求为 0。
-    """
-
-    session_id: str
-    request_id: str
-    created: bool
-    queue_position: int
-
-
 class SessionService:
-    """Session 持久化唯一入口；调用方不应直接读写 state.json。"""
+    """Session 持久化唯一入口；调用方不应直接读写 state.json。
+
+    Repository 只负责 CRUD、索引、锁和原子提交；这里维护业务规则及 Hook/投影
+    绑定。``close()`` 不删除数据，shutdown 只解除运行时引用，保证重复关闭安全。
+    """
     key = "sessions"
 
     def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
@@ -159,6 +145,7 @@ class SessionService:
     # ============================================================
 
     def create_id(self) -> str:
+        """生成符合 Session 目录安全约束的新 ID。"""
         return self._repo.create_id()
 
     def session_dir(self, session_id: str) -> Path:
@@ -168,6 +155,7 @@ class SessionService:
     async def create_session(
         self, channel_id: str, title: str = "", workspace: str = ""
     ) -> str:
+        """创建 Session，并在持久化成功后发出 created lifecycle Hook。"""
         session_id = await self._repo.create_session(channel_id, title, workspace)
         await self._emit_lifecycle("created", session_id, channel_id)
         return session_id
@@ -180,15 +168,26 @@ class SessionService:
         workspace: str = "",
         external_data: dict[str, Any] | None = None,
     ) -> str:
+        """按 Channel 外部 key 幂等取得内部 Session。"""
         return await self._repo.get_or_create_external_session(
             channel_id, external_key, title, workspace, external_data
         )
 
     async def get_external_session(self, session_id: str) -> ExternalSessionModel | None:
+        """读取外部会话绑定投影。"""
         return await self._repo.get_external_session(session_id)
 
     async def get_session(self, session_id: str) -> SessionModel | None:
+        """读取 Session 元信息投影。"""
         return await self._repo.get_session(session_id)
+
+    def has_session(self, session_id: str) -> bool:
+        """同步只读存在性查询，供可选 Inbox Package 做 admission 校验。"""
+        return self._repo.get_state(session_id) is not None
+
+    def has_request_id(self, session_id: str, request_id: str) -> bool:
+        """同步只读幂等查询，供 Inbox 避免重复接纳已提交输入。"""
+        return self._repo.has_request_id(session_id, request_id)
 
     async def update_session(
         self,
@@ -196,14 +195,17 @@ class SessionService:
         title: str | None = None,
         workspace: str | None = None,
     ) -> None:
+        """更新标题/工作区等 Session 元信息，不修改消息历史。"""
         await self._repo.update_session(session_id, title, workspace)
 
     async def get_session_metadata(self, session_id: str) -> dict[str, Any]:
+        """读取可扩展 Session metadata 的防御性副本。"""
         return await self._repo.get_session_metadata(session_id)
 
     async def update_session_metadata(
         self, session_id: str, key: str, value: Any | None
     ) -> dict[str, Any]:
+        """替换 metadata 的一个 key，并返回更新后的 metadata。"""
         return await self._repo.update_session_metadata(session_id, key, value)
 
     async def mutate_session_metadata(
@@ -264,6 +266,7 @@ class SessionService:
         # 运行时关闭由 AgentLoop.delete_session 先完成，Manager 只负责持久化删除。
         for msid in member_sids:
             await self._repo.delete_session(msid)
+            await self._emit_lifecycle("disposed", msid)
 
         # 4) 删 leader 的 sub_agents 整棵树（含未登记的残留目录）
         sub_agent_profile.delete_all_profiles(self, session_id)
@@ -328,6 +331,7 @@ class SessionService:
         channel_id: str | None = None,
         workspace: str | None = None,
     ) -> list[SessionModel]:
+        """分页列出 Session 元信息，可按 Channel/工作区过滤。"""
         return await self._repo.list_sessions(limit, offset, channel_id, workspace)
 
     async def count_sessions(
@@ -335,85 +339,12 @@ class SessionService:
         channel_id: str | None = None,
         workspace: str | None = None,
     ) -> int:
+        """统计过滤条件下的 Session 数量。"""
         return await self._repo.count_sessions(channel_id, workspace)
 
     async def list_workspaces(self, channel_id: str | None = None) -> list[dict]:
+        """返回工作区聚合列表，供工作区选择器使用。"""
         return await self._repo.list_workspaces(channel_id)
-
-    # ============================================================
-    # Mailbox（仅由 AgentLoop 内部的 SessionLane 使用）
-    # ============================================================
-
-    async def admit_inbound(
-        self, inbound: BusMessage, *, mailbox_capacity: int = 100
-    ) -> RequestAdmission:
-        session_id = inbound.data.get("session_id", "") or inbound.from_session
-        if not session_id:
-            raise ValueError("inbound 缺少 session_id")
-        session = await self.get_session(session_id)
-        if session is None:
-            raise ValueError(f"session 不存在: {session_id}")
-        if session["channel_id"] != inbound.from_channel:
-            raise ValueError(
-                f"session 与 channel 不匹配: {session_id} ({session['channel_id']})"
-            )
-
-        # request_id 是请求在 mailbox、历史 UserMsg 和 WS 事件间唯一共用的业务 ID。
-        # WS 使用自己的 frame_id 注入它；内部调用未给出时只在这里生成一次。
-        request_id = (
-            inbound.metadata.request_id
-            or f"request_{uuid.uuid4().hex}"
-        )
-        created, position = await self._repo.admit_request(
-            session_id,
-            request_id=request_id,
-            content=str(inbound.data.get("content") or ""),
-            attachments=list(inbound.data.get("attachments") or []),
-            agent_id=inbound.metadata.agent_id,
-            capacity=mailbox_capacity,
-        )
-        return RequestAdmission(
-            session_id=session_id,
-            request_id=request_id,
-            created=created,
-            queue_position=position,
-        )
-
-    async def peek_request(self, session_id: str) -> QueueItem | None:
-        return await self._repo.peek_request(session_id)
-
-    async def take_pending_request(
-        self, session_id: str, request_id: str
-    ) -> QueueItem | None:
-        return await self._repo.take_pending_request(session_id, request_id)
-
-    async def cancel_pending_request(
-        self, session_id: str, request_id: str
-    ) -> QueueItem | None:
-        """取消尚未被 SessionLane 领取的请求。"""
-        return await self._repo.cancel_pending_request(session_id, request_id)
-
-    async def get_mailbox_snapshot(self, session_id: str) -> MailboxState:
-        return await self._repo.mailbox_snapshot(session_id)
-
-    async def advance_mailbox_revision(self, session_id: str) -> int:
-        """记录一次对客户端可见的 Lane 状态变化。"""
-        return await self._repo.advance_mailbox_revision(session_id)
-
-    def has_mailbox_work(self, session_id: str) -> bool:
-        """同步判断该会话是否仍有 pending 或 active 请求。
-
-        AgentLoop 的状态查询不应穿透到 Repository 私有字段；这里仅读内存快照，
-        不做 I/O，也不把 Mailbox 的具体 JSON 结构泄露给调用方。
-        """
-        state = self._repo.get_state(session_id)
-        return bool(state and state.mailbox.pending)
-
-    async def get_pending_request_count(self, session_id: str) -> int:
-        return len((await self._repo.mailbox_snapshot(session_id)).pending)
-
-    async def get_mailbox_session_ids(self) -> list[str]:
-        return await self._repo.mailbox_session_ids()
 
     # ============================================================
     # Message（委托 storage）
@@ -426,9 +357,11 @@ class SessionService:
         *,
         timestamp: float | None = None,
     ) -> str:
+        """新增一条 Msg 快照；重复 ID 由 Repository 拒绝。"""
         return await self._repo.save_message(session_id, message, timestamp=timestamp)
 
     async def update_message(self, message: Msg | dict[str, Any]) -> None:
+        """更新已存在的 Msg 快照，保持消息 ID 不变。"""
         await self._repo.update_message(message)
 
     async def update_messages(
@@ -438,11 +371,13 @@ class SessionService:
         await self._repo.update_messages(messages)
 
     async def get_messages_by_session(self, session_id: str) -> list[MessageModel]:
+        """按历史顺序读取 Session 的持久消息。"""
         return await self._repo.get_messages_by_session(session_id)
 
     async def upsert_message(
         self, session_id: str, message: Msg | dict[str, Any]
     ) -> str:
+        """按 Msg ID 幂等新增或更新消息，供 Projection 重放使用。"""
         return await self._repo.upsert_message(session_id, message)
 
     # ============================================================
@@ -736,7 +671,7 @@ class SessionService:
             }
 
         # ── 阶段 2：锁外组装完整 state（全新构建，绝不 model_copy 父 state——
-        # 否则会连带继承 mailbox/external/teams/id/时间戳）──
+        # 否则会连带继承 Inbox/external/teams/id/时间戳）──
         fork_metadata["forked_from"] = parent_session_id
         fork_metadata["forked_at"] = datetime.now(UTC).isoformat()
         new_state = AgentStateFile(
@@ -750,7 +685,6 @@ class SessionService:
                 updated_at=now,
             ),
             messages=cloned_messages,
-            mailbox=MailboxState(),  # mailbox 不继承：全新空队列
             metadata=fork_metadata,
         )
 

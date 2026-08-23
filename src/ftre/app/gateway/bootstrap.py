@@ -1,4 +1,9 @@
 """Gateway startup facade used by the CLI and embedders."""
+# Gateway 启停边界：创建唯一 Composition、构建 FastAPI Host，并在关闭时按依赖逆序释放资源。
+#
+# 与 composition.py 的分工：
+#   - composition.py 负责"装配"（Plugin 清单 + Service 生命周期）；
+#   - 本模块只负责进程级 Host/Runtime 启停和逆序关停，不创建业务 Service。
 
 from __future__ import annotations
 
@@ -10,18 +15,29 @@ from .composition import build_composition
 
 async def start_gateway(*, config: dict[str, Any] | None = None, plugins_dir=None, initial_services=None):
     """Build a composition and materialize its HTTP Host for embedders/tests."""
+    # 轻量启动入口：只做"组装 + 物化 HTTP"，不开数据面（AgentLoop/WS）。
+    # 供嵌入式场景（测试、需要自管数据面的宿主）使用：
+    #   1. 调 build_composition 完成 Plugin 装载（不监听端口）；
+    #   2. 若 http 服务存在，把路由物化成 FastAPI 并 freeze（冻结后不可再注册路由）；
+    #   3. 返回 Composition 句柄，由调用方决定何时 close()。
     composition = await build_composition(config, plugins_dir=plugins_dir, initial_services=initial_services)
     http_service = composition.context.get("http")
     if http_service is not None:
         from .http.app import create_app
 
         composition.http_app = create_app(http_service)
+        channels = composition.context.get("channels", strict=False)
+        websocket = channels.manager.get("ws") if channels is not None else None
+        if websocket is not None and hasattr(websocket, "attach_app"):
+            websocket.attach_app(composition.http_app)
         http_service.freeze()
     return composition
 
 
 async def run_gateway(*, config: dict[str, Any] | None = None, plugins_dir=None, initial_services=None):
     """Keep an embedded Gateway alive until cancellation, then close it."""
+    # 最简单的驻留模式：组装后无限 sleep，直到外部取消（Ctrl+C / task.cancel），
+    # finally 里逆序关停所有 Plugin Fiber。适用于测试与最小嵌入式宿主。
     composition = await start_gateway(config=config, plugins_dir=plugins_dir, initial_services=initial_services)
     try:
         while True:
@@ -37,118 +53,59 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
     providers; they receive public Service handles from Composition and are
     stopped by the returned root cleanup path.
     """
-    from ftre_agent_core.tool import ToolRegistry
+    # 真实 Gateway 数据面启动入口（CLI `ftre gateway` 走这里）。
+    #
+    # 运行时只读取 Composition Context 的公开 Service；全程 try/finally，
+    # 即使中途失败，已启动的 Runtime/Plugin 资源也全部逆序释放。
+    from ftre.services.config.loader import load_config_file
 
-    from ftre.services.agent import AgentService
-    from ftre.services.agent.profile import AgentProfileService
-    from ftre.services.agent.profile.manager import AgentManager
-    from ftre.services.agent_loop import (
-        AgentLoopProvider,
-        AgentRuntimeServices,
-    )
-    from ftre.services.command import CommandService
-    from ftre.services.config import ConfigService
-    from ftre.services.config.loader import load_config_file, load_gateway_address
-    from ftre.services.config.paths import AGENTS_DIR
-    from ftre.services.messaging.bus import EventBus, MessageBusService
-    from ftre.services.messaging.channel import ChannelService
-    from ftre.services.messaging.channel.manager import ChannelManager
-    from ftre.services.messaging.channel.providers.subagent.channel import (
-        SubagentChannel,
-    )
-    from ftre.services.messaging.channel.providers.websocket.channel import (
-        WebSocketChannel,
-    )
-    from ftre.services.session.events import SessionEventService
-    from ftre.services.tools import ToolService
-
-    config_data = config if config is not None else load_config_file()
-    session_manager = None
-    session_events = SessionEventService()
-    agent_loop = None
-    agent_service = None
-    channel_manager = None
+    # 加载配置（外部传入或读 ~/.ftre/config.json）
+    config_data = dict(config) if config is not None else load_config_file()
+    # 监听地址属于 WebSocket Provider 的配置，不再由 Bootstrap 持有一个
+    # 第二份 Channel 对象；这里仅把 CLI 覆盖值写入该 Plugin 的 manifest。
+    servers = config_data.get("servers")
+    gateway = servers.get("gateway") if isinstance(servers, dict) else None
+    gateway = dict(gateway) if isinstance(gateway, dict) else {}
+    configured_host = gateway.get("host") if isinstance(gateway.get("host"), str) else "127.0.0.1"
+    configured_port = gateway.get("port") if isinstance(gateway.get("port"), int) else 48650
+    ws_config = {"host": host or configured_host, "port": port or configured_port}
+    plugin_entries = [dict(item) for item in config_data.get("plugins", ()) if isinstance(item, dict)]
+    for item in plugin_entries:
+        if str(item.get("id") or item.get("name")) == "websocket-channel":
+            item["config"] = {**dict(item.get("config") or {}), **ws_config}
+            break
+    else:
+        plugin_entries.append({"id": "websocket-channel", "config": ws_config})
+    config_data["plugins"] = plugin_entries
+    # 预置变量：None 哨兵供 finally 判断"是否已创建、是否需要释放"
+    agent_runtime = None
+    channel_service = None
     composition = None
     try:
-        from ftre.services.session import SessionService
-
-        session_manager = SessionService()
-        await session_manager.init()
-        bus = EventBus()
-        channel_manager = ChannelManager(bus)
-        tool_registry = ToolRegistry()
-        agent_manager = AgentManager(agents_dir=AGENTS_DIR)
-        agent_manager.ensure_default()
-        config_service = ConfigService(initial=config_data)
-        message_bus = MessageBusService(bus)
-        channel_service = ChannelService(channel_manager)
-        tool_service = ToolService(tool_registry)
-        command_service = CommandService()
-        profile_service = AgentProfileService(agent_manager)
-        agent_service = AgentService()
+        # Plugin 负责创建并初始化业务 Service；Bootstrap 只取得公开句柄并
+        # 启动 Host/Runtime，不再手工 new Session、Bus、Channel、Agent 或 Tool。
         composition = await start_gateway(
             config=config_data,
-            initial_services={
-                "config": config_service,
-                "sessions": session_manager,
-                "message_bus": message_bus,
-                "channels": channel_service,
-                "tools": tool_service,
-                "commands": command_service,
-                "agent_profiles": profile_service,
-                "agents": agent_service,
-                "session_events": session_events,
-            },
             plugins_dir=plugins_dir,
         )
-        config_host, config_port = load_gateway_address()
-        gateway_host = host if host is not None else config_host
-        gateway_port = port if port is not None else config_port
-        runtime_provider = AgentLoopProvider(
-            AgentRuntimeServices(
-                sessions=composition.context.get("sessions"),
-                message_bus=composition.context.get("message_bus"),
-                channels=composition.context.get("channels"),
-                tools=composition.context.get("tools"),
-                commands=composition.context.get("commands"),
-                agent_profiles=composition.context.get("agent_profiles"),
-                event_hub=composition.context,
-                plugin_manager=composition.plugins,
-                agents=composition.context.get("agents"),
-                attachments=composition.context.get("attachments"),
-                system_prompt=composition.context.get("system_prompt"),
-                mcp=composition.context.get("mcp"),
-                hook_runtime=composition.context.get("hook_runtime"),
-                session_events=composition.context.get("session_events"),
-            )
-        )
-        agent_runtime = runtime_provider.build()
-        agent_loop = agent_runtime.loop
-        agent_service.attach_driver(agent_runtime.driver, profile_service)
-        ws_channel = WebSocketChannel(
-            bus,
-            host=gateway_host,
-            port=gateway_port,
-            app=composition.http_app,
-            attachment_service=composition.context.get("attachments"),
-        )
-        channel_manager.register(ws_channel)
-        channel_manager.register(SubagentChannel(bus))
-        agent_loop.start()
-        ws_channel.set_session_projection(agent_loop.session_projection)
-        ws_channel.set_session_snapshot_provider(agent_loop)
-        await channel_manager.start()
-        composition.context.get("http").freeze()
+        context = composition.context
+        channel_service = context.channels
+        # 读取 Agent Runtime Provider Plugin 的公开句柄。
+        agent_runtime = context.agent_runtime
+        # agent-runtime Plugin 已完成 Driver、Inbox admission 和生命周期绑定；
+        # Bootstrap 不重复接线，也不保存第二份业务对象图。
+        # ── 第四步：启动已由 Channel Provider Plugins 注册的通道 ──
+        agent_runtime.start()  # Plugin-owned AgentLoop consumes inbound
+        await channel_service.start_all()
+        composition.context.get("http").freeze()  # 冻结路由：此后不可再注册
+        # 常驻：直到外部取消（Ctrl+C / 进程信号）
         while True:
             await asyncio.sleep(1)
     finally:
-        if agent_loop is not None:
-            await agent_loop.stop()
-        if agent_service is not None:
-            agent_service.detach_driver()
-        if channel_manager is not None:
-            await channel_manager.stop()
+        # ── 逆序关停（与启动顺序相反，保证依赖方先停）──
+        if agent_runtime is not None:
+            await agent_runtime.close()  # 由 Agent Runtime Plugin 收拢 Loop/Driver
+        if channel_service is not None:
+            await channel_service.stop_all()  # 停通道接收循环
         if composition is not None:
-            await composition.close()
-        if session_manager is not None:
-            await session_manager.close()
+            await composition.close()  # 逆序释放全部 Plugin Fiber（effect 清理）

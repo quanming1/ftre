@@ -5,6 +5,7 @@ activation, dependency epochs, effects, and teardown are delegated to the
 installed ``cordis-py`` Fiber/Registry implementation; this module must not
 recreate a second lifecycle state machine.
 """
+# 中文说明：Plugin Loader：把选定入口交给官方 cordis-py Fiber，负责配置/诊断适配而不重写生命周期状态机。
 
 from __future__ import annotations
 

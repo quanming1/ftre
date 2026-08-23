@@ -1,4 +1,9 @@
-"""Per-session workspace selection and filesystem-policy construction."""
+"""Workspace Service：Session 工作区选择和文件系统策略构造。
+
+工作区属于 Session，而不是进程全局配置；Service 从 SessionService 读取/写回当前
+目录，并把它转换成 Tools 可消费的 ``PathPolicy``。它不直接执行文件读写，避免
+工作区状态和文件 IO 的 Owner 混在一起。
+"""
 
 from __future__ import annotations
 
@@ -10,7 +15,7 @@ from ftre.services.filesystem.policy import PathPolicy
 
 
 class WorkspaceService:
-    """Translate session workspace state into safe filesystem boundaries."""
+    """把 Session 工作区状态转换为安全的文件系统边界。"""
     key = "workspaces"
 
     def __init__(self, sessions: Any | None = None, default: str = "") -> None:

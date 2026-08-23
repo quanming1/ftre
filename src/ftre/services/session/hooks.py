@@ -1,4 +1,5 @@
 """Session post-commit and persistence-barrier Hook contracts."""
+# 中文说明：Session lifecycle/flush Hook 数据契约：描述提交后通知和持久化屏障，不负责执行 Hook。
 
 from __future__ import annotations
 

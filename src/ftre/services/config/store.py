@@ -1,4 +1,9 @@
-"""Atomic JSON storage used only by ConfigService."""
+"""ConfigService 专用的原子 JSON 存储。
+
+这个类故意不承担配置 merge、revision 或 watcher 规则；它只负责安全读取和
+``temp + fsync + replace`` 写入一个 JSON 对象，避免把文件系统细节扩散到
+ConfigService 的业务代码。
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ from typing import Any
 
 
 class JsonConfigStore:
+    """配置文件的最小读写适配器，不保存长期内存状态。"""
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
 

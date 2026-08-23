@@ -1,8 +1,11 @@
-"""
-EventBus - 消息网关
+"""EventBus：消息网关的队列实现。
 
-- inbound:  全局单队列（AgentLoop 统一消费）
-- outbound: 全局单队列（ChannelManager 统一消费，按 to_channel 分发）
+- inbound：全局单队列，由 AgentLoop 统一消费。
+- outbound：全局单队列，由 ChannelManager 按 ``to_channel`` 分发。
+
+Bus 只负责内存中的传输和一次 request/ack 关联；durable admission、Session 历史
+和重试策略属于上层 Service。关闭时停止 inbound admission，并唤醒等待中的请求，
+避免调用方永久挂起。
 """
 import asyncio
 import logging
@@ -16,6 +19,7 @@ Middleware = Callable[[BusMessage], BusMessage | None]
 
 
 class EventBus:
+    """维护 inbound/outbound 队列，并按协议校验 BusMessage。"""
 
     _TYPED_TOPIC_PREFIXES = ("session_event:", "global_event:")
 
@@ -33,9 +37,11 @@ class EventBus:
     # ============================================================
 
     def use_inbound(self, middleware: Middleware) -> None:
+        """追加 inbound 中间件；返回值语义由 middleware 自己决定。"""
         self._inbound_middlewares.append(middleware)
 
     def use_outbound(self, middleware: Middleware) -> None:
+        """追加 outbound 中间件，按注册顺序处理消息。"""
         self._outbound_middlewares.append(middleware)
 
     def _apply(self, msg: BusMessage, middlewares: list[Middleware]) -> BusMessage | None:
@@ -88,6 +94,7 @@ class EventBus:
         return True
 
     def reject_inbound(self, request_id: str, error: Exception) -> bool:
+        """拒绝一个正在等待 admission ACK 的请求并唤醒调用方。"""
         future = self._inbound_replies.get(request_id)
         if future is None or future.done():
             return False

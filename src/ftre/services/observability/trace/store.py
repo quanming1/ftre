@@ -1,4 +1,5 @@
 """SQLite-backed storage and query helpers for Agent Traces."""
+# 中文说明：Trace SQLite 适配器：负责 schema、并发写入和查询裁剪；TraceService 对外提供稳定门面。
 
 from __future__ import annotations
 
@@ -235,6 +236,7 @@ def list_trace_summaries(
 def get_trace(
     trace_id: str, path: Path = TRACE_DB_PATH, *, include_payload: bool = False
 ) -> dict | None:
+    """读取一条 trace 及其 runs；默认裁剪大 payload 以适合诊断 API。"""
     conn = _connect(path)
     try:
         _ensure_schema(conn)
@@ -257,6 +259,7 @@ def get_trace(
 def get_trace_run(
     trace_id: str, run_id: str, path: Path = TRACE_DB_PATH
 ) -> dict | None:
+    """读取指定 trace run，并按需补回 payload 表中的输入。"""
     conn = _connect(path)
     try:
         _ensure_schema(conn)

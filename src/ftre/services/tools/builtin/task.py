@@ -14,13 +14,12 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 防递归：subagent channel 的调用方禁止再调 task。
 """
 import asyncio
+import uuid
 
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
-from ftre.services.messaging.bus import BusMessage
-from ftre.services.messaging.channel.providers.subagent.channel import (
-    SUBAGENT_CHANNEL_ID,
-)
+from ftre.services.agent.contracts import InboundMessage
+from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
 
 _SUBAGENT_PREAMBLE = """\
 [Subagent 上下文]
@@ -63,12 +62,15 @@ def create_task_tool(channel_manager) -> Tool:
         event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
+        inbox=Injected("inbox"),  # noqa: B008 - optional ftre-inbox Package
         workspace=Injected("workspace"),  # noqa: B008 - public WorkspaceAccessor runtime key
     ) -> str:
         if not prompt or not prompt.strip():
             return "[error] prompt 不能为空"
         if event_loop is None or session_manager is None or agent_service is None:
             return "[error] runtime context 未注入完整"
+        if inbox is None:
+            return "[error] ftre-inbox 未启用，无法派发 subagent"
         if caller_channel == SUBAGENT_CHANNEL_ID:
             return (
                 "[error] subagent 内不允许再次调用 task，"
@@ -107,20 +109,19 @@ def create_task_tool(channel_manager) -> Tool:
 
             wrapped_prompt = _wrap_with_preamble(prompt)
 
-            ack = _run_async(
-                agent_service.submit(BusMessage(
-                    type="user_message",
-                    from_channel=SUBAGENT_CHANNEL_ID,
-                    from_session=sid,
-                    to_channel=SUBAGENT_CHANNEL_ID,
-                    to_session=sid,
-                    data={
-                        "content": wrapped_prompt,
-                        "session_id": sid,
-                    },
-                )),
-                event_loop,
-            )
+            if inbox is not None:
+                ack = _run_async(
+                    inbox.followup(InboundMessage(
+                        session_id=sid,
+                        request_id=f"task_{uuid.uuid4().hex}",
+                        channel_id=SUBAGENT_CHANNEL_ID,
+                        content=wrapped_prompt,
+                        source="plugin",
+                    )),
+                    event_loop,
+                )
+            else:
+                raise RuntimeError("ftre-inbox 未启用")
             if not ack.accepted:
                 return f"[error] subagent 消息接纳失败: {ack.error}"
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
@@ -131,7 +132,7 @@ def create_task_tool(channel_manager) -> Tool:
         # task 调用本身也会中断，不尝试跨进程恢复。
         try:
             done_payload = _run_async(
-                agent_service.wait(sid, ack.request_id),
+                inbox.wait(sid, ack.request_id),
                 event_loop,
                 timeout=None,
             )

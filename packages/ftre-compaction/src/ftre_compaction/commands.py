@@ -31,7 +31,7 @@ def register_commands(
     """
 
     async def on_compact(ctx: CommandContext) -> CommandResult:
-        # /compact 是维护命令：它直接触发 Service，不进入 SessionLane 的
+        # /compact 是维护命令：它直接触发 Service，不进入 Inbox 的
         # pending，也不经过 TurnExecutor。
         try:
             await compaction.compact_now(

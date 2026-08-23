@@ -44,7 +44,7 @@ def apply(ctx: Context, config=None):
         if event_sink is not None:
             service.bind_event_emitter(event_sink.emit)
         ctx.provide("compaction", service)
-        ctx.effect(service.close, label="ftre-compaction:close")
+        ctx.effect(lambda: service.close, label="ftre-compaction:close")
 
     for index, receipt in enumerate(register_hooks(ctx, service)):
         ctx.effect(

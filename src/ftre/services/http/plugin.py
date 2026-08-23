@@ -1,7 +1,7 @@
-"""Provider Plugin for the route-contribution registry.
+"""HTTP 路由注册表的 Provider Plugin。
 
-This creates a registry, not a listening server. The App Host decides when the
-registry is converted into a FastAPI application and when it starts uvicorn.
+这里创建的是注册表，不是监听 Server；App Host 决定何时构建 FastAPI 和启动
+uvicorn，因此 HTTP Service 可以在测试和嵌入场景中单独使用。
 """
 
 from __future__ import annotations
@@ -15,8 +15,10 @@ inject = ()
 
 
 def apply(ctx: Context, config=None):
-    """Publish the HTTP registry unless an embedded host supplied one."""
+    """发布路由注册表；嵌入式 Host 已提供实例时保留其所有权。"""
     if ctx.get("http", strict=False) is not None:
-        return
-    service = HttpService()
-    ctx.provide("http", service)
+        service = ctx.get("http")
+    else:
+        service = HttpService()
+        ctx.provide("http", service)
+    ctx.effect(lambda: service.register_health(), label="http:health")

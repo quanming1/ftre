@@ -14,7 +14,8 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import Msg
 
-from ftre.services.agent.config import AgentConfig, ContextConfig, LLMConfig
+from ftre.services.agent.config import AgentConfig, LLMConfig
+from ftre.services.agent.contracts import InboundMessage
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
 from ftre.services.agent_loop.runtime.loop.turn_executor import TurnExecutor
@@ -73,7 +74,6 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop = object.__new__(AgentLoop)
     config = AgentConfig()
     config.llm = LLMConfig()
-    config.context = ContextConfig()
     loop._injected_config = config
     loop._event_loop = asyncio.get_running_loop()
     loop.hooks = None
@@ -85,6 +85,9 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop.bus = AsyncMock()
     loop.agent_manager = Mock()
     loop.agent_service = None
+    loop.mcp_service = None
+    loop.tool_service = None
+    loop.inbox = None
     loop._agent_created_emitted = set()
     loop.agent_manager.load = Mock(return_value=None)
     loop.agent_manager.create_agent = Mock(return_value=agent)
@@ -120,6 +123,21 @@ def _inbound():
     )
 
 
+async def _execute_admitted(executor, inbound=None):
+    """Mirror the AgentLoop delivery boundary used by production code."""
+    inbound = inbound or _inbound()
+    turn_id = "turn_test"
+    user_message_id = await executor._loop._persist_inbound_user_message(
+        inbound,
+        turn_id=turn_id,
+    )
+    return await executor.execute(
+        inbound,
+        turn_id=turn_id,
+        user_message_id=user_message_id,
+    )
+
+
 def _saved_messages(executor):
     """所有通过 SessionProjection 持久化的消息。"""
     projected = [
@@ -144,7 +162,7 @@ def _updated_messages(executor):
 async def test_user_msg_is_persisted_before_agent_run():
     agent = FakeAgent()
     executor = _make_executor(agent)
-    await executor.execute(_inbound())
+    await _execute_admitted(executor)
 
     saved = _saved_messages(executor)
     assert len(saved) == 1
@@ -160,7 +178,7 @@ async def test_turn_executor_does_not_drop_message_when_maintenance_is_external(
     executor = _make_executor(agent)
 
     with caplog.at_level("WARNING"):
-        await executor.execute(_inbound())
+        await _execute_admitted(executor)
 
     assert len(_saved_messages(executor)) == 1
     assert agent._captured_runtime_context is not None
@@ -182,7 +200,7 @@ async def test_user_message_is_projected_before_frontend_echo():
     executor._loop.session_manager.upsert_message.side_effect = record_upsert
     executor._loop.bus.publish_outbound.side_effect = record_publish
 
-    await executor.execute(_inbound())
+    await _execute_admitted(executor)
 
     assert order == ["persist", "broadcast"]
 
@@ -195,7 +213,7 @@ async def test_claimed_request_identity_is_persisted_on_user_message():
         request_id="request-a",
     )
 
-    await executor.execute(inbound)
+    await _execute_admitted(executor, inbound)
 
     user = _saved_messages(executor)[0]
     assert user.metadata["request_id"] == "request-a"
@@ -208,10 +226,17 @@ async def test_channel_mismatch_is_failed_instead_of_false_completed():
     inbound = _inbound()
     inbound.from_channel = "cron"
 
-    outcome = await executor.execute(inbound)
+    error = await executor._loop._validate_inbound(
+        InboundMessage(
+            session_id="test-session",
+            request_id="request-channel",
+            channel_id=inbound.from_channel,
+            content="hello",
+        )
+    )
 
-    assert outcome.status == "error"
-    assert outcome.error["code"] == "channel_mismatch"
+    assert error is not None
+    assert error["code"] == "channel_mismatch"
     executor._loop.agent_manager.create_agent.assert_not_called()
 
 
@@ -219,7 +244,7 @@ async def test_channel_mismatch_is_failed_instead_of_false_completed():
 async def test_turn_executor_has_no_critical_path_compaction_owner():
     executor = _make_executor(FakeAgent())
 
-    await executor.execute(_inbound())
+    await _execute_admitted(executor)
 
     executor._publish_session_status_async.assert_not_awaited()
 
@@ -238,7 +263,7 @@ async def test_compact_decisions_use_selected_agent_context_window():
     inbound = _inbound()
     inbound.metadata = InboundMetadata(agent_id="coder")
 
-    await executor.execute(inbound)
+    await _execute_admitted(executor, inbound)
 
     decision_config = executor._build_messages.await_args.args[3]
     assert decision_config.llm.model == "kiro/gpt-5.6-sol"
@@ -249,7 +274,7 @@ async def test_compact_decisions_use_selected_agent_context_window():
 @pytest.mark.asyncio
 async def test_delta_is_live_only_and_reply_persists_as_one_msg():
     executor = _make_executor(FakeAgent(stream=True))
-    await executor.execute(_inbound())
+    await _execute_admitted(executor)
 
     saved = _saved_messages(executor)
     # user msg + assistant msg (REPLY_START 时 save)
@@ -289,7 +314,7 @@ async def test_delta_is_live_only_and_reply_persists_as_one_msg():
 @pytest.mark.asyncio
 async def test_partial_reply_is_saved_as_error_msg():
     executor = _make_executor(FakeAgent(stream=True, fail_after_delta=True))
-    await executor.execute(_inbound())
+    await _execute_admitted(executor)
 
     saved = _saved_messages(executor)
     # user msg + assistant msg (REPLY_START 时 save)

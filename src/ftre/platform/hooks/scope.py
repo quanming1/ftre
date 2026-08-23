@@ -1,4 +1,5 @@
 """Hook scope carrier based on Cordis isolate Context identity."""
+# 中文说明：Hook scope carrier：用 Cordis isolate identity 标识 Agent 生命周期，避免同名 Agent 重建后复用旧监听器。
 
 from __future__ import annotations
 

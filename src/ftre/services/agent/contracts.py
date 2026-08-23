@@ -1,14 +1,32 @@
 """Agent Service 的公开契约。
 
 这些 Protocol 是 Gateway、HTTP、Channel 和 Feature 可依赖的边界；它们不暴露
-SessionLane、TurnExecutor 或 AgentLoop 对象。具体数据面由 agent_loop Provider
-实现 ``AgentDriver``。
+Inbox、TurnExecutor 或 AgentLoop 对象。具体数据面由 agent_loop Provider 实现
+``AgentDriver``。
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
+
+
+@dataclass(frozen=True, slots=True)
+class InboundMessage:
+    """已经归一化、准备交给 AgentService 执行的一条输入。
+
+    这是 AgentService 的唯一数据面输入。它不包含 QueueItem、pending、容量或
+    客户端队列状态；可选 Inbox Package 负责决定何时生成它。
+    """
+
+    session_id: str
+    request_id: str
+    channel_id: str
+    content: str = ""
+    attachments: tuple[dict[str, Any], ...] = ()
+    source: str = "user"
+    metadata: dict[str, Any] | None = None
 
 
 @runtime_checkable
@@ -19,19 +37,13 @@ class AgentDriver(Protocol):
 
     def get_session_status(self, session_id: str) -> str: ...
 
-    def submit(self, *args: Any, **kwargs: Any) -> Awaitable[Any]: ...
+    def is_busy(self, session_id: str) -> bool: ...
+
+    def run(self, message: InboundMessage) -> Awaitable[Any]: ...
 
     def cancel(self, *args: Any, **kwargs: Any) -> Awaitable[Any]: ...
 
-    def wait(self, *args: Any, **kwargs: Any) -> Awaitable[Any]: ...
-
     def delete_session(self, session_id: str) -> Awaitable[Any]: ...
-
-    def cancel_queued_message(
-        self, session_id: str, request_id: str
-    ) -> Awaitable[Any]: ...
-
-    def get_mailbox_snapshot(self, session_id: str) -> Awaitable[Any]: ...
 
     def resume_confirmation(
         self,
@@ -41,7 +53,6 @@ class AgentDriver(Protocol):
         metadata: Any,
     ) -> Awaitable[Any]: ...
 
-    def wait_session_quiescent(self, session_id: str) -> Awaitable[Any]: ...
 
 
 @runtime_checkable
@@ -59,4 +70,4 @@ class AgentRegistryProtocol(Protocol):
 
 AgentListener = Callable[[dict[str, Any]], Any]
 
-__all__ = ["AgentDriver", "AgentListener", "AgentRegistryProtocol"]
+__all__ = ["AgentDriver", "AgentListener", "AgentRegistryProtocol", "InboundMessage"]

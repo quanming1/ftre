@@ -1,4 +1,8 @@
-"""Public facade over persisted Agent profile definitions."""
+"""Agent Profile 公共 Service。
+
+配置文件、默认 profile 和 prompt 文件由 ``AgentManager`` 持有；这里把它收敛成
+Feature 可消费的窄接口，调用方不需要知道 profile 在磁盘上的布局和校验规则。
+"""
 
 from __future__ import annotations
 
@@ -9,28 +13,34 @@ from .models import EffectiveProfile
 
 
 class AgentProfileService:
-    """Expose profile CRUD without leaking AgentManager internals to Features."""
+    """提供 profile CRUD/解析，但不向 Feature 暴露 Manager 的存储细节。"""
     key = "agent_profiles"
 
     def __init__(self, manager: AgentManager) -> None:
         self.manager = manager
 
     def list(self) -> list[dict[str, Any]]:
+        """列出可用 Agent profile 的摘要。"""
         return self.manager.list_agents()
 
     def get(self, agent_id: str):
+        """读取一个 profile；不存在时由 Manager 返回空值/抛出领域错误。"""
         return self.manager.load(agent_id)
 
     def create(self, **kwargs: Any):
+        """创建 profile，并由 Manager 负责默认值和磁盘校验。"""
         return self.manager.create_agent_profile(**kwargs)
 
     def update(self, agent_id: str, payload: dict[str, Any]):
+        """更新指定 profile 的可编辑配置。"""
         return self.manager.update_agent(agent_id, payload)
 
     def delete(self, agent_id: str) -> None:
+        """删除 profile；不会由 Service 直接操作 profile 目录。"""
         self.manager.delete_agent(agent_id)
 
     def resolve(self, agent_id: str, session_id: str | None = None) -> EffectiveProfile:
+        """解析当前 Agent 的有效配置投影，供一次请求使用。"""
         return EffectiveProfile(agent_id, self.manager.load(agent_id))
 
     def list_prompts(self, agent_id: str) -> dict[str, str]:

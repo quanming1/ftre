@@ -28,7 +28,7 @@ from ftre_agent_core.message import (
 )
 
 from ftre.platform.hooks import HookRuntime
-from ftre.services.agent.config import AgentConfig, ContextConfig, LLMConfig
+from ftre.services.agent.config import AgentConfig, LLMConfig
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
 from ftre.services.agent_loop.runtime.loop.turn_executor import TurnExecutor
@@ -112,7 +112,6 @@ def _make_executor(agent) -> TurnExecutor:
     loop = object.__new__(AgentLoop)
     config = AgentConfig()
     config.llm = LLMConfig()
-    config.context = ContextConfig()
     loop._injected_config = config
     loop._event_loop = asyncio.get_running_loop()
     loop.hooks = None
@@ -126,6 +125,9 @@ def _make_executor(agent) -> TurnExecutor:
     loop.bus = AsyncMock()
     loop.agent_manager = Mock()
     loop.agent_service = None
+    loop.mcp_service = None
+    loop.tool_service = None
+    loop.inbox = None
     loop._agent_created_emitted = set()
     loop.agent_manager.load = Mock(return_value=None)
     loop.agent_manager.create_agent = Mock(return_value=agent)
@@ -208,7 +210,6 @@ def _enable_builtin_commands(executor):
         return await executor.execute(
             inbound,
             confirm_event=events[-1],
-            persist_input=False,
         )
 
     agents = SimpleNamespace(resume_confirmation=resume_confirmation)
@@ -255,7 +256,16 @@ async def test_tool_ask_pauses_turn_with_success_turn_end():
     agent = PausingAgent()
     executor = _make_executor(agent)
 
-    await executor.execute(_user_inbound())
+    inbound = _user_inbound()
+    turn_id = "turn_test"
+    user_message_id = await executor._loop._persist_inbound_user_message(
+        inbound, turn_id=turn_id
+    )
+    await executor.execute(
+        inbound,
+        turn_id=turn_id,
+        user_message_id=user_message_id,
+    )
 
     frames = _outbound_frames(executor)
 
@@ -279,7 +289,7 @@ async def test_tool_ask_pauses_turn_with_success_turn_end():
     )
     assert pipeline_end["value"]["success"] is True
 
-    # TurnExecutor 不再维护 session 全局 active 集合；SessionLane 持有执行所有权。
+    # TurnExecutor 不再维护 session 全局 active 集合；AgentLoop/AgentService 持有 active Turn 所有权。
 
 
 @pytest.mark.asyncio

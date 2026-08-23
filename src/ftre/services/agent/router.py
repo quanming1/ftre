@@ -1,4 +1,5 @@
 """HTTP routes for persisted Agent profiles."""
+# 中文说明：Agent HTTP 路由：只操作 AgentProfileService 的公开 profile API，不直接读 agents 目录。
 
 from __future__ import annotations
 

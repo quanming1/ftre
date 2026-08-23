@@ -1,1 +1,1 @@
-"""AgentLoop data-plane internals; public binding lives in ``services.agent_loop``."""
+"""AgentLoop 数据面内部实现；公开绑定位于 ``services.agent_loop``。"""

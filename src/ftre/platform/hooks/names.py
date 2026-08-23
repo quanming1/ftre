@@ -4,13 +4,13 @@
 迁移完成后由架构测试确保它们不会回流到新代码。
 """
 
+from ftre_agent_core.hooks import AGENT_BEFORE_REASONING
+
 AGENT_CREATED = "agent/created"
 AGENT_DISPOSED = "agent/disposed"
 AGENT_ERROR = "agent/error"
-AGENT_INBOX_INSERTED = "agent/inbox/inserted"
-AGENT_INBOX_CLAIMED = "agent/inbox/claimed"
-AGENT_INBOX_DISCARDED = "agent/inbox/discarded"
-AGENT_PRE_STEP = "agent/pre-step"
+# 一次 InboundMessage 进入 Agent 前的 Turn 级准入；每轮只触发一次。
+AGENT_BEFORE_TURN = "agent/before-turn"
 AGENT_AFTER_TURN = "agent/after-turn"
 AGENT_REQUEST = "agent/request"
 AGENT_REQUEST_ERROR = "agent/request-error"
@@ -38,10 +38,8 @@ PUBLIC_HOOK_NAMES = frozenset(
         AGENT_CREATED,
         AGENT_DISPOSED,
         AGENT_ERROR,
-        AGENT_INBOX_INSERTED,
-        AGENT_INBOX_CLAIMED,
-        AGENT_INBOX_DISCARDED,
-        AGENT_PRE_STEP,
+        AGENT_BEFORE_TURN,
+        AGENT_BEFORE_REASONING,
         AGENT_AFTER_TURN,
         AGENT_REQUEST,
         AGENT_REQUEST_ERROR,

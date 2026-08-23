@@ -1,8 +1,8 @@
-"""Public Agent Service: Registry + explicit AgentDriver port.
+"""Agent 公共 Service：身份注册 + 显式数据面 Driver。
 
-AgentService owns Agent identity and public operations. It never exposes an
-``AgentLoop`` attribute and never performs generic method-name forwarding; the
-independent ``services.agent_loop`` Provider attaches an explicit AgentDriver.
+这里是 HTTP、WebSocket 和 Feature 看到的 Agent 边界。它只保存 Agent 的公开
+身份/状态，并把执行请求交给 ``AgentDriver``；真正的 AgentLoop 由独立 Provider
+在 Composition 阶段组装，避免业务调用方反向依赖 Loop 的私有实现。
 """
 
 from __future__ import annotations
@@ -13,12 +13,17 @@ from typing import Any
 
 from ftre.platform.hooks import HookScopeCarrier
 
-from .contracts import AgentDriver, AgentListener
+from .contracts import AgentDriver, AgentListener, InboundMessage
 from .registry import AgentRegistry
 
 
 class AgentService:
-    """Stable Agent contract consumed by HTTP/WS/Feature code."""
+    """对外稳定的 Agent 合约。
+
+    ``registry`` 管理可见的 Agent 身份，``_driver`` 只在启动组合完成后注入。
+    因此 Service 可以先被路由注册，再由 AgentLoop Provider 完成数据面绑定；
+    未绑定时查询方法仍可安全返回 idle，但执行方法会明确报“未就绪”。
+    """
 
     key = "agents"
 
@@ -56,39 +61,40 @@ class AgentService:
         for record in tuple(self.registry.list()):
             self.registry.dispose(record["id"])
 
-    async def submit(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._await(self.driver.submit(*args, **kwargs))
+    async def run(self, message: InboundMessage) -> Any:
+        """执行一条已经由上游交付的 InboundMessage。
+
+        Inbox Package 负责 admission 和 worker；AgentService 只接收这一条
+        已交付输入。直接调用时若同一 Session 正在运行，由 Driver 返回 busy 错误，
+        而不是在这里隐式创建第二个队列。
+        """
+        return await self._await(self.driver.run(message))
 
     async def cancel(self, *args: Any, **kwargs: Any) -> Any:
+        """请求 Driver 取消会话中的 active Turn；未交付输入由 InboxService 负责。"""
         return await self._await(self.driver.cancel(*args, **kwargs))
 
-    async def wait(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._await(self.driver.wait(*args, **kwargs))
-
     def status(self, session_id: str) -> str:
+        """查询 Session 当前状态；Driver 未绑定时返回 idle。"""
         if self._driver is None:
             return "idle"
         return self._driver.get_session_status(session_id)
 
     def is_busy(self, session_id: str) -> bool:
+        """判断 Session 是否仍有活动 Turn 或维护任务。"""
         return self.status(session_id) in {"running", "processing", "compacting"}
 
     def get_session_status(self, session_id: str) -> str:
+        """兼容公开 AgentDriver 的状态查询命名。"""
         return self.status(session_id)
 
     def is_session_busy(self, session_id: str) -> bool:
+        """兼容公开 AgentDriver 的忙碌查询命名。"""
         return self.is_busy(session_id)
 
     async def delete_session(self, session_id: str) -> Any:
+        """请求 Driver 关闭并删除一个 Session。"""
         return await self._await(self.driver.delete_session(session_id))
-
-    async def cancel_queued_message(self, session_id: str, request_id: str) -> Any:
-        return await self._await(
-            self.driver.cancel_queued_message(session_id, request_id)
-        )
-
-    async def get_mailbox_snapshot(self, session_id: str) -> Any:
-        return await self._await(self.driver.get_mailbox_snapshot(session_id))
 
     async def resume_confirmation(
         self,
@@ -107,30 +113,34 @@ class AgentService:
             )
         )
 
-    async def wait_session_quiescent(self, session_id: str) -> Any:
-        return await self._await(self.driver.wait_session_quiescent(session_id))
-
     def list(self) -> list[dict[str, Any]]:
+        """返回 Agent registry 的诊断摘要。"""
         return self.registry.list()
 
     def get(self, agent_id: str) -> dict[str, Any] | None:
+        """读取一个 Agent 的公开状态摘要。"""
         return self.registry.get(agent_id)
 
     def tool_scope(self, agent_id: str) -> str:
+        """返回该 Agent 的 scoped tool key。"""
         return self.registry.tool_scope(agent_id)
 
     def scope_identity(self, agent_id: str) -> object:
+        """返回当前 Agent 生命周期专用的 scope identity。"""
         return self.registry.scope_identity(agent_id)
 
     def scope_carrier(
         self, agent_id: str, *, parent_id: str | None = None
     ) -> HookScopeCarrier:
+        """构造传给 HookRuntime 的 Agent scope carrier。"""
         return self.registry.scope_carrier(agent_id, parent_id=parent_id)
 
     def on_created(self, callback: AgentListener) -> Callable[[], bool]:
+        """订阅 Agent 创建事件，并返回幂等取消函数。"""
         return self._listen("created", callback)
 
     def on_disposed(self, callback: AgentListener) -> Callable[[], bool]:
+        """订阅 Agent 销毁事件，并返回幂等取消函数。"""
         return self._listen("disposed", callback)
 
     @staticmethod

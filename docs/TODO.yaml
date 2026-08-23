@@ -697,3 +697,161 @@ stages:
           - id: F11.10
             title: 压缩配置 Owner 收敛、历史死配置清理与中文注释
             status: done
+
+      - id: F12
+        title: 独立 Inbox Package 与权威队列协议
+        status: done
+        date: 2026-08-23
+        prd: docs/prd/PRD-F12-session-inbox-protocol.md
+        prd_status: 已验收
+        depends_on:
+          - F8
+          - F11
+        external_consumer: E:\binn\ftre-desktop（本阶段冻结并测试 wire contract，不在本仓库修改客户端）
+        external_dependency: E:\ftre-agent-core（C2 agent/before-reasoning；要求 >=0.1.2，发行仍单独安排）
+        modules:
+          - packages/ftre-inbox/
+          - src/ftre/services/session/
+          - src/ftre/services/agent/
+          - src/ftre/services/agent_loop/
+          - src/ftre/services/messaging/
+          - src/ftre/services/command/
+          - src/ftre/app/gateway/composition.py
+          - tests/contracts/
+          - tests/architecture/
+          - tests/lifecycle/
+          - docs/prd/README.md
+        acceptance: 整个队列模型、持久化、worker 和客户端 queue 协议迁入可独立构建发布的 ftre-inbox Package；ftre 核心不依赖该包，AgentService 只执行 InboundMessage 且无 QueueItem、pending、capacity 或 snapshot 概念；next-turn/next-step、followup/steer/inject、peek→Hook→claim、有界队列、at-most-once 和重启恢复语义落地；Gateway 在 Package 启用时提供 session.prompt、session.updateQueue、session.cancel、session/queue 和独立 status/event 协议；客户端只消费完整权威快照；Command、同步 ToolResult 和其他 Feature 不拥有队列；旧单 FIFO、薄壳与兼容协议清理；并发、恢复、生命周期、协议、独立包、全量质量门禁和 Gateway smoke 通过
+        tasks:
+          - id: F12.1
+            title: Inbox 所有权、Step 边界与协议评审冻结
+            status: done
+          - id: F12.2
+            title: ftre-inbox 独立 Package、Provider 与持久化迁移
+            status: done
+          - id: F12.3
+            title: next-turn/next-step 原子操作与旧数据迁移
+            status: done
+          - id: F12.4
+            title: AgentService InboundMessage 瘦身与 Step Hook 交付
+            status: done
+          - id: F12.5
+            title: Session Prompt、Queue、Status 线协议
+            status: done
+          - id: F12.6
+            title: Queue edit/remove/steer、Cancel 与 Command 边界
+            status: done
+          - id: F12.7
+            title: 客户端契约、重连基线与旧协议清理
+            status: done
+          - id: F12.8
+            title: 并发、恢复、生命周期与架构测试
+            status: done
+          - id: F12.9
+            title: 全量验收、文档同步与执行报告
+            status: done
+          - id: F12.10
+            title: 外部 Core active-step Hook 授权与接入
+            status: done
+            scope: E:\\ftre-agent-core（独立仓库；不得把 Core 文件复制进 ftre）
+            acceptance: Core 提供 agent/before-reasoning；ftre-inbox 通过公开 Hook 在运行中消费 next-step；Core 全量测试、ftre 全量测试和 active-steer 集成 smoke 通过
+
+      - id: F13
+        title: Plugin-first 内核收敛与消息交接
+        status: done
+        prd: docs/prd/PRD-F13-plugin-first-kernel.md
+        prd_status: 已验收
+        date: 2026-08-23
+        depends_on:
+          - F12
+        external_consumer: E:\\binn\\ftre-desktop（只消费既有 USER_MESSAGE、session/queue、session/status 语义）
+        modules:
+          - src/ftre/platform/plugin_runtime/
+          - src/ftre/app/gateway/composition.py
+          - src/ftre/app/gateway/bootstrap.py
+          - packages/ftre-inbox/
+          - packages/ftre-compaction/
+          - src/ftre/services/session/
+          - src/ftre/services/agent_loop/
+          - src/ftre/services/command/
+          - src/ftre/services/system_prompt/
+          - src/ftre/features/
+          - tests/architecture/
+          - tests/contracts/
+          - tests/lifecycle/
+          - tests/startup/
+        acceptance: Kernel 只保留 Context、Plugin、Hook、Lifecycle 和 Diagnostics 机制；业务能力均有唯一 Plugin/Service Owner 并通过 Inject/Hook 协作，HTTP 路由由 Owner Plugin 注册并通过 Effect 清理；AgentService 只执行 InboundMessage，TurnExecutor 不持有 Queue、Command、Compaction 或普通 UserMessage 持久化职责；Queue 到 History 使用既有 request_id 交接；可选 Plugin 可独立禁用、卸载和重启；Trace exporter、Inbox/Loop 绑定和 WebSocket queue Hook 无重复 Owner；ftre 全量 439 passed、ruff、Gateway smoke、Desktop pnpm test 和架构/生命周期专项通过
+        tasks:
+          - id: F13.1
+            title: 内核边界冻结与架构门禁
+            status: done
+          - id: F13.2
+            title: Service 与 Plugin Owner 审计
+            status: done
+          - id: F13.3
+            title: Agent 数据面收敛
+            status: done
+          - id: F13.4
+            title: 可选行为 Plugin 化
+            status: done
+          - id: F13.5
+            title: Queue 到 History 协议交接
+            status: done
+          - id: F13.6
+            title: 生命周期与缺失能力测试
+            status: done
+          - id: F13.7
+            title: 债务清理与最终验收
+            status: done
+
+      - id: F14
+        title: 轻内核 + Plugin-first 最终目标架构
+        status: in_progress
+        prd: docs/prd/PRD-F14-final-plugin-first-architecture.md
+        prd_status: 开发中
+        depends_on:
+          - F13
+        modules:
+          - src/ftre/app/
+          - src/ftre/kernel/
+          - src/ftre/services/
+          - src/ftre/plugins/
+          - packages/ftre-inbox/
+          - packages/ftre-compaction/
+          - tests/architecture/
+          - tests/contracts/
+          - tests/lifecycle/
+          - tests/startup/
+          - docs/prd/README.md
+        acceptance: 实际目录收敛为 app/kernel/services/plugins/packages；Kernel 保持业务零知识；AgentLoop 降为 AgentService 私有 Runtime；Command、concrete Channel、Trace 和产品行为成为可逆 Builtin Plugin；Inbox/Compaction 保持独立可选 Package；跨能力只走 Inject/Hook；旧路径与兼容壳删除；最小/默认 Composition、独立 wheel、洁净安装、生命周期、全量质量门禁和 Gateway smoke 通过
+        tasks:
+          - id: F14.1
+            title: 终局目录、Owner 与依赖基线
+            status: todo
+          - id: F14.2
+            title: Kernel 命名与业务零知识迁移
+            status: todo
+          - id: F14.3
+            title: Agent Runtime 内聚与唯一 Agent Service
+            status: todo
+          - id: F14.4
+            title: Messaging Ingress 与 Command/Inbox Plugin 交接
+            status: todo
+          - id: F14.5
+            title: Builtin Plugin 目录与 Owner 迁移
+            status: todo
+          - id: F14.6
+            title: Host Service 边界和私有实现收敛
+            status: todo
+          - id: F14.7
+            title: Inbox/Compaction Package 与发行门禁
+            status: todo
+          - id: F14.8
+            title: 生命周期、故障与最小 Composition 验证
+            status: todo
+          - id: F14.9
+            title: 旧路径、兼容壳、死代码与生成物清理
+            status: todo
+          - id: F14.10
+            title: 最终验收与执行报告
+            status: todo

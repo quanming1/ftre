@@ -7,7 +7,7 @@ import pytest
 from cordis import Context
 
 from ftre.platform.hooks import (
-    AGENT_PRE_STEP,
+    AGENT_BEFORE_TURN,
     HookFailurePolicy,
     HookMode,
     HookRuntime,
@@ -23,7 +23,7 @@ def _spec(mode: HookMode, *, failure=HookFailurePolicy.PROPAGATE) -> HookSpec:
         return payload
 
     return HookSpec(
-        AGENT_PRE_STEP,
+        AGENT_BEFORE_TURN,
         "agent",
         mode,
         failure_policy=failure,
@@ -186,7 +186,7 @@ async def test_observer_failure_is_diagnosed_without_blocking_dispatch():
     await runtime.dispatch(spec, {})
 
     assert seen == ["healthy"]
-    assert runtime.diagnostics[0].hook == AGENT_PRE_STEP
+    assert runtime.diagnostics[0].hook == AGENT_BEFORE_TURN
     assert runtime.diagnostics[0].owner == "broken-plugin"
     assert runtime.diagnostics[0].exception_type == "RuntimeError"
 
@@ -307,7 +307,7 @@ async def test_scope_carrier_inherits_parent_and_rejects_rebuilt_same_id():
     context = Context()
     runtime = HookRuntime(context)
     spec = HookSpec(
-        AGENT_PRE_STEP,
+        AGENT_BEFORE_TURN,
         "agent",
         HookMode.PARALLEL,
         payload_type=dict,

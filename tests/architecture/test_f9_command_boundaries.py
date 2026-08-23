@@ -30,11 +30,12 @@ def test_turn_executor_has_no_command_matching_or_legacy_filter_path() -> None:
     assert not any(item in source for item in forbidden)
 
 
-def test_agent_loop_parses_commands_before_mailbox_admission() -> None:
+def test_agent_loop_parses_commands_before_inbox_admission() -> None:
     source = _text("services/agent_loop/runtime/loop/engine.py")
     assert "_parse_ingress_command" in source
-    assert "lanes.dispatch_command" in source
     assert "self.commands.parse({\"inbound\": msg})" in source
+    assert "_inbound_handler" in source
+    assert "self.lanes" not in source
 
 
 def test_command_layer_does_not_import_private_agent_runtime() -> None:

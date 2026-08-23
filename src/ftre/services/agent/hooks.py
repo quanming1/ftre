@@ -1,20 +1,22 @@
-"""Agent 状态机语义 Hook 契约。
+"""Agent 运行时 Hook 契约。
 
-Hook payload 是进程内控制协议，不是 SessionEvent，也不进入 mailbox 持久化。
-候选输入在 ``agent/pre-step`` 成功前仍然属于 pending；只有 ``EnterStep`` 被
-接受后，SessionLane 才能 claim 它。
+这里仅描述 Agent active Turn 的语义：请求解析、请求错误、Step 边界、Turn 收尾和
+生命周期。pending、队列目标以及 claim 观察都属于 ``ftre-inbox`` Package，绝不在
+本模块不定义 Inbox 的 pending 类型。
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import Any
 
 from ftre_agent_core.hooks import (
+    AGENT_BEFORE_REASONING_SPEC,
     AGENT_TURN_STOPPING_SPEC,
+    BeforeReasoningPayload,
+    BeforeReasoningResult,
     ContinueTurn,
     StopTurn,
     TurnStoppingPayload,
@@ -22,13 +24,10 @@ from ftre_agent_core.hooks import (
 
 from ftre.platform.hooks import (
     AGENT_AFTER_TURN,
+    AGENT_BEFORE_TURN,
     AGENT_CREATED,
     AGENT_DISPOSED,
     AGENT_ERROR,
-    AGENT_INBOX_CLAIMED,
-    AGENT_INBOX_DISCARDED,
-    AGENT_INBOX_INSERTED,
-    AGENT_PRE_STEP,
     AGENT_REQUEST,
     AGENT_REQUEST_ERROR,
     AGENT_SESSION_START,
@@ -40,7 +39,6 @@ from ftre.platform.hooks import (
     HookSpec,
 )
 from ftre.services.agent.config import AgentConfig
-from ftre.services.session.entity.state import QueueItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,48 +50,35 @@ class AgentSubject:
 
 
 @dataclass(frozen=True, slots=True)
-class PendingInput:
-    """QueueItem 的只读 Hook 视图，不允许监听器回写 mailbox 对象。"""
+class BeforeTurnPayload:
+    """一次 InboundMessage 进入 Agent 前的 Turn 级准入输入。"""
 
-    request_id: str
-    sequence: int
-    content: str
-    attachments: tuple[Mapping[str, Any], ...]
-    agent_id: str
-
-    @classmethod
-    def from_queue_item(cls, item: QueueItem) -> PendingInput:
-        return cls(
-            request_id=item.request_id,
-            sequence=item.sequence,
-            content=item.content,
-            attachments=tuple(
-                MappingProxyType(dict(attachment)) for attachment in item.attachments
-            ),
-            agent_id=item.agent_id,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class PreStepPayload:
     agent: AgentSubject
     session_id: str
     turn_id: str
-    candidate: PendingInput
     cancellation: asyncio.Event
     channel_id: str = ""
     config: AgentConfig | None = None
-    set_maintenance: Callable[[bool, str], Awaitable[None]] | None = None
+    context: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AllowTurn:
+    """默认允许本次 InboundMessage 创建 active Turn。"""
+
+    context: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RejectTurn:
+    """阻止本次 InboundMessage 进入 active Turn；pending 仍由 Inbox 持有。"""
+
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
 class AfterTurnPayload:
-    """Turn 完成后的可等待维护边界。
-
-    ``set_maintenance`` 是 Lane 提供的通用状态桥接；Hook 可以标记自己的维护阶段，
-    但不能访问 Mailbox 或改变 claim 顺序。压缩包因此可以拥有全部压缩逻辑，核心
-    仍只拥有串行状态和公开快照。
-    """
+    """Turn 完成后的可等待维护边界。"""
 
     agent: AgentSubject
     session_id: str
@@ -107,22 +92,9 @@ class AfterTurnPayload:
 
 
 @dataclass(frozen=True, slots=True)
-class EnterStep:
-    candidate: PendingInput
-
-
-@dataclass(frozen=True, slots=True)
-class RejectStep:
-    disposition: Literal["keep", "discard"]
-    reason: str
-
-    def __post_init__(self) -> None:
-        if self.disposition not in {"keep", "discard"}:
-            raise ValueError("RejectStep.disposition must be keep or discard")
-
-
-@dataclass(frozen=True, slots=True)
 class AgentRequestPayload:
+    """一次已交付 Agent request 的 Hook 输入。"""
+
     agent: AgentSubject
     session_id: str
     turn_id: str
@@ -132,6 +104,8 @@ class AgentRequestPayload:
 
 @dataclass(frozen=True, slots=True)
 class RequestErrorPayload:
+    """LLM/Tool 请求失败时传给错误 Hook 的结构化上下文。"""
+
     agent: AgentSubject
     session_id: str
     turn_id: str
@@ -145,6 +119,8 @@ class RequestErrorPayload:
 
 @dataclass(frozen=True, slots=True)
 class RetryRequest:
+    """错误 Hook 请求重新执行当前请求，并携带最大重试次数。"""
+
     reason: str
     progress_token: str
     max_attempts: int = 1
@@ -180,19 +156,8 @@ class AgentLifecyclePayload:
     message: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class AgentInboxPayload:
-    """Inbox mutation 的只读观察视图。"""
-
-    agent: AgentSubject
-    session_id: str
-    item: PendingInput
-    turn_id: str = ""
-    reason: str = ""
-
-
-async def _enter_step(payload: PreStepPayload) -> EnterStep:
-    return EnterStep(payload.candidate)
+async def _allow_turn(payload: BeforeTurnPayload) -> AllowTurn:
+    return AllowTurn(payload.context)
 
 
 async def _keep_request(payload: AgentRequestPayload) -> AgentConfig:
@@ -203,21 +168,37 @@ async def _stop_on_error(payload: RequestErrorPayload) -> None:
     return None
 
 
-AGENT_PRE_STEP_SPEC = HookSpec(
-    AGENT_PRE_STEP,
-    "agent",
-    HookMode.WATERFALL,
-    failure_policy=HookFailurePolicy.PROPAGATE,
-    payload_type=PreStepPayload,
-    result_type=(EnterStep, RejectStep),
-    default=_enter_step,
-    scope=HookScope.AGENT,
-)
-
-
 async def _continue_after_turn(payload: AfterTurnPayload) -> None:
     return None
 
+
+def _observe_nothing(_payload) -> None:
+    return None
+
+
+def _observation_spec(name: str, payload_type: type) -> HookSpec:
+    return HookSpec(
+        name,
+        "agent",
+        HookMode.EMIT,
+        failure_policy=HookFailurePolicy.OBSERVE,
+        payload_type=payload_type,
+        result_type=type(None),
+        default=_observe_nothing,
+        scope=HookScope.AGENT,
+    )
+
+
+AGENT_BEFORE_TURN_SPEC = HookSpec(
+    AGENT_BEFORE_TURN,
+    "agent",
+    HookMode.WATERFALL,
+    failure_policy=HookFailurePolicy.PROPAGATE,
+    payload_type=BeforeTurnPayload,
+    result_type=(AllowTurn, RejectTurn),
+    default=_allow_turn,
+    scope=HookScope.AGENT,
+)
 
 AGENT_AFTER_TURN_SPEC = HookSpec(
     AGENT_AFTER_TURN,
@@ -252,53 +233,21 @@ AGENT_REQUEST_ERROR_SPEC = HookSpec(
     scope=HookScope.AGENT,
 )
 
-def _observe_nothing(_payload) -> None:
-    return None
-
-
-def _observation_spec(name: str, payload_type: type) -> HookSpec:
-    return HookSpec(
-        name,
-        "agent",
-        HookMode.EMIT,
-        failure_policy=HookFailurePolicy.OBSERVE,
-        payload_type=payload_type,
-        result_type=type(None),
-        default=_observe_nothing,
-        scope=HookScope.AGENT,
-    )
-
-
-AGENT_TURN_STOPPED_SPEC = _observation_spec(
-    AGENT_TURN_STOPPED, TurnStoppedPayload
-)
-
-
+AGENT_TURN_STOPPED_SPEC = _observation_spec(AGENT_TURN_STOPPED, TurnStoppedPayload)
 AGENT_CREATED_SPEC = _observation_spec(AGENT_CREATED, AgentLifecyclePayload)
 AGENT_DISPOSED_SPEC = _observation_spec(AGENT_DISPOSED, AgentLifecyclePayload)
 AGENT_ERROR_SPEC = _observation_spec(AGENT_ERROR, AgentLifecyclePayload)
-AGENT_SESSION_START_SPEC = _observation_spec(
-    AGENT_SESSION_START, AgentLifecyclePayload
-)
+AGENT_SESSION_START_SPEC = _observation_spec(AGENT_SESSION_START, AgentLifecyclePayload)
 AGENT_STATUS_SPEC = _observation_spec(AGENT_STATUS, AgentLifecyclePayload)
-AGENT_INBOX_INSERTED_SPEC = _observation_spec(
-    AGENT_INBOX_INSERTED, AgentInboxPayload
-)
-AGENT_INBOX_CLAIMED_SPEC = _observation_spec(AGENT_INBOX_CLAIMED, AgentInboxPayload)
-AGENT_INBOX_DISCARDED_SPEC = _observation_spec(
-    AGENT_INBOX_DISCARDED, AgentInboxPayload
-)
 
 
 __all__ = [
     "AGENT_AFTER_TURN_SPEC",
+    "AGENT_BEFORE_REASONING_SPEC",
+    "AGENT_BEFORE_TURN_SPEC",
     "AGENT_CREATED_SPEC",
     "AGENT_DISPOSED_SPEC",
     "AGENT_ERROR_SPEC",
-    "AGENT_INBOX_CLAIMED_SPEC",
-    "AGENT_INBOX_DISCARDED_SPEC",
-    "AGENT_INBOX_INSERTED_SPEC",
-    "AGENT_PRE_STEP_SPEC",
     "AGENT_REQUEST_ERROR_SPEC",
     "AGENT_REQUEST_SPEC",
     "AGENT_SESSION_START_SPEC",
@@ -306,15 +255,15 @@ __all__ = [
     "AGENT_TURN_STOPPED_SPEC",
     "AGENT_TURN_STOPPING_SPEC",
     "AfterTurnPayload",
-    "AgentInboxPayload",
     "AgentLifecyclePayload",
     "AgentRequestPayload",
     "AgentSubject",
+    "AllowTurn",
+    "BeforeReasoningPayload",
+    "BeforeReasoningResult",
+    "BeforeTurnPayload",
     "ContinueTurn",
-    "EnterStep",
-    "PendingInput",
-    "PreStepPayload",
-    "RejectStep",
+    "RejectTurn",
     "RequestErrorPayload",
     "RetryRequest",
     "StopTurn",

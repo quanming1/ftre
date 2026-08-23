@@ -96,6 +96,39 @@ async def test_reply_end_persists_final_msg_and_removes_active_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_reply_end_keeps_snapshot_when_final_persist_fails():
+    """最终快照写盘失败时保留 active Reply，供取消收尾重试而不丢消息。"""
+    sessions = AsyncMock()
+    projection = SessionProjection(sessions)
+    session_id = "ws_sess_test"
+    reply_id = "reply_test"
+
+    await projection.apply(session_id, ReplyStartEvent(
+        session_id=session_id, reply_id=reply_id, name="assistant",
+    ))
+    sessions.update_message.side_effect = ValueError("session deleted")
+
+    with pytest.raises(ValueError, match="session deleted"):
+        await projection.apply(session_id, ReplyEndEvent(
+            session_id=session_id,
+            reply_id=reply_id,
+            finished_reason=ReplyFinishedReason.COMPLETED,
+        ))
+
+    snapshot = await projection.snapshot(session_id)
+    assert len(snapshot) == 1
+    assert snapshot[0]["reply_id"] == reply_id
+
+    sessions.update_message.side_effect = None
+    completed = await projection.finish_open(
+        session_id, ReplyFinishedReason.ERROR,
+        error={"code": "persist_retry"},
+    )
+    assert [message.id for message in completed] == [reply_id]
+    assert await projection.snapshot(session_id) == []
+
+
+@pytest.mark.asyncio
 async def test_compact_start_is_memory_only_until_terminal_event():
     sessions = AsyncMock()
     projection = SessionProjection(sessions)

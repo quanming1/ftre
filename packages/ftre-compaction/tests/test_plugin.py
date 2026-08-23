@@ -50,7 +50,7 @@ async def test_compaction_service_and_feature_hooks_register_separately():
 
     assert context.get("compaction") is not None
     hooks = {item.hook for item in runtime.snapshot()}
-    assert hooks == {"agent/pre-step", "agent/after-turn", "agent/request-error"}
+    assert hooks == {"agent/after-turn", "agent/request-error"}
     await context.dispose()
 
 

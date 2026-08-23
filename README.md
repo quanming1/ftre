@@ -114,21 +114,21 @@ after its manifest is explicitly enabled in `~/.ftre/config.json`:
 ## Agent data plane
 
 ```text
-Channel → MessageBus → AgentLoop → SessionLane → TurnExecutor
-                                      ├─ agent/pre-step Hook → claim
-                                      ├─ agent/after-turn Hook → next pending
-                                      ├─ MailboxStore (pending only)
-                                      └─ messages (durable chat history)
+Channel → MessageBus → ftre-inbox → AgentLoop → TurnExecutor → ftre-agent-core
+                         ├─ inbox/before-claim → atomic claim
+                         ├─ agent/before-turn → one Turn admission
+                         └─ agent/before-reasoning → next-step message injection
 
 Context compaction is optional: when `ftre-compaction` is explicitly enabled,
-its Service owns the pre-step/after-turn gates and overflow recovery. The core
-SessionLane only provides the Hook barriers and generic maintenance state; it
-does not import or construct a compaction implementation.
+its Service owns the `inbox/before-claim`/`agent/after-turn` gates and overflow recovery. The core
+ftre-inbox owns pending/worker/claim; AgentService only executes an already
+admitted InboundMessage. Compaction remains optional and does not belong to the
+queue or Core Agent implementation.
 ```
 
 Different sessions run concurrently. A session has at most one active turn;
 turn and compaction never overlap. Pending claims are at-most-once. These
-invariants are covered by the SessionLane and lifecycle tests.
+invariants are covered by the Inbox, protocol and lifecycle tests.
 
 ## Built-in capabilities
 

@@ -4,12 +4,12 @@ TurnExecutor — 单个 Turn 的完整执行。
 Turn 是一等公民：一个有状态的生命周期对象，从收到用户消息到响应完成。
 
 状态机驱动：BUILDING → RUNNING → FINALIZING → COMPLETED。
-execute() 只负责单个已经由 SessionLane 领取的 Agent Work Item。
+execute() 只负责单个已经由 Inbox 交付的 Agent 输入。
 Command 在接入层完成并不会进入本执行器。
 
 处理路径：
   普通消息：  持久化用户消息 → BUILDING → RUNNING → FINALIZING → COMPLETED
-  turn_cancel：由 SessionLane 在控制面取消当前 task，不进入本执行器
+  turn_cancel：由控制面取消当前 task，不进入本执行器
   确认恢复：已有 Session Event → BUILDING → RUNNING → FINALIZING → COMPLETED
 """
 
@@ -26,9 +26,8 @@ from ftre_agent_core.agent import ReActAgent, RunStatus
 from ftre_agent_core.event import (
     CustomEvent,
     ReplyFinishedReason,
-    UserMessageEvent,
 )
-from ftre_agent_core.message import Msg, from_openai_message
+from ftre_agent_core.message import Msg
 
 from ftre.services.agent.config import AgentConfig, load_config
 from ftre.services.agent.hooks import (
@@ -41,10 +40,7 @@ from ftre.services.agent.hooks import (
     TurnStoppedPayload,
 )
 from ftre.services.messaging.bus import BusMessage
-from ftre.services.session.message.multimodal import (
-    build_user_content,
-    normalize_stored_user_content,
-)
+from ftre.services.session.message.multimodal import build_user_content
 from ftre.services.system_prompt.hooks import (
     SYSTEM_PROMPT_ASSEMBLE_SPEC,
     PromptAssemblyPayload,
@@ -103,8 +99,7 @@ class Turn:
     # ── 当前状态（状态机读写）──
     status: TurnStatus = TurnStatus.BUILDING
 
-    user_message_id: str = ""  # 本轮持久化后的 UserMsg id
-    input_persisted: bool = False
+    user_message_id: str = ""  # AgentLoop 进入 Turn 前已持久化的 UserMsg id
 
     # ── Agent 执行上下文（_build 写入，_run 读取）──
     agent_profile: "AgentProfile | None" = None  # 本轮选定的 Agent 私有配置
@@ -114,7 +109,7 @@ class Turn:
     runtime_context: dict = field(default_factory=dict)  # 工具共享的运行时上下文
     final_content: str = ""  # 最后一条完整 assistant 回复（task 工具用）
     subagent_status: str = "completed"  # subagent 完成态：completed/cancelled/error
-    error: dict | None = None  # 进入 ERROR 时返回给 SessionLane 的结构化原因
+    error: dict | None = None  # 进入 ERROR 时返回给 AgentService 的结构化原因
     retry_count: int = 0
     retry_tokens: set[str] = field(default_factory=set)
     continuation_count: int = 0
@@ -134,7 +129,7 @@ class Turn:
 
 @dataclass(frozen=True)
 class TurnOutcome:
-    """SessionLane 用于完成 request 的结构化 Turn 结果。"""
+    """AgentService 用于完成 request 的结构化 Turn 结果。"""
 
     turn_id: str
     status: str
@@ -165,6 +160,7 @@ class TurnExecutor:
         system_prompt=None,
         hooks=None,
         agent_registry=None,
+        inbox=None,
     ) -> None:
         self._loop = loop
         self._sessions = sessions
@@ -175,6 +171,10 @@ class TurnExecutor:
         self._system_prompt = system_prompt
         self._hooks = hooks
         self._agent_registry = agent_registry
+        # Optional capability exposed to tools/Core Hook integration.  The
+        # Inbox package remains the owner of queue state; this reference is
+        # only a runtime capability and is never used for admission or claim.
+        self._inbox = inbox
 
     # ─── 驱动入口 ────────────────────────────────────────────
 
@@ -187,9 +187,9 @@ class TurnExecutor:
         agent_profile: "AgentProfile | None" = None,
         cancellation: asyncio.Event | None = None,
         confirm_event: object | None = None,
-        persist_input: bool = True,
+        user_message_id: str = "",
     ) -> TurnOutcome:
-        """执行一条已经由 SessionLane 领取的 Agent Work Item。"""
+        """执行一条已经完成历史交接、由 Inbox 交付的 Agent 输入。"""
         session_id = self._session_id_of(inbound)
 
         turn = Turn(
@@ -200,9 +200,8 @@ class TurnExecutor:
             agent_profile=agent_profile,
             cancellation=(cancellation if cancellation is not None else asyncio.Event()),
             confirm_event=confirm_event,
+            user_message_id=user_message_id,
         )
-        if persist_input:
-            await self._persist_user_message(turn)
         await self._emit_step(turn, "PIPELINE_START")
         return await self._drive(turn)
 
@@ -231,7 +230,7 @@ class TurnExecutor:
         # Agent Core now invokes agent/turn-stopping before finalization.  The
         # Gateway only publishes the post-decision observation here.
             # 无论正常完成、异常还是取消，都必须在离开 execute() 前关闭开放中的
-            # reply/tool 生命周期并发送 PIPELINE_END。SessionLane 在这里返回之后
+            # reply/tool 生命周期并发送 PIPELINE_END。Inbox 在这里返回之后
             # 清除自己的内存运行态并唤醒同进程等待者；聊天事实已经写入 messages。
             if turn.agent is not None:
                 await self._finalize(turn)
@@ -275,49 +274,12 @@ class TurnExecutor:
 
     # ─── 状态处理函数 ────────────────────────────────────────
 
-    async def _persist_user_message(self, turn: Turn) -> None:
-        """将已被 Agent 接纳的普通消息写入 SessionProjection 一次。"""
-        if turn.input_persisted:
-            return
-        inbound = turn.inbound
-        content = inbound.data.get("content", "")
-        if not turn.session_id or not content:
-            turn.input_persisted = True
-            return
-        attachments = inbound.data.get("attachments") or []
-        user_metadata = {
-            "hide": False,
-            "agent_id": inbound.metadata.agent_id or "default",
-        }
-        if inbound.metadata.request_id:
-            user_metadata["request_id"] = inbound.metadata.request_id
-        persisted_content = build_user_content(
-            normalize_stored_user_content(content),
-            attachments,
-            include_images=True,
-        )
-        user_event = UserMessageEvent(
-            reply_id=turn.turn_id,
-            content=from_openai_message({"role": "user", "content": persisted_content}),
-            message_metadata=user_metadata,
-            data={**inbound.data},
-        )
-        user_event.data["id"] = user_event.id
-        result = await self._loop.emit_session_event(
-            turn.session_id,
-            inbound.from_channel,
-            user_event,
-            metadata=inbound.metadata,
-        )
-        turn.user_message_id = result.persisted_messages[0].id
-        turn.input_persisted = True
-
     async def _build(self, turn: Turn) -> TurnStatus:
         """[状态 2/4] 鉴权 + 构建消息 + 创建 Agent + 组装 runtime_context。
 
         这一步做完 Agent 就准备好了，下一步 _run 直接驱动它。
         校验失败会返回 ERROR（turn.agent 保持 None，不会进 _finalize 清理），
-        由 SessionLane 回传失败 TurnOutcome，避免入口误以为消息已经成功执行。
+        由 AgentService 回传失败 TurnOutcome，避免入口误以为消息已经成功执行。
         """
         loop = self._loop
         inbound = turn.inbound
@@ -325,34 +287,10 @@ class TurnExecutor:
         content = inbound.data.get("content", "")
         attachments = inbound.data.get("attachments") or []
 
-        # ── 鉴权 1：session 必须存在 ──
+        # AgentLoop 已在历史交接前完成 Session/channel 校验。
         session = await self._sessions.get_session(session_id)
         if session is None:
-            logger.warning(
-                f"[turn-executor] session 不存在，拒绝执行: session={session_id}"
-            )
-            turn.error = {
-                "code": "session_not_found",
-                "message": f"会话不存在: {session_id}",
-                "retryable": False,
-            }
-            return TurnStatus.ERROR  # 拒绝执行必须形成失败结果，不能伪装成功
-        # ── 鉴权 2：session 的 channel 必须和消息来源一致（防串台）──
-        if session["channel_id"] != inbound.from_channel:
-            logger.warning(
-                f"[turn-executor] session 与 channel 不匹配: "
-                f"session={session_id} (channel={session['channel_id']}), "
-                f"消息来自 {inbound.from_channel}"
-            )
-            turn.error = {
-                "code": "channel_mismatch",
-                "message": (
-                    f"会话通道为 {session['channel_id']}，消息路由通道为 "
-                    f"{inbound.from_channel}"
-                ),
-                "retryable": False,
-            }
-            return TurnStatus.ERROR
+            raise RuntimeError(f"Session disappeared before Turn execution: {session_id}")
 
         # ── 取得本 Turn 已解析的有效配置（不同 agent 可用不同 LLM）──
         config, agent_profile = await self._resolve_turn_config(turn)
@@ -394,7 +332,7 @@ class TurnExecutor:
         hook_config = await self._request_config(turn, turn.config)
         turn.config = copy.deepcopy(hook_config)
 
-        # ── 创建本轮私有 Agent；取消由 SessionLane 持有的 Turn task 传播 ──
+        # ── 创建本轮私有 Agent；取消由 AgentService 持有的 Turn task 传播 ──
         assert loop.agent_manager is not None, "agent_manager must be provided"
         core_hooks, core_hook_context = self._core_hook_binding(turn)
         agent_id = agent_profile.agent_id if agent_profile is not None else (
@@ -424,6 +362,7 @@ class TurnExecutor:
             "sessions": self._sessions,
             "bus": loop.bus,
             "agent": self._agents,
+            "inbox": self._inbox,
             "attachments": self._attachments,
             "llm_config": hook_config.llm,
             "agent_profile": agent_profile,
@@ -523,6 +462,7 @@ class TurnExecutor:
             "sessions": self._sessions,
             "bus": loop.bus,
             "agent": self._agents,
+            "inbox": self._inbox,
             "attachments": self._attachments,
             "llm_config": hook_config.llm,
             "agent_profile": agent_profile,
@@ -603,8 +543,8 @@ class TurnExecutor:
             _is_error = done_reason == ReplyFinishedReason.ERROR
             if _is_error and await self._request_error_recovery(
                 turn,
-                error_code=getattr(run_state, "error_code", None) or "request_error",
-                message=getattr(run_state, "error", None) or "Agent request failed",
+                error_code=run_state.error_code or "request_error",
+                message=run_state.error or "Agent request failed",
             ):
                 return TurnStatus.RUNNING
             await self._emit_step(
@@ -667,7 +607,7 @@ class TurnExecutor:
         # 若已被后来的 Agent 顶替，不清理（避免误删别人的）
         # 无条件 emit（不依赖通道推断）：task/team 只对 subagent session wait，
         # 非 subagent 完成时无人订阅，零开销；未来其它功能可订阅同一事件。
-        # request 完成的等待与通知由 SessionLane 在 Turn 结束后统一处理。
+        # request 完成的等待与通知由 Inbox 的进程内 receipt 处理。
 
         return TurnStatus.COMPLETED
 
@@ -936,7 +876,13 @@ class TurnExecutor:
 
             # 路径 3：全局 agent
             if profile is None:
-                agent_id = inbound_metadata.agent_id or "default"
+                session_model = await self._sessions.get_session(turn.session_id)
+                session_agent_id = (
+                    str(session_model.get("agent_id") or "default")
+                    if session_model is not None
+                    else "default"
+                )
+                agent_id = inbound_metadata.agent_id or session_agent_id
                 profile = self._loop.agent_manager.load(agent_id)
 
         if profile is not None:

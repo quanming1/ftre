@@ -14,10 +14,15 @@ LEGACY_IMPORT = "ftre.services.agent_loop.runtime.hooks"
 def test_public_hook_names_exclude_legacy_filter_names():
     assert "agent/before_messages_build" not in PUBLIC_HOOK_NAMES
     assert "agent/before_run" not in PUBLIC_HOOK_NAMES
+    assert "agent/before-turn" in PUBLIC_HOOK_NAMES
+    assert "agent/before-reasoning" in PUBLIC_HOOK_NAMES
     assert "tools/pre-execute" in PUBLIC_HOOK_NAMES
     assert "tool/pre-execute" not in PUBLIC_HOOK_NAMES
-    assert "agent/inbox/claimed" in PUBLIC_HOOK_NAMES
+    assert "agent/inbox/claimed" not in PUBLIC_HOOK_NAMES
     assert "agent/inbox" not in PUBLIC_HOOK_NAMES
+    from ftre_inbox.hooks import INBOX_CLAIMED
+
+    assert INBOX_CLAIMED == "inbox/claimed"
 
 
 def test_new_platform_hooks_do_not_import_legacy_runtime_module():

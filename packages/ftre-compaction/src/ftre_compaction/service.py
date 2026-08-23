@@ -2,7 +2,7 @@
 CompactionService — 上下文压缩 Service 的唯一真实实现
 
 设计：
-- agent/pre-step 在领取下一条请求前做强制水位检查并等待压缩
+- inbox/before-claim 在领取下一条请求前做强制水位检查并等待压缩
 - /compact 手动：立即压缩
 - /compress-fast：零 LLM 成本裁剪旧 ToolResultBlock 输出
 
@@ -99,7 +99,7 @@ class CompactionService:
     """上下文压缩 Service（全异步），由本包 Plugin 唯一创建。
 
     Service 只依赖 ftre 的公开 Session 事件和 LLM 配置对象。它不认识
-    SessionLane、TurnExecutor 或 Gateway；这些对象通过 Hook/Command 在
+    Inbox worker、TurnExecutor 或 Gateway；这些对象通过 Hook/Command 在
     外层调用它。这个边界是“卸载压缩包后核心仍可运行”的关键。
     """
 

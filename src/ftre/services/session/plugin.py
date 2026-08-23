@@ -1,9 +1,15 @@
-"""Provider Plugin for Session persistence and lifecycle."""
+"""Session Service 的 Provider Plugin。
+
+Session 是 Agent 数据面的持久化根，因此 Provider 先创建并初始化 repository，再
+发布 ``sessions``；Hook runtime 通过注入 key 绑定 lifecycle 桥，而不是由
+SessionService 反向查找全局 AgentLoop。
+"""
 
 from __future__ import annotations
 
 from cordis import Context
 
+from .events import SessionEventService
 from .hooks import (
     SESSION_CREATED_SPEC,
     SESSION_DISPOSED_SPEC,
@@ -11,12 +17,14 @@ from .hooks import (
 )
 from .service import SessionService
 
-inject = ("hook_runtime",)
-provide = ("sessions",)
+inject = ("hook_runtime", "http", "agents")
+provide = ("sessions", "session_events")
 
 
 async def apply(ctx: Context, config=None):
-    """Initialize the session store before making ``sessions`` visible."""
+    """先初始化 Session 存储，再发布 ``sessions`` Service。"""
+    if ctx.get("session_events", strict=False) is None:
+        ctx.provide("session_events", SessionEventService())
     service = ctx.get("sessions", strict=False)
     if service is None:
         options = config if isinstance(config, dict) else {}
@@ -37,4 +45,12 @@ async def apply(ctx: Context, config=None):
     if isinstance(service, SessionService):
         unbind = service.bind_lifecycle_dispatcher(dispatch)
         ctx.effect(lambda: unbind, label="hook:session:lifecycle")
-        ctx.effect(service.close, label="sessions:close")
+        ctx.effect(lambda: service.close, label="sessions:close")
+
+    from .router import build_router
+
+    disposer = ctx.http.register_router(
+        build_router(service, ctx.agents, ctx.get("inbox", strict=False)),
+        owner="sessions",
+    )
+    ctx.effect(lambda: disposer, label="http:sessions")

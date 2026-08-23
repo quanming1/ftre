@@ -1,4 +1,5 @@
 """HTTP contribution for revisioned ConfigService updates."""
+# 中文说明：Config HTTP 路由：用 ConfigService 的 snapshot/revision 更新配置，冲突时返回显式错误。
 
 from __future__ import annotations
 

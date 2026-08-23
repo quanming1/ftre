@@ -3,6 +3,9 @@
 AgentScope Event 是实时传输过程；进行中的 assistant Reply 则是由一条可变
 Msg 快照表达的会话事实。本模块是 Event 聚合、checkpoint 与 attach 快照的唯一
 所有者。
+
+它是运行时投影组件而非独立 Service：SessionService 负责最终持久化，Projection
+负责把 stream 事件聚合成可恢复的 Msg 快照；两者之间通过显式绑定协作。
 """
 from __future__ import annotations
 
@@ -200,13 +203,11 @@ class SessionProjection:
                 save_new = True
                 state.dirty = False
             elif is_end:
-                # 最终 Event 已将结束信息写入 Msg；先从 active 集合移除，再写终态。
-                # 此后 attach 从正常历史读取，不再收到 running snapshot。
+                # 最终 Event 已将结束信息写入 Msg。先保留 active 状态，等下面的
+                # update_message 成功后再移除；这样取消或 Session 删除不能在落盘
+                # 前把唯一的内存快照丢掉，finish_open 仍能完成兜底收尾。
                 state.dirty = False
                 completed = state.message
-                replies.pop(reply_id, None)
-                if not replies:
-                    self._replies.pop(session_id, None)
             else:
                 state.dirty = True
                 if event_type in IMMEDIATE_CHECKPOINT_TYPES:
@@ -219,7 +220,15 @@ class SessionProjection:
         if update_snapshot is not None:
             await self._session_manager.update_message(update_snapshot)
         if completed is not None:
-            await self._session_manager.update_message(completed)
+            # 持有投影锁直到最终快照提交成功，避免 finish_open 或并发 Event 在
+            # "已标记完成、尚未落盘" 的窗口中移除/覆盖同一 Reply。
+            async with self._lock:
+                await self._session_manager.update_message(completed)
+                replies = self._replies.get(session_id)
+                if replies is not None and replies.get(reply_id) is state:
+                    replies.pop(reply_id, None)
+                    if not replies:
+                        self._replies.pop(session_id, None)
         return ProjectionResult(completed_message=completed)
 
     async def _project_compact_done(

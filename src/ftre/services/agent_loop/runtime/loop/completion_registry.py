@@ -67,3 +67,13 @@ class CompletionRegistry:
         for future in waiters:
             if not future.done():
                 future.set_exception(RuntimeError(f"session 已关闭: {session_id}"))
+
+    async def close(self) -> None:
+        """关闭整个 Loop 的等待注册表，避免 shutdown 后遗留 Future/结果缓存。"""
+        async with self._lock:
+            waiters = [future for futures in self._waiters.values() for future in futures]
+            self._waiters.clear()
+            self._cache.clear()
+        for future in waiters:
+            if not future.done():
+                future.set_exception(RuntimeError("AgentLoop 已关闭"))

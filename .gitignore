@@ -21,7 +21,7 @@ debug_*.py
 *.jpeg
 
 # 日志
-*.log 
+*.log
 
-# ��������չĿ¼��gateway ����ʱ�� cwd ���Զ������� skill/mcp �Ǽܣ���Դ��
+# Gateway 运行时会在当前工作目录创建 Skill/MCP 扩展目录；这些运行产物不进入版本库。
 /.ftre/

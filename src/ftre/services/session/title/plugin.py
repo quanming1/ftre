@@ -3,6 +3,7 @@
 The generator is a Service consumer and observes structured prompt assembly
 through the Cordis Context.
 """
+# 中文说明：标题 Plugin Provider：注入 sessions/system_prompt/hook runtime，注册 assemble Hook 并绑定线程停止清理。
 
 from __future__ import annotations
 
@@ -42,7 +43,7 @@ def apply(ctx: Context, config=None):
         lambda: receipt.dispose,
         label="hook:system-prompt:session-title",
     )
-    ctx.effect(generator.close, label="session-title:close")
+    ctx.effect(lambda: generator.close, label="session-title:close")
     disposer = ctx.system_prompt.register_section(
         PromptSection(
             name="title-generation",

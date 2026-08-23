@@ -1,4 +1,5 @@
 """Composition-facing plugin manager."""
+# 中文说明：PluginManager：面向 Composition 的装配门面，协调清单、加载、卸载和状态诊断。
 
 from __future__ import annotations
 
@@ -70,6 +71,10 @@ class PluginManager:
     async def unload(self, plugin_id: str) -> bool:
         """Delegate reversible unload while retaining a stable public API."""
         return await self.loader.unload(plugin_id)
+
+    async def restart(self, plugin_id: str) -> bool:
+        """Restart one Plugin Fiber through the official Cordis lifecycle."""
+        return await self.loader.restart(plugin_id)
 
     async def close(self) -> None:
         """Close the Context once; Cordis makes repeated cleanup safe."""

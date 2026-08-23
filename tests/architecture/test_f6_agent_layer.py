@@ -9,6 +9,7 @@ ROOT = Path(__file__).parents[2]
 AGENT_SERVICE = ROOT / "src" / "ftre" / "services" / "agent" / "service.py"
 AGENT_PLUGIN = ROOT / "src" / "ftre" / "services" / "agent" / "plugin.py"
 PROVIDER = ROOT / "src" / "ftre" / "services" / "agent_loop" / "provider.py"
+RUNTIME_PLUGIN = ROOT / "src" / "ftre" / "services" / "agent_loop" / "plugin.py"
 BOOTSTRAP = ROOT / "src" / "ftre" / "app" / "gateway" / "bootstrap.py"
 
 
@@ -40,8 +41,11 @@ def test_agent_plugin_only_provides_registry_service():
 
 def test_only_agent_loop_provider_constructs_agent_loop():
     provider_source = PROVIDER.read_text(encoding="utf-8")
+    runtime_plugin_source = RUNTIME_PLUGIN.read_text(encoding="utf-8")
     bootstrap_source = BOOTSTRAP.read_text(encoding="utf-8")
     assert "AgentLoop(" in provider_source
     assert "AgentLoop(" not in bootstrap_source
-    assert "AgentLoopProvider" in bootstrap_source
-    assert "attach_driver" in bootstrap_source
+    assert "AgentLoopProvider" in runtime_plugin_source
+    assert "attach_driver" in runtime_plugin_source
+    assert "AgentLoopProvider" not in bootstrap_source
+    assert "attach_driver" not in bootstrap_source

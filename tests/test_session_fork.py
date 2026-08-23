@@ -5,7 +5,7 @@
 - messages 全量克隆、逐条重生成 Msg.id、内容与顺序保持
 - metadata 深拷贝并排除活资源所有权键（teams/team_member/external），内容键保留
 - forked_from / forked_at 追加（fork-of-fork 覆盖式，只指向直接父）
-- mailbox 不继承（fork 为全新空队列）
+- Inbox 不继承（fork 为全新空队列）
 - channel_id / workspace 沿用父；title 加 "fork of " 前缀
 - external 索引零占用；父 session 不被修改
 - 父不存在抛 ValueError
@@ -13,8 +13,10 @@
 import pytest
 import pytest_asyncio
 from ftre_agent_core.message import AssistantMsg, UserMsg
+from ftre_inbox.repository import InboxRepository
+from ftre_inbox.service import InboxService
 
-from ftre.services.messaging.bus import BusMessage
+from ftre.services.agent.contracts import InboundMessage
 from ftre.services.session.service import SessionService as SessionManager
 
 
@@ -88,34 +90,27 @@ async def test_fork_metadata_exclude_live_resource_keys(manager):
 
 
 @pytest.mark.asyncio
-async def test_fork_mailbox_not_inherited(manager):
+async def test_fork_inbox_not_inherited(manager, tmp_path):
     parent = await manager.create_session("ws")
     await _seed_parent(manager, parent, n_turns=2)
-    # 给父 mailbox 塞一条 pending，让测试可证伪：若实现错误地继承父 mailbox，
-    # fork 的 pending 就不会是空（父 mailbox 为空时该断言会平凡成立）。
-    inbound = BusMessage(
-        type="user_message",
-        from_channel="ws",
-        to_channel="ws",
-        from_session=parent,
-        to_session=parent,
-        data={"content": "queued", "session_id": parent},
-        metadata={},
+    inbox = InboxService(
+        InboxRepository(tmp_path / "inbox", session_exists=manager.has_session)
     )
-    await manager.admit_inbound(inbound)
-    parent_before = await manager.get_mailbox_snapshot(parent)
+    await inbox.followup(InboundMessage(parent, "request-1", "ws", "queued"))
+    parent_before = await inbox.snapshot(parent)
     assert len(parent_before.pending) == 1
 
     result = await manager.fork_session(parent)
 
-    # fork 得到全新空队列，不继承父的 pending
-    fork_mailbox = await manager.get_mailbox_snapshot(result.fork_session_id)
-    assert fork_mailbox.pending == []
-    assert fork_mailbox.revision == 0
-    assert fork_mailbox.next_sequence == 1
+    # fork 得到全新空 Inbox，不继承父的 pending
+    fork_inbox = await inbox.snapshot(result.fork_session_id)
+    assert fork_inbox.pending == ()
+    assert fork_inbox.revision == 0
+    assert fork_inbox.next_sequence == 1
     # 父的 pending 不受 fork 影响
-    parent_after = await manager.get_mailbox_snapshot(parent)
+    parent_after = await inbox.snapshot(parent)
     assert len(parent_after.pending) == 1
+    await inbox.close()
 
 
 @pytest.mark.asyncio

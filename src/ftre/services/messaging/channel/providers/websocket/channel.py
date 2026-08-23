@@ -1,5 +1,4 @@
-"""
-WebSocket Channel
+"""WebSocket Channel：桌面客户端协议到 Bus 的适配层。
 
 启动时创建 FastAPI + WebSocket 端点。
 多个客户端连接共享同一个全局 AgentLoop。
@@ -8,8 +7,11 @@ WebSocket Channel
 - 一个客户端 = 一条物理 WebSocket。
 - 一条 WebSocket 可以 attach 到多个 session（前端同时关注多个会话）。
 - session_id → set[WebSocket]：同一个 session 也允许被多个客户端 attach（多端同步）。
-- 客户端必须显式发送 attach 帧（或在 user_message/cancel 时隐式 attach 当前 session），
+- 客户端必须显式发送 attach 帧（或在 session.prompt/session.cancel 时隐式 attach 当前 session），
   后端才会把这条 ws 加入 session 的推送目标。
+Channel 只负责连接、帧校验、attach 和 outbound 推送；Session admission、命令解析
+和 Agent 执行仍由 MessageBus/AgentLoop 完成。一个连接可以 attach 多个 Session，
+因此连接集合是本类私有状态，不能塞进 SessionService。
 """
 import asyncio
 import base64
@@ -38,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# 附件校验（user_message.data.attachments）
+# 附件校验（session.prompt.payload.attachments）
 # ============================================================
 
 # 允许的图片 MIME
@@ -55,9 +57,22 @@ MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024  # 3 MB
 MAX_ATTACHMENTS_PER_MESSAGE = 8
 
 
+def _prompt_text(value: Any) -> str:
+    """将 prompt/updateQueue 的字符串或文本 parts 归一为内部文本。"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(
+            str(part.get("text", ""))
+            for part in value
+            if isinstance(part, dict) and part.get("type", "text") == "text"
+        )
+    return str(value or "")
+
+
 def _validate_attachments(attachments) -> tuple[bool, str]:
     """
-    校验 user_message.data.attachments。
+    校验 session.prompt.payload.attachments。
     返回 (ok, error_message)。无附件视为合法。
     """
     if attachments is None:
@@ -131,6 +146,7 @@ def _persist_attachments(
 
 
 class WebSocketChannel(Channel):
+    """维护 WebSocket 连接集合，并把客户端帧转换为 BusMessage。"""
 
     def __init__(
         self,
@@ -161,17 +177,18 @@ class WebSocketChannel(Channel):
         self._session_output_locks: dict[str, asyncio.Lock] = {}
         # SessionProjection（由 main.py 注入），attach 时读取 reply/session 快照。
         self._session_projection = None
-        # AgentLoop 的只读快照接口（由 main.py 注入），attach 时恢复 mailbox 状态。
-        # AgentLoop 提供只读快照；WebSocket 不再持有或调用 Lane/调度器。
-        self._session_snapshot_provider = None
+        # 可选 ftre-inbox 的客户端权威队列投影；Channel 不读取其内部 next-turn/next-step。
+        self._inbox_provider = None
+        self._status_provider = None
         self._server = None
         self._server_task: asyncio.Task | None = None
         # Attachment persistence is a Service dependency; the channel never
         # reaches into the attachment store or constructs a global fallback.
         self._attachment_service = attachment_service
 
-        # 注册路由
-        self.app.websocket("/")(self._ws_endpoint)
+        # Register the endpoint on the provisional app.  The Host may replace
+        # it with the shared HttpService app after all Plugin routes are built.
+        self._register_endpoint(self.app)
 
         # HTTP routes are materialized by HttpService before this Channel is
         # created.  The Channel contributes only the WebSocket protocol path.
@@ -180,9 +197,34 @@ class WebSocketChannel(Channel):
         """注入 SessionProjection（由 main.py 在 AgentLoop 创建后调用）。"""
         self._session_projection = projection
 
-    def set_session_snapshot_provider(self, provider) -> None:
-        """注入 AgentLoop 的窄查询口，仅用于 attach 时读取 mailbox 快照。"""
-        self._session_snapshot_provider = provider
+    def attach_app(self, app: FastAPI) -> None:
+        """Attach the shared Host app after HttpService materialization."""
+        if app is self.app:
+            return
+        self.app = app
+        self._register_endpoint(app)
+
+    def _register_endpoint(self, app: FastAPI) -> None:
+        """Register this channel's endpoint exactly once on one app."""
+        marker = "_ftre_ws_channel_registered"
+        if getattr(app.state, marker, False):
+            return
+        app.websocket("/")(self._ws_endpoint)
+        setattr(app.state, marker, True)
+
+    def set_inbox_provider(self, provider) -> None:
+        """绑定可选 Inbox provider 或返回当前实例的 resolver。"""
+        self._inbox_provider = provider
+
+    def _current_inbox(self):
+        provider = self._inbox_provider
+        if callable(provider):
+            return provider()
+        return provider
+
+    def set_status_provider(self, provider) -> None:
+        """绑定 active Agent status 查询；状态不从 Queue 快照推导。"""
+        self._status_provider = provider
 
     async def start(self) -> None:
         """启动 WebSocket 服务"""
@@ -233,11 +275,12 @@ class WebSocketChannel(Channel):
             else msg.data
         )
         payload = {
-            "frame_id": msg.id,
             "type": msg.type,
-            "data": wire_data,
+            "payload": wire_data,
             "metadata": metadata.model_dump(exclude_none=True),
         }
+        if msg.metadata.request_id:
+            payload["request_id"] = msg.metadata.request_id
         text = json.dumps(payload, ensure_ascii=False, default=str)
 
         if msg.to_session == GLOBAL_SESSION:
@@ -338,15 +381,16 @@ class WebSocketChannel(Channel):
 
     async def _on_message(self, raw: str, ws: WebSocket) -> None:
         """
-        收到客户端消息 → 持久化接纳到 session mailbox
+        收到客户端消息 → 通过 Bus 交给 Inbox/Command 边界
 
-        上行帧格式: {id, type, data: {...}, metadata?}
+        上行帧格式: {type, request_id, payload: {...}, metadata?}
 
         type:
         - attach     声明这条 ws 关心的 session（data.session_id）
         - detach     取消关心（data.session_id）
-        - user_message 用户消息（隐式 attach data.session_id）
-        - cancel       取消当前 Turn（独立控制消息，不进入用户队列）
+        - session.prompt 提交 queue/steer 输入（隐式 attach）
+        - session.cancel 取消当前 Turn（独立控制消息，不进入 Inbox）
+        - session.updateQueue 修改 pending 项
         """
         try:
             frame = json.loads(raw)
@@ -356,7 +400,7 @@ class WebSocketChannel(Channel):
             return
 
         frame_type = frame.get("type", "")
-        data = frame.get("data") or {}
+        data = frame.get("payload") or {}
         if not isinstance(data, dict):
             return
         session_id = data.get("session_id", "")
@@ -374,17 +418,20 @@ class WebSocketChannel(Channel):
             self._detach(session_id, ws)
             return
 
-        # ─── cancel 帧：控制面，不伪装成 /cancel 用户消息 ───
-        if frame_type == "cancel":
+        # ─── cancel 帧：控制面，不伪装成用户消息 ───
+        if frame_type == "session.cancel":
             if not session_id:
                 logger.warning("[ws-channel] cancel 缺少 session_id，忽略")
                 return
             self._attach(session_id, ws)
-            frame_id = frame.get("frame_id") or ""
+            request_id = frame.get("request_id") or ""
+            if not isinstance(request_id, str) or not request_id:
+                await self._reject(ws, "", session_id, "缺少 request_id", code="missing_request_id")
+                return
             expected_request_id = data.get("expected_request_id") or ""
             try:
-                # 仍通过 Bus request/reply 排队到 AgentLoop，但它不是 mailbox 输入，
-                # 所以不会写 messages，也不会在刷新后变成一条待执行的 /cancel。
+                # 通过 Bus request/reply 进入控制面；它不是 Inbox 输入，
+                # 所以不会写 messages，也不会变成待执行的 Agent 输入。
                 ack = await self.bus.request_inbound(
                     BusMessage(
                         type="turn_cancel",
@@ -400,9 +447,9 @@ class WebSocketChannel(Channel):
                 )
                 await self._send_control_ack(
                     ws,
-                    frame_id,
+                    request_id,
                     session_id,
-                    status="cancelled" if getattr(ack, "created", False) else "nothing_to_cancel",
+                    accepted=bool(getattr(ack, "created", False)),
                 )
             except (WebSocketDisconnect, RuntimeError):
                 logger.debug("[ws-channel] cancel ack skipped after disconnect session=%s", session_id)
@@ -410,7 +457,7 @@ class WebSocketChannel(Channel):
                 logger.exception("[ws-channel] cancel control 执行失败 session=%s", session_id)
                 await self._reject(
                     ws,
-                    frame_id,
+                    request_id,
                     session_id,
                     "取消指令执行失败，请重试",
                     code="control_failed",
@@ -418,31 +465,40 @@ class WebSocketChannel(Channel):
                 )
             return
 
-        if frame_type != "user_message":
+        if frame_type == "session.updateQueue":
+            await self._on_queue_update(ws, frame, data)
+            return
+
+        if frame_type != "session.prompt":
             logger.debug(f"[ws-channel] unknown frame type: {frame_type}")
             return
 
         if not session_id:
-            logger.warning(f"[ws-channel] {frame_type} 缺少 session_id，忽略")
+            logger.warning("[ws-channel] session.prompt 缺少 session_id，忽略")
             return
 
-        frame_id = frame.get("frame_id") or ""
-        if not isinstance(frame_id, str) or not frame_id:
+        request_id = frame.get("request_id") or ""
+        if not isinstance(request_id, str) or not request_id:
             await self._reject(
                 ws,
                 "",
                 session_id,
-                "user_message 缺少 frame_id，无法保证幂等接纳",
+                "session.prompt 缺少 request_id，无法保证幂等接纳",
                 code="missing_request_id",
                 retryable=False,
             )
             return
 
-        # user_message 附件校验：违规直接拒绝，不进 Bus
+        mode = data.get("mode") or "queue"
+        if mode not in {"queue", "steer"}:
+            await self._reject(ws, request_id, session_id, "mode 只能是 queue 或 steer", code="invalid_mode")
+            return
+
+        # 附件校验：违规直接拒绝，不进 Bus
         ok, err = _validate_attachments(data.get("attachments"))
         if not ok:
-            logger.warning(f"[ws-channel] user_message 附件非法: {err}")
-            await self._reject(ws, frame_id, session_id, err)
+            logger.warning(f"[ws-channel] session.prompt 附件非法: {err}")
+            await self._reject(ws, request_id, session_id, err)
             return
 
         # 附件落盘：base64 → temp 文件路径，事件链路不再携带 base64
@@ -450,7 +506,7 @@ class WebSocketChannel(Channel):
         if attachments and self._attachment_service is None:
             await self._reject(
                 ws,
-                frame_id,
+                request_id,
                 session_id,
                 "附件服务未就绪，请稍后重试",
                 code="attachment_service_unavailable",
@@ -460,43 +516,45 @@ class WebSocketChannel(Channel):
         if self._attachment_service is not None:
             _persist_attachments(attachments, self._attachment_service)
 
-        # user_message 隐式 attach：接收消息的 ws 自动跟踪该 session
+        # prompt 隐式 attach：接收消息的 ws 自动跟踪该 session
         self._attach(session_id, ws)
 
         metadata = InboundMetadata.from_client(frame.get("metadata"))
-        # 从这一行起，frame_id 已经成为统一的 request_id；AgentLoop、
-        # QueueItem 和 UserMsg 都不会再保存第二个客户端 ID。
+        # request_id 是唯一的传输相关性标识；内部 QueueItem 仅由 Inbox 保存。
         metadata = metadata.model_copy(
             update={
-                "request_id": frame_id,
+                "request_id": request_id,
             }
         )
 
         try:
-            # submit() 返回前已将 QueueItem 原子写入 state.json；本 ACK 因而是
-            # 客户端帧的耐久接纳确认，而不是“已放进内存队列”的假成功。
+            data = {**data, "mode": mode}
             ack = await self._admit(session_id, data, metadata, kind="user_message")
             if not getattr(ack, "accepted", False):
                 error = getattr(ack, "error", None) or {}
                 await self._reject(
-                    ws, frame_id, session_id,
+                    ws, request_id, session_id,
                     str(error.get("message") or "消息接纳被拒绝"),
                     code=str(error.get("code") or "admission_rejected"),
                     retryable=bool(error.get("retryable")),
                 )
                 return
-            await self._send_admission_ack(ws, frame_id, ack)
+            await self._send_admission_ack(
+                ws,
+                request_id,
+                ack,
+            )
         except Exception:
             logger.exception(
-                "[ws-channel] durable admission 失败 session=%s frame=%s",
+                "[ws-channel] durable admission 失败 session=%s request=%s",
                 session_id,
-                frame_id,
+                request_id,
             )
             await self._reject(
                 ws,
-                frame_id,
+                request_id,
                 session_id,
-                "消息接纳失败，请使用同一 frame_id 重试",
+                "消息接纳失败，请使用同一 request_id 重试",
                 code="admission_failed",
                 retryable=True,
             )
@@ -509,12 +567,7 @@ class WebSocketChannel(Channel):
         *,
         kind: str,
     ):
-        """Use durable admission; keep a Bus fallback for isolated channel tests.
-
-        WebSocket 只负责解析/校验协议帧；真正的容量、幂等、session 生命周期和
-        state.json 写入统一交给 AgentLoop。这样 HTTP、WS、工具三种入口不会各自
-        实现一套“入队”逻辑。
-        """
+        """把规范化 prompt 信封交给 MessageBus/InBox 边界。"""
         message = BusMessage(
             type=kind,
             from_channel=self.channel_id,
@@ -527,8 +580,12 @@ class WebSocketChannel(Channel):
         return await self.bus.request_inbound(message)
 
     async def _send_reply_snapshot(self, session_id: str, ws: WebSocket) -> None:
-        """attach 时原子发送 Reply 与权威 Mailbox 快照。"""
-        if self._session_projection is None and self._session_snapshot_provider is None:
+        """attach 时原子发送事件、队列和状态基线。"""
+        if (
+            self._session_projection is None
+            and self._inbox_provider is None
+            and self._status_provider is None
+        ):
             return
         replies = (
             await self._session_projection.snapshot(session_id)
@@ -540,57 +597,107 @@ class WebSocketChannel(Channel):
             if self._session_projection is not None
             else []
         )
-        mailbox = (
-            await self._session_snapshot_provider.get_mailbox_snapshot(session_id)
-            if self._session_snapshot_provider is not None
-            else None
-        )
-        # mailbox 快照只包含持久化 pending；运行 phase 由 SessionLane 内存状态推导。
-        if (
-            not replies
-            and not session_events
-            and mailbox is None
-        ):
+        inbox = self._current_inbox()
+        queue = await inbox.wire_snapshot(session_id) if inbox is not None else None
+        if not replies and not session_events and queue is None and self._status_provider is None:
             return
         payload = {
-            "frame_id": f"sync_{session_id}",
             "type": "reply_snapshot",
-            "data": {
+            "payload": {
                 "session_id": session_id,
                 "replies": replies,
                 "events": session_events,
-                "mailbox": mailbox,
             },
         }
         try:
             await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
+            if queue is not None:
+                await ws.send_text(json.dumps({
+                    "type": "session/queue",
+                    "payload": queue,
+                }, ensure_ascii=False, default=str))
+            status = "idle"
+            if self._status_provider is not None:
+                value = self._status_provider(session_id)
+                status = await value if asyncio.iscoroutine(value) else str(value)
+            await ws.send_text(json.dumps({
+                "type": "session/status",
+                "payload": {
+                    "session_id": session_id,
+                    "status": status,
+                },
+            }, ensure_ascii=False, default=str))
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             logger.debug(f"[ws-channel] reply_snapshot 发送失败: {e}")
+
+    async def _on_queue_update(self, ws: WebSocket, frame: dict, data: dict) -> None:
+        """将 edit/remove/steer 转给 Inbox Package，不在 Channel 维护队列。"""
+        session_id = str(data.get("session_id") or "")
+        request_id = str(frame.get("request_id") or "")
+        item_id = str(data.get("item_id") or "")
+        action = data.get("action") or {}
+        inbox = self._current_inbox()
+        if not session_id or not item_id or not isinstance(action, dict) or inbox is None:
+            await self._reject(ws, request_id, session_id, "队列能力不可用", code="inbox-unavailable")
+            return
+        kind = action.get("kind")
+        try:
+            if kind == "edit":
+                accepted = await inbox.edit(
+                    session_id,
+                    item_id,
+                    _prompt_text(action.get("content")),
+                    action.get("attachments"),
+                )
+            elif kind == "remove":
+                accepted = await inbox.remove(session_id, item_id)
+            elif kind == "steer":
+                snapshot = await inbox.snapshot(session_id)
+                if not any(item.request_id == item_id for item in snapshot.next_turn):
+                    await self._reject(
+                        ws,
+                        request_id,
+                        session_id,
+                        "只有 queued 消息可以提升为 steering",
+                        code="steer-not-available",
+                    )
+                    return
+                accepted = await inbox.promote(session_id, item_id)
+            else:
+                await self._reject(ws, request_id, session_id, "未知队列操作", code="invalid_queue_action")
+                return
+        except Exception:
+            logger.exception("[ws-channel] queue update failed session=%s item=%s", session_id, item_id)
+            await self._reject(ws, request_id, session_id, "队列操作失败", code="queue_update_failed", retryable=True)
+            return
+        if not accepted:
+            await self._reject(ws, request_id, session_id, "消息已不在队列中", code="item-not-pending")
+            return
+        await ws.send_text(json.dumps({
+            "request_id": request_id,
+            "ok": True,
+            "value": {"accepted": True, "session_id": session_id, "item_id": item_id},
+        }, ensure_ascii=False))
 
     async def _reject(
         self,
         ws: WebSocket,
-        frame_id: str,
+        request_id: str,
         session_id: str,
         reason: str,
         *,
         code: str = "invalid_input",
         retryable: bool = False,
     ) -> None:
-        """向客户端回写一帧拒绝消息（不入 Bus）"""
+        """用统一 RPC error envelope 回写，不伪装成 Queue 快照。"""
         payload = {
-            "frame_id": frame_id or "",
-            "type": "error",
-            "data": {
+            "request_id": request_id or "",
+            "ok": False,
+            "error": {
                 "code": code,
                 "message": reason,
                 "session_id": session_id,
-                "request_id": frame_id or "",
                 "retryable": retryable,
-            },
-            "metadata": {
-                "channel_id": self.channel_id,
-                "session_id": session_id,
             },
         }
         try:
@@ -601,41 +708,22 @@ class WebSocketChannel(Channel):
     async def _send_control_ack(
         self,
         ws: WebSocket,
-        frame_id: str,
+        request_id: str,
         session_id: str,
         *,
-        status: str,
+        accepted: bool,
     ) -> None:
         payload = {
-            "frame_id": frame_id,
-            "type": "control_ack",
-            "data": {
-                "request_id": frame_id,
-                "session_id": session_id,
-                "status": status,
-            },
-            "metadata": {
-                "channel_id": self.channel_id,
-                "session_id": session_id,
-            },
+            "request_id": request_id,
+            "ok": True,
+            "value": {"accepted": accepted, "session_id": session_id},
         }
         await ws.send_text(json.dumps(payload, ensure_ascii=False))
 
-    async def _send_admission_ack(self, ws: WebSocket, frame_id: str, ack) -> None:
-        """只在 AgentLoop durable admission 成功后回写；客户端据此结束 sending 状态。"""
-        payload = {
-            "frame_id": frame_id,
-            "type": "message_ack",
-            "data": {
-                "session_id": ack.session_id,
-                "request_id": ack.request_id,
-                # 兼容尚未迁移的 Desktop；这是传输帧的别名，业务层并不保存它。
-                "queue_position": ack.queue_position,
-                "created": ack.created,
-            },
-            "metadata": {
-                "channel_id": self.channel_id,
-                "session_id": ack.session_id,
-            },
-        }
-        await ws.send_text(json.dumps(payload, ensure_ascii=False))
+    async def _send_admission_ack(self, ws: WebSocket, request_id: str, ack) -> None:
+        """持久 admission 成功后回写统一 ACK。"""
+        await ws.send_text(json.dumps({
+            "request_id": request_id,
+            "ok": True,
+            "value": {"accepted": True, "session_id": ack.session_id},
+        }, ensure_ascii=False))
