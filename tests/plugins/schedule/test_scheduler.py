@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from ftre.features.schedule.scheduler import CronScheduler
-from ftre.features.schedule.service import ScheduleService
+from ftre.plugins.builtin.schedule.scheduler import CronScheduler
+from ftre.plugins.builtin.schedule.service import ScheduleService
 from ftre.services.messaging.bus import MessageBusService
 
 

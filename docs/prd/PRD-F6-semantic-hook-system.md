@@ -216,7 +216,7 @@ PRE11-PRE13 是 `E:\cordis-py` owner 的外部发布动作，本仓库只记录�
 
 ### 3.5 Compaction 与 Command 首批迁移
 
-- [x] FR35：Compaction 必须迁入独立 `features/compaction` Owner，并通过公开 `CompactionService` 暴露 `compact_if_needed`、`compact_now` 和 overflow recovery；AgentLoop、Agent Service、Command 不得 import 其私有实现。
+- [x] FR35：Compaction 必须迁入独立 `plugins/builtin/compaction` Owner，并通过公开 `CompactionService` 暴露 `compact_if_needed`、`compact_now` 和 overflow recovery；AgentLoop、Agent Service、Command 不得 import 其私有实现。
 - [x] FR36：自动压力压缩必须监听 `agent/pre-step`，在 pending 仍未领取时工作；正常压力压缩失败默认记录告警并调用 `next_()` 继续，不得静默吞掉取消。
 - [x] FR37：上下文溢出恢复必须监听 `agent/request-error`；只有压缩产生可证明的持久上下文进展且未取消时才能短路后续监听器并返回 `RetryRequest`，否则委托 `next_()` 保留原始错误。
 - [x] FR38：手动压缩必须通过 Command Plugin 调用 `CompactionService.compact_now(agent)`；Agent 进入独占 maintenance 状态，期间允许新输入入队，maintenance 结束后由 pending 唤醒 driver。
@@ -307,7 +307,7 @@ src/
    │     ├─ model_adapter.py        # 在 ftre 边界提供 llm/stream 包装点
    │     └─ tool_adapter.py         # 在 ftre 边界提供 Tool 管线包装点
    │
-   └─ features/
+   └─ plugins/builtin/
       └─ compaction/
          ├─ service.py
          ├─ policy.py
@@ -326,7 +326,7 @@ tests/
 │  ├─ agent_loop/
 │  ├─ tools/
 │  └─ session/
-└─ features/
+└─ plugins/builtin/
    └─ compaction/
 ```
 
@@ -811,7 +811,7 @@ transition/test host 的显式 fallback；F6.9 已删除该 fallback 及旧契�
 #### F6.8 实现边界与验收记录
 
 压缩实现已从 `services/agent_loop/runtime/compaction` 迁入
-`features/compaction/service.py`，公开端口收敛为 `services/compaction/contracts.py`
+`plugins/builtin/compaction/service.py`，公开端口收敛为 `services/compaction/contracts.py`
 中的 `CompactionPort`。AgentLoop、ContextGate 和 Command 只依赖这个 Protocol/Service
 端口，不 import Feature 私有实现，也不再持有 `CompactManager`。
 
@@ -1016,7 +1016,7 @@ git diff --check
 | 2026-08-21 | F6.5 验收：AgentService/AgentDriver 契约、Registry identity 生命周期、Provider 唯一构造 Owner、真实 runtime 目录迁移、Gateway attach/detach 和架构门禁全部通过；全量测试 353 passed | 完成 Agent 公共 Service 与 AgentLoop 数据面 Provider 的真实分层，进入 F6.6 状态机语义 Hook |
 | 2026-08-21 | F6.6 验收：接入 `agent/pre-step`、`agent/request`、`agent/request-error`、`agent/turn-stopping`；SessionLane 固化 `peek → decision → claim`，补齐 keep/discard、取消 signal、Inbox mutation 与 Agent 生命周期观察；全量测试 360 passed，ruff 全绿 | 将 Hook 从契约推进到真实 Agent 状态机边界，保证 Hook 失败/取消不提前领取或丢失 pending |
 | 2026-08-21 | F6.7 验收：接入 Tool pre/execute/post/result、Session post-commit/flush、结构化 PromptAssembly 和 LLM around stream；新增 Agent Core 单向适配器与共享 `hook_runtime` Service；全量测试 364 passed，ruff 全绿 | 将 Tool、Session、Prompt、LLM 扩展点从旧可变 Filter/Core Hook 收口到统一 Cordis 语义边界 |
-| 2026-08-21 | F6.8 验收：Compaction 实现迁入 `features/compaction`，公开 `CompactionPort`，通过 `agent/pre-step` 做压力优化、通过 `agent/request-error` 做有进展 overflow recovery；Command 改走 `compaction` Service；删除 AgentLoop 对 CompactManager 的直接持有；专项与既有压缩测试通过 | 让压缩成为可独立卸载的 Feature Owner，AgentLoop 只依赖公开能力，不再拥有压缩算法和任务表 |
+| 2026-08-21 | F6.8 验收：Compaction 实现迁入 `plugins/builtin/compaction`，公开 `CompactionPort`，通过 `agent/pre-step` 做压力优化、通过 `agent/request-error` 做有进展 overflow recovery；Command 改走 `compaction` Service；删除 AgentLoop 对 CompactManager 的直接持有；专项与既有压缩测试通过 | 让压缩成为可独立卸载的 Feature Owner，AgentLoop 只依赖公开能力，不再拥有压缩算法和任务表 |
 | 2026-08-21 | F6.9 实现：CommandService 增加 parse/dispatch_inbound 接入 API；AgentLoop 在 Bus 消费边界先解析命令，SessionLane 以 admission lock 串行执行普通命令；TurnExecutor 删除 CommandManager 匹配/派发，仅执行已解析结果；`/compact` 与 `/compress-fast` 保持公开 CompactionPort 调用；删除旧 runtime/hooks.py、旧 Filter fallback 与对应兼容测试，新增 F6.9 架构/契约门禁 | 消除命令文本进入 Inbox/模型的隐性路径，收紧 AgentLoop/TurnExecutor/旧 Hook 的职责边界，完成 FR39/FR41/FR42 与 AC20-AC22 |
 | 2026-08-21 | F6.10 实现：HookRuntime registration 绑定 Cordis Fiber companion Effect，Fiber unload/restart 标记并清理旧 Listener；增加 active_calls drain barrier 等待 in-flight Hook 收敛；新增 lifecycle/scope/fault 测试覆盖同 id Agent 重建、pre-step 失败重试、取消后拒绝 retry、压缩失败保留 pending 与去重执行 | 仅移除 Listener 不能证明 Plugin 生命周期安全；需要将“不可再进入、等待进行中调用、资源可逆、pending 不丢失”转成可观察的测试契约 |
 | 2026-08-21 | F6.11 最终验收：补齐 `session/created` / `session/disposed` Hook；公共 Hook README 增加 owner、模式、payload/result、失败策略、scope 与副作用边界；完成 FR1-FR46、AC1-AC30 重核，保留 PyPI PRE11-PRE16/AC31-AC32 为 F6.12 后置项；新增 F6 执行报告 | 将实现、测试、文档和验收证据三联动收口；业务层 `agent.steer()` 不属于当前数据面，明确后置而不伪造完成 |

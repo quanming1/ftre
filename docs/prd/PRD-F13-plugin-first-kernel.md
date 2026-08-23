@@ -338,7 +338,7 @@ AgentService.run(InboundMessage)
 
 ### F13.2 Service/Plugin Owner 审计
 
-- 逐项审计 `services/`、`features/`、`packages/`；
+- 逐项审计 `services/`、`plugins/builtin/`、`packages/`；
 - 记录每项能力的 Plugin Owner、Service key、inject 和生命周期；
 - 找出直接实例化、全局 setter、service bag、重复 provider 和私有 import。
 

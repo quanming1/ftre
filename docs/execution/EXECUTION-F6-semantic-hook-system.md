@@ -23,8 +23,8 @@ Gateway Composition Root
   ├─ services/session: durable Session、Mailbox、Projection、lifecycle/flush Hook
   ├─ services/tools + infrastructure/agent_core: typed Tool Hook adapter
   ├─ services/system_prompt + services/llm: structured prompt / stream Hook
-  ├─ features/compaction: CompactionService + pre-step/request-error Hook
-  └─ services/command: ingress parse/dispatch；不进入 Inbox 或模型上下文
+  ├─ plugins/builtin/compaction: CompactionService + pre-step/request-error Hook
+  └─ plugins/builtin/command: ingress parse/dispatch；不进入 Inbox 或模型上下文
 ```
 
 ### 2.1 Owner 与生命周期
@@ -35,7 +35,7 @@ Gateway Composition Root
 | Agent scope | `AgentRegistry` | identity + parent carrier | dispose 后旧 identity 不再命中新 Agent | 同 ID 重建隔离 |
 | Session | `SessionService` | repository commit 后发布 `session/created` | 删除 commit 后发布 `session/disposed`，`flush()` 是唯一屏障 | 观察失败不回滚事实 |
 | SessionLane | `SessionLaneRegistry` | pending admission 后启动 drain | close/stop 取消 worker、压缩和等待者 | Hook/压缩失败保留 pending 或进入 BLOCKED |
-| Compaction | `features/compaction` | Composition 显式加载 Feature | `cancel_all_compact_tasks` 等待真实 Task 退出 | overflow 只有持久进展才 Retry |
+| Compaction | `plugins/builtin/compaction` | Composition 显式加载 Feature | `cancel_all_compact_tasks` 等待真实 Task 退出 | overflow 只有持久进展才 Retry |
 | Command | `CommandService` + ingress | AgentLoop 消费 Bus 时 parse | control/SessionLane 完成后返回 ACK | 命令不进入 Mailbox |
 
 ### 2.2 关键行为
@@ -55,8 +55,8 @@ Gateway Composition Root
 - `src/ftre/kernel/hooks/names.py`：补充 `session/created`、`session/disposed`。
 - `src/ftre/services/session/`：Session lifecycle Hook、flush barrier、post-commit 事件。
 - `src/ftre/services/agent_loop/`：AgentLoop Provider、SessionLane、TurnExecutor 和 Mailbox 数据面。
-- `src/ftre/features/compaction/`：独立 CompactionService 与 Hook Feature。
-- `src/ftre/services/command/`：接入层 parse/dispatch、CommandResult 路由。
+- `src/ftre/plugins/builtin/compaction/`：独立 CompactionService 与 Hook Feature。
+- `src/ftre/plugins/builtin/command/`：接入层 parse/dispatch、CommandResult 路由。
 - `src/ftre/infrastructure/agent_core/`：Tool/LLM 单向适配器。
 
 ### 3.2 测试
@@ -131,5 +131,5 @@ PRD 中的 FR/AC 已按上述结果更新；F6.12 的 PRE11–PRE16、AC31–AC3
 ## F11 后续变更
 
 F11 在本报告的 F6.8–F6.11 基线上新增 `agent/after-turn`，并把压缩实现、Hook、命令
-和算法迁入 `packages/ftre-compaction`；F6.8 中关于 `features/compaction` 或
+和算法迁入 `packages/ftre-compaction`；F6.8 中关于 `plugins/builtin/compaction` 或
 `CompactionPort` 的路径描述是历史记录，不代表当前主包结构。

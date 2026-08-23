@@ -12,9 +12,8 @@ unknown channel；不真的把任何东西推给外部。
 import logging
 
 from ftre.services.messaging.bus import BusMessage, EventBus
+from ftre.services.messaging.channel.base import Channel
 from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
-
-from ...base import Channel
 
 logger = logging.getLogger(__name__)
 

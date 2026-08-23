@@ -58,7 +58,7 @@ def test_agent_service_contract_is_single_message_execution_boundary() -> None:
 
 def test_queue_wire_contract_has_no_legacy_frame_or_mailbox_alias() -> None:
     protocol = (SRC / "services" / "messaging" / "bus" / "protocol.py").read_text(encoding="utf-8")
-    channel = (SRC / "services" / "messaging" / "channel" / "providers" / "websocket" / "channel.py").read_text(encoding="utf-8")
+    channel = (SRC / "plugins" / "builtin" / "channels" / "websocket" / "channel.py").read_text(encoding="utf-8")
     assert "session/queue" in protocol
     assert "session/status" in protocol
     assert "mailbox_snapshot" not in protocol

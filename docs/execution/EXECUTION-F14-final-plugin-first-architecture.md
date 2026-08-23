@@ -35,22 +35,22 @@
 | `agent-profiles` | `ftre.services.agent.profile.plugin:apply` | Host Provider | `agent_profiles` |
 | `agents` | `ftre.services.agent.plugin:apply` | Host Provider | `agents` |
 | `sessions` | `ftre.services.session.plugin:apply` | Host Provider | `sessions`, `session_events` |
-| `commands` | `ftre.services.command.plugin:apply` | Host Provider（待 F14.5 归位） | `commands` |
+| `commands` | `ftre.plugins.builtin.command.plugin:apply` | Host Provider（待 F14.5 归位） | `commands` |
 | `workspaces` | `ftre.services.workspace.plugin:apply` | Host Provider | `workspaces` |
 | `channels` | `ftre.services.messaging.channel.plugin:apply` | Registry Provider | `channels` |
 | `attachments` | `ftre.services.attachment.plugin:apply` | Host Provider | `attachments` |
-| `traces` | `ftre.services.observability.trace.plugin:apply` | Optional behavior（待 F14.5 归位） | `traces` |
+| `traces` | `ftre.plugins.builtin.trace.plugin:apply` | Optional behavior（待 F14.5 归位） | `traces` |
 | `agent-runtime` | `ftre.services.agent_loop.plugin:apply` | Runtime Provider（待 F14.3 合并） | `agent_runtime` |
 | `inbox` | `ftre_inbox.plugin:apply` | Optional Package | Inbox capability |
-| `subagent-channel` | `ftre.services.messaging.channel.providers.subagent.plugin:apply` | Adapter Plugin（待 F14.5 归位） | none |
-| `websocket-channel` | `ftre.services.messaging.channel.providers.websocket.plugin:apply` | Adapter Plugin（待 F14.5 归位） | none |
-| `skill` | `ftre.features.skill.plugin:apply` | Behavior Plugin（待 F14.5 归位） | `skills` |
-| `mcp` | `ftre.features.mcp.plugin:apply` | Behavior Plugin（待 F14.5 归位） | `mcp` |
-| `plan` | `ftre.features.plan.plugin:apply` | Behavior Plugin（待 F14.5 归位） | none |
-| `team` | `ftre.features.team.plugin:apply` | Behavior Plugin（待 F14.5 归位） | `teams` |
-| `schedule` | `ftre.features.schedule.plugin:apply` | Behavior Plugin（待 F14.5 归位） | `schedule` |
-| `context-govern` | `ftre.features.context_govern.plugin:apply` | Behavior Plugin（待 F14.5 归位） | none |
-| `session-title` | `ftre.services.session.title.plugin:apply` | Behavior Plugin（待 F14.5 归位） | none |
+| `subagent-channel` | `ftre.plugins.builtin.channels.subagent.plugin:apply` | Adapter Plugin（待 F14.5 归位） | none |
+| `websocket-channel` | `ftre.plugins.builtin.channels.websocket.plugin:apply` | Adapter Plugin（待 F14.5 归位） | none |
+| `skill` | `ftre.plugins.builtin.skill.plugin:apply` | Behavior Plugin（待 F14.5 归位） | `skills` |
+| `mcp` | `ftre.plugins.builtin.mcp.plugin:apply` | Behavior Plugin（待 F14.5 归位） | `mcp` |
+| `plan` | `ftre.plugins.builtin.plan.plugin:apply` | Behavior Plugin（待 F14.5 归位） | none |
+| `team` | `ftre.plugins.builtin.team.plugin:apply` | Behavior Plugin（待 F14.5 归位） | `teams` |
+| `schedule` | `ftre.plugins.builtin.schedule.plugin:apply` | Behavior Plugin（待 F14.5 归位） | `schedule` |
+| `context-govern` | `ftre.plugins.builtin.context_govern.plugin:apply` | Behavior Plugin（待 F14.5 归位） | none |
+| `session-title` | `ftre.plugins.builtin.session_title.plugin:apply` | Behavior Plugin（待 F14.5 归位） | none |
 
 证据来源：`src/ftre/app/gateway/composition.py` 的 `default_manifests()`，以及各 entry
 模块顶部的 `inject`/`provide` 声明。
@@ -62,9 +62,9 @@
 | `src/ftre/kernel/hooks` | `src/ftre/kernel/hooks` | Kernel mechanism | F14.2 |
 | `src/ftre/kernel/plugins` | `src/ftre/kernel/plugins` | Plugin Runtime | F14.2 |
 | `src/ftre/services/agent_loop` | `src/ftre/services/agent/runtime` | Agent Provider | F14.3 |
-| `src/ftre/features/*` | `src/ftre/plugins/builtin/*` | 各行为 Plugin | F14.5 |
-| `services/command` | `plugins/builtin/command` | Command Plugin | F14.4/F14.5 |
-| `services/observability/trace` | `plugins/builtin/trace` | Trace Plugin | F14.5 |
+| `src/ftre/plugins/builtin/*` | `src/ftre/plugins/builtin/*` | 各行为 Plugin | F14.5 |
+| `plugins/builtin/command` | `plugins/builtin/command` | Command Plugin | F14.4/F14.5 |
+| `plugins/builtin/trace` | `plugins/builtin/trace` | Trace Plugin | F14.5 |
 | `services/messaging/channel/providers/*` | `plugins/builtin/channels/*` | concrete Channel Plugin | F14.5 |
 | `packages/ftre-inbox` | 保持独立 Package | Inbox Plugin/Service | F14.7 |
 | `packages/ftre-compaction` | 保持独立 Package | Compaction Plugin/Service | F14.7 |
@@ -86,11 +86,11 @@
 | 债务 | 证据 | Owner | 清理批次 |
 |---|---|---|---|
 | `platform` 名称仍承载 Kernel 机制 | `src/ftre/kernel/` | Kernel | F14.2 |
-| `features` 名称隐藏 Plugin 生命周期 | `src/ftre/features/*` | Builtin Plugins | F14.5 |
+| `features` 名称隐藏 Plugin 生命周期 | `src/ftre/plugins/builtin/*` | Builtin Plugins | F14.5 |
 | `agent_runtime` 与 `agents` 双 Service/Provider | `composition.py`、`services/agent_loop/plugin.py` | Agent | F14.3 |
 | AgentLoop 仍拥有 Bus 分流、Command/Inbox binding | `services/agent_loop/runtime/loop/engine.py` | Messaging/Agent | F14.3/F14.4 |
 | concrete Channel 深嵌在 Service 目录 | `services/messaging/channel/providers/*` | Channel Plugin | F14.5 |
-| Command/Trace Service 仍位于 Host services | `services/command`、`services/observability/trace` | Builtin Plugins | F14.5 |
+| Command/Trace Service 仍位于 Host services | `plugins/builtin/command`、`plugins/builtin/trace` | Builtin Plugins | F14.5 |
 | Package 仍引用旧 `ftre.kernel` 测试/入口 | `packages/ftre-inbox`、`ftre-compaction` | Package | F14.2/F14.7 |
 | 多处 `ctx.get(..., strict=False)` 作为可选依赖查找 | 各 Provider Plugin | 各 Owner | F14.6 |
 | 多处 `bind_*` 生命周期桥接 | Session、Command、Inbox、AgentLoop | 各 Owner | F14.3-F14.6 |
@@ -210,6 +210,37 @@ python -m ruff check --no-cache src tests packages/ftre-inbox packages/ftre-comp
 ```
 
 F14.3/F14.4 已完成；F14.5 继续处理 Builtin Plugin 目录和 concrete Channel 归位。
+
+## F14.5 Builtin Plugin 目录与 Owner 迁移（2026-08-24）
+
+### 已完成
+
+- `src/ftre/features` 已删除，Skill、MCP、Plan、Team、Schedule、Context Govern 统一迁入
+  `src/ftre/plugins/builtin/`。
+- Command Service/Plugin、Trace Service/Plugin、Session Title Plugin 迁入各自 Builtin Plugin；
+  Command/Trace 的稳定 Service key 保持不变，但 Python 私有路径不再伪装成 Host Service。
+- concrete WebSocket/Subagent Channel 迁入
+  `plugins/builtin/channels/{websocket,subagent}`；`services/messaging/channel` 只保留
+  Channel registry/base contract。
+- `tests/features` 迁入 `tests/plugins`；所有生产/测试/Package import 和 Composition entry
+  已同步，旧目录、空目录和 Provider 路径删除。
+- 新增 `plugins/README.md`、`plugins/__init__.py` 和 `plugins/builtin/__init__.py`，明确
+  Builtin Plugin 的 Owner、Effect 和可选行为边界。
+
+### 验证
+
+```text
+python -m pytest -q tests/startup/test_composition.py tests/architecture/test_f14_baseline.py tests/architecture/test_import_boundaries.py tests/architecture/test_f6_hook_boundaries.py tests/architecture/test_f9_service_injection.py tests/architecture/test_f5_schedule_owner.py tests/architecture/test_f13_plugin_first.py tests/plugins tests/test_mcp.py tests/test_trace_store.py tests/test_title_gen.py
+→ 77 passed in 5.13s
+
+python -m pytest -q tests/architecture/test_f14_baseline.py tests/architecture/test_f2_http_owner.py tests/architecture/test_f4_no_legacy_packages.py tests/architecture/test_import_boundaries.py tests/architecture/test_f5_schedule_owner.py tests/architecture/test_f6_hook_boundaries.py tests/plugins
+→ 36 passed in 5.10s
+
+python -m ruff check --no-cache src tests packages/ftre-inbox packages/ftre-compaction
+→ All checks passed
+```
+
+F14.5 已完成；F14.6/F14.7 继续审计 Host Service 依赖和独立 Package 发行门禁。
 
 ## 后续批次精确输入
 

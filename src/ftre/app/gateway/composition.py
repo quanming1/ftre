@@ -28,7 +28,7 @@ def default_manifests() -> list[PluginManifest]:
     #
     # PluginManifest 位置参数：id, entry, source, required, default_enabled, description
     #   - required=True：必选 Plugin，启动失败会阻止 Gateway 启动（fail loud）；
-    #   - required=False：可选 Plugin（features/*），失败只记录状态、不阻塞启动；
+    #   - required=False：可选 Plugin（plugins/builtin/*），失败只记录状态、不阻塞启动；
         #   - 顺序即装载顺序：先 Host Service，再 Agent Provider，最后是可选 Plugin；
         #     每个 Provider 的 inject 必须在自身 apply 前已经存在。
     return [
@@ -43,29 +43,29 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("tools", "ftre.services.tools.plugin:apply", "builtin", True, True, description="scoped tool registry"),
         PluginManifest("agent-profiles", "ftre.services.agent.profile.plugin:apply", "builtin", True, True, description="agent profile merge"),
         PluginManifest("sessions", "ftre.services.session.plugin:apply", "builtin", True, True, description="session persistence facade"),
-        PluginManifest("commands", "ftre.services.command.plugin:apply", "builtin", True, True, description="command registry"),
+        PluginManifest("commands", "ftre.plugins.builtin.command.plugin:apply", "builtin", True, True, description="command registry"),
         PluginManifest("workspaces", "ftre.services.workspace.plugin:apply", "builtin", True, True, description="workspace boundary"),
         PluginManifest("channels", "ftre.services.messaging.channel.plugin:apply", "builtin", True, True, description="channel registry"),
         PluginManifest("attachments", "ftre.services.attachment.plugin:apply", "builtin", True, True, description="attachment storage"),
-        PluginManifest("traces", "ftre.services.observability.trace.plugin:apply", "builtin", True, True, description="trace persistence"),
+        PluginManifest("traces", "ftre.plugins.builtin.trace.plugin:apply", "builtin", True, True, description="trace persistence"),
         # Agent Provider 同时发布 agents 和私有执行 Runtime；可选 Inbox
         # 在它之后接管 pending/worker。
         PluginManifest("agents", "ftre.services.agent.plugin:apply", "builtin", True, True, description="agent service and private runtime"),
         # 可选独立队列包：未安装时 AgentService 仍可直接执行 InboundMessage；
         # 安装后由该 Package 接管 pending、worker 和 session queue 协议。
         PluginManifest("inbox", "ftre_inbox.plugin:apply", "builtin", False, True, description="optional durable inbox package"),
-        PluginManifest("subagent-channel", "ftre.services.messaging.channel.providers.subagent.plugin:apply", "builtin", True, True, description="internal subagent channel"),
-        PluginManifest("websocket-channel", "ftre.services.messaging.channel.providers.websocket.plugin:apply", "builtin", True, True, description="desktop WebSocket channel"),
-        # ── 产品行为层（features / 可选）──
+        PluginManifest("subagent-channel", "ftre.plugins.builtin.channels.subagent.plugin:apply", "builtin", True, True, description="internal subagent channel"),
+        PluginManifest("websocket-channel", "ftre.plugins.builtin.channels.websocket.plugin:apply", "builtin", True, True, description="desktop WebSocket channel"),
+        # ── 产品行为与适配器 Plugin（可选）──
         # 这些 Plugin 只消费上面的公开 Service key，不访问私有实现；
         # required=False 表示能力缺失（如 MCP 未配置）不应阻止 Gateway 启动。
-        PluginManifest("skill", "ftre.features.skill.plugin:apply", "builtin", False, True, description="skill catalog and tool"),
-        PluginManifest("mcp", "ftre.features.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
-        PluginManifest("plan", "ftre.features.plan.plugin:apply", "builtin", False, True, description="plan behavior"),
-        PluginManifest("team", "ftre.features.team.plugin:apply", "builtin", False, True, description="team lifecycle"),
-        PluginManifest("schedule", "ftre.features.schedule.plugin:apply", "builtin", False, True, description="cron persistence"),
-        PluginManifest("context-govern", "ftre.features.context_govern.plugin:apply", "builtin", True, True, description="workspace governance"),
-        PluginManifest("session-title", "ftre.services.session.title.plugin:apply", "builtin", False, True, description="title behavior"),
+        PluginManifest("skill", "ftre.plugins.builtin.skill.plugin:apply", "builtin", False, True, description="skill catalog and tool"),
+        PluginManifest("mcp", "ftre.plugins.builtin.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
+        PluginManifest("plan", "ftre.plugins.builtin.plan.plugin:apply", "builtin", False, True, description="plan behavior"),
+        PluginManifest("team", "ftre.plugins.builtin.team.plugin:apply", "builtin", False, True, description="team lifecycle"),
+        PluginManifest("schedule", "ftre.plugins.builtin.schedule.plugin:apply", "builtin", False, True, description="cron persistence"),
+        PluginManifest("context-govern", "ftre.plugins.builtin.context_govern.plugin:apply", "builtin", True, True, description="workspace governance"),
+        PluginManifest("session-title", "ftre.plugins.builtin.session_title.plugin:apply", "builtin", False, True, description="title behavior"),
     ]
 
 

@@ -42,7 +42,7 @@ imports、tests 和生命周期实现反推证据。
 
 - `src/ftre/kernel`；
 - `src/ftre/services/agent_loop`；
-- `src/ftre/features`；
+- `src/ftre/plugins/builtin`；
 - Command、Trace、Session Title；
 - concrete WebSocket/Subagent Channel；
 - `packages/ftre-inbox`、`packages/ftre-compaction`。

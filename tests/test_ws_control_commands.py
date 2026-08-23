@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from ftre.plugins.builtin.channels.websocket.channel import WebSocketChannel
 from ftre.services.messaging.bus import EventBus
-from ftre.services.messaging.channel.providers.websocket.channel import WebSocketChannel
 
 
 class FakeWebSocket:

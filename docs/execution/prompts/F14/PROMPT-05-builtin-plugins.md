@@ -1,7 +1,7 @@
 # 执行提示词 05：F14.5 Builtin Plugin 目录与 Owner 迁移
 
 你正在 `E:\ftre` 执行 F14.5。目标是让产品行为和 concrete adapter 在目录上明确表现为
-Plugin，最终删除含义模糊的 `features/`。这不是把文件机械复制到新目录；每项能力必须同时完成
+Plugin，最终删除含义模糊的 `plugins/builtin/`。这不是把文件机械复制到新目录；每项能力必须同时完成
 Owner、inject/provide、Effect、测试和旧路径清理。
 
 ## 一、前置检查
@@ -48,7 +48,7 @@ ToolService、SystemPromptService。Plugin 自带且只服务于该能力的 Ser
 7. Schedule 唯一拥有 store/scheduler/channel/tool/router；停止顺序能等待任务退出。
 8. MCP/Skill/Team 等自有 Service 保持稳定 key，缺失时基础 Turn 正常。
 9. 更新 Composition entry 和所有生产/测试/文档 import。
-10. 删除 `src/ftre/features`、旧 provider 路径、重复文件、re-export 和 compatibility alias。
+10. 删除 `src/ftre/plugins/builtin`、旧 provider 路径、重复文件、re-export 和 compatibility alias。
 
 一次只迁移一个完整 Owner；该 Owner 的专项测试通过后再迁下一个，避免大爆炸式 diff 无法定位。
 
@@ -67,7 +67,7 @@ Hook/Channel/Task/Store 清理和 restart 使用新实例。
 最终执行：
 
 ```powershell
-rg -n "ftre\.features|src/ftre/features" src tests packages docs
+rg -n "ftre\.features|src/ftre/plugins/builtin" src tests packages docs
 python -m pytest -q tests/architecture tests/contracts tests/lifecycle tests/startup
 python -m pytest -q
 python -m ruff check src tests packages

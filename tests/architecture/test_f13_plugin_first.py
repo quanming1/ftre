@@ -22,7 +22,7 @@ def test_lightweight_kernel_has_no_product_imports() -> None:
     ]
     forbidden = (
         "ftre.services",
-        "ftre.features",
+        "ftre.plugins.builtin",
         "ftre_inbox",
         "QueueItem",
         "Compaction",
@@ -87,7 +87,7 @@ def test_builtin_tools_use_public_channel_names_not_provider_modules() -> None:
 def test_agent_runtime_uses_trace_service_owner() -> None:
     engine = _source("services/agent/runtime/engine.py")
     provider = _source("services/agent/runtime/provider.py")
-    trace_service = _source("services/observability/trace/service.py")
+    trace_service = _source("plugins/builtin/trace/service.py")
     assert "SQLiteTraceExporter" not in engine
     assert "TRACE_DB_PATH" not in engine
     assert '"traces"' in provider

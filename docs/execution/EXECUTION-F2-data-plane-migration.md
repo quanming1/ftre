@@ -27,7 +27,7 @@ F2 已在 `feature/F2-data-plane-migration` 分支完成并通过验收。迁移
 
 - EventBus、Bus message/payload/protocol 归入 `services/messaging/bus`。
 - Channel base/manager、WebSocket、Subagent Provider 归入 `services/messaging/channel`。
-- Command manager/types/builtin 归入 `services/command`。
+- Command manager/types/builtin 归入 `plugins/builtin/command`。
 - 内置 Tool catalog 和工具实现归入 `services/tools/builtin`。
 - 旧 `bus/channel/command/tools` 目录只保留兼容模块别名，历史 import 和 monkeypatch 行为保持可用。
 

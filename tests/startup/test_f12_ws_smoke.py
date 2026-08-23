@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from ftre.plugins.builtin.channels.websocket.channel import WebSocketChannel
 from ftre.services.messaging.bus import EventBus
-from ftre.services.messaging.channel.providers.websocket.channel import WebSocketChannel
 
 
 class FakeInbox:

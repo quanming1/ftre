@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from ftre.services.session.title.generator import TitleGenPlugin
+from ftre.plugins.builtin.session_title.generator import TitleGenPlugin
 
 
 def test_first_turn_is_not_rejected_after_current_user_msg_is_persisted():
@@ -26,7 +26,7 @@ def test_hidden_user_msg_does_not_count_as_prior_turn():
 
 def test_title_generation_passes_reasoning_effort_to_handler(monkeypatch):
     """Title generation forwards the selected LLM configuration's effort."""
-    from ftre.services.session.title import generator as title_gen
+    from ftre.plugins.builtin.session_title import generator as title_gen
 
     captured = {}
 

@@ -23,11 +23,11 @@
 | 债务类别 | 当前证据 | 问题 | 目标 Owner |
 |---|---|---|---|
 | Agent 旧壳 | `src/ftre/agent/*` | `import *`、`sys.modules` 替换和 lazy export；旧目录看起来像业务 Owner | `services/agent/profile`、`services/agent/runtime` |
-| 数据面旧壳 | `src/ftre/session`、`bus`、`channel`、`command`、`tools` | 旧路径仍被测试和部分工具使用，维护两套 import 表面 | `services/session`、`services/messaging`、`services/command`、`services/tools` |
+| 数据面旧壳 | `src/ftre/session`、`bus`、`channel`、`command`、`tools` | 旧路径仍被测试和部分工具使用，维护两套 import 表面 | `services/session`、`services/messaging`、`plugins/builtin/command`、`services/tools` |
 | Config 重复 Owner | `src/ftre/config.py` 与 `services/config/*` | AgentConfig/LLMConfig、原始 config 文件和路径事实源混在旧根模块 | `services/config` + `services/agent/config.py` |
-| Trace 重复 Owner | `src/ftre/trace_store.py` 被 `services/observability/trace/service.py` 反向导入 | Service 层依赖根目录实现，无法证明 Trace Service 是唯一 Owner | `services/observability/trace/store.py` |
-| MCP 分裂 | `src/ftre/mcp/*` 是真实连接/适配实现，`features/mcp/*` 只有状态 Service 和转发壳 | Feature Plugin 与 MCP 传输实现不在同一能力边界，旧根包仍是实际 Owner | `features/mcp/*` |
-| Feature 通配符壳 | `features/mcp/adapter.py`、`mcp/config.py`、`plan/tool.py`、`schedule/tool.py`、`team/profile.py`、`team/tools.py` | Feature 目录存在但文件只转发到旧/共享实现，职责不清 | 删除死壳；真实实现归属明确的 Service/Feature |
+| Trace 重复 Owner | `src/ftre/trace_store.py` 被 `plugins/builtin/trace/service.py` 反向导入 | Service 层依赖根目录实现，无法证明 Trace Service 是唯一 Owner | `plugins/builtin/trace/store.py` |
+| MCP 分裂 | `src/ftre/mcp/*` 是真实连接/适配实现，`plugins/builtin/mcp/*` 只有状态 Service 和转发壳 | Feature Plugin 与 MCP 传输实现不在同一能力边界，旧根包仍是实际 Owner | `plugins/builtin/mcp/*` |
+| Feature 通配符壳 | `plugins/builtin/mcp/adapter.py`、`mcp/config.py`、`plan/tool.py`、`schedule/tool.py`、`team/profile.py`、`team/tools.py` | Feature 目录存在但文件只转发到旧/共享实现，职责不清 | 删除死壳；真实实现归属明确的 Service/Feature |
 | HTTP 死兼容 API | `services/http/dependencies.py`、`register_compat_snapshot`、`kind="compat"` | 旧 aggregate API 已删除，遗留接口却继续暗示双路由体系 | `HttpService` 只保留正式 Route/WebSocket Path |
 | Gateway 边界错位 | `src/ftre/gateway/runtime.py` 被 CLI 使用，真正进程边界在 `app/` | 进程管理不在 App 层，Composition 与 CLI 入口分散 | `app/gateway/process.py` |
 | 图片基础设施错位 | `src/ftre/utils/image_store.py` 被 Session/Tool/WS/MCP 多处直接引用，`services/attachment/store.py` 仍是空转发 | 附件存储没有单一基础设施 Owner | `services/attachment/store.py` |
@@ -63,14 +63,14 @@
   `services/config`，将 `AgentConfig`、`LLMConfig`、`ContextConfig` 与解析函数归入
   `services/agent/config.py`；删除 `src/ftre/config.py`，禁止新 Owner 反向导入它。
 - [x] **FR5：Trace Owner 收敛。** 将 `src/ftre/trace_store.py` 的真实 SQLite 实现迁入
-  `services/observability/trace/store.py`，更新 TraceService、Agent Runtime、路由和测试，
+  `plugins/builtin/trace/store.py`，更新 TraceService、Agent Runtime、路由和测试，
   删除根模块。
 - [x] **FR6：MCP Owner 收敛。** 将 `src/ftre/mcp/{config,manager,adapter}.py` 的实际能力
-  迁入 `features/mcp` 的明确模块（配置、连接生命周期、Tool Adapter），由 MCP Feature
+  迁入 `plugins/builtin/mcp` 的明确模块（配置、连接生命周期、Tool Adapter），由 MCP Feature
   Plugin 负责创建和关闭；删除根 `mcp` 包及 Feature 通配符转发。
-- [x] **FR7：Feature 空壳清理。** 删除或改造 `features/mcp/adapter.py`、`features/mcp/config.py`、
-  `features/plan/tool.py`、`features/schedule/tool.py`、`features/team/profile.py`、
-  `features/team/tools.py`；每个保留文件必须拥有实际职责，禁止单行 `import *`。
+- [x] **FR7：Feature 空壳清理。** 删除或改造 `plugins/builtin/mcp/adapter.py`、`plugins/builtin/mcp/config.py`、
+  `plugins/builtin/plan/tool.py`、`plugins/builtin/schedule/tool.py`、`plugins/builtin/team/profile.py`、
+  `plugins/builtin/team/tools.py`；每个保留文件必须拥有实际职责，禁止单行 `import *`。
 - [x] **FR8：HTTP 兼容表面清理。** 删除未使用的 `ApiDependencies`、`register_compat_snapshot`
   和 `kind="compat"`；WebSocket `/` 使用正式的 `register_websocket_path`（或等价正式 API），
   路由快照不再伪装成 legacy/compat surface。
@@ -127,7 +127,7 @@ src/ftre/
 │  │  ├─ service.py
 │  │  └─ router.py
 │  └─ ...
-├─ features/
+├─ plugins/builtin/
 │  └─ mcp/
 │     ├─ config.py
 │     ├─ connection.py             # MCP 连接生命周期
@@ -152,8 +152,8 @@ src/ftre/
 
 ```python
 from ftre.services.agent.config import AgentConfig, ContextConfig, LLMConfig
-from ftre.services.observability.trace.store import SQLiteTraceExporter
-from ftre.features.mcp.adapter import build_mcp_tools
+from ftre.plugins.builtin.trace.store import SQLiteTraceExporter
+from ftre.plugins.builtin.mcp.adapter import build_mcp_tools
 from ftre.app.gateway.process import GatewayRuntime
 ```
 

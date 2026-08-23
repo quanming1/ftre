@@ -36,7 +36,7 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 ### 2.1 功能需求
 
 - [x] **FR1：Hook 契约统一。** Agent Runtime 只使用 `services/agent/runtime/hooks.py` 和 Cordis Context Event；旧 `ftre.plugin.kernel.events` 不再被生产代码或新测试导入。
-- [x] **FR2：旧 Builtin Plugin 迁移。** Skill、MCP、Plan、Team、Schedule、ContextGovern、SessionTitle 的测试改为验证 `features/*` 或 `services/*` 的新 Plugin/Service，删除 `src/ftre/plugin/builtin`。
+- [x] **FR2：旧 Builtin Plugin 迁移。** Skill、MCP、Plan、Team、Schedule、ContextGovern、SessionTitle 的测试改为验证 `plugins/builtin/*` 或 `services/*` 的新 Plugin/Service，删除 `src/ftre/plugin/builtin`。
 - [x] **FR3：旧 Kernel 测试迁移。** 旧 FtreContext/EventHub/PluginRegistry/PluginLoader 测试替换为 Cordis Context/Fiber/PluginContext/Effect/PluginRuntime 测试，保留相同的依赖缺失、生命周期、事件过滤和失败诊断覆盖。
 - [x] **FR4：旧 aggregate API 退役。** `src/ftre/api/routes.py`、`api/app.py` 和旧 setter 测试迁移到 Service-owned Router，删除旧 API 包中不再被引用的实现。
 - [x] **FR5：旧 Plugin 公共入口删除。** `ftre.plugin` 包及其旧符号全部删除，防止新代码误用旧入口。
@@ -58,13 +58,13 @@ F1/F2 已经让新 Composition、Cordis Context/Fiber、Service、Feature Plugin
 | 旧入口 | 新 Owner |
 |---|---|
 | `ftre.plugin.kernel.events` | `services/agent/runtime/hooks.py` + `cordis.Context.events` |
-| `ftre.plugin.builtin.context_govern` | `features/context_govern/plugin.py` |
-| `ftre.plugin.builtin.skill_plugin` | `features/skill/plugin.py` |
-| `ftre.plugin.builtin.mcp_plugin` | `features/mcp/plugin.py` |
-| `ftre.plugin.builtin.plan_plugin` | `features/plan/plugin.py` |
-| `ftre.plugin.builtin.team_plugin` | `features/team/plugin.py` |
-| `ftre.plugin.builtin.title_gen` | `services/session/title/plugin.py` |
-| `ftre.api.routes` | `services/session/router.py`、`services/agent/router.py`、`services/attachment/router.py`、`services/command/router.py`、Feature Router |
+| `ftre.plugin.builtin.context_govern` | `plugins/builtin/context_govern/plugin.py` |
+| `ftre.plugin.builtin.skill_plugin` | `plugins/builtin/skill/plugin.py` |
+| `ftre.plugin.builtin.mcp_plugin` | `plugins/builtin/mcp/plugin.py` |
+| `ftre.plugin.builtin.plan_plugin` | `plugins/builtin/plan/plugin.py` |
+| `ftre.plugin.builtin.team_plugin` | `plugins/builtin/team/plugin.py` |
+| `ftre.plugin.builtin.title_gen` | `plugins/builtin/session_title/plugin.py` |
+| `ftre.api.routes` | `services/session/router.py`、`services/agent/router.py`、`services/attachment/router.py`、`plugins/builtin/command/router.py`、Feature Router |
 | `ftre.plugin.kernel` | `cordis` + `kernel/plugins` |
 
 ### 3.2 测试迁移规则

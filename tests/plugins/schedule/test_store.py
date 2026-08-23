@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from ftre.features.schedule.store import CronStore, ScheduleStoreError
+from ftre.plugins.builtin.schedule.store import CronStore, ScheduleStoreError
 
 
 def _job(job_id: str = "job_1") -> dict:

@@ -20,7 +20,7 @@ Command/Agent 解耦、`ftre-inbox` 与 `ftre-compaction` 独立包化，以及 
 交接。但是当前目录仍保留了重构过程中的中间表达：
 
 - `platform/` 的名字不能直观表达“这里仅允许放内核机制”；
-- `features/` 中的能力实际上都是 Plugin，但目录名没有显示其生命周期属性；
+- `plugins/builtin/` 中的能力实际上都是 Plugin，但目录名没有显示其生命周期属性；
 - `services/agent_loop/` 看起来像第二个公共 Agent Service，实际只是 Agent 的内部运行时；
 - concrete Channel、Command、Trace 和产品 Feature 的 Service/Plugin 身份仍需看代码才能判断；
 - `packages/` 的拆分依赖局部需求，尚无统一的“什么时候值得独立发行”门禁；
@@ -317,7 +317,7 @@ E:/ftre/
 ### 6.1 文件树的强制解释
 
 - `kernel/` 取代含义宽泛的 `platform/`，且不能放任何业务类型。
-- `plugins/builtin/` 取代 `features/`；目录本身直接表达“这些能力可由 Plugin 生命周期管理”。
+- `plugins/builtin/` 取代 `plugins/builtin/`；目录本身直接表达“这些能力可由 Plugin 生命周期管理”。
 - `services/agent/runtime/` 取代顶层 `services/agent_loop/`；Loop 是 AgentService 的内部实现，
   不是与 AgentService 并列的能力。
 - concrete WebSocket/Subagent 位于 Plugin，而 Channel base/registry 位于 Service。
@@ -453,7 +453,7 @@ Gateway Composition
 ## 11. 功能需求
 
 - [ ] **FR1：终局目录收敛**
-  - `platform/ → kernel/`、`features/ → plugins/builtin/`；
+  - `platform/ → kernel/`、`plugins/builtin/ → plugins/builtin/`；
   - `services/agent_loop/ → services/agent/runtime/`；
   - 删除旧目录、兼容导出、空 `__init__` 聚合和陈旧文档路径。
 
@@ -672,9 +672,10 @@ F14 只有在以下事实同时成立时才可以标记“已验收”：
 
 | 日期 | 变更内容 | 理由 | 受影响验收 |
 |---|---|---|---|
-| 2026-08-24 | 创建最终目标架构草案，冻结 Kernel/Service/Plugin/Hook/Package 判定、目标文件树、依赖方向、数据流和迁移门禁 | F13 已完成阶段性收敛，但仓库仍存在 `platform/features/agent_loop` 等中间表达，需要一份长期终局契约指导后续迁移 | AC1-AC13 待评审 |
+| 2026-08-24 | 创建最终目标架构草案，冻结 Kernel/Service/Plugin/Hook/Package 判定、目标文件树、依赖方向、数据流和迁移门禁 | F13 已完成阶段性收敛，但仓库仍存在 `platform/plugins/builtin/agent_loop` 等中间表达，需要一份长期终局契约指导后续迁移 | AC1-AC13 待评审 |
 | 2026-08-24 | 新增七批串行 AI 执行提示词，覆盖前置检查、代码迁移、中文注释、测试、债务清理、工程卫生、提交和最终交接 | F14 涉及多个高冲突目录，必须让每批任务自包含、可验证且不留下双实现 | AC1-AC13 不变；执行方式细化 |
 | 2026-08-24 | 用户授权按七批提示词进入开发，PRD 状态由草稿推进为开发中；F14.1 先建立 Owner、依赖和债务基线 | 开始执行完整 F14，不跳过前置审计 | AC1-AC13 待逐批验证 |
 | 2026-08-24 | 完成 F14.1：建立 Manifest/Service/Hook/Package Owner 清单、目标映射、债务基线和架构扫描；提交 `5501fc1`，全量测试 439 passed、ruff 通过 | 为后续路径迁移提供可复现的事实基线和防回归门禁 | AC1、AC3、AC6、AC8 的基线证据已建立，终局 AC 仍待后续批次 |
 | 2026-08-24 | 完成 F14.2：`platform → kernel`、`plugin_runtime → kernel/plugins`，删除 Kernel 业务 Hook 名称目录并将名称归还各语义 Owner；全量测试 445 passed、ruff 通过 | 让 Kernel 真正业务零知识，避免继续形成中央 Hook 名称表 | AC2、AC9 已部分验证；AC1、AC12 待后续目录/发行门禁 |
 | 2026-08-24 | 完成 F14.3/F14.4：Agent Runtime 归入 `services/agent/runtime` 并由唯一 Agent Provider 拥有；MessageBus 接管 `messaging/inbound`，Command/Inbox Plugin 旁路裁决；全量测试 445 passed | 消除 `agent_runtime` 第二 Owner 和 AgentLoop 的 Bus/Command/Inbox 业务负担 | AC4、AC5、AC6 已部分验证；AC1、AC7、AC10 待后续批次 |
+| 2026-08-24 | 完成 F14.5：features、Command、Trace、Session Title 和 concrete Channel 全部归位 `plugins/builtin`；删除旧目录并新增文件树门禁 | 让产品行为和适配器在文件系统上直接表达 Plugin 生命周期，避免 Service/Feature 身份混淆 | AC1、AC3、AC7 已部分验证；AC6、AC12 待 Package 门禁 |

@@ -312,6 +312,6 @@ Agent 的两个相邻边界必须区分：`agent/before-turn` 只负责一次
 - `compaction` Service key、压缩事件、命令和客户端协议保持不变；
 - 未安装/未启用 `ftre-compaction` 时核心 Gateway 和普通 Agent 流程正常运行。
 
-F10 中关于 `src/ftre/services/compaction`、`src/ftre/features/compaction` 和
+F10 中关于 `src/ftre/services/compaction`、`src/ftre/plugins/builtin/compaction` 和
 `ContextGate` 的路径描述是历史记录；当前实现以
 [`PRD-F11-compaction-gate-hook.md`](PRD-F11-compaction-gate-hook.md) 为准。

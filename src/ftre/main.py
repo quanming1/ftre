@@ -35,7 +35,7 @@ class ColorFormatter(logging.Formatter):
     }
     NAMESPACE_COLORS: ClassVar[dict[str, str]] = {
         "ftre.services": "\033[38;5;214m",
-        "ftre.features": "\033[38;5;208m",
+        "ftre.plugins.builtin": "\033[38;5;208m",
         "ftre_agent_core": "\033[38;5;75m",
         "__main__": "\033[38;5;203m",
     }

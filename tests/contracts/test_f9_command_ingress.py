@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ftre.services.command import CommandResult, CommandService
+from ftre.plugins.builtin.command import CommandResult, CommandService
 from ftre.services.messaging.bus import BusMessage
 
 

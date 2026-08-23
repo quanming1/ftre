@@ -28,12 +28,12 @@ from ftre_agent_core.message import (
 )
 
 from ftre.kernel.hooks import HookRuntime
+from ftre.plugins.builtin.command import CommandService
+from ftre.plugins.builtin.command.builtin import register_builtin_commands
 from ftre.services.agent.config import AgentConfig, LLMConfig
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.agent.runtime.engine import AgentLoop
 from ftre.services.agent.runtime.turn_executor import TurnExecutor
-from ftre.services.command import CommandService
-from ftre.services.command.builtin import register_builtin_commands
 from ftre.services.messaging.bus import BusMessage
 from ftre.services.session.projection import SessionProjection
 from ftre.services.system_prompt.hooks import (

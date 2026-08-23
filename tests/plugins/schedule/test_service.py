@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ftre.features.schedule.service import ScheduleService
+from ftre.plugins.builtin.schedule.service import ScheduleService
 
 
 def test_schedule_service_crud_is_the_public_job_boundary(tmp_path) -> None:

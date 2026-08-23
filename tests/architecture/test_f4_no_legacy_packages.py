@@ -38,7 +38,7 @@ def test_root_owners_are_removed_after_migration() -> None:
 
 def test_new_layers_do_not_import_retired_data_plane_namespaces() -> None:
     forbidden = ("ftre.agent", "ftre.session", "ftre.bus", "ftre.channel", "ftre.command", "ftre.tools")
-    roots = (SOURCE / "ftre" / "app", SOURCE / "ftre" / "platform", SOURCE / "ftre" / "services", SOURCE / "ftre" / "features")
+    roots = (SOURCE / "ftre" / "app", SOURCE / "ftre" / "kernel", SOURCE / "ftre" / "services", SOURCE / "ftre" / "plugins")
     for root in roots:
         for path in _python_files(root):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -53,7 +53,7 @@ def test_new_layers_do_not_import_retired_data_plane_namespaces() -> None:
 
 
 def test_new_layers_do_not_use_module_identity_replacement() -> None:
-    for root in (SOURCE / "ftre" / "app", SOURCE / "ftre" / "platform", SOURCE / "ftre" / "services", SOURCE / "ftre" / "features"):
+    for root in (SOURCE / "ftre" / "app", SOURCE / "ftre" / "kernel", SOURCE / "ftre" / "services", SOURCE / "ftre" / "plugins"):
         for path in _python_files(root):
             source = path.read_text(encoding="utf-8")
             assert "sys.modules[__name__]" not in source, path

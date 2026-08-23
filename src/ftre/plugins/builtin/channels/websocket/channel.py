@@ -33,8 +33,7 @@ from ftre.services.messaging.bus import (
     InboundMetadata,
     OutboundMetadata,
 )
-
-from ...base import Channel
+from ftre.services.messaging.channel.base import Channel
 
 logger = logging.getLogger(__name__)
 

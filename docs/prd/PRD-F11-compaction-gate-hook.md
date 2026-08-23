@@ -17,7 +17,7 @@
 ### 1.1 当前问题
 
 F10 已经将压缩实现收敛到 `services/compaction/CompactionService`，并将
-`features/compaction` 作为 Hook Plugin。但 Agent 数据面仍然由
+`plugins/builtin/compaction` 作为 Hook Plugin。但 Agent 数据面仍然由
 `SessionLane` 直接持有 `ContextGate`，并在 Lane 内决定压缩时机、更新
 `CompactOperation`、执行压缩和处理失败：
 

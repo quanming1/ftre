@@ -9,13 +9,13 @@ PACKAGE = ROOT / "packages" / "ftre-compaction"
 
 def test_core_has_no_compaction_owner_or_context_gate():
     assert not (SRC / "services" / "compaction").exists()
-    assert not (SRC / "features" / "compaction").exists()
+    assert not (SRC / "plugins" / "builtin" / "compaction").exists()
     assert not (SRC / "services" / "agent_loop" / "runtime" / "loop" / "context_gate.py").exists()
 
     for path in (
         SRC / "services" / "agent" / "runtime" / "engine.py",
         SRC / "services" / "agent" / "runtime" / "provider.py",
-        SRC / "services" / "command" / "builtin.py",
+        SRC / "plugins" / "builtin" / "command" / "builtin.py",
     ):
         source = path.read_text(encoding="utf-8")
         assert "CompactionService" not in source
@@ -52,4 +52,4 @@ def test_core_agent_config_does_not_own_compaction_settings():
 def test_composition_does_not_enable_compaction_by_default():
     source = (SRC / "app" / "gateway" / "composition.py").read_text(encoding="utf-8")
     assert "ftre.services.compaction" not in source
-    assert "ftre.features.compaction" not in source
+    assert "ftre.plugins.builtin.compaction" not in source

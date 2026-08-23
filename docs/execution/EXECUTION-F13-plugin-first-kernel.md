@@ -83,7 +83,7 @@ passed
   Service Owner、Trace 单一 exporter 和公共 Channel 名称门禁；
 - `tests/lifecycle/test_agent_runtime_plugin.py`：Agent Runtime/Channel Provider 装载、
   endpoint 配置、关闭和无 Inbox 降级；
-- `tests/architecture/test_f2_http_owner.py`、`tests/features/schedule/test_plugin.py`：
+- `tests/architecture/test_f2_http_owner.py`、`tests/plugins/builtin/schedule/test_plugin.py`：
   Owner Plugin 路由和 Effect 清理；
 - `tests/test_turn_lifecycle.py`、`tests/test_inbox_service.py`、F10/F12 生命周期和协议回归。
 

@@ -9,6 +9,7 @@ from cordis import Context
 from ftre_compaction.plugin import apply
 
 from ftre.kernel.hooks import HookRuntime
+from ftre.plugins.builtin.command import CommandService
 from ftre.services.agent.hooks import (
     AGENT_REQUEST_ERROR_SPEC,
     AgentSubject,
@@ -16,7 +17,6 @@ from ftre.services.agent.hooks import (
     RetryRequest,
 )
 from ftre.services.agent.registry import AgentRegistry
-from ftre.services.command import CommandService
 from ftre.services.messaging.bus import BusMessage, InboundMetadata
 
 

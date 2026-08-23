@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ftre.features.schedule.router import build_router
-from ftre.features.schedule.service import ScheduleService
+from ftre.plugins.builtin.schedule.router import build_router
+from ftre.plugins.builtin.schedule.service import ScheduleService
 
 
 def test_router_uses_schedule_service_crud(tmp_path) -> None:

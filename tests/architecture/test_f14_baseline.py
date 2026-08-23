@@ -40,7 +40,7 @@ def _literal_names(path: Path, name: str) -> tuple[str, ...]:
 def _plugin_files() -> list[Path]:
     return [
         *sorted((SRC / "services").rglob("plugin.py")),
-        *sorted((SRC / "features").rglob("plugin.py")),
+        *sorted((SRC / "plugins" / "builtin").rglob("plugin.py")),
     ]
 
 
@@ -81,7 +81,7 @@ def test_kernel_mechanism_layer_is_business_free_at_baseline() -> None:
     roots = [SRC / "kernel" / "hooks", SRC / "kernel" / "plugins"]
     forbidden = (
         "ftre.services",
-        "ftre.features",
+        "ftre.plugins.builtin",
         "ftre_inbox",
         "CompactionService",
         "CommandService",
@@ -99,7 +99,6 @@ def test_packages_do_not_import_host_private_runtime() -> None:
         "ftre.services.agent_loop",
         "ftre.services.session.persistence",
         "ftre.services.agent.runtime",
-        "ftre.features",
         "ftre.app.gateway",
     )
     for path in PACKAGES.glob("*/src/**/*.py"):
@@ -114,3 +113,23 @@ def test_known_legacy_escape_hatches_are_not_reintroduced() -> None:
         for path in root.rglob("*.py"):
             source = path.read_text(encoding="utf-8")
             assert not any(item in source for item in forbidden), path
+
+
+def test_builtin_plugin_tree_has_no_legacy_feature_or_adapter_roots() -> None:
+    """F14.5 makes Plugin ownership visible in the filesystem itself."""
+    for retired in (
+        SRC / "features",
+        SRC / "services" / "command",
+        SRC / "services" / "observability",
+        SRC / "services" / "session" / "title",
+        SRC / "services" / "messaging" / "channel" / "providers",
+    ):
+        assert not retired.exists(), retired
+    for expected in (
+        SRC / "plugins" / "builtin" / "command" / "plugin.py",
+        SRC / "plugins" / "builtin" / "trace" / "plugin.py",
+        SRC / "plugins" / "builtin" / "session_title" / "plugin.py",
+        SRC / "plugins" / "builtin" / "channels" / "websocket" / "plugin.py",
+        SRC / "plugins" / "builtin" / "channels" / "subagent" / "plugin.py",
+    ):
+        assert expected.is_file(), expected

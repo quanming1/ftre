@@ -69,7 +69,7 @@ def test_old_filter_contexts_are_absent_from_production_code():
 
 
 def test_features_do_not_import_other_feature_private_modules():
-    feature_root = SRC / "features"
+    feature_root = SRC / "plugins" / "builtin"
     feature_names = {
         path.name for path in feature_root.iterdir() if path.is_dir() and path.name != "__pycache__"
     }
@@ -77,6 +77,6 @@ def test_features_do_not_import_other_feature_private_modules():
     for path in feature_root.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         for feature in feature_names:
-            if f"ftre.features.{feature}." in text and feature != path.parts[-2]:
-                violations.append(f"{path}: ftre.features.{feature}")
+            if f"ftre.plugins.builtin.{feature}." in text and feature != path.parts[-2]:
+                violations.append(f"{path}: ftre.plugins.builtin.{feature}")
     assert not violations, "cross-feature private imports: " + ", ".join(violations)

@@ -1,6 +1,6 @@
 # ftre Services：运行时能力说明
 
-`services/` 是 ftre 的“公共能力层”。这里的对象会被多个 Feature、HTTP 路由、
+`services/` 是 ftre 的“公共能力层”。这里的对象会被多个 Plugin、HTTP 路由、
 Channel 或 Agent 数据面共同使用，因此每个 Service 都有稳定的 `key`，并由
 Composition Root 通过 Provider Plugin 创建和销毁。
 
@@ -12,8 +12,8 @@ Composition Root 通过 Provider Plugin 创建和销毁。
 2. **Provider Plugin 只负责装配。** `plugin.py` 中的 `inject` 表示依赖的 Service
    key，`provide` 表示发布的 Service key；资源、监听器、路由和后台任务都要通过
    `ctx.effect(...)` 绑定到当前 Fiber，卸载时才能逆序清理。
-3. **Feature 不拥有基础设施。** Feature 可以消费公开 Service 或 Hook，但不能
-   import 另一个 Service 的私有 Provider、存储实现或 AgentLoop 内部对象。
+3. **Plugin 不拥有别人的基础设施。** Plugin 可以消费公开 Service 或 Hook，但不能
+   import 另一个 Service 的私有 Provider、存储实现或 Agent Runtime 内部对象。
 
 ## Service 清单
 
@@ -29,22 +29,20 @@ Composition Root 通过 Provider Plugin 创建和销毁。
 | `agents` | `agent/service.py` | Agent 身份、状态和公开数据面 Driver | HTTP/WS、AgentLoop Provider |
 | `agent_profiles` | `agent/profile/service.py` | Agent 配置文件的 CRUD 与解析 | Agent、MCP、Tools |
 | `tools` | `tools/service.py` | 全局工具、Agent scoped 工具和 allow/deny 视图 | AgentLoop、Tool Feature |
-| `commands` | `command/service.py` | Slash Command 解析、注册和执行 | MessageBus 接入层、Session |
 | `workspaces` | `workspace/service.py` | Session 工作区选择和 `PathPolicy` 构造 | Tools、Workspace API |
 | `attachments` | `attachment/service.py` | 请求附件的安全保存、读取和 MIME 判断 | WebSocket、HTTP |
 | `system_prompt` | `system_prompt/service.py` | 有序、按 scope 的 Prompt section 组装 | AgentLoop、Prompt Feature |
-| `traces` | `observability/trace/service.py` | Agent trace 的 SQLite 查询门面 | Trace API、诊断工具 |
+| `traces` | `plugins/builtin/trace/service.py` | Agent trace 的 SQLite 查询门面 | Trace Plugin、诊断工具 |
 
-`services/agent_loop/` 是一个特殊的 Provider：它不是供业务直接调用的普通 Service，
-而是把上表中的 Service 句柄组合成一个 `AgentLoop`，再通过显式 `AgentDriver` 挂到
-`AgentService`。这样 HTTP/WS 只依赖 `agents`，不会拿到 Loop 的私有实现。
+`services/agent/runtime/` 是 AgentService 的私有执行实现；它不是独立 Service。唯一公开
+的 Agent key 是 `agents`，HTTP/WS 和 Plugin 只依赖这个 Service，不会拿到 Loop/Executor。
 
 ## 一条消息如何经过这些 Service
 
 ```text
 Channel
   → MessageBusService.request_inbound()
-  → AgentLoopProvider 组合的 AgentLoop
+  → AgentService（内部 Runtime）
   → ftre-inbox.InboxService
   → SystemPromptService + ToolService
   → ftre-agent-core / LLM

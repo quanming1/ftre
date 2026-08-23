@@ -306,7 +306,7 @@ src/ftre/
 │        ├─ store.py
 │        └─ router.py
 │
-└─ features/
+└─ plugins/builtin/
    ├─ README.md
    ├─ mcp/
    │  ├─ service.py
@@ -409,8 +409,8 @@ app ───────→ features ───────→ services
 
 约束：
 
-1. `platform` 不导入 `services/features/app`。
-2. `services` 不导入 `features/app`。
+1. `platform` 不导入 `services/plugins/builtin/app`。
+2. `services` 不导入 `plugins/builtin/app`。
 3. `features` 可以依赖多个公共 Service，但不能导入其 `runtime` 或具体 Provider。
 4. `app` 只做最终装配、进程入口和 Host 资源管理，不承载 Session、Agent、MCP 等业务规则。
 5. 同层能力间必须通过 Service、事件或消息协议协作，不得访问对方私有字段。
@@ -433,13 +433,13 @@ Service key 在 F1 内视为稳定接口，禁止用 Python 类名或目录名�
 | `agent_profiles` | `services/agent/profile` | Agent 配置与 Prompt/Profile 合并 | Agent Factory、HTTP、Team |
 | `agents` | `services/agent` | submit、cancel、wait、status | Channel、Command、HTTP、Team |
 | `tools` | `services/tools` | Tool 注册、执行和 agent-scoped view | Agent Factory、功能 Plugin |
-| `commands` | `services/command` | Command 注册和 dispatch | Channel、Skill、Agent |
+| `commands` | `plugins/builtin/command` | Command 注册和 dispatch | Channel、Skill、Agent |
 | `attachments` | `services/attachment` | 附件校验、存储和解析 | HTTP、WebSocket、Tool |
-| `traces` | `services/observability/trace` | Trace 写入和查询 | Agent、HTTP |
-| `mcp` | `features/mcp` | MCP 连接池、全局/私有连接状态 | MCP Router、Agent |
-| `skills` | `features/skill` | Skill Catalog、加载和配置 | Skill Tool、HTTP、Prompt |
-| `schedule` | `features/schedule` | Cron 持久化、触发和状态 | Cron Tool、HTTP、Channel |
-| `teams` | `features/team` | Team/Profile/成员生命周期 | Team Tool、Session 清理协调 |
+| `traces` | `plugins/builtin/trace` | Trace 写入和查询 | Agent、HTTP |
+| `mcp` | `plugins/builtin/mcp` | MCP 连接池、全局/私有连接状态 | MCP Router、Agent |
+| `skills` | `plugins/builtin/skill` | Skill Catalog、加载和配置 | Skill Tool、HTTP、Prompt |
+| `schedule` | `plugins/builtin/schedule` | Cron 持久化、触发和状态 | Cron Tool、HTTP、Channel |
+| `teams` | `plugins/builtin/team` | Team/Profile/成员生命周期 | Team Tool、Session 清理协调 |
 
 Agent 对外接口只暴露 `agents`；`AgentLoop` 不再作为任意模块可直接访问的全局对象。
 
@@ -872,16 +872,16 @@ F1 只保证启动期 Router Composition。Server 启动后发生的 Router Plug
 
 | 现有表面 | 新 Owner |
 |---|---|
-| `GET /api/traces*` | `services/observability/trace/router.py` |
+| `GET /api/traces*` | `plugins/builtin/trace/router.py` |
 | `/api/sessions*`、`GET /api/workspaces` | `services/session/router.py` |
 | `GET/PUT /api/config` | `services/config/router.py` |
-| `/api/cron*` | `features/schedule/router.py` |
+| `/api/cron*` | `plugins/builtin/schedule/router.py` |
 | `GET /api/health` | `app/gateway/http/health.py` |
-| `GET /api/commands` | `services/command/router.py` 或 Command Provider 的 Router contribution |
+| `GET /api/commands` | `plugins/builtin/command/router.py` 或 Command Provider 的 Router contribution |
 | `GET /api/image-file`、`GET /api/images/{filename}` | `services/attachment/router.py` |
 | `/api/agents*`、Agent Prompt 文件 API | `services/agent/router.py` 与 AgentProfileService |
-| `/api/skills*` | `features/skill/router.py` |
-| `/api/mcp*` | `features/mcp/router.py` |
+| `/api/skills*` | `plugins/builtin/skill/router.py` |
+| `/api/mcp*` | `plugins/builtin/mcp/router.py` |
 | `WebSocket /` | WebSocket Channel Provider，通过 Host 注册 |
 
 Router 不保存 Service 模块全局变量。允许的依赖取得方式只有：
@@ -918,15 +918,15 @@ F1 不顺便改变 CORS 对 Desktop 的可连接行为；安全收紧若会影�
 | `agent/session_projection.py` | `services/session/projection.py` |
 | `agent/agent_manager.py` | `services/agent/profile` + `services/agent/runtime/factory.py` |
 | `agent/loop.py` 及 Lane/Compact 组件 | `services/agent/runtime`，算法语义不变 |
-| `tools/*` | `services/tools`、`features/plan`、`features/team`、`features/schedule` |
-| `command/*` | `services/command` |
+| `tools/*` | `services/tools`、`plugins/builtin/plan`、`plugins/builtin/team`、`plugins/builtin/schedule` |
+| `command/*` | `plugins/builtin/command` |
 | `api/routes.py` | 拆回各 Service/Feature 的 `router.py` |
-| `api/skill.py` | `features/skill/store.py` |
-| `mcp/*` + `plugin/builtin/mcp_plugin.py` | `features/mcp` |
-| `plugin/builtin/skill_plugin.py` | `features/skill` |
-| `plugin/builtin/context_govern.py` | `features/context_govern/plugin.py` |
-| `plugin/builtin/title_gen.py` | `services/session/title/plugin.py` |
-| `trace_store.py` | `services/observability/trace` |
+| `api/skill.py` | `plugins/builtin/skill/store.py` |
+| `mcp/*` + `plugin/builtin/mcp_plugin.py` | `plugins/builtin/mcp` |
+| `plugin/builtin/skill_plugin.py` | `plugins/builtin/skill` |
+| `plugin/builtin/context_govern.py` | `plugins/builtin/context_govern/plugin.py` |
+| `plugin/builtin/title_gen.py` | `plugins/builtin/session_title/plugin.py` |
+| `trace_store.py` | `plugins/builtin/trace` |
 | `utils/image_store.py` | `services/attachment` |
 
 #### 3.8.1 迁移不变量
@@ -1225,7 +1225,7 @@ http frozen + restart_required
 ## 5. 验收标准
 
 - [x] **AC1：Cordis 成为唯一新内核。** `python -c "from cordis import Context, Fiber, Service, Inject"` 成功；`app/platform/services/features` 和 Gateway 实际启动路径不导入 `ftre.plugin.kernel`。迁移期 `ftre.plugin.kernel` 仅作为旧插件/旧测试兼容面保留，并不再作为新 Provider/Consumer 的运行时内核。
-- [x] **AC2：目录与导入边界成立。** `tests/architecture` 验证 `platform` 不依赖上层、`services` 不依赖 `features/app`、Consumer 不导入其他能力 `runtime/providers`，测试通过。
+- [x] **AC2：目录与导入边界成立。** `tests/architecture` 验证 `platform` 不依赖上层、`services` 不依赖 `plugins/builtin/app`、Consumer 不导入其他能力 `runtime/providers`，测试通过。
 - [x] **AC3：唯一 Composition Root。** `main.py` 不直接构造 SessionManager、AgentLoop、ChannelManager、CronScheduler、McpManager 或 Plugin Manager；默认 Composition 启动时 required Fiber 全部进入 ACTIVE。
 - [x] **AC4：生命周期可逆。** lifecycle 测试注册 Tool、Command、Hook、Channel、MCP 连接、Cron Task 和后台 Task，dispose 对应 Fiber 后贡献消失、资源关闭；重复 dispose 幂等。
 - [x] **AC5：响应式依赖正确。** Consumer 在 Provider 缺失时为 PENDING；Provider 上线后 ACTIVE；Provider dispose 后 Consumer 自动卸载；替换 Provider 后 Consumer 自动重载。

@@ -6,7 +6,7 @@ from pathlib import Path
 ROOTS = (
     Path(__file__).parents[2] / "src" / "ftre" / "app" / "gateway",
     Path(__file__).parents[2] / "src" / "ftre" / "services",
-    Path(__file__).parents[2] / "src" / "ftre" / "features",
+    Path(__file__).parents[2] / "src" / "ftre" / "plugins",
 )
 
 

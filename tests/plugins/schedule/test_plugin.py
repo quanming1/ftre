@@ -4,7 +4,7 @@ import pytest
 from cordis import Context, FiberState
 from ftre_agent_core.tool import ToolRegistry
 
-from ftre.features.schedule.plugin import apply, inject, provide
+from ftre.plugins.builtin.schedule.plugin import apply, inject, provide
 from ftre.services.http.service import HttpService
 from ftre.services.messaging.bus import EventBus, MessageBusService
 from ftre.services.messaging.channel import ChannelService

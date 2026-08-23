@@ -48,7 +48,7 @@ F1 已经让新的 Composition Root、Cordis Plugin Runtime、公共 Service 和
 - [x] **FR3：Workspace 消除旧管理器耦合。** Workspace、Session workspace 持久化和工具工作区访问只依赖 `sessions`/`workspaces` Service，不直接创建或保存旧 `SessionManager`。
 - [x] **FR4：Agent Runtime Provider 实迁移。** AgentLoop、SessionLane、Mailbox、ContextGate、CompletionRegistry、TurnExecutor、Compaction 和 Agent Factory 的真实实现归入 `services/agent/runtime`。
 - [x] **FR5：Agent Consumer 改用 Service。** AgentLoop 和 runtime 内部通过 `SessionService`、`MessageBusService`、`ToolService`、`CommandService` 和 `AgentProfileService` 的窄契约工作，不从旧目录导入 Manager 实现。
-- [x] **FR6：MessageBus/Channel/Command/Tool Provider 实迁移。** 业务数据面实现归入 `services/messaging`、`services/command` 和 `services/tools`；旧目录仅保留兼容导出。
+- [x] **FR6：MessageBus/Channel/Command/Tool Provider 实迁移。** 业务数据面实现归入 `services/messaging`、`plugins/builtin/command` 和 `services/tools`；旧目录仅保留兼容导出。
 - [x] **FR7：HTTP/WS 去除旧聚合入口。** 按 Owner 拆出的 Router 和 WebSocket Provider 使用公共 Service；移除 `bind_legacy_api`、模块全局 setter 和 `ws_channel.py` 对旧 aggregate API 的依赖。
 - [x] **FR8：旧内核和旧 Builtin 收尾。** 新生产路径不导入 `ftre.plugin.kernel` 或 `ftre.plugin.builtin`；本阶段只清理数据面旧实现，旧 Plugin Kernel/Builtin 作为 F1 兼容测试面保留，删除另开 Plugin Kernel 收尾阶段。
 - [x] **FR9：每个迁移切片可逆。** Provider 的对象、任务、监听和注册通过 Composition/Fiber/Effect 关闭；重复 close 不产生异常或残留。
@@ -85,7 +85,7 @@ src/ftre/
 │  ├─ messaging/
 │  ├─ command/
 │  └─ tools/
-├─ features/
+├─ plugins/builtin/
 └─ platform/
 ```
 

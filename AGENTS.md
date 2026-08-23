@@ -89,17 +89,18 @@ src/
    │     ├─ composition.py         # 唯一 Composition Root：声明默认 Plugin 清单
    │     ├─ bootstrap.py            # 启动/关闭顺序；不承载业务规则
    │     └─ http/                   # Host 与服务器适配
-   ├─ platform/                    # 轻内核：运行时机制，不承载产品能力
+   ├─ kernel/                      # 轻内核：运行时机制，不承载产品能力
    │  └─ plugins/            # Manifest、Discovery、Loader、Manager、Diagnostics
-   ├─ services/                    # 有状态公共能力；每个能力由 Service + Provider Plugin 组成
+   ├─ services/                    # Host 稳定公共能力；每个能力由 Service + Provider Plugin 组成
    │  ├─ config/ filesystem/ http/
    │  ├─ messaging/{bus,channel}/
    │  ├─ session/ agent/ tools/ workspace/
-   │  ├─ command/ attachment/ observability/
+   │  ├─ attachment/
    │  └─ system_prompt/
-   └─ features/                    # 产品行为 Plugin，可选地提供 Feature Service
-      ├─ skill/ mcp/ plan/ team/ schedule/
-      └─ context_govern/
+   └─ plugins/builtin/              # 产品行为与 concrete adapter Plugin
+      ├─ command/ trace/ session_title/
+      ├─ channels/{websocket,subagent}/
+      └─ skill/ mcp/ plan/ team/ schedule/ context_govern/
 ```
 
 ### Service 与 Plugin 的区别
@@ -108,7 +109,7 @@ src/
   `message_bus` 和 `http`。Service 保存状态并暴露窄接口，不负责自身的全局装配。
 - **Provider Plugin** 是 Service 的生命周期适配器，通常位于同一目录的 `plugin.py`，通过
   `provide = (...)` 声明输出、`inject = (...)` 声明依赖，并用 `ctx.effect(...)` 注册可逆清理。
-- **Feature Plugin** 位于 `features/`，拥有 Skill、MCP、Team 等产品行为；它只能消费公开
+- **Builtin Plugin** 位于 `plugins/builtin/`，拥有 Skill、MCP、Team 等产品行为和 concrete adapter；它只能消费公开
   Service，不得访问 AgentLoop、Session 存储等私有实现。
 - Plugin 入口统一是 `module:attribute` 指向 `apply`。Agent runtime 的 Provider/Plugin
   边界已经建立；任何仍由 Bootstrap 直接创建或复制 Service 句柄的代码都属于 F13 存量
@@ -124,7 +125,7 @@ ftre.main
   → PluginManager / PluginLoader
   → cordis.Context + Fiber
   → Provider Services
-  → Feature Plugins / 外部 Plugins
+  → Builtin Plugins / 外部 Plugins
   → FastAPI Host + WebSocket Channel + AgentLoop
 ```
 
@@ -136,7 +137,7 @@ ftre.main
 5. 必选 Plugin 启动失败会产生诊断并阻止 Gateway 启动；可选 Plugin 失败只记录状态。
 6. `ftre.plugin`、`ftre.agent`、`ftre.session`、`ftre.bus`、`ftre.channel`、`ftre.command`、
    `ftre.tools`、`ftre.api`、`ftre.config`、`ftre.mcp` 等旧目录/根模块已退役。新代码不得
-   依赖旧 Kernel 或兼容入口，新的 Service/Feature 必须放入四层目录。
+   依赖旧 Kernel 或兼容入口，新的 Host Service 必须放入 `services/`，产品行为必须放入 `plugins/`。
 
 ## Agent 数据面不变量
 
@@ -173,7 +174,7 @@ def apply(ctx: Context, config: dict | None = None):
 - 注释要求：每个新模块说明层级职责；每个公共 Service/Plugin、生命周期方法和非显然并发/清理逻辑
   必须有 docstring 或近邻注释，解释“为什么”和边界，不重复代码字面含义。
 - 不在 Plugin 中创建全局 FastAPI；通过 `HttpService.register_router` 贡献路由。
-- 不在 Feature 中 import 另一个 Feature 的私有模块；跨能力协作通过 Service key 或事件完成。
+- 不在 Plugin 中 import 另一个 Plugin 的私有模块；跨能力协作通过 Service key 或事件完成。
 
 ## 开发、测试与运行
 

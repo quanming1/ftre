@@ -6,7 +6,7 @@
 ## 一、前置检查
 
 - 阅读强制文档、F14 PRD、执行报告、目标树和第 4.5 节 Package 门禁。
-- 确认 F14.1-F14.5 已完成，旧 platform/features/agent_loop 已清零。
+- 确认 F14.1-F14.5 已完成，旧 platform/plugins/builtin/agent_loop 已清零。
 - 从 Composition、Plugin inject/provide 和 AST import 重新生成当前 Service 依赖图。
 - 只改 ftre 仓库及其 `packages/`；不修改/发布外部仓库。
 

@@ -74,13 +74,13 @@ Gateway smoke                                    → GATEWAY START OK / GATEWAY 
 | `src/ftre/app/gateway/http/server.py` | 未被 App、Composition 或测试引用；监听生命周期由外部 Gateway Host 管理 |
 | `src/ftre/app/gateway/http/server_plugin.py` | 无 manifest/入口引用，属于未启用的旧 Server Plugin |
 | `src/ftre/app/gateway/http/service_plugin.py` | 默认清单已使用 `services.http.plugin:apply`，该文件只是旧入口 |
-| `src/ftre/features/mcp/private.py` | `private_scope` 无调用方；MCP 私有配置由 Feature Service 处理 |
-| `src/ftre/features/skill/store.py` | 仅重导出 `SkillService`，真实 Owner 是 `features/skill/service.py` |
+| `src/ftre/plugins/builtin/mcp/private.py` | `private_scope` 无调用方；MCP 私有配置由 Feature Service 处理 |
+| `src/ftre/plugins/builtin/skill/store.py` | 仅重导出 `SkillService`，真实 Owner 是 `plugins/builtin/skill/service.py` |
 | `src/ftre/services/agent/events.py` | `AgentLifecycleEvent` 无调用方，语义 Hook 已由 `services/agent/hooks.py` 提供 |
 | `src/ftre/services/session/compat.py` | `SessionManager` 兼容别名无调用方，旧 Session 入口已退役 |
 | `src/ftre/services/system_prompt/base.md` | 只有 HTML 注释，却会被注册进 Prompt；应用基座实际由 `services/agent/config.py` 加载 |
 | `src/ftre/services/config/models.py` | `ConfigValue` 无消费者、未公开导出 |
-| `src/ftre/services/session/title/config.py` | `TitleConfig` 无消费者；真实配置模型是 `generator.py` 的 `TitleGenConfig` |
+| `src/ftre/plugins/builtin/session_title/config.py` | `TitleConfig` 无消费者；真实配置模型是 `generator.py` 的 `TitleGenConfig` |
 
 同时删除：
 
@@ -94,15 +94,15 @@ Gateway smoke                                    → GATEWAY START OK / GATEWAY 
 - Session/Trace/JSON 数据格式的读取迁移逻辑，负责已有用户数据恢复。
 - `WebSocketChannel` 的隔离测试 Bus fallback，只在未提供完整 Durable Service 的测试场景使用。
 - 工具、MCP、附件和进程管理中的异常边界与系统 PATH fallback，属于运行时容错而非模块兼容壳。
-- `features/schedule/channel.py`、`store.py` 和 `tool.py`，分别承担 Cron Channel、持久化 Store
-  和 Tool factory，均由 `features/schedule/plugin.py` 的动态能力组合使用。
+- `plugins/builtin/schedule/channel.py`、`store.py` 和 `tool.py`，分别承担 Cron Channel、持久化 Store
+  和 Tool factory，均由 `plugins/builtin/schedule/plugin.py` 的动态能力组合使用。
 
 ### 4.1 已核验但不在本轮删除范围的债务
 
 | 位置 | 证据 | 处理结论 |
 |---|---|---|
 | `services/messaging/channel/providers/{websocket,subagent}/plugin.py` | 没有默认 manifest 引用；`bootstrap.py` 在真实 Gateway 路径手工构造 Channel | 不是无引用安全删除项，保留并列为后续“Channel Provider 单一入口”重构 |
-| `services/messaging/channel/providers/websocket/channel.py` | 真实负责 WS 协议、连接 attach、快照和附件校验，623 行 | 真实 Owner，不作为死代码删除；后续可拆为协议/连接/附件适配子模块 |
+| `plugins/builtin/channels/websocket/channel.py` | 真实负责 WS 协议、连接 attach、快照和附件校验，623 行 | 真实 Owner，不作为死代码删除；后续可拆为协议/连接/附件适配子模块 |
 | `services/session/service.py`、`persistence/repository.py` | 承担 Session CRUD、Mailbox admission、持久化和生命周期，均被 Runtime/Router 使用 | 真实数据面 Owner；后续按职责拆分，不做机械切文件 |
 | `services/tools/builtin/team.py` | Team 工具拥有多条用户可调用行为和 Agent/Session 注入 | 真实行为 Owner；后续可按 Tool family 拆分 |
 | `src/ftre/system_prompt.md` | 被 `services/agent/config.py` 唯一加载，内容是实际系统提示词 | 保留；与已删除的无效 `services/system_prompt/base.md` 不是同一资源 |
@@ -124,7 +124,7 @@ Gateway smoke                                    → GATEWAY START OK / GATEWAY 
 删除后专项验证：
 
 ```text
-python -m pytest -q tests/architecture tests/startup tests/lifecycle tests/features/schedule
+python -m pytest -q tests/architecture tests/startup tests/lifecycle tests/plugins/builtin/schedule
 69 passed
 python -m ruff check --no-cache src tests
 All checks passed!
@@ -182,7 +182,7 @@ python -m vulture src/ftre --min-confidence 90: 无高置信度死代码
 
 | 检查项 | 结果 |
 |---|---|
-| 核心压缩 Owner | `src/ftre/services/compaction`、`src/ftre/features/compaction`、`ContextGate` 均不存在 |
+| 核心压缩 Owner | `src/ftre/services/compaction`、`src/ftre/plugins/builtin/compaction`、`ContextGate` 均不存在 |
 | 可选压缩 Owner | `packages/ftre-compaction/src/ftre_compaction` 唯一提供 Service、三条 Hook 和两个命令 |
 | Agent 数据面 | `SessionLane` 仅保留 `peek → Hook → claim → Turn → after-turn`，未导入压缩实现 |
 | 旧生产 import | AST 复核 `ftre.plugin/agent/session/bus/channel/command/tools/api/config/mcp`：0 条 |

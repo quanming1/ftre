@@ -5,7 +5,7 @@ from cordis import FiberState
 from ftre_agent_core.tool import ToolRegistry
 
 from ftre.app.gateway.composition import build_composition
-from ftre.services.command import CommandService
+from ftre.plugins.builtin.command import CommandService
 from ftre.services.config import ConfigService
 from ftre.services.messaging.bus import EventBus, MessageBusService
 from ftre.services.messaging.channel import ChannelService
