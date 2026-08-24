@@ -1,8 +1,21 @@
-"""ftre HookRuntime 的通用机制适配。
+"""ftre 的通用 Hook 运行时入口。
 
-Kernel 只负责把类型化 HookSpec 交给 Cordis 调度，并提供作用域、诊断、receipt
-和取消能力。具体的 ``agent/*``、``session/*`` 或 ``tools/*`` 名称由语义 Owner
-定义在各自 Service/Package 中，避免 Kernel 重新拥有产品协议。
+这里是业务 Plugin 使用 Hook 机制时的唯一公共导入面。可以把本目录理解成一
+个很薄的适配层：
+
+``HookSpec`` / ``HookMode`` / ``HookScope``
+    来自 ``ftre-agent-core``，描述一个 Hook 的名字、调用方式和作用域。
+``HookRuntime``
+    负责把监听器注册到 Cordis Context，并在触发时选择 Cordis 的事件调度模式。
+``HookScopeCarrier``
+    给 Agent 运行实例创建隔离身份，防止不同 Agent 的监听器互相收到事件。
+``HookReceipt`` / 诊断结构
+    让 Plugin 能主动取消注册，也让生命周期和运维代码能观察注册及失败情况。
+
+Kernel 只提供上述“怎么注册和调度”的机制，不知道 ``agent/request``、
+``session/flush``、``tools/result`` 等业务 Hook 的含义。具体 HookSpec 必须由
+对应的 Service 或 Package 定义，这样卸载一个可选 Plugin 时，Kernel 不需要认识
+或保留它的业务协议。
 """
 
 from .diagnostics import HookDiagnostic, HookListenerSnapshot
