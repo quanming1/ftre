@@ -19,7 +19,7 @@ class AgentLoopDriver(AgentDriver):
         self._loop = loop
 
     def is_session_busy(self, session_id: str) -> bool:
-        return self._loop.is_session_busy(session_id)
+        return self._loop.is_active_session(session_id)
 
     def get_session_status(self, session_id: str) -> str:
         return self._loop.get_session_status(session_id)

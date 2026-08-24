@@ -201,10 +201,6 @@ class AgentLoop:
         """只判断 AgentService active Turn，不读取任何 pending 队列。"""
         return self.is_session_running(session_id) or session_id in self._direct_tasks
 
-    def is_session_busy(self, session_id: str) -> bool:
-        """是否有 active Turn；pending 由独立 InboxService 查询。"""
-        return self.is_active_session(session_id)
-
     def get_session_status(self, session_id: str) -> str:
         """返回 Agent active Turn 的公开 activity；不读取 Inbox pending。"""
         if session_id in self._direct_tasks:

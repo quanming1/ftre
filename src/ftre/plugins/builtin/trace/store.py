@@ -8,8 +8,6 @@ import logging
 import sqlite3
 import threading
 import time
-from collections import defaultdict
-from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -469,108 +467,6 @@ def _load_runs_for_traces(conn: sqlite3.Connection, trace_ids: list[str]) -> lis
                 run["inputs"] = payload_map[run["id"]]
 
     return runs
-
-
-def _load_runs_for_summary(
-    conn: sqlite3.Connection, trace_ids: list[str]
-) -> list[dict]:
-    """Lightweight query for list view - skip large payload fields (inputs, events)."""
-    if not trace_ids:
-        return []
-    placeholders = ",".join("?" for _ in trace_ids)
-    rows = conn.execute(
-        f"""
-        SELECT id, trace_id, parent_run_id, name, run_type, status,
-               start_time, end_time, duration_ms, error,
-               outputs_json, metadata_json, tags_json
-        FROM trace_runs
-        WHERE trace_id IN ({placeholders})
-        ORDER BY trace_id, start_time, parent_run_id IS NOT NULL, id
-        """,
-        trace_ids,
-    ).fetchall()
-    return [_row_to_run_summary(row) for row in rows]
-
-
-def _row_to_run_summary(row: sqlite3.Row) -> dict:
-    """Convert row to dict for summary view - skip inputs and events."""
-    return {
-        "id": row["id"],
-        "trace_id": row["trace_id"],
-        "parent_run_id": row["parent_run_id"],
-        "name": row["name"],
-        "run_type": row["run_type"],
-        "status": row["status"],
-        "start_time": row["start_time"],
-        "end_time": row["end_time"],
-        "duration_ms": row["duration_ms"],
-        "inputs": {},  # Skip for summary
-        "outputs": _json_load(row["outputs_json"], {}),
-        "error": row["error"],
-        "metadata": _json_load(row["metadata_json"], {}),
-        "tags": _json_load(row["tags_json"], []),
-        "events": [],  # Skip for summary
-    }
-
-
-def _summarize_runs(runs: Iterable[dict], *, limit: int) -> list[dict]:
-    by_trace: dict[str, list[dict]] = defaultdict(list)
-    for run in runs:
-        trace_id = str(run.get("trace_id") or "")
-        if trace_id:
-            by_trace[trace_id].append(run)
-
-    summaries: list[dict] = []
-    for trace_id, trace_runs in by_trace.items():
-        root = next(
-            (run for run in trace_runs if run.get("parent_run_id") is None),
-            min(trace_runs, key=lambda run: run.get("start_time") or ""),
-        )
-        llm_runs = [run for run in trace_runs if run.get("run_type") == "llm"]
-        tool_runs = [run for run in trace_runs if run.get("run_type") == "tool"]
-        stop_without_tools = sum(
-            1
-            for run in llm_runs
-            if (run.get("outputs") or {}).get("finish_reason") == "stop"
-            and not (run.get("outputs") or {}).get("has_tool_calls")
-        )
-        response_models = sorted(
-            {
-                str(
-                    ((run.get("outputs") or {}).get("response_metadata") or {}).get(
-                        "model"
-                    )
-                )
-                for run in llm_runs
-                if ((run.get("outputs") or {}).get("response_metadata") or {}).get(
-                    "model"
-                )
-            }
-        )
-        summaries.append(
-            {
-                "trace_id": trace_id,
-                "name": root.get("name") or "react_agent",
-                "status": root.get("status") or "unknown",
-                "start_time": root.get("start_time"),
-                "end_time": root.get("end_time"),
-                "duration_ms": root.get("duration_ms"),
-                "metadata": root.get("metadata") or {},
-                "tags": root.get("tags") or [],
-                "outputs": root.get("outputs") or {},
-                "run_count": len(trace_runs),
-                "llm_run_count": len(llm_runs),
-                "tool_run_count": len(tool_runs),
-                "stop_without_tools": stop_without_tools,
-                "response_models": response_models,
-                "error_count": sum(
-                    1 for run in trace_runs if run.get("status") == "error"
-                ),
-            }
-        )
-
-    summaries.sort(key=lambda item: item.get("start_time") or "", reverse=True)
-    return summaries[: max(1, min(limit, 500))]
 
 
 def _compact_run(run: dict) -> dict:

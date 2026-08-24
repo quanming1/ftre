@@ -56,18 +56,6 @@ class CompletionRegistry:
                     if not waiters:
                         self._waiters.pop(key, None)
 
-    async def close_session(self, session_id: str) -> None:
-        """会话关闭时明确唤醒 waiter，避免 task/team 永远悬挂。"""
-        async with self._lock:
-            keys = [key for key in self._waiters if key[0] == session_id]
-            waiters = [future for key in keys for future in self._waiters.pop(key)]
-            cached_keys = [key for key in self._cache if key[0] == session_id]
-            for key in cached_keys:
-                self._cache.pop(key, None)
-        for future in waiters:
-            if not future.done():
-                future.set_exception(RuntimeError(f"session 已关闭: {session_id}"))
-
     async def close(self) -> None:
         """关闭整个 Loop 的等待注册表，避免 shutdown 后遗留 Future/结果缓存。"""
         async with self._lock:

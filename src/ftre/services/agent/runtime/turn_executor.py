@@ -108,13 +108,10 @@ class Turn:
     messages: list = field(default_factory=list)  # 发给 LLM 的消息列表
     runtime_context: dict = field(default_factory=dict)  # 工具共享的运行时上下文
     final_content: str = ""  # 最后一条完整 assistant 回复（task 工具用）
-    subagent_status: str = "completed"  # subagent 完成态：completed/cancelled/error
-    error: dict | None = None  # 进入 ERROR 时返回给 AgentService 的结构化原因
     retry_count: int = 0
     retry_tokens: set[str] = field(default_factory=set)
     continuation_count: int = 0
     max_continuations: int = 3
-    prompt_assembly: PromptAssembly | None = None
     # 每个 Turn 独占一个取消信号；控制型 Agent Hook 只能观察这一个实例。
     cancellation: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -122,10 +119,6 @@ class Turn:
     # 非 None 表示本 Turn 是恢复请求：跳过普通消息构建，
     # 注入历史 context 到新 agent，run() 时传入此事件而非 messages。
     confirm_event: object | None = None
-
-    # ── 事件序列（供回放/调试）──
-    events: list = field(default_factory=list)  # 本 Turn 产生的所有 CustomEvent
-
 
 @dataclass(frozen=True)
 class TurnOutcome:
@@ -216,7 +209,6 @@ class TurnExecutor:
                 turn.status = await self._advance(turn)
         except asyncio.CancelledError:
             turn.status = TurnStatus.CANCELLED
-            turn.subagent_status = "cancelled"
             if turn.agent is not None:
                 await self._persist_open_replies(turn, ReplyFinishedReason.INTERRUPTED)
         except Exception:
@@ -225,7 +217,6 @@ class TurnExecutor:
                 f"status={turn.status}"
             )
             turn.status = TurnStatus.ERROR
-            turn.subagent_status = "error"
         finally:
         # Agent Core now invokes agent/turn-stopping before finalization.  The
         # Gateway only publishes the post-decision observation here.
@@ -253,8 +244,7 @@ class TurnExecutor:
             user_message_id=turn.user_message_id,
             final_content=turn.final_content,
             error=(
-                turn.error
-                or {"code": "turn_error", "message": "Turn 执行失败", "retryable": True}
+                {"code": "turn_error", "message": "Turn 执行失败", "retryable": True}
                 if turn.status == TurnStatus.ERROR
                 else None
             ),
@@ -281,7 +271,6 @@ class TurnExecutor:
         校验失败会返回 ERROR（turn.agent 保持 None，不会进 _finalize 清理），
         由 AgentService 回传失败 TurnOutcome，避免入口误以为消息已经成功执行。
         """
-        loop = self._loop
         inbound = turn.inbound
         session_id = turn.session_id
         content = inbound.data.get("content", "")
@@ -303,25 +292,18 @@ class TurnExecutor:
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
         # 发送消息时确保当前工作区有 .ftre 扩展目录骨架（工作区级 skill / mcp.json 的落点）
         ensure_workspace_ext_dir(workspace)
-        llm_content = content
         messages, hook_config = await self._build_messages(
             session_id,
-            llm_content,
+            content,
             attachments,
             config,
-            inbound_data=inbound.data,
-            channel_id=inbound.from_channel,
-            workspace=workspace,
-            agent_dir=(agent_profile.agent_dir if agent_profile else ""),
-            reply_id=turn.turn_id,
         )
-        hook_config, assembly = await self._assemble_prompt(
+        hook_config, _ = await self._assemble_prompt(
             turn,
             hook_config,
             messages,
             workspace=workspace,
         )
-        turn.prompt_assembly = assembly
         # 轮后压缩屏障必须继续使用真正创建 Agent 时的配置，而不是重新读取
         # 此刻可能已经切换过的 default Agent 配置。
         turn.config = copy.deepcopy(hook_config)
@@ -333,57 +315,12 @@ class TurnExecutor:
         turn.config = copy.deepcopy(hook_config)
 
         # ── 创建本轮私有 Agent；取消由 AgentService 持有的 Turn task 传播 ──
-        assert loop.agent_manager is not None, "agent_manager must be provided"
-        core_hooks, core_hook_context = self._core_hook_binding(turn)
-        agent_id = agent_profile.agent_id if agent_profile is not None else (
-            inbound.metadata.agent_id or "default"
+        await self._create_agent(
+            turn,
+            hook_config,
+            agent_profile,
+            workspace=workspace,
         )
-        tool_registry = await loop.tool_registry_for_agent(agent_id, agent_profile)
-        agent = loop.agent_manager.create_agent(
-            profile=agent_profile,
-            config=hook_config,
-            channel_manager=loop.channel_manager,
-            tool_registry=tool_registry,
-            tracer=loop.tracer,
-            channel_id=inbound.from_channel,
-            session_id=session_id,
-            hooks=core_hooks,
-            hook_context=core_hook_context,
-        )
-        turn.agent = agent  # 标记：已创建 Agent，execute finally 会走 _finalize
-        # ── 组装 runtime_context（工具执行时的共享数据）──
-        turn.runtime_context = {
-            "session_id": session_id,
-            "request_id": inbound.metadata.request_id,
-            "agent_id": inbound.metadata.agent_id or "default",
-            "agent_subject": loop.agent_subject(inbound.metadata.agent_id or "default"),
-            "channel_id": inbound.from_channel,
-            "event_loop": loop._event_loop,
-            "sessions": self._sessions,
-            "bus": loop.bus,
-            "agent": self._agents,
-            "inbox": self._inbox,
-            "attachments": self._attachments,
-            "llm_config": hook_config.llm,
-            "agent_profile": agent_profile,
-            "workspace": WorkspaceAccessor(
-                session_id=session_id,
-                session_manager=self._sessions,
-                event_loop=loop._event_loop,  # type: ignore[arg-type]
-                fallback_cwd=workspace,
-            ),
-            "trace_name": f"session:{session_id}",
-            "trace_tags": [inbound.from_channel or "unknown"],
-            "trace_metadata": {
-                "session_id": session_id,
-                "channel_id": inbound.from_channel,
-                "workspace": workspace,
-            },
-            "reply_id": turn.turn_id,
-            "cancellation": turn.cancellation,
-            "continuation_count": turn.continuation_count,
-            "max_continuations": turn.max_continuations,
-        }
 
         # Prompt Hook 只能替换结构化 assembly；消息历史保持由 Session/Prompt
         # 正式构建，避免 Feature 就地修改首个 system message。
@@ -407,7 +344,6 @@ class TurnExecutor:
         from ftre.services.session.message.converter import _as_msg
 
         loop = self._loop
-        inbound = turn.inbound
         session_id = turn.session_id
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
 
@@ -415,48 +351,67 @@ class TurnExecutor:
         # 覆盖的完整 transcript 重新注入。保留 typed Msg 以维持 ToolCallState。
         records = await self._sessions.get_context_messages(session_id)
         hook_config = copy.deepcopy(config)
-        hook_config, assembly = await self._assemble_prompt(
+        hook_config, _ = await self._assemble_prompt(
             turn,
             hook_config,
             tuple(records),
             workspace=workspace,
         )
-        turn.prompt_assembly = assembly
         context_msgs = [_as_msg(r) for r in records]
         hook_config = await self._request_config(turn, hook_config)
 
         # 复用默认权限规则，注入历史 context
         state = loop.agent_manager._default_agent_state()
         state.context = context_msgs
+        turn.config = copy.deepcopy(hook_config)
+        await self._create_agent(
+            turn,
+            hook_config,
+            agent_profile,
+            workspace=workspace,
+            state=state,
+            reply_id=turn.confirm_event.reply_id,
+        )
+        return TurnStatus.RUNNING
 
+    async def _create_agent(
+        self,
+        turn: Turn,
+        config: AgentConfig,
+        agent_profile,
+        *,
+        workspace: str,
+        state=None,
+        reply_id: str | None = None,
+    ) -> None:
+        """Create the Core Agent and its shared tool context for both Turn paths."""
+        loop = self._loop
+        inbound = turn.inbound
         assert loop.agent_manager is not None, "agent_manager must be provided"
-        core_hooks, core_hook_context = self._core_hook_binding(turn)
         agent_id = agent_profile.agent_id if agent_profile is not None else (
             inbound.metadata.agent_id or "default"
         )
-        tool_registry = await loop.tool_registry_for_agent(agent_id, agent_profile)
-        agent = loop.agent_manager.create_agent(
-            profile=agent_profile,
-            config=hook_config,
-            channel_manager=loop.channel_manager,
-            tool_registry=tool_registry,
-            tracer=loop.tracer,
-            channel_id=inbound.from_channel,
-            session_id=session_id,
-            hooks=core_hooks,
-            hook_context=core_hook_context,
-            state=state,
-        )
-
-        turn.agent = agent
-        turn.config = copy.deepcopy(hook_config)
-
-        reply_id = turn.confirm_event.reply_id
+        core_hooks, core_hook_context = self._core_hook_binding(turn)
+        create_args = {
+            "profile": agent_profile,
+            "config": config,
+            "channel_manager": loop.channel_manager,
+            "tool_registry": await loop.tool_registry_for_agent(agent_id, agent_profile),
+            "tracer": loop.tracer,
+            "channel_id": inbound.from_channel,
+            "session_id": turn.session_id,
+            "hooks": core_hooks,
+            "hook_context": core_hook_context,
+        }
+        if state is not None:
+            create_args["state"] = state
+        turn.agent = loop.agent_manager.create_agent(**create_args)
+        runtime_agent_id = inbound.metadata.agent_id or "default"
         turn.runtime_context = {
-            "session_id": session_id,
+            "session_id": turn.session_id,
             "request_id": inbound.metadata.request_id,
-            "agent_id": inbound.metadata.agent_id or "default",
-            "agent_subject": loop.agent_subject(inbound.metadata.agent_id or "default"),
+            "agent_id": runtime_agent_id,
+            "agent_subject": loop.agent_subject(runtime_agent_id),
             "channel_id": inbound.from_channel,
             "event_loop": loop._event_loop,
             "sessions": self._sessions,
@@ -464,27 +419,26 @@ class TurnExecutor:
             "agent": self._agents,
             "inbox": self._inbox,
             "attachments": self._attachments,
-            "llm_config": hook_config.llm,
+            "llm_config": config.llm,
             "agent_profile": agent_profile,
             "workspace": WorkspaceAccessor(
-                session_id=session_id,
+                session_id=turn.session_id,
                 session_manager=self._sessions,
                 event_loop=loop._event_loop,  # type: ignore[arg-type]
                 fallback_cwd=workspace,
             ),
-            "trace_name": f"session:{session_id}",
+            "trace_name": f"session:{turn.session_id}",
             "trace_tags": [inbound.from_channel or "unknown"],
             "trace_metadata": {
-                "session_id": session_id,
+                "session_id": turn.session_id,
                 "channel_id": inbound.from_channel,
                 "workspace": workspace,
             },
-            "reply_id": reply_id,
+            "reply_id": reply_id or turn.turn_id,
             "cancellation": turn.cancellation,
             "continuation_count": turn.continuation_count,
             "max_continuations": turn.max_continuations,
         }
-        return TurnStatus.RUNNING
 
     async def _run(self, turn: Turn) -> TurnStatus:
         """[状态 3/4] 驱动 Agent 执行，逐条投递事件。
@@ -498,7 +452,6 @@ class TurnExecutor:
         无论哪种结局都会发 TURN_END，保证客户端和 DB 里 Turn 有完整边界。
         """
         agent = turn.agent
-        turn.subagent_status = "completed"
         turn.final_content = ""
 
         try:
@@ -561,7 +514,6 @@ class TurnExecutor:
 
         except asyncio.CancelledError:
             # 被 /cancel 触发的 task.cancel() 中断（在 LLM stream 的 await 处抛出）
-            turn.subagent_status = "cancelled"
             logger.info(
                 f"[turn-executor] Agent 被 cancel 中断 session={turn.session_id}"
             )
@@ -576,7 +528,6 @@ class TurnExecutor:
             return TurnStatus.CANCELLED
         except Exception:
             # 未预期异常
-            turn.subagent_status = "error"
             logger.exception(f"[turn-executor] _run 异常 (session={turn.session_id})")
             if await self._request_error_recovery(
                 turn, error_code="request_exception", message="Agent request raised"
@@ -626,7 +577,6 @@ class TurnExecutor:
             metadata={"reply_id": turn.turn_id},
         )
         await self.publish_agent_event(turn, event)
-        turn.events.append(event)  # 记入 Turn 的事件序列（供回放/调试）
 
     async def publish_agent_event(self, turn: Turn, event) -> Msg | None:
         """实时派发 Event，并在 Reply 生命周期内管理 Msg 持久化。
@@ -895,12 +845,6 @@ class TurnExecutor:
         content: str,
         attachments: list[dict],
         config: AgentConfig,
-        *,
-        inbound_data: dict | None = None,
-        channel_id: str = "",
-        workspace: str = "",
-        agent_dir: str = "",
-        reply_id: str,
     ) -> tuple[list[dict], AgentConfig]:
         """构建发给 LLM 的消息列表。
 

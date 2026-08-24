@@ -49,10 +49,6 @@ def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
 
 
-def _epoch_to_iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts).astimezone().isoformat()
-
-
 def _iso_to_epoch(value: str | None) -> float:
     try:
         return datetime.fromisoformat(value or "").timestamp()

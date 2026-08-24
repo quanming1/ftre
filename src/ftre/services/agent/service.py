@@ -27,8 +27,7 @@ class AgentService:
 
     key = "agents"
 
-    def __init__(self, profiles: Any | None = None) -> None:
-        self._profiles = profiles
+    def __init__(self) -> None:
         self._driver: AgentDriver | None = None
         self.registry = AgentRegistry()
         self._listeners: dict[str, list[AgentListener]] = {
@@ -43,15 +42,13 @@ class AgentService:
             raise RuntimeError("AgentService runtime is not ready")
         return self._driver
 
-    def attach_driver(self, driver: AgentDriver, profiles: Any | None = None) -> None:
+    def attach_driver(self, driver: AgentDriver) -> None:
         """Attach an explicit data-plane port after Provider composition."""
         if not isinstance(driver, AgentDriver):
             raise TypeError("driver must implement AgentDriver")
         if self._driver is not None and self._driver is not driver:
             raise RuntimeError("AgentService already has an attached driver")
         self._driver = driver
-        if profiles is not None:
-            self._profiles = profiles
         if self.registry.get("default") is None:
             self.registry.register("default", state="ready")
 

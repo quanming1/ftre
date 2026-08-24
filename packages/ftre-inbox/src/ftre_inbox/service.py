@@ -255,10 +255,6 @@ class InboxService:
                 return {"session_id": session_id, "status": "quiescent"}
             await asyncio.sleep(0.02)
 
-    def notify_agent_idle(self, session_id: str) -> None:
-        """由 AgentService 在 active Turn 收尾后唤醒等待中的 Inbox worker。"""
-        self._wake_event(session_id).set()
-
     async def claim_next_step_for_reasoning(
         self,
         session_id: str,

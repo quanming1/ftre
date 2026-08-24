@@ -382,13 +382,6 @@ class McpManager:
     def attachment_service(self) -> AttachmentService | None:
         return self._attachments
 
-    def get_status(self) -> dict[str, str]:
-        """返回所有服务器的连接状态"""
-        return {
-            name: "connected" if conn.is_connected else "disconnected"
-            for name, conn in self._connections.items()
-        }
-
     async def _remove_connection(self, name: str) -> None:
         """从连接池移除并断开指定服务器。"""
         conn = self._connections.pop(name, None)
@@ -397,45 +390,6 @@ class McpManager:
             await conn.disconnect()
 
     # ─── Agent 私有 MCP 支持 ──────────────────────────────────────
-
-    async def ensure_connection(self, config: McpServerConfig) -> bool:
-        """确保单个服务器已连接，复用已有连接或创建新连接。
-
-        - 已连接且 config 相同 → 复用，不二次加载
-        - 已连接但 config 不同 → 断开重连
-        - 未连接 → 新建连接
-
-        连接创建后长期存活于连接池，下次调用直接复用。
-        """
-        existing = self._connections.get(config.name)
-        if existing and existing.is_connected and existing.config == config:
-            return True
-
-        if existing:
-            await self._remove_connection(config.name)
-
-        conn = McpConnection(config)
-        self._connections[config.name] = conn
-        return await conn.connect()
-
-    async def ensure_connections(self, configs: list[McpServerConfig]) -> set[str]:
-        """批量确保服务器已连接。
-
-        Returns:
-            成功连接的 server name 集合。
-        """
-        results = await asyncio.gather(
-            *(self.ensure_connection(cfg) for cfg in configs),
-            return_exceptions=True,
-        )
-        success: set[str] = set()
-        for cfg, result in zip(configs, results):
-            if result is True:
-                success.add(cfg.name)
-            elif isinstance(result, Exception):
-                logger.warning(f"[mcp] ensure_connection 失败: {cfg.name} — {result}")
-        logger.info(f"[mcp] ensure_connections: {len(success)}/{len(configs)} 连接成功")
-        return success
 
     async def list_tools_for_servers(
         self, server_names: set[str]
