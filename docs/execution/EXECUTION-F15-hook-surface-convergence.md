@@ -41,15 +41,15 @@
 
 | 债务 | 证据 | 清理批次 | 当前状态 |
 |---|---|---|---|
-| `agent/error`、`agent/session-start`、`agent/status` 无发布点 | `src/ftre/services/agent/hooks.py` 定义与导出；AST/rg 无生产 dispatch | F15.3 | 待清理 |
-| `agent/request` 名称与 AgentConfig 转换语义不符且无生产消费者 | `AgentRequestPayload`/`AGENT_REQUEST_SPEC`；运行链仅由 TurnExecutor 旧配置阶段持有 | F15.3 | 待清理 |
-| `agent/turn-stopped` 与 after-turn 重叠且无生产消费者 | `TurnStoppedPayload`/Spec；无生产 listener | F15.3 | 待清理 |
-| `session/event` 与 MessageBus 事实通知重复 | `SESSION_EVENT_SPEC` 与 `services/session/events.py` 发布链 | F15.4 | 待清理 |
-| `session/flush` 无消费者、不是实际多 Store 屏障 | `SESSION_FLUSH_SPEC`；无生产 listener | F15.4 | 待清理 |
-| Inbox 三个细粒度 mutation Hook 无消费者 | `ftre_inbox/hooks.py` 与 Package dispatch 搜索 | F15.4 | 待清理 |
-| `messaging/inbound` 名称表达不出控制路由 | `MESSAGING_INBOUND_SPEC` 被 Bus 消费链使用 | F15.3 | 待改名 |
-| EMIT 异步 listener detached，当前承载关键清理/权威状态 | `HookRuntime.dispatch` EMIT 分支；Session/Inbox/WebSocket listener | F15.2/F15.4 | 待修复 |
-| 注册 API 同时存在 Context Effect、Runtime companion 和 Plugin 手工 receipt Effect | `HookRuntime.register` 与 Package/Plugin 注册点 | F15.2/F15.5 | 待收敛 |
+| `agent/error`、`agent/session-start`、`agent/status` 无发布点 | `src/ftre/services/agent/hooks.py` 定义与导出；AST/rg 无生产 dispatch | F15.3 | 已删除 |
+| `agent/request` 名称与 AgentConfig 转换语义不符且无生产消费者 | `AgentRequestPayload`/`AGENT_REQUEST_SPEC`；运行链仅由 TurnExecutor 旧配置阶段持有 | F15.3 | 已删除 |
+| `agent/turn-stopped` 与 after-turn 重叠且无生产消费者 | `TurnStoppedPayload`/Spec；无生产 listener | F15.3 | 已删除 |
+| `session/event` 与 MessageBus 事实通知重复 | `SESSION_EVENT_SPEC` 与 `services/session/events.py` 发布链 | F15.4 | 已删除 |
+| `session/flush` 无消费者、不是实际多 Store 屏障 | `SESSION_FLUSH_SPEC`；无生产 listener | F15.4 | 已删除 |
+| Inbox 三个细粒度 mutation Hook 无消费者 | `ftre_inbox/hooks.py` 与 Package dispatch 搜索 | F15.4 | 已删除 |
+| `messaging/inbound` 名称表达不出控制路由 | `MESSAGING_INBOUND_SPEC` 被 Bus 消费链使用 | F15.3 | 已改名 |
+| EMIT 异步 listener detached，当前承载关键清理/权威状态 | `HookRuntime.dispatch` EMIT 分支；Session/Inbox/WebSocket listener | F15.2/F15.4 | 已修复：关键 Hook 改 awaited PARALLEL |
+| 注册 API 同时存在 Context Effect、Runtime companion 和 Plugin 手工 receipt Effect | `HookRuntime.register` 与 Package/Plugin 注册点 | F15.2/F15.5 | 已收敛 |
 
 ## 命令证据
 
@@ -61,20 +61,11 @@
 | `python -m pytest -q tests/hooks tests/contracts packages/ftre-inbox/tests packages/ftre-compaction/tests` | 100 passed |
 | `python -m ruff check --no-cache src tests packages` | 通过 |
 
-## F15.2 进行中
+## F15.8/F15.9 最终输入
 
-- `HookRuntime.register` 的诊断 scope 不再由调用方传入，Agent 全局监听参数改为
-  `all_agent_scopes`；生产 Hook 注册必须显式传入 `context`。
-- Plugin 不再额外注册 `ctx.effect(...receipt.dispose...)`；Runtime 自己绑定 Fiber 生命周期。
-- 新增 AST 门禁，检查生产 `hook_runtime.register` 的 Context、all-agent 范围和重复 receipt disposer。
-- F15.2 仍待把关键 Session/Inbox Hook 从 EMIT 迁为 awaited PARALLEL，并补齐 in-flight unload 矩阵。
-
-## 后续批次输入
-
-- F15.2 必须先解决 EMIT/awaited、Context 必填和唯一 Effect Owner，再迁移消费者。
-- F15.3 只能删除 Host Agent/Messaging 旧名；不得修改 Core 7 个 Hook。
-- F15.4 需要用 Barrier/Event 证明 Session dispose、Inbox revision 和 WebSocket 状态顺序。
-- F15.5 需要保留 `ftre-compaction` 的独立包边界，并处理执行前已有的注释改动而不覆盖它。
+- 生产源码、Package 和当前架构测试中已无删除的 Host Hook 名称；历史 PRD/执行记录中的旧名
+  仅作为迁移证据保留，不属于当前运行契约。
+- 仍需在 F15.9 记录执行前遗留修改隔离、CHANGELOG、全量命令、Gateway smoke 和外部 CI 状态。
 
 ## F15.2 / F15.3 结果
 
@@ -120,3 +111,17 @@
   `__pycache__`、`.pyc`、tests 或 Host 私有源码。Core 7 项名称、DTO 和依赖未修改。
 - 构建生成的 package `build/` 与 `egg-info/` 已移出仓库至
   `E:\tmp\ftre-f15-generated-trash`，工作区不保留生成物。
+
+## F15.8/F15.9 当前结果
+
+- 全量 `python -m pytest -q`：486 passed；`python -m ruff check --no-cache src tests packages`：通过；
+  `git diff --check`：通过。
+- 真实 Gateway smoke：`python -m ftre.main gateway --foreground --port 48659 --host 127.0.0.1`
+  启动成功；`GET /api/health` 返回 HTTP 200 `{"status":"ok"}`；真实 WebSocket 连接建立并正常
+  关闭；Ctrl+C 优雅关闭 Channel、Command、Schedule、MCP 和 Plugin 资源。
+- 生成缓存 `__pycache__`/`.pyc`、root `build`、`.pytest_cache` 已移出工作区到
+  `E:\tmp\ftre-f15-cache-trash`；仓库内缓存扫描为零。
+- 当前生产源码、Package 和架构扫描均无删除的 Host Hook 名、`global_listener` 或重复
+  `receipt.dispose`；F15 目标快照为 17 项。
+- F15 GitHub Actions 尚未触发（当前 feature 分支未 push）；因此 AC19 和最终“已验收/发布”
+  仍保持未完成，不能把本地绿色结果冒充远程 CI 证据。

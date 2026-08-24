@@ -46,8 +46,8 @@ WS/HTTP/Plugin
         → inbox/before-claim
         → 原子 claim
         → AgentService.run(InboundMessage)
-        → Agent Core / agent/after-turn
-    → session/queue + session/status + session/event
+        → Agent Core / agent/after-run
+    → session/queue + session/status
 ```
 
 当前所有权只有三条：
@@ -304,11 +304,11 @@ Hook、命令和算法移动到可选发行物 `packages/ftre-compaction`。当�
 ftre-compaction/plugin.py
   → 创建 CompactionService
   → provide("compaction")
-  → 注册 inbox/before-claim、agent/after-turn、agent/request-error
+  → 注册 inbox/before-claim、agent/after-run、agent/run-error
   → 注册 /compact、/compress-fast
 ```
 
-Agent 的两个相邻边界必须区分：`agent/before-turn` 只负责一次
+Agent 的两个相邻边界必须区分：`agent/before-run` 只负责一次
 `InboundMessage` 的 Turn 准入；`agent/before-reasoning` 由 `ftre-agent-core` 在每次
 真正调用 LLM 前触发，`ftre-inbox` 可在这里消费运行中的 `next-step`。
 

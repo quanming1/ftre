@@ -326,61 +326,61 @@ F15 的稳定输入，架构测试必须防止 F15 误删或私自改名。
 
 ### 7.1 基线与门禁
 
-- [ ] **FR1：Hook 事实清单。** 由 AST/运行时快照生成当前 HookSpec、发布者、生产监听者、
+- [x] **FR1：Hook 事实清单。** 由 AST/运行时快照生成当前 HookSpec、发布者、生产监听者、
   模式、Scope、失败策略和生命周期 Owner；不得靠手写列表冒充事实源。
-- [ ] **FR2：目标清单唯一。** 架构测试断言公共 Hook 名集合与第 3.2 节 17 个名称完全一致，
+- [x] **FR2：目标清单唯一。** 架构测试断言公共 Hook 名集合与第 3.2 节 17 个名称完全一致，
   不允许额外旧名、alias 或未登记 Hook。
-- [ ] **FR3：发布者门禁。** 每个 HookSpec 至少有一个真实发布点；删除“能注册但永不触发”的
+- [x] **FR3：发布者门禁。** 每个 HookSpec 至少有一个真实发布点；删除“能注册但永不触发”的
   幽灵 Hook。
-- [ ] **FR4：消费价值门禁。** 新增 Hook 必须在 PRD 记录真实消费者或稳定扩展价值；没有
+- [x] **FR4：消费价值门禁。** 新增 Hook 必须在 PRD 记录真实消费者或稳定扩展价值；没有
   消费者的内部时机保持私有方法。
 
 ### 7.2 Runtime 语义
 
-- [ ] **FR5：EMIT 限界。** 生产业务 Hook 不得使用 EMIT 执行异步清理、权威状态推送或
+- [x] **FR5：EMIT 限界。** 生产业务 Hook 不得使用 EMIT 执行异步清理、权威状态推送或
   持久化屏障；架构测试扫描并拒绝此类组合。
-- [ ] **FR6：awaited lifecycle。** `session/created/disposed`、`inbox/changed/status-changed`
+- [x] **FR6：awaited lifecycle。** `session/created/disposed`、`inbox/changed/status-changed`
   使用 awaited 模式；dispatch 返回时对应 listener 已结束。
-- [ ] **FR7：唯一 Effect Owner。** Hook 注册自动绑定传入 Context Fiber；生产 Plugin 不再为
+- [x] **FR7：唯一 Effect Owner。** Hook 注册自动绑定传入 Context Fiber；生产 Plugin 不再为
   receipt 注册第二个 dispose Effect。
-- [ ] **FR8：Context 必填。** Plugin 级 `register()` 缺少 Context 时直接失败；根 Context
+- [x] **FR8：Context 必填。** Plugin 级 `register()` 缺少 Context 时直接失败；根 Context
   注册仅允许显式内部 API，不能由业务 Plugin 静默使用。
-- [ ] **FR9：作用域收敛。** 删除诊断字符串 scope；将 `global_listener` 改为
+- [x] **FR9：作用域收敛。** 删除诊断字符串 scope；将 `global_listener` 改为
   `all_agent_scopes`，并证明它不改变生命周期 Owner。
-- [ ] **FR10：in-flight 清理。** unload/restart 在 listener 执行中发生时，阻止新调用并等待
+- [x] **FR10：in-flight 清理。** unload/restart 在 listener 执行中发生时，阻止新调用并等待
   现有调用排空；取消和异常路径无悬挂 Task。
 
 ### 7.3 Host 与 Package Hook
 
-- [ ] **FR11：Agent Hook 收敛。** 按迁移表删除幽灵/重复 Hook并迁移为
+- [x] **FR11：Agent Hook 收敛。** 按迁移表删除幽灵/重复 Hook并迁移为
   `before-run/after-run/run-error`；Agent Runtime 不识别 Compaction/Inbox 实现。
-- [ ] **FR12：Session Hook 收敛。** 只保留 awaited `session/created/disposed`；删除
+- [x] **FR12：Session Hook 收敛。** 只保留 awaited `session/created/disposed`；删除
   `session/event/flush` 及没有消费者的 DTO、默认函数、测试和文档。
-- [ ] **FR13：Messaging 路由。** `messaging/route` 保持 Command-first、Inbox-second 的
+- [x] **FR13：Messaging 路由。** `messaging/route` 保持 Command-first、Inbox-second 的
   Waterfall 语义；无人处理时返回稳定 capability error。
-- [ ] **FR14：Inbox Hook 收敛。** 只保留 before-claim、changed、status-changed；删除三种
+- [x] **FR14：Inbox Hook 收敛。** 只保留 before-claim、changed、status-changed；删除三种
   细粒度 mutation Hook，队列持久化、revision 和客户端快照行为不变。
-- [ ] **FR15：Compaction 迁移。** 压缩包只监听 after-run、run-error、before-claim；禁用或卸载
+- [x] **FR15：Compaction 迁移。** 压缩包只监听 after-run、run-error、before-claim；禁用或卸载
   后基础 Agent Run 正常，pending 不丢失。
-- [ ] **FR16：内置 Plugin 迁移。** Command、WebSocket、Session Title 使用目标 Hook 名和唯一
+- [x] **FR16：内置 Plugin 迁移。** Command、WebSocket、Session Title 使用目标 Hook 名和唯一
   Fiber Effect；Plugin unload/restart 无 listener、Task 或闭包残留。
 
 ### 7.4 Core 边界冻结
 
-- [ ] **FR17：Core 契约不变。** F15 不修改 Core 依赖版本和 7 个 Core Hook 的名称、Spec、Payload、
+- [x] **FR17：Core 契约不变。** F15 不修改 Core 依赖版本和 7 个 Core Hook 的名称、Spec、Payload、
   Result 或调用顺序；架构测试明确区分“保留的 Core Hook”和“删除的 Host Hook”。
-- [ ] **FR18：跨仓库隔离。** ftre 不复制 Core Hook 类型、不添加临时 adapter、不通过本地
+- [x] **FR18：跨仓库隔离。** ftre 不复制 Core Hook 类型、不添加临时 adapter、不通过本地
   `sys.path` 或未提交 Core worktree 获得测试通过；后续 Core 候选只记录在本 PRD 第 6.4 节。
 
 ### 7.5 清理、文档与诊断
 
-- [ ] **FR19：无兼容层。** 删除 Host 旧常量、旧 Payload、旧导出、旧测试和旧文档示例；不保留
+- [x] **FR19：无兼容层。** 删除 Host 旧常量、旧 Payload、旧导出、旧测试和旧文档示例；不保留
   deprecated alias、双发或 adapter。
-- [ ] **FR20：诊断可理解。** Hook snapshot 输出 name、owner、mode、真实 Context scope、顺序、
+- [x] **FR20：诊断可理解。** Hook snapshot 输出 name、owner、mode、真实 Context scope、顺序、
   active calls 和 disposed；不显示已删除 Hook 或用户 payload。
-- [ ] **FR21：中文文档。** Kernel README 和各 Owner hooks.py 解释目标 17 个 Hook 的时机、
+- [x] **FR21：中文文档。** Kernel README 和各 Owner hooks.py 解释目标 17 个 Hook 的时机、
   输入输出、失败语义、是否等待及最小 Plugin 示例。
-- [ ] **FR22：工程卫生。** 删除死代码、未使用 import、空目录、生成缓存和重复 Effect；ruff、
+- [x] **FR22：工程卫生。** 删除死代码、未使用 import、空目录、生成缓存和重复 Effect；ruff、
   diff check、架构扫描无 allowlist 扩张。
 - [ ] **FR23：最终验收。** ftre 全量测试、两个 Package 独立测试与 wheel、Gateway smoke、
   Plugin unload/restart 和 ftre CI 全部通过，执行报告记录真实命令和结果。
@@ -418,40 +418,40 @@ F15 的稳定输入，架构测试必须防止 F15 误删或私自改名。
 
 ## 10. 验收标准
 
-- [ ] **AC1：精确清单。** AST 和运行时 snapshot 均只出现第 3.2 节 17 个 Hook；其中 Host 10 个、
+- [x] **AC1：精确清单。** AST 和运行时 snapshot 均只出现第 3.2 节 17 个 Hook；其中 Host 10 个、
   Core 7 个，Owner 归属不可混淆。
-- [ ] **AC2：幽灵 Hook 清零。** 每个 HookSpec 均有发布者；旧 Agent 幽灵 Hook 全盘搜索为零。
-- [ ] **AC3：注册 API。** 所有生产 listener 显式绑定 Plugin Context，Plugin 源码没有
+- [x] **AC2：幽灵 Hook 清零。** 每个 HookSpec 均有发布者；旧 Agent 幽灵 Hook 全盘搜索为零。
+- [x] **AC3：注册 API。** 所有生产 listener 显式绑定 Plugin Context，Plugin 源码没有
   `ctx.effect(...receipt.dispose...)` 二次生命周期注册。
-- [ ] **AC4：Session 清理等待。** 人工阻塞 Inbox 的 session/disposed listener 时，Session
+- [x] **AC4：Session 清理等待。** 人工阻塞 Inbox 的 session/disposed listener 时，Session
   dispatch 不得提前返回；释放后完整清理。
-- [ ] **AC5：WebSocket 顺序。** 连续 Inbox mutation/status 变化产生顺序一致的权威快照和状态，
+- [x] **AC5：WebSocket 顺序。** 连续 Inbox mutation/status 变化产生顺序一致的权威快照和状态，
   无 detached Task 迟到覆盖新状态。
-- [ ] **AC6：in-flight unload。** 控制/维护 listener 执行中卸载 Plugin，unload 等待排空；卸载后
+- [x] **AC6：in-flight unload。** 控制/维护 listener 执行中卸载 Plugin，unload 等待排空；卸载后
   再 dispatch 不进入旧 listener。
-- [ ] **AC7：Agent Run。** before-run 拒绝不持久化/执行错误输入；after-run 在成功、错误、取消后
+- [x] **AC7：Agent Run。** before-run 拒绝不持久化/执行错误输入；after-run 在成功、错误、取消后
   恰好执行一次。
-- [ ] **AC8：错误恢复。** run-error 只有 progress token 前进且未取消时允许一次有界重试；重复 token
+- [x] **AC8：错误恢复。** run-error 只有 progress token 前进且未取消时允许一次有界重试；重复 token
   和恢复失败保留原错误。
-- [ ] **AC9：Reasoning。** next-step 在首次、Tool 后和 continuation 后的 before-reasoning 原子消费，
+- [x] **AC9：Reasoning。** next-step 在首次、Tool 后和 continuation 后的 before-reasoning 原子消费，
   不丢失、不重复。
-- [ ] **AC10：Core Tool 契约冻结。** `tools/pre-execute`、`tools/execute`、`tools/post-execute`、
+- [x] **AC10：Core Tool 契约冻结。** `tools/pre-execute`、`tools/execute`、`tools/post-execute`、
   `tools/result` 四个名称及 Host dispatch 兼容测试保持通过，F15 不引入 `tool/before/after` 半迁移。
-- [ ] **AC11：Core Agent 契约冻结。** `agent/before-reasoning`、`agent/turn-stopping` 与
+- [x] **AC11：Core Agent 契约冻结。** `agent/before-reasoning`、`agent/turn-stopping` 与
   `llm/stream` 保持现状；默认 Stop、Continue、有界 continuation 和 next-step 回归通过。
-- [ ] **AC12：跨仓库隔离。** `E:\ftre-agent-core` 无 F15 修改；ftre 源码没有复制 Core Hook DTO、
+- [x] **AC12：跨仓库隔离。** `E:\ftre-agent-core` 无 F15 修改；ftre 源码没有复制 Core Hook DTO、
   compatibility adapter、临时 `sys.path` 或本地路径依赖。
-- [ ] **AC13：Compaction。** before-claim、after-run、run-error 三条路径行为保持；卸载包后 Agent
+- [x] **AC13：Compaction。** before-claim、after-run、run-error 三条路径行为保持；卸载包后 Agent
   基础流程无条件分支和 no-op fallback。
-- [ ] **AC14：Inbox。** admission、next-turn/next-step、claim、discard、恢复、容量、取消和权威快照
+- [x] **AC14：Inbox。** admission、next-turn/next-step、claim、discard、恢复、容量、取消和权威快照
   测试通过；旧细粒度 mutation Hook 不存在。
-- [ ] **AC15：最小 Composition。** 未安装 Inbox/Compaction 时 Host 可 import、Composition 可启停、
+- [x] **AC15：最小 Composition。** 未安装 Inbox/Compaction 时 Host 可 import、Composition 可启停、
   直接 Agent Run 可执行。
-- [ ] **AC16：Package。** Inbox/Compaction 独立测试、wheel build、洁净安装和 entry point discovery
+- [x] **AC16：Package。** Inbox/Compaction 独立测试、wheel build、洁净安装和 entry point discovery
   通过，wheel 不夹带缓存或 Host 私有源码。
-- [ ] **AC17：质量门禁。** `python -m pytest -q`、`python -m ruff check --no-cache src tests packages`、
+- [x] **AC17：质量门禁。** `python -m pytest -q`、`python -m ruff check --no-cache src tests packages`、
   `git diff --check` 全部通过。
-- [ ] **AC18：Gateway smoke。** Config、HTTP health、WebSocket attach、消息 admission、Agent 回复、
+- [x] **AC18：Gateway smoke。** Config、HTTP health、WebSocket attach、消息 admission、Agent 回复、
   queue/status、取消和正常 shutdown 通过。
 - [ ] **AC19：ftre CI。** F15 GitHub Actions 成功；声明的 Core 版本和两个本地可选 Package 可在
   洁净 runner 安装，不依赖其他仓库 dirty worktree。
@@ -515,6 +515,7 @@ F15 的稳定输入，架构测试必须防止 F15 误删或私自改名。
 | 2026-08-24 | 完成 F15.4：Session 只保留 awaited created/disposed；Inbox 只保留 before-claim/changed/status-changed 并将权威通知改为 awaited PARALLEL；删除 Session event/flush 和 Inbox 三种细粒度 mutation | 消除重复事实通知和 detached 状态推送，保证 Session 删除清理、队列 revision 与 WebSocket snapshot 的顺序可等待 |
 | 2026-08-24 | 完成 F15.5：Inbox、Compaction、Command、WebSocket、Session Title 全部迁移目标 Hook；生产扫描清零旧 Host 名、global_listener 和 receipt 二次 Effect | 让 Package/内置 Plugin 的实际消费者与 17 项目标表一致，卸载由 HookRuntime Fiber Owner 统一收尾 |
 | 2026-08-24 | 完成 F15.6/F15.7：补齐 in-flight unload、Session dispose 失败和队列恢复回归；构建并洁净安装 Inbox/Compaction wheel，验证 Core 7 项冻结 | 在最终清理前证明取消/生命周期/Package 发行边界，避免把本地构建目录或 Core sibling 依赖带入验收 |
+| 2026-08-24 | F15.8 本地清理与 F15.9 预验收：全量 486 passed、ruff/diff 通过、Gateway health/WebSocket attach/优雅关闭 smoke 通过，清除缓存和空生成物；AC19 保持未勾选，等待 feature push 后的 GitHub Actions | 诚实区分本地可复现证据与必须在远程洁净 runner 执行的 CI 门禁，不提前标记阶段已验收 |
 | 2026-08-24 | 用户授权按 F15.1-F15.9 串行执行；PRD 由草稿进入开发中，FR/AC 保持未勾选，验收以执行证据为准 | 开始按第二版 Host-only 17 Hook 方案落地，禁止提前宣称完成 |
 | 2026-08-24 | 增加 F15 七批执行提示词，并为后续 F16/Core C3 建立“先配对 PRD、后 Core、再 Host”的七批预案 | 将 PRD 转换为自包含、可验证、带注释/卫生/提交边界的 Agent 执行契约，避免一次性跨仓迁移和未发布 sibling 依赖 |
 | 2026-08-24 | 第二版：F15 从跨仓 29→15 调整为 Host-only 29→17；冻结 Core 7 个 Hook，将 Tool 4→2 和 turn-stopping 改名移入后续 F16/Core C3 候选；同步重写 FR、任务、AC、测试与风险 | 第一版同时修改 HookRuntime、Host、两个 Package 和 Core，交付面过大且会让 Host 债务清理被 Core 发版阻塞；第二版保留终局方向，但先完成单仓可独立验收的收敛 |

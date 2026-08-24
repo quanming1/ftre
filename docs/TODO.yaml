@@ -924,7 +924,8 @@ stages:
             date: 2026-08-24
           - id: F15.8
             title: 文档、诊断、旧引用与工程卫生清理
-            status: in_progress
+            status: done
+            date: 2026-08-24
           - id: F15.9
             title: 全量验收、执行报告与收尾
-            status: todo
+            status: in_progress

@@ -17,7 +17,7 @@
 
 ```text
 业务 Owner 定义 HookSpec
-        │ 例如 services.agent.hooks 定义 agent/request
+        │ 例如 services.agent.hooks 定义 agent/before-run
         ▼
 Plugin.apply(ctx) 注册 listener
         │ HookRuntime.register → Cordis Context.on/once
@@ -72,31 +72,29 @@ Kernel 只知道“如何调度一个合法的 HookSpec”，不应该出现 `co
 
 ## 最小使用示例
 
-下面的 Plugin 给 Agent 请求设置温度上限。它不直接调用 AgentLoop，也不创建第二个
-事件总线，只通过公开的 HookSpec 和当前 Cordis Context 工作：
+下面的 Plugin 在 Agent Run 准入时拒绝不满足策略的输入。它不直接调用 AgentLoop，也
+不创建第二个事件总线，只通过公开的 HookSpec 和当前 Cordis Context 工作：
 
 ```python
 import copy
 
-from ftre.services.agent.hooks import AGENT_REQUEST_SPEC
+from ftre.services.agent.hooks import AGENT_BEFORE_RUN_SPEC, RejectRun
 
 
 async def apply(ctx):
     async def policy(payload, next_):
-        # Waterfall listener 必须调用 next_() 才会把请求交给后续 listener。
-        request = await next_()
-        request = copy.deepcopy(request)
-        request.llm.temperature = min(request.llm.temperature, 0.2)
-        return request
+        # Waterfall listener 可以在 Run 创建前拒绝；允许时继续交给后续 listener。
+        if payload.context.get("maintenance"):
+            return RejectRun("Agent 正在维护")
+        return await next_()
 
     receipt = ctx.hook_runtime.register(
-        AGENT_REQUEST_SPEC,
+        AGENT_BEFORE_RUN_SPEC,
         policy,
         owner="example-policy",
         context=ctx,
     )
-    # Effect 使 unload/restart 可逆；重复调用 receipt.dispose() 也是安全的。
-    ctx.effect(lambda: receipt.dispose, label="hook:agent:request:example-policy")
+    # HookRuntime 已将 receipt 绑定到当前 Plugin Fiber；无需再注册第二个 disposer。
 ```
 
 ## Agent 作用域为什么不用字符串

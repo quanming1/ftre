@@ -2,6 +2,16 @@
 
 ## [Unreleased] - 2026-08-23
 
+### F15 Hook 语义收敛（本地预验收，CI 待触发）
+
+- 将 ftre Host Hook 从 22 项收敛为 10 项，全系统公共 Hook 固定为 17 项；Core 7 项契约冻结。
+- 删除 Agent lifecycle/request/turn-stopped、Session event/flush 和 Inbox 三种细粒度 mutation Hook；
+  `messaging/inbound` 改为 `messaging/route`。
+- 关键 Session/Inbox 状态通知改为 awaited PARALLEL；HookRuntime 统一 Context/Fiber 生命周期，
+  Plugin 不再重复注册 receipt disposer。
+- 补齐 in-flight unload、队列恢复、Package wheel/洁净安装和 Gateway smoke；全量测试 486 passed。
+  F15 GitHub Actions 尚未触发，正式验收待 feature push 后完成。
+
 ### F14 轻内核 + Plugin-first（已验收）
 
 - F14.6 收敛 Host Service：Session/Command/Inbox/SessionEvent/Compaction 改为构造注入或公开

@@ -262,7 +262,7 @@ E:/ftre/
 │     │  ├─ tools/
 │     │  ├─ system_prompt/
 │     │  ├─ messaging/
-│     │  │  ├─ hooks.py                   # messaging/inbound 等业务 HookSpec
+│     │  │  ├─ hooks.py                   # messaging/route 等业务 HookSpec
 │     │  │  ├─ bus/                       # transport-neutral event plane
 │     │  │  └─ channels/                  # Channel registry/base contract
 │     │  ├─ workspace/
@@ -362,7 +362,7 @@ WebSocket / HTTP / Subagent / Schedule
           MessageBusService
                   │
                   v
-       messaging/inbound Hook
+       messaging/route Hook
           │                 │
           │ slash command   │ ordinary input
           v                 v
@@ -379,7 +379,7 @@ WebSocket / HTTP / Subagent / Schedule
                                       │
                          SessionService 写正式历史
                                       │
-                         agent/before-turn Hook
+                         agent/before-run Hook
                                       │
                              private Agent runtime
                                       │
@@ -389,14 +389,14 @@ WebSocket / HTTP / Subagent / Schedule
                     │                                   │
                     └──────── Session events ──────────┘
                                       │
-                         agent/after-turn Hook
+                         agent/after-run Hook
                                       │
                        MessageBus → Channel outbound
 ```
 
 关键语义：
 
-- `messaging/inbound` HookSpec 由 Messaging Owner 定义，Kernel 不认识它；
+- `messaging/route` HookSpec 由 Messaging Owner 定义，Kernel 不认识它；
 - Command Plugin 只消费命令，不能创建 Agent Turn；
 - Inbox Package 只拥有 pending/claim/worker，不进入 Agent Runtime；
 - AgentService 只接收 `InboundMessage`，并且不知道消息来源；
