@@ -10,7 +10,6 @@ from enum import StrEnum
 from typing import Any
 
 from ftre.services.messaging.bus import BusMessage, EventBus, InboundMetadata
-from ftre.services.session.hooks import SESSION_EVENT_SPEC, SessionEventPayload
 
 
 class SessionMaintenanceEvent(StrEnum):
@@ -24,32 +23,22 @@ class SessionMaintenanceEvent(StrEnum):
 class SessionEventService:
     """Session 维护事件的唯一投影/广播出口。
 
-    Service 在构造时注入 Session projection、MessageBus 和 Hook Runtime；不再由
-    Agent Provider 通过 setter 临时挂接。压缩等 Package 只依赖这个稳定
-    ``emit`` 方法，事件会先持久化投影，再广播并通知观察 Hook。
+    Service 在构造时注入 Session projection 和 MessageBus；不再由 Agent Provider
+    通过 setter 临时挂接。压缩等 Package 只依赖这个稳定 ``emit`` 方法，事件会先
+    持久化投影，再广播权威事实。
     """
 
-    def __init__(self, sessions, message_bus: EventBus, hook_runtime) -> None:
+    def __init__(self, sessions, message_bus: EventBus) -> None:
         self._sessions = sessions
         self._bus = message_bus
-        self._hooks = hook_runtime
 
     async def emit(self, *args, **kwargs) -> Any:
-        """先持久化 Session 事件，再广播和通知 Hook。"""
+        """先持久化 Session 事件，再广播权威事实。"""
         if len(args) < 3:
             raise TypeError("session event requires session_id, channel_id and event")
         session_id, channel_id, event = args[:3]
         metadata = kwargs.get("metadata") or InboundMetadata()
         result = await self._sessions.projection.apply(session_id, event)
-        await self._hooks.dispatch(
-            SESSION_EVENT_SPEC,
-            SessionEventPayload(
-                session_id=session_id,
-                event=event,
-                persisted_ids=tuple(message.id for message in result.persisted_messages),
-                completed_id=(result.completed_message.id if result.completed_message else ""),
-            ),
-        )
         await self._bus.publish_outbound(
             BusMessage(
                 type="agent_event",

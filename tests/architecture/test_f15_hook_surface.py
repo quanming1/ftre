@@ -23,7 +23,7 @@ HOST_MODULES = (
 )
 PACKAGE_MODULES = ("ftre_inbox.hooks",)
 
-# F15.3 完成后的中间快照；F15.4 继续把 Session/Inbox 收敛到目标 17 项。
+# F15.4 完成后的目标快照；Core 7 项与 Host/Package 10 项均必须唯一。
 CURRENT_HOOK_NAMES = {
     "tools/pre-execute",
     "tools/execute",
@@ -37,14 +37,9 @@ CURRENT_HOOK_NAMES = {
     "agent/run-error",
     "session/created",
     "session/disposed",
-    "session/event",
-    "session/flush",
     "messaging/route",
     "system-prompt/assemble",
     "inbox/before-claim",
-    "inbox/inserted",
-    "inbox/claimed",
-    "inbox/discarded",
     "inbox/changed",
     "inbox/status-changed",
 }
@@ -100,12 +95,12 @@ def _fact_snapshot() -> dict[str, list[tuple[str, str, str, str]]]:
     return snapshot
 
 
-def test_f15_migration_snapshot_has_exactly_22_unique_hook_names():
+def test_f15_target_snapshot_has_exactly_17_unique_hook_names():
     snapshot = _fact_snapshot()
     names = [item[0] for group in snapshot.values() for item in group]
     # Agent Host 为了稳定导入面重导出两项 Core Spec；事实门禁按唯一名称计数，
     # 不把同一个对象的公开重导出误判为第二个 Hook Owner。
-    assert len(set(names)) == 22
+    assert len(set(names)) == 17
     assert set(names) == CURRENT_HOOK_NAMES
 
 

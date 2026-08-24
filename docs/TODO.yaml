@@ -908,10 +908,11 @@ stages:
             date: 2026-08-24
           - id: F15.4
             title: Session、Inbox 与 WebSocket 通知收敛
-            status: in_progress
+            status: done
+            date: 2026-08-24
           - id: F15.5
             title: Compaction、Inbox、Command 与 Session Title 消费迁移
-            status: todo
+            status: in_progress
           - id: F15.6
             title: 取消、异常、in-flight、并发与状态顺序测试
             status: todo

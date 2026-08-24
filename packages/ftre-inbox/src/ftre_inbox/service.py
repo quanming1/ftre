@@ -15,14 +15,10 @@ from ftre.services.messaging.bus import IngressResult
 from .hooks import (
     INBOX_BEFORE_CLAIM_SPEC,
     INBOX_CHANGED_SPEC,
-    INBOX_CLAIMED_SPEC,
-    INBOX_DISCARDED_SPEC,
-    INBOX_INSERTED_SPEC,
     INBOX_STATUS_CHANGED_SPEC,
     BeforeClaimPayload,
     EnterClaim,
     InboxChangedPayload,
-    InboxMutationPayload,
     InboxStatusPayload,
     RejectClaim,
 )
@@ -195,21 +191,11 @@ class InboxService:
         return True
 
     async def remove(self, session_id: str, request_id: str) -> bool:
-        before = await self.repository.snapshot(session_id)
         result = await self.repository.remove(session_id, request_id)
         if result is None:
             return False
         await self._publish(session_id)
         self._wake_event(session_id).set()
-        await self._emit_mutation(
-            INBOX_DISCARDED_SPEC,
-            InboxMutationPayload(
-                session_id=session_id,
-                item=result,
-                target=("next-step" if result in before.next_step else "next-turn"),
-                operation="discarded",
-            ),
-        )
         return True
 
     async def promote(self, session_id: str, request_id: str) -> bool:
@@ -280,15 +266,6 @@ class InboxService:
                 removed = await self.repository.remove(session_id, candidate.request_id)
                 if removed is None:
                     continue
-                await self._emit_mutation(
-                    INBOX_DISCARDED_SPEC,
-                    InboxMutationPayload(
-                        session_id=session_id,
-                        item=removed,
-                        target="next-step",
-                        operation="discarded",
-                    ),
-                )
             await self._publish(session_id)
             return ()
         return await self._claim_candidates(session_id, snapshot, candidates)
@@ -332,22 +309,6 @@ class InboxService:
         if wake and message.session_id in self._blocked:
             self._blocked.pop(message.session_id, None)
             await self._publish_status_event(message.session_id, "idle")
-        if created:
-            admitted_snapshot = await self.repository.snapshot(message.session_id)
-            admitted_item = next(
-                item
-                for item in admitted_snapshot.pending
-                if item.request_id == message.request_id
-            )
-            await self._emit_mutation(
-                INBOX_INSERTED_SPEC,
-                InboxMutationPayload(
-                    session_id=message.session_id,
-                    item=admitted_item,
-                    target=target,
-                    operation="inserted",
-                ),
-            )
         # 只有 next-turn 会产生独立的 Agent Turn，因此才建立可等待 receipt。
         # next-step 的 steer/inject 可能被 Core Hook 直接注入当前 Turn；为它们
         # 创建 Future 会永远没有完成者，形成隐蔽的长期内存泄漏。
@@ -405,19 +366,6 @@ class InboxService:
                     # the candidates that the Hook approved for discard, then retry.
                     for candidate in discard_items:
                         await self.repository.remove(session_id, candidate.request_id)
-                        await self._emit_mutation(
-                            INBOX_DISCARDED_SPEC,
-                            InboxMutationPayload(
-                                session_id=session_id,
-                                item=candidate,
-                                target=(
-                                    "next-step"
-                                    if candidate in snapshot.next_step
-                                    else "next-turn"
-                                ),
-                                operation="discarded",
-                            ),
-                        )
                     await self._publish(session_id)
                     self._blocked.pop(session_id, None)
                     continue
@@ -499,20 +447,6 @@ class InboxService:
         )
         if not claimed:
             return ()
-        for item in claimed:
-            await self._emit_mutation(
-                INBOX_CLAIMED_SPEC,
-                InboxMutationPayload(
-                    session_id=session_id,
-                    item=item,
-                    target=(
-                        "next-step"
-                        if item in snapshot.next_step
-                        else "next-turn"
-                    ),
-                    operation="claimed",
-                ),
-            )
         await self._publish(session_id)
         return claimed
 
@@ -557,22 +491,11 @@ class InboxService:
 
     async def _publish(self, session_id: str) -> None:
         if self._hook_runtime is not None and INBOX_CHANGED_SPEC is not None:
-            await self._emit_mutation(
+            # changed 是已持久化事实；PARALLEL dispatch 返回前，协议适配器必须
+            # 完成当前 revision 的权威快照读取，不能再用 detached EMIT 乱序发送。
+            await self._hook_runtime.dispatch(
                 INBOX_CHANGED_SPEC,
                 InboxChangedPayload(session_id=session_id),
-            )
-
-    async def _emit_mutation(self, spec, payload: InboxMutationPayload) -> None:
-        """发布观察 Hook；观察失败不改变已提交的 Inbox 事实。"""
-        if self._hook_runtime is None or spec is None:
-            return
-        try:
-            await self._hook_runtime.dispatch(spec, payload)
-        except Exception:
-            logger.exception(
-                "[ftre-inbox] mutation hook failed session=%s operation=%s",
-                payload.session_id,
-                payload.operation,
             )
 
     def status(self, session_id: str) -> str | None:
@@ -581,7 +504,7 @@ class InboxService:
 
     async def _publish_status_event(self, session_id: str, status: str) -> None:
         if self._hook_runtime is not None and INBOX_STATUS_CHANGED_SPEC is not None:
-            await self._emit_mutation(
+            await self._hook_runtime.dispatch(
                 INBOX_STATUS_CHANGED_SPEC,
                 InboxStatusPayload(session_id=session_id, status=status),
             )

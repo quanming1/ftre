@@ -29,8 +29,7 @@ from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.hooks import AGENT_TURN_STOPPING_SPEC, AgentSubject
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.llm import LLM_STREAM_SPEC
-from ftre.services.session import SessionService
-from ftre.services.session.hooks import SESSION_FLUSH_SPEC
+from ftre.services.session.hooks import SESSION_DISPOSED_SPEC, SessionLifecyclePayload
 from ftre.services.system_prompt import SystemPromptService
 from ftre.services.system_prompt.hooks import (
     SYSTEM_PROMPT_ASSEMBLE_SPEC,
@@ -182,20 +181,19 @@ async def test_structured_prompt_assembly_is_waterfall_replaceable():
 
 
 @pytest.mark.asyncio
-async def test_session_flush_is_unique_public_barrier():
+async def test_session_disposed_is_an_awaited_public_lifecycle_fact():
     context = Context()
     runtime = HookRuntime(context)
-    session = SessionService(hook_runtime=runtime)
-    seen: list[tuple[str, str]] = []
+    seen: list[str] = []
 
     async def dispatcher(payload):
-        session_id = payload.session_id
-        reason = payload.reason
-        seen.append((session_id, reason))
+        await asyncio.sleep(0)
+        seen.append(payload.session_id)
 
-    runtime.register(SESSION_FLUSH_SPEC, dispatcher, owner="test")
-    await session.flush("session-1", reason="checkpoint")
-    assert seen == [("session-1", "checkpoint")]
+    runtime.register(SESSION_DISPOSED_SPEC, dispatcher, owner="test", context=context)
+    await runtime.dispatch(
+        SESSION_DISPOSED_SPEC,
+        SessionLifecyclePayload("session-1", "ws", "test"),
+    )
+    assert seen == ["session-1"]
     context.dispose()
-    await session.flush("session-1", reason="after-dispose")
-    assert seen == [("session-1", "checkpoint")]

@@ -86,3 +86,12 @@
 - F15.3 后唯一 Hook 快照为 22 项（Core 7 + Agent 3 + Session 4 + Messaging 1 + Prompt 1 + Inbox 6）。
 - 证据：F15 Hook/契约/Package 专项 91 passed，ruff 通过；Session/Inbox awaited 和三种 mutation
   Hook 仍属于 F15.4。
+
+## F15.4 结果
+
+- Session 只保留 `session/created`、`session/disposed`，两者改为 awaited PARALLEL/OBSERVE；
+  删除 `session/event`、`session/flush` 及其 DTO、Service flush 入口和重复事件通知。
+- Inbox 只保留 `inbox/before-claim`、`inbox/changed`、`inbox/status-changed`；changed/status
+  改为 awaited PARALLEL，删除 inserted/claimed/discarded 及统一 mutation wrapper。
+- WebSocket 继续通过 Inbox 的公开 HookSpec 读取权威 snapshot/status，wire contract 不变。
+- 目标 Hook 快照已精确为 17 项；F15.4/生命周期/架构/启动/契约专项 79 passed，ruff 通过。
