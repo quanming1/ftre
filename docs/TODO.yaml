@@ -866,3 +866,58 @@ stages:
             title: 最终验收与执行报告
             status: done
             date: 2026-08-24
+
+      - id: F15
+        title: Hook 语义收敛与生命周期安全
+        status: in_progress
+        date: 2026-08-24
+        prd: docs/prd/PRD-F15-hook-surface-convergence.md
+        prd_status: 开发中
+        depends_on:
+          - F14
+        implementation_boundary: 只修改 E:\ftre Host 与仓内 packages；Core 7 个 Hook 冻结不变
+        follow_up: Tool Hook 4→2 与 agent/turn-stopping 改名待 F15 后另立 F16 / Core C3
+        modules:
+          - src/ftre/kernel/hooks/
+          - src/ftre/services/agent/hooks.py
+          - src/ftre/services/agent/runtime/
+          - src/ftre/services/session/hooks.py
+          - src/ftre/services/messaging/bus/ingress.py
+          - src/ftre/services/system_prompt/hooks.py
+          - packages/ftre-inbox/
+          - packages/ftre-compaction/
+          - src/ftre/plugins/builtin/command/
+          - src/ftre/plugins/builtin/channels/websocket/
+          - tests/hooks/
+          - tests/architecture/
+          - tests/contracts/
+          - tests/lifecycle/
+        acceptance: Host Hook 从 22 个收敛为 10 个，全系统公共 Hook 从 29 个收敛为 PRD 冻结的 17 个稳定边界；Core 7 个 Hook 保持不变；幽灵 Hook、重复通知、Host 旧名和重复 Effect 清零；关键异步清理与权威状态通知全部 awaited；Inbox/Compaction 可选生命周期、全量测试、Package wheel、Gateway smoke 和 ftre CI 通过
+        tasks:
+          - id: F15.1
+            title: Hook、发布者、监听者、Effect 与 Scope 事实基线
+            status: todo
+          - id: F15.2
+            title: HookRuntime awaited 语义与唯一 Effect Owner
+            status: todo
+          - id: F15.3
+            title: Host Agent 与 Messaging Hook 删除改名
+            status: todo
+          - id: F15.4
+            title: Session、Inbox 与 WebSocket 通知收敛
+            status: todo
+          - id: F15.5
+            title: Compaction、Inbox、Command 与 Session Title 消费迁移
+            status: todo
+          - id: F15.6
+            title: 取消、异常、in-flight、并发与状态顺序测试
+            status: todo
+          - id: F15.7
+            title: Package 独立发行与 Core 边界回归
+            status: todo
+          - id: F15.8
+            title: 文档、诊断、旧引用与工程卫生清理
+            status: todo
+          - id: F15.9
+            title: 全量验收、执行报告与收尾
+            status: todo

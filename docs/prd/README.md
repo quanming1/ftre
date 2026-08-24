@@ -18,13 +18,22 @@
 > 唯一 Plugin/Service Owner 通过 Inject/Hook 协作；Queue → History 交接、Owner Plugin 路由
 > 和可选能力降级均已验证。
 
-> **F14 草稿（2026-08-24）**：
+> **F14 已验收（2026-08-24）**：
 > [`PRD-F14-final-plugin-first-architecture.md`](PRD-F14-final-plugin-first-architecture.md)
-> 是后续架构迁移的终局契约。目标目录统一为 `app/kernel/services/plugins/packages`，
+> 是当前目录和 Owner 边界的终局契约。目标目录统一为 `app/kernel/services/plugins/packages`，
 > `AgentLoop` 降为 AgentService 私有 Runtime，产品能力由 Builtin/External Plugin 管理，
-> `ftre-inbox` 与 `ftre-compaction` 保持独立可选 Package。F14 定稿前不据此开发。
-> 分批实施提示词见
-> [`docs/execution/prompts/F14/`](../execution/prompts/F14/README.md)，必须在 PRD 定稿后按编号串行执行。
+> `ftre-inbox` 与 `ftre-compaction` 保持独立可选 Package。分批实施提示词及其历史执行顺序见
+> [`docs/execution/prompts/F14/`](../execution/prompts/F14/README.md)。
+
+> **F15 开发中（2026-08-24）**：
+> [`PRD-F15-hook-surface-convergence.md`](PRD-F15-hook-surface-convergence.md)
+> 负责收敛 F6-F14 演进后留下的 Hook 语义债务。第二版把交付面限定在 ftre Host 与仓内
+> Package：Host Hook 22→10、全系统 29→17，Core 7 个 Hook 原样冻结；删除幽灵 Hook、
+> 重复通知和 Host 旧名，修复 EMIT 承载关键异步清理的竞态，并让一次监听器注册只归属于
+> 一个 Cordis Fiber Owner。Tool Hook 4→2 与停止决策改名留给后续独立 Core 阶段。
+> F15 已按用户授权进入开发阶段。分批执行契约见
+> [`docs/execution/prompts/F15/`](../execution/prompts/F15/README.md)；后续终局阶段的配对 PRD 与
+> 跨仓执行预案见 [`docs/execution/prompts/F16-C3/`](../execution/prompts/F16-C3/README.md)。
 
 ## 当前运行契约（F12）
 
