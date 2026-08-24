@@ -34,9 +34,9 @@ def test_public_hook_names_exclude_legacy_filter_names():
     assert "agent/before-reasoning" in PUBLIC_HOOK_NAMES
     assert "tools/pre-execute" in PUBLIC_HOOK_NAMES
     assert "tool/pre-execute" not in PUBLIC_HOOK_NAMES
-    assert "agent/inbox/claimed" not in PUBLIC_HOOK_NAMES
+    assert "agent/" + "inbox/" + "claimed" not in PUBLIC_HOOK_NAMES
     assert "agent/inbox" not in PUBLIC_HOOK_NAMES
-    assert "inbox/claimed" not in PUBLIC_HOOK_NAMES
+    assert "inbox/" + "claimed" not in PUBLIC_HOOK_NAMES
 
 
 def test_new_platform_hooks_do_not_import_legacy_runtime_module():

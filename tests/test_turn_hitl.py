@@ -146,7 +146,6 @@ def _make_executor(agent) -> TurnExecutor:
     loop.session_events = SessionEventService(
         SimpleNamespace(projection=loop.session_projection),
         loop.bus,
-        HookRuntime(Context()),
     )
 
     async def emit_session_event(session_id, channel_id, event, *, metadata=None):

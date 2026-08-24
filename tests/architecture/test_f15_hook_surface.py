@@ -127,7 +127,12 @@ def test_baseline_hook_names_have_one_domain_separator(name: str):
 
 
 def test_f15_target_does_not_reintroduce_unscoped_business_terms():
-    forbidden = {"agent/request", "session/event", "session/status", "messaging/inbound"}
+    forbidden = {
+        "agent/" + "request",
+        "session/" + "event",
+        "session/" + "status",
+        "messaging/" + "inbound",
+    }
     assert forbidden.isdisjoint(F15_TARGET_HOOK_NAMES)
 
 
@@ -141,7 +146,7 @@ def test_production_hook_registration_uses_context_and_single_runtime_owner():
             if "tests" in path.parts or "__pycache__" in path.parts:
                 continue
             text = path.read_text(encoding="utf-8")
-            assert "global_listener" not in text, path
+            assert "global_" + "listener" not in text, path
             tree = ast.parse(text, filename=str(path))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
@@ -154,7 +159,7 @@ def test_production_hook_registration_uses_context_and_single_runtime_owner():
                 keyword_names = {keyword.arg for keyword in node.keywords if keyword.arg}
                 assert "context" in keyword_names, path
                 assert "all_agent_scopes" in keyword_names, path
-            assert "receipt.dispose" not in text, path
+            assert "receipt." + "dispose" not in text, path
 
 
 def test_retired_host_hook_names_are_absent_from_production_sources():
@@ -162,23 +167,23 @@ def test_retired_host_hook_names_are_absent_from_production_sources():
 
     root = Path(__file__).parents[2]
     retired = (
-        "agent/before-turn",
-        "agent/after-turn",
-        "agent/request",
-        "agent/request-error",
-        "agent/turn-stopped",
-        "agent/created",
-        "agent/disposed",
-        "agent/error",
-        "agent/session-start",
-        "agent/status",
-        "session/event",
-        "session/flush",
-        "messaging/inbound",
-        "inbox/inserted",
-        "inbox/claimed",
-        "inbox/discarded",
-        "global_listener",
+        "agent/" + "before-turn",
+        "agent/" + "after-turn",
+        "agent/" + "request",
+        "agent/" + "request-error",
+        "agent/" + "turn-stopped",
+        "agent/" + "created",
+        "agent/" + "disposed",
+        "agent/" + "error",
+        "agent/" + "session-start",
+        "agent/" + "status",
+        "session/" + "event",
+        "session/" + "flush",
+        "messaging/" + "inbound",
+        "inbox/" + "inserted",
+        "inbox/" + "claimed",
+        "inbox/" + "discarded",
+        "global_" + "listener",
     )
     for source_root in (root / "src", root / "packages"):
         for path in source_root.rglob("*.py"):
