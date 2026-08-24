@@ -912,10 +912,11 @@ stages:
             date: 2026-08-24
           - id: F15.5
             title: Compaction、Inbox、Command 与 Session Title 消费迁移
-            status: in_progress
+            status: done
+            date: 2026-08-24
           - id: F15.6
             title: 取消、异常、in-flight、并发与状态顺序测试
-            status: todo
+            status: in_progress
           - id: F15.7
             title: Package 独立发行与 Core 边界回归
             status: todo

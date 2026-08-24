@@ -95,3 +95,12 @@
   改为 awaited PARALLEL，删除 inserted/claimed/discarded 及统一 mutation wrapper。
 - WebSocket 继续通过 Inbox 的公开 HookSpec 读取权威 snapshot/status，wire contract 不变。
 - 目标 Hook 快照已精确为 17 项；F15.4/生命周期/架构/启动/契约专项 79 passed，ruff 通过。
+
+## F15.5 结果
+
+- `ftre-inbox` 监听 `messaging/route`、Core `agent/before-reasoning`、awaited
+  `session/disposed`，发布 before-claim/changed/status-changed；无旧 mutation Hook。
+- `ftre-compaction` 监听 `agent/after-run`、`agent/run-error`、`inbox/before-claim`，压缩
+  行为和可选卸载语义保持；Command、WebSocket、Session Title 均使用公开目标 Spec。
+- 生产扫描无旧 Host Hook、`global_listener`、receipt 二次 Effect 或 Package 私有跨 Owner import。
+- 证据：Package、启动、生命周期专项 85 passed；架构/契约专项 141 passed；ruff 通过。
