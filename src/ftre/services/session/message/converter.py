@@ -3,6 +3,7 @@
 The database stores complete ``Msg`` objects. Streaming ``AgentStreamEvent``
 objects never enter this layer; they are a transport/trace concern only.
 """
+# 中文说明：消息协议转换边界：把持久化 Msg 快照转换成 Provider 消息，stream Event 不进入存储层。
 from __future__ import annotations
 
 import json

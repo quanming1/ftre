@@ -1,33 +1,30 @@
 """ftre 业务路径对 Core Tool Hook 契约的稳定重导出。"""
 
 from ftre_agent_core.hooks import (
-    TOOLS_EXECUTE_SPEC,
-    TOOLS_POST_EXECUTE_SPEC,
-    TOOLS_PRE_EXECUTE_SPEC,
-    TOOLS_RESULT_SPEC,
+    TOOL_AFTER_SPEC,
+    TOOL_BEFORE_SPEC,
+    ToolAfterPayload,
     ToolAllow,
     ToolArguments,
+    ToolBeforePayload,
     ToolCallIdentity,
     ToolDeny,
-    ToolExecutePayload,
     ToolExecutionResult,
-    ToolPostExecutePayload,
-    ToolPreExecutePayload,
-    ToolResultPayload,
 )
 
+TOOL_BEFORE = TOOL_BEFORE_SPEC.name
+TOOL_AFTER = TOOL_AFTER_SPEC.name
+
 __all__ = [
-    "TOOLS_EXECUTE_SPEC",
-    "TOOLS_POST_EXECUTE_SPEC",
-    "TOOLS_PRE_EXECUTE_SPEC",
-    "TOOLS_RESULT_SPEC",
+    "TOOL_AFTER",
+    "TOOL_AFTER_SPEC",
+    "TOOL_BEFORE",
+    "TOOL_BEFORE_SPEC",
+    "ToolAfterPayload",
     "ToolAllow",
     "ToolArguments",
+    "ToolBeforePayload",
     "ToolCallIdentity",
     "ToolDeny",
-    "ToolExecutePayload",
     "ToolExecutionResult",
-    "ToolPostExecutePayload",
-    "ToolPreExecutePayload",
-    "ToolResultPayload",
 ]

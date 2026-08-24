@@ -1,0 +1,231 @@
+"""
+send_message 工具 - 向另一个 session 发送一条消息
+
+两种模式（kind 参数）：
+
+- notify（默认）：仅通知，不触发对方 agent
+  目标 session 收到一条 external_message 实时通知，并持久化为 assistant Msg，
+  目标自己的运行不受影响。适合"通知/抄送/把结果同步给别人"。
+
+- invoke：唤起，触发对方 agent 执行
+  以 user_message 形式投递到目标 session 的 Channel.receive()，等价于"模拟一条
+  用户输入"，AgentLoop 会跑起目标 agent。适合"委派任务/请求别人帮忙"。
+  调用方拿不到结果（fire-and-forget），需要 await 对方回复请改用 task 工具。
+
+通用约束：
+- subagent 不允许 send_message（结果应通过 task 返回值传回）
+- 不能给当前 session 自己发（直接在回复里输出即可）
+"""
+
+import asyncio
+import uuid
+
+from ftre_agent_core.message import AssistantMsg
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
+
+from ftre.services.agent.contracts import InboundMessage
+from ftre.services.messaging.bus import BusMessage
+from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
+
+# kind=invoke 时拼到 content 头部的来源标注模板
+_INVOKE_PREFIX_TEMPLATE = (
+    "[来自 channel={from_channel} session={from_session}]\n\n{content}"
+)
+
+
+def create_send_message_tool(channel_manager, inbox) -> Tool:
+    """创建由 messaging Plugin 拥有、可消费 Inbox 的跨 Session 消息工具。"""
+
+    def send_message(
+        channel_id: str,
+        session_id: str,
+        content: str,
+        kind: str = "notify",
+        caller_channel: str = Injected("channel_id"),
+        caller_session: str = Injected("session_id"),
+        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        bus=Injected("bus"),  # noqa: B008 - MessageBus transport context
+        session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
+        agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
+    ) -> str:
+        # ── 通用前置校验 ────────────────────────────────────
+        if caller_channel == SUBAGENT_CHANNEL_ID:
+            return (
+                "[error] subagent 内不允许调用 send_message，"
+                "请通过你的最后一条消息总结结果给调用方"
+            )
+        target_channel = channel_manager.get(channel_id)
+        if target_channel is None:
+            return f"[error] 频道不存在: {channel_id}"
+        if event_loop is None:
+            return "[error] runtime context 未注入完整"
+        if channel_id == caller_channel and session_id == caller_session:
+            return "[error] 不能给当前 session 发消息（直接在回复中输出即可）"
+        if kind not in ("notify", "invoke"):
+            return f"[error] 未知 kind: {kind!r}（应为 'notify' 或 'invoke'）"
+
+        # ── 分发 ────────────────────────────────────────────
+        try:
+            if kind == "notify":
+                if bus is None or session_manager is None:
+                    return "[error] runtime context 未注入完整"
+                _do_notify(
+                    bus=bus,
+                    session_manager=session_manager,
+                    event_loop=event_loop,
+                    target_channel_id=channel_id,
+                    target_session_id=session_id,
+                    content=content,
+                    caller_channel=caller_channel or "",
+                    caller_session=caller_session or "",
+                )
+                return f"已通知 {channel_id}:{session_id}"
+
+            # kind == "invoke"
+            if inbox is None:
+                return "[error] Inbox Service 未就绪，无法唤起目标 Agent"
+            ack = _do_invoke(
+                target_channel=target_channel,
+                event_loop=event_loop,
+                agent_service=agent_service,
+                target_session_id=session_id,
+                content=content,
+                caller_channel=caller_channel or "",
+                caller_session=caller_session or "",
+                inbox=inbox,
+            )
+            if not ack.accepted:
+                return (
+                    f"[error] 目标消息队列已满: {channel_id}:{session_id} "
+                    f"(reason={ack.error})"
+                )
+            return f"已提交 {channel_id}:{session_id} (request_id={ack.request_id})"
+        except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
+            return f"[error] 发送失败: {type(e).__name__}: {e}"
+
+    return Tool(
+        name="send_message",
+        description=(
+            "向另一个 session 发送一条消息。\n"
+            "kind='notify'（默认）：仅通知，目标 session 收到一条 external_message，"
+            "目标自身运行不受影响。\n"
+            "kind='invoke'：唤起目标 session，以 user_message 形式触发对方 agent 执行；"
+            "调用方拿不到结果（如需等待回复请改用 task 工具）。\n"
+            "subagent 内禁止调用，禁止发给当前 session 自己。"
+        ),
+        parameters=[
+            ToolParameter(
+                name="channel_id",
+                type="string",
+                description="目标频道 ID（如 ws、telegram）",
+                required=True,
+            ),
+            ToolParameter(
+                name="session_id",
+                type="string",
+                description="目标 session ID",
+                required=True,
+            ),
+            ToolParameter(
+                name="content", type="string", description="消息内容", required=True
+            ),
+            ToolParameter(
+                name="kind",
+                type="string",
+                description="'notify' 仅通知（默认）；'invoke' 唤起目标 session 执行",
+                required=False,
+            ),
+        ],
+        func=send_message,
+    )
+
+
+# ============================================================
+# notify 路径：assistant Msg 持久化 + external_message 实时通知
+# 维持原有行为：直接 save_message + publish_outbound，
+# 后续若要重构为 Channel.receive 统一入口再单独动这块。
+# ============================================================
+
+
+def _do_notify(
+    *,
+    bus,
+    session_manager,
+    event_loop,
+    target_channel_id: str,
+    target_session_id: str,
+    content: str,
+    caller_channel: str,
+    caller_session: str,
+) -> None:
+    event_data = {
+        "content": content,
+        "from_session": caller_session,
+        "from_channel": caller_channel,
+    }
+    msg = BusMessage(
+        type="agent_event",
+        from_channel=caller_channel,
+        to_channel=target_channel_id,
+        from_session=caller_session,
+        to_session=target_session_id,
+        data={"type": "external_message", "data": event_data},
+    )
+    persisted_message = AssistantMsg(
+        name="default",
+        content=content,
+        metadata={
+            "external": True,
+            "from_session": caller_session,
+            "from_channel": caller_channel,
+        },
+    )
+    # 1) 持久化到目标 session 历史，前端切换/刷新可见
+    asyncio.run_coroutine_threadsafe(
+        session_manager.save_message(target_session_id, persisted_message),
+        event_loop,
+    ).result(timeout=10)
+    # 2) outbound 推送给前端（连接活跃时实时显示）
+    asyncio.run_coroutine_threadsafe(bus.publish_outbound(msg), event_loop).result(
+        timeout=10
+    )
+
+
+# ============================================================
+# invoke 路径：通过目标 Channel.receive() 投递一条 user_message
+# AgentLoop 会自动持久化 user_message 并 echo 给目标 session 前端。
+# ============================================================
+
+
+def _do_invoke(
+    *,
+    target_channel,
+    event_loop,
+    agent_service,
+    target_session_id: str,
+    content: str,
+    caller_channel: str,
+    caller_session: str,
+    inbox=None,
+) -> object:
+    # 来源归因：唯一让被唤起 agent 知道"这是别的 session 发来的"的方式，
+    # 是把出处写进它能看见的内容里（LLM 不会读 metadata）。
+    prefixed_content = _INVOKE_PREFIX_TEMPLATE.format(
+        from_channel=caller_channel or "(unknown)",
+        from_session=caller_session or "(unknown)",
+        content=content,
+    )
+    if agent_service is None:
+        raise RuntimeError("runtime context 未注入 agent")
+    if inbox is not None:
+        message = InboundMessage(
+            session_id=target_session_id,
+            request_id=f"invoke_{uuid.uuid4().hex}",
+            channel_id=target_channel.channel_id,
+            content=prefixed_content,
+            source="plugin",
+        )
+        return asyncio.run_coroutine_threadsafe(
+            inbox.followup(message), event_loop
+        ).result(timeout=10)
+    raise RuntimeError("ftre-inbox 未启用")

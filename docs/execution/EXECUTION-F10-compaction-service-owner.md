@@ -14,8 +14,8 @@
 
 | 迁移前 | 迁移后 | 结果 |
 |---|---|---|
-| `features/compaction/service.py` | `services/compaction/service.py` | 唯一真实 `CompactionService` |
-| `features/compaction/plugin.py` 创建并 provide Service | `services/compaction/plugin.py` 创建并 provide | Service Plugin 唯一 Owner |
+| `plugins/builtin/compaction/service.py` | `services/compaction/service.py` | 唯一真实 `CompactionService` |
+| `plugins/builtin/compaction/plugin.py` 创建并 provide Service | `services/compaction/plugin.py` 创建并 provide | Service Plugin 唯一 Owner |
 | Feature Plugin 同时创建 Service、注册 Hook | Feature Plugin 只注入 `compaction` 并注册 Hook | 行为与状态分离 |
 | `services/compaction/contracts.py` 的 `CompactionPort` | 删除 | 不再增加额外接口层 |
 | `AgentLoop/ContextGate/Command/Provider` 依赖 Port | 直接使用 `CompactionService` | 调用链更直观 |
@@ -25,7 +25,7 @@
 ```text
 services/compaction/service.py  → CompactionService
 services/compaction/plugin.py   → provide("compaction")
-features/compaction/plugin.py   → agent/pre-step + agent/request-error Hook
+plugins/builtin/compaction/plugin.py   → agent/pre-step + agent/request-error Hook
 ```
 
 `NullCompactionService` 仅保留为测试/禁用嵌入场景的显式 No-op，不是第二个 Owner，
@@ -76,7 +76,7 @@ passed
 ## 5. 静态清理
 
 - 生产代码中 `CompactionPort`：0；
-- `features/compaction/service.py`：已删除；
+- `plugins/builtin/compaction/service.py`：已删除；
 - `services/compaction/contracts.py`：已删除；
 - 生产代码不存在 `services.agent_loop → features.compaction.service` 私有导入；
 - `compaction` Service key 只有 Service Plugin 提供；
@@ -105,6 +105,6 @@ passed
 ## F11 后续变更
 
 F11 已完成后续拆包：当前主包不再包含 `services/compaction` 或
-`features/compaction`，压缩 Service、Hook、命令和算法位于
+`plugins/builtin/compaction`，压缩 Service、Hook、命令和算法位于
 `packages/ftre-compaction`。本报告保留 F10 当时的验收证据；当前架构以 F11 PRD 和
 执行报告为准。

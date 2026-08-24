@@ -26,7 +26,7 @@ ftre.tools
 ```
 
 所有测试改为从 `services/agent`、`services/session`、`services/messaging`、
-`services/command`、`services/tools` 导入。`channel/test_channel.py` 不再放在生产包中。
+`plugins/builtin/command`、`services/tools` 导入。`channel/test_channel.py` 不再放在生产包中。
 
 ### 2.2 Config 与 Trace
 
@@ -34,12 +34,12 @@ ftre.tools
   和 Agent 配置解析拥有明确 Owner。
 - 原始 JSON 配置读取和 Gateway 地址读取归入 `services/config/loader.py`，路径归入
   `services/config/paths.py`。
-- `src/ftre/trace_store.py` → `services/observability/trace/store.py`；TraceService 不再
+- `src/ftre/trace_store.py` → `plugins/builtin/trace/store.py`；TraceService 不再
   反向依赖根模块。
 
 ### 2.3 MCP Feature
 
-- `src/ftre/mcp/{config,manager,adapter}.py` 迁入 `features/mcp/{config,connection,adapter}.py`。
+- `src/ftre/mcp/{config,manager,adapter}.py` 迁入 `plugins/builtin/mcp/{config,connection,adapter}.py`。
 - MCP Plugin 负责创建连接管理器、注册工具和停止 watcher/连接。
 - 删除根 `ftre.mcp` 包和 Feature 层通配符转发。
 

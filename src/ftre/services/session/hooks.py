@@ -1,41 +1,16 @@
-"""Session post-commit and persistence-barrier Hook contracts."""
+"""Session 生命周期 Hook contracts."""
+# 中文说明：这里只公开 Session 创建/删除后的事实通知；持久化 flush 是 Service 内部实现，
+# 没有真实跨 Owner 消费者时不预留公共 Hook。
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 
-from ftre.platform.hooks import (
-    SESSION_CREATED,
-    SESSION_DISPOSED,
-    SESSION_EVENT,
-    SESSION_FLUSH,
-    HookFailurePolicy,
-    HookMode,
-    HookScope,
-    HookSpec,
-)
+from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
 
-
-@dataclass(frozen=True, slots=True)
-class SessionEventPayload:
-    """A committed Session event; observers run after projection persistence."""
-
-    session_id: str
-    event: object
-    persisted_ids: tuple[str, ...] = ()
-    completed_id: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class SessionFlushPayload:
-    """Explicit persistence barrier input."""
-
-    session_id: str
-    reason: str
-    cancellation: asyncio.Event
-
-
+# SessionService owns persistence lifecycle names; they are not Kernel concepts.
+SESSION_CREATED = "session/created"
+SESSION_DISPOSED = "session/disposed"
 @dataclass(frozen=True, slots=True)
 class SessionLifecyclePayload:
     """Session identity committed to or removed from durable storage."""
@@ -43,14 +18,6 @@ class SessionLifecyclePayload:
     session_id: str
     channel_id: str = ""
     reason: str = ""
-
-
-def _observe(_payload: SessionEventPayload) -> None:
-    return None
-
-
-def _flush(_payload: SessionFlushPayload) -> None:
-    return None
 
 
 def _lifecycle(_payload: SessionLifecyclePayload) -> None:
@@ -61,7 +28,7 @@ def _lifecycle_spec(name: str) -> HookSpec:
     return HookSpec(
         name,
         "session",
-        HookMode.EMIT,
+        HookMode.PARALLEL,
         failure_policy=HookFailurePolicy.OBSERVE,
         payload_type=SessionLifecyclePayload,
         result_type=type(None),
@@ -74,35 +41,8 @@ SESSION_CREATED_SPEC = _lifecycle_spec(SESSION_CREATED)
 SESSION_DISPOSED_SPEC = _lifecycle_spec(SESSION_DISPOSED)
 
 
-SESSION_EVENT_SPEC = HookSpec(
-    SESSION_EVENT,
-    "session",
-    HookMode.EMIT,
-    failure_policy=HookFailurePolicy.OBSERVE,
-    payload_type=SessionEventPayload,
-    result_type=type(None),
-    default=_observe,
-    scope=HookScope.GLOBAL,
-)
-
-SESSION_FLUSH_SPEC = HookSpec(
-    SESSION_FLUSH,
-    "session",
-    HookMode.PARALLEL,
-    failure_policy=HookFailurePolicy.PROPAGATE,
-    payload_type=SessionFlushPayload,
-    result_type=type(None),
-    default=_flush,
-    scope=HookScope.GLOBAL,
-)
-
-
 __all__ = [
     "SESSION_CREATED_SPEC",
     "SESSION_DISPOSED_SPEC",
-    "SESSION_EVENT_SPEC",
-    "SESSION_FLUSH_SPEC",
-    "SessionEventPayload",
-    "SessionFlushPayload",
     "SessionLifecyclePayload",
 ]

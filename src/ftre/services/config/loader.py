@@ -1,4 +1,5 @@
 """Raw gateway configuration loading owned by the Config layer."""
+# 中文说明：配置加载辅助：读取 Gateway 启动所需原始 JSON 并处理默认值；revision 更新由 ConfigService Owner 负责。
 
 from __future__ import annotations
 

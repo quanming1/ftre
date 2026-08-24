@@ -10,9 +10,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+from ftre.plugins.builtin.command import CommandContext, CommandResult, CommandService
 from ftre.services.agent.config import AgentConfig, load_config
-from ftre.services.command import CommandService
-from ftre.services.command.types import CommandContext, CommandResult
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +30,7 @@ def register_commands(
     """
 
     async def on_compact(ctx: CommandContext) -> CommandResult:
-        # /compact 是维护命令：它直接触发 Service，不进入 SessionLane 的
+        # /compact 是维护命令：它直接触发 Service，不进入 Inbox 的
         # pending，也不经过 TurnExecutor。
         try:
             await compaction.compact_now(

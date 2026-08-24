@@ -52,16 +52,10 @@ def test_minimal_state_round_trip():
         "schema_version",
         "session",
         "messages",
-        "mailbox",
         "metadata",
     }
     assert payload["schema_version"] == 1
     assert payload["messages"] == []
-    assert payload["mailbox"] == {
-        "revision": 0,
-        "next_sequence": 1,
-        "pending": [],
-    }
     assert payload["metadata"] == {}
 
     loaded = parse_agent_state(payload)
@@ -151,6 +145,5 @@ def test_json_schema_generable():
         "schema_version",
         "session",
         "messages",
-        "mailbox",
         "metadata",
     }

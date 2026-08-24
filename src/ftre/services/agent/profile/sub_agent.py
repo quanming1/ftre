@@ -163,25 +163,6 @@ def load_member_profile(
         return None
 
 
-# ── 摘要（team_plugin 概览用）────────────────────────────────
-
-def role_brief(
-    session_manager: SessionService,
-    leader_session_id: str,
-    member_session_id: str,
-    limit: int = 60,
-) -> str:
-    """读成员 AGENTS.md 开头做单行摘要（limit 字截断）；读不到返回 ''。"""
-    try:
-        agents_md = profile_dir_of(
-            session_manager, leader_session_id, member_session_id
-        ) / MEMBER_AGENTS_MD
-        content = agents_md.read_text(encoding="utf-8").strip().replace("\n", " ")
-    except (OSError, ValueError):
-        return ""
-    return content[:limit] + ("…" if len(content) > limit else "")
-
-
 # ── 删除 ──────────────────────────────────────────────────────
 
 def delete_member_profile(

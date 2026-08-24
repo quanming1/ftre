@@ -1,4 +1,5 @@
 """Pure image encoding helpers used at the message/provider boundary."""
+# 中文说明：附件编码边界：把本地图片转成安全的 data URL/消息附件形状，纯函数不保存文件。
 
 from __future__ import annotations
 

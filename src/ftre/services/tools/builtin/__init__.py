@@ -11,10 +11,7 @@ from ftre_agent_core.tool import ToolRegistry
 from .bash import create_bash_tool
 from .edit import create_edit_tool
 from .read import create_read_tool
-from .send_message import create_send_message_tool
 from .set_workspace import create_set_workspace_tool
-from .task import create_task_tool
-from .team import create_team_tools
 from .write import create_write_tool
 
 
@@ -68,18 +65,15 @@ def filter_tools(registry: ToolRegistry, tools_config: dict | None) -> ToolRegis
 
 
 def build_default_tools(
-    channel_manager=None,
     tool_registry: ToolRegistry | None = None,
     llm_config=None,
 ) -> ToolRegistry:
-    """构建默认工具集：bash + read + write + edit + set_workspace
-    + task + send_message + 插件注册的全局工具。
+    """构建不依赖 Inbox 的基础工具集和插件贡献。
 
-    Cron is contributed by ``features.schedule`` through ``ToolService``;
-    keeping it out of this provider prevents a second, unowned registration.
+    Cron、send_message、task 和 team 均由自己的 Plugin 通过 ``ToolService`` 贡献；
+    基础工厂不再偷偷拥有队列相关行为。
 
     Args:
-        channel_manager: ChannelManager 实例（用于 send_message / task 工具）
         tool_registry: 全局插件 ToolRegistry，其工具会被合并进来
         llm_config: 当前 Agent 的 llm 配置
 
@@ -93,12 +87,6 @@ def build_default_tools(
     registry.register(create_write_tool())
     registry.register(create_edit_tool())
     registry.register(create_set_workspace_tool())
-
-    if channel_manager:
-        registry.register(create_task_tool(channel_manager))
-        registry.register(create_send_message_tool(channel_manager))
-        for tool in create_team_tools(channel_manager):
-            registry.register(tool)
 
     if tool_registry is not None:
         for tool in tool_registry.snapshot():

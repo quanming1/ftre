@@ -1,4 +1,9 @@
-"""Small root-confined store for files attached to API messages."""
+"""请求附件 Service：在一个根目录内保存、读取和识别上传文件。
+
+附件是 Channel/API 边界的数据，不属于 Session 历史或 Tool 工作区。Service
+通过文件名净化和 root 校验阻断路径穿越；调用方拿到的是文件内容/元数据，而不
+需要自己拼接用户目录。
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ from typing import Any
 
 
 class AttachmentService:
-    """Resolve and read attachments while preventing traversal outside the root."""
+    """在配置根目录内解析和读写附件，阻止路径穿越。"""
     key = "attachments"
 
     def __init__(self, root: str | Path | None = None) -> None:
@@ -19,6 +24,7 @@ class AttachmentService:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def resolve(self, filename: str) -> Path:
+        """把单一文件名解析到 root 内，拒绝目录和路径穿越。"""
         safe = os.path.basename(filename)
         if safe != filename:
             raise ValueError("非法文件名")
@@ -28,11 +34,13 @@ class AttachmentService:
         return path
 
     def stat(self, filename: str) -> dict[str, Any]:
+        """返回附件大小和 MIME，不把 Path 对象泄露给协议层。"""
         path = self.resolve(filename)
         info = path.stat()
         return {"filename": filename, "size": info.st_size, "mime": mimetypes.guess_type(filename)[0] or "application/octet-stream"}
 
     def read(self, filename: str, limit: int = 10_000_000) -> bytes:
+        """按上限读取附件字节，避免异常大文件一次性进入内存。"""
         return self.resolve(filename).read_bytes()[:limit]
 
     def save_image(self, raw: bytes, mime: str, original_name: str = "") -> str:

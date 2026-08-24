@@ -176,7 +176,7 @@ Command 需要影响 Agent 时，不扩展 `CommandResult`。Handler 写入已�
 
 - [x] **FR9：TurnExecutor 纯化**
   - 删除 `execute_command()`、`_command()`、`TurnStatus.COMMAND`、`Turn.command`、
-    `Turn.command_name` 以及对 `ftre.services.command` 的导入。
+    `Turn.command_name` 以及对 `ftre.plugins.builtin.command` 的导入。
   - `TurnExecutor.execute()` 只接受已由 Mailbox 领取的 Agent 工作项/普通 Agent 消息。
 
 - [x] **FR10：架构债务清理**
@@ -374,7 +374,7 @@ register_builtin_commands(manager, agent_loop)
 ## 8. 验收标准
 
 - [x] **AC1：TurnExecutor 依赖门禁**
-  - `turn_executor.py` 不导入 `ftre.services.command`，不存在 `execute_command()`、
+  - `turn_executor.py` 不导入 `ftre.plugins.builtin.command`，不存在 `execute_command()`、
     `TurnStatus.COMMAND`、`Turn.command`、`Turn.command_name` 和 `_command()`。
 
 - [x] **AC2：最小 CommandResult**

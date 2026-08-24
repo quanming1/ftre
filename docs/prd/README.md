@@ -6,7 +6,79 @@
 > 如果本文与某个阶段 PRD 冲突，以最近一次经过「变更记录」修订的阶段 PRD 为准，
 > 同时必须补回本文，避免同一事实在多个文档中漂移。
 
-## 1. 阶段地图
+> **F12 更新（2026-08-23）**：下方早期 A/B 阶段中的 `SessionLane`、
+> `MailboxStore`、`state.json.mailbox` 和 `mailbox_snapshot` 是历史实现记录，
+> 不再是当前运行契约。当前队列 Owner 以
+> [PRD-F12-session-inbox-protocol.md](PRD-F12-session-inbox-protocol.md) 为准：
+> `packages/ftre-inbox` 拥有队列和 worker，`AgentService` 只执行
+> `InboundMessage`。
+
+> **F13 已验收（2026-08-23）**：`PRD-F13-plugin-first-kernel.md` 已落实
+> Plugin-first：Kernel 只提供 Context、Plugin、Hook、Lifecycle 和 Diagnostics，业务能力由
+> 唯一 Plugin/Service Owner 通过 Inject/Hook 协作；Queue → History 交接、Owner Plugin 路由
+> 和可选能力降级均已验证。
+
+> **F14 已验收（2026-08-24）**：
+> [`PRD-F14-final-plugin-first-architecture.md`](PRD-F14-final-plugin-first-architecture.md)
+> 是当前目录和 Owner 边界的终局契约。目标目录统一为 `app/kernel/services/plugins/packages`，
+> `AgentLoop` 降为 AgentService 私有 Runtime，产品能力由 Builtin/External Plugin 管理，
+> `packages/` 下的五个 Package 保持独立发行边界；当前 Gateway 默认安装并装配 Inbox、Compaction、Messaging、Task、Team，业务 Package 仍可按配置禁用。分批实施提示词及其历史执行顺序见
+> [`docs/execution/prompts/F14/`](../execution/prompts/F14/README.md)。
+
+> **F20 已验收（2026-08-24）**：
+> [`PRD-F20-default-package-install.md`](PRD-F20-default-package-install.md) 将仓内五个 Package
+> 纳入 `ftre` 默认发行依赖和 Composition 清单；extras 保留为裁剪安装兼容入口，不再是默认
+> 安装压缩、消息、任务和团队能力的前置条件。
+
+> **F15 开发中（2026-08-24）**：
+> [`PRD-F15-hook-surface-convergence.md`](PRD-F15-hook-surface-convergence.md)
+> 负责收敛 F6-F14 演进后留下的 Hook 语义债务。第二版把交付面限定在 ftre Host 与仓内
+> Package：Host Hook 22→10、全系统 29→17，Core 7 个 Hook 原样冻结；删除幽灵 Hook、
+> 重复通知和 Host 旧名，修复 EMIT 承载关键异步清理的竞态，并让一次监听器注册只归属于
+> 一个 Cordis Fiber Owner。Tool Hook 4→2 与停止决策改名留给后续独立 Core 阶段。
+> F15 已按用户授权进入开发阶段。分批执行契约见
+> [`docs/execution/prompts/F15/`](../execution/prompts/F15/README.md)；后续终局阶段的配对 PRD 与
+> 跨仓执行预案见 [`docs/execution/prompts/F16-C3/`](../execution/prompts/F16-C3/README.md)。
+
+> **F16/C3 已验收（2026-08-24）**：
+> [`PRD-F16-core-hook-surface-convergence.md`](PRD-F16-core-hook-surface-convergence.md) 与
+> `E:\ftre-agent-core\docs\prd\PRD-C3-hook-surface-convergence.md` 配对，目标是把 Core
+> Tool Hook 4→2、`agent/turn-stopping` 改为 `agent/stop-decision`，使全系统公共 Hook 17→15。
+> 两个 PRD 已完成批次 00–06；Core Hook 7→5、全系统 17→15，两个可选 Package 通过
+> wheel/洁净 venv/生命周期验证。
+
+## 当前运行契约（F12）
+
+```text
+WS/HTTP/Plugin
+    → EventBus
+    → AgentLoop（Command 旁路；普通输入交给 Inbox）
+    → ftre-inbox.InboxService
+        → next-step 全部候选 + next-turn 最多一条
+        → inbox/before-claim
+        → 原子 claim
+        → AgentService.run(InboundMessage)
+        → Agent Core / agent/after-run
+    → session/queue + session/status
+```
+
+当前所有权只有三条：
+
+| Owner | 负责 | 不负责 |
+|---|---|---|
+| `ftre-inbox` | 双队列、持久化、容量、幂等、claim、worker、Queue wire | Agent 算法、Command 解析、Session 历史 |
+| `AgentService` | 单条 `InboundMessage` 的 active Turn、取消和 Agent Hook | pending、QueueItem、capacity、queue snapshot |
+| `SessionService` | Session 身份、配置、正式消息历史和生命周期 Hook | Inbox pending、worker 和队列协议 |
+
+客户端只理解 `session.prompt`、`session.updateQueue`、`session.cancel`、
+`session/queue`、`session/status` 和统一 ACK/error envelope；`next-turn`、
+`next-step`、revision、capacity、source 不泄漏到 wire。
+
+## 1. 历史阶段地图（非当前运行契约）
+
+本节至第 7 节保留 A/B 阶段的演进记录。它们中的 `SessionLane`、`MailboxStore`、
+`state.json.mailbox` 和 `mailbox_snapshot` 只用于解释历史决策；当前实现和新开发必须遵循
+上方 F12 契约，不得从这些历史图中恢复旧 Owner。
 
 ```mermaid
 flowchart LR
@@ -40,7 +112,7 @@ flowchart LR
 | TurnExecutor / Projection | `PRD-B3` | 不决定下一条何时领取、不启动自动压缩 |
 | 测试与 CI | `PRD-D1` | 不新增业务行为；只验证各阶段契约 |
 
-## 2. 唯一端到端流程
+## 2. 历史端到端流程（非当前运行契约）
 
 ```mermaid
 flowchart LR
@@ -77,7 +149,7 @@ flowchart LR
 3. **执行完成**：TurnExecutor 返回 `TurnOutcome`，Reply/消息投影已收尾，
    CompletionRegistry 唤醒同进程等待者。它不是 Bus ACK，也不是 pending 快照。
 
-## 3. 数据和状态的唯一来源
+## 3. 历史数据和状态模型（非当前运行契约）
 
 ### 3.1 持久数据
 
@@ -99,7 +171,7 @@ flowchart LR
 这是为了避免 bash、write、MCP 等工具产生重复副作用。已 checkpoint 的 Reply Msg
 仍保留，用户可以根据历史继续发起下一条请求。
 
-## 4. 三个 ID 不可混用
+## 4. 历史 ID 模型（非当前运行契约）
 
 | ID | 生产位置 | 生命周期 | 用途 |
 |---|---|---|---|
@@ -109,7 +181,7 @@ flowchart LR
 
 `BusMessage.id` 不能替代 `request_id`。Bus 重试可以产生新的 Bus 信封，但必须复用同一个业务 `request_id`，否则会绕过 Mailbox 幂等。
 
-## 5. request_id 贯穿规则
+## 5. 历史 request_id 规则（非当前运行契约）
 
 `request_id` 是一次用户输入在以下位置的同一标识：
 
@@ -120,7 +192,7 @@ flowchart LR
 - 相同 request_id 在 pending 或已写入 UserMsg 时只返回已有接纳/去重结果，不重复执行。
 - `turn_id` 只标识一次实际执行，不替代 request_id；一个 request 最多产生一个 Turn。
 
-## 6. 状态快照和客户端契约
+## 6. 历史状态快照契约（非当前运行契约）
 
 `session_event:mailbox_snapshot` 是队列和运行态的权威投影，Payload 包含：
 
@@ -132,7 +204,7 @@ flowchart LR
 - `agent_event` 的顺序保证是 Projection 落盘成功后再广播；实时流不是历史事实源。
 - `turn_cancel` 是控制面消息，不进入 mailbox，不写成 `/cancel` UserMsg。
 
-## 7. 失败、取消与恢复矩阵
+## 7. 历史失败、取消与恢复矩阵（非当前运行契约）
 
 | 场景 | 结果 | pending | messages | 客户端应看到 |
 |---|---|---|---|---|
@@ -199,7 +271,7 @@ CommandIngress → CommandRuntime → Domain Service
 - 纯 Command 不创建 Turn、不进入 Mailbox、不产生 LLM request；
 - `/allow`、`/deny` 等需要恢复 Agent 的命令复用已有 Session Event，不新增
   `AgentEffect`、`AgentControlPort` 或 `AgentResumeRequest`；
-- Agent 原始输入必须经过 Mailbox 的 `peek → policy → claim`，再进入 Agent Hook 和
+- Agent 原始输入必须经过 `ftre-inbox` 的候选 `→ Hook → claim`，再进入 Agent Hook 和
   `TurnExecutor`；
 - `TurnExecutor` 不依赖 Command 类型，也不负责解析或解释 Command；
 - `persist_input` 只描述命令审计/历史策略，不能作为创建 Agent Turn 的隐式开关；
@@ -244,19 +316,39 @@ Hook、命令和算法移动到可选发行物 `packages/ftre-compaction`。当�
 ftre-compaction/plugin.py
   → 创建 CompactionService
   → provide("compaction")
-  → 注册 agent/pre-step、agent/after-turn、agent/request-error
+  → 注册 inbox/before-claim、agent/after-run、agent/run-error
   → 注册 /compact、/compress-fast
 ```
+
+Agent 的两个相邻边界必须区分：`agent/before-run` 只负责一次
+`InboundMessage` 的 Turn 准入；`agent/before-reasoning` 由 `ftre-agent-core` 在每次
+真正调用 LLM 前触发，`ftre-inbox` 可在这里消费运行中的 `next-step`。
 
 不可违反的规则：
 
 - `ftre-compaction.CompactionService` 是唯一真实压缩状态和算法 Owner；
 - ftre 核心不 import、创建或要求 `compaction` Service；
-- `SessionLane` 只提供 `peek → Hook → claim`、通用 maintenance 状态和生命周期边界；
+- `ftre-inbox` 只提供候选 `→ Hook → claim`、队列状态和生命周期边界；
 - 不新增第二个 Port、Facade、No-op fallback 或兼容别名；
 - `compaction` Service key、压缩事件、命令和客户端协议保持不变；
 - 未安装/未启用 `ftre-compaction` 时核心 Gateway 和普通 Agent 流程正常运行。
 
-F10 中关于 `src/ftre/services/compaction`、`src/ftre/features/compaction` 和
+F10 中关于 `src/ftre/services/compaction`、`src/ftre/plugins/builtin/compaction` 和
 `ContextGate` 的路径描述是历史记录；当前实现以
 [`PRD-F11-compaction-gate-hook.md`](PRD-F11-compaction-gate-hook.md) 为准。
+
+## 14. Inbox 与业务 Tool Owner 收敛（F17/F18）
+
+F17 将当前 Gateway 的 Inbox 从“可选能力”调整为“必选 Plugin”，并让
+`ftre-inbox` 只拥有持久队列、Queue Hook、Worker 和 claim 生命周期。Agent Runtime 只执行
+已交付的 `InboundMessage`，不再保存或透传 Inbox 句柄。
+
+F18 进一步把使用 Inbox 的三个业务 Tool 按职责拆为独立 Package：
+`ftre-messaging` 拥有 `send_message`，`ftre-task` 拥有 `task`，`ftre-team` 拥有
+`team_*`/`wait_agent`。依赖 Inbox 不代表属于 Inbox；详细边界见
+[`PRD-F17-inbox-tool-owner-convergence.md`](PRD-F17-inbox-tool-owner-convergence.md) 和
+[`PRD-F18-tool-package-boundaries.md`](PRD-F18-tool-package-boundaries.md)。
+
+F19 又将 Session HTTP 路由从 Session Provider 中拆为 `session-routes` Plugin；Session
+Provider 不再迟查 Agent/Inbox，路由通过显式 Inject 注册并随 Fiber 可逆清理。详见
+[`PRD-F19-session-route-inject-boundary.md`](PRD-F19-session-route-inject-boundary.md)。

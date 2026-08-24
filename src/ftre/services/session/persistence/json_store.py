@@ -18,6 +18,9 @@ session_id 规范：只允许 [A-Za-z0-9_-]，由 manager 生成时保证。
 
 调用方写盘失败时不得提前提交内存缓存：应先构造不可变副本，
 write() 成功后再由调用方替换 states 中的引用。
+
+它是 Repository 下方的文件系统适配器，不拥有 Session 业务语义；损坏文件会被
+隔离并报告，不能静默当成空 Session，否则会把用户历史误判为已删除。
 """
 from __future__ import annotations
 

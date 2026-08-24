@@ -1,2 +1,0 @@
-"""Plan behavior plugin."""
-

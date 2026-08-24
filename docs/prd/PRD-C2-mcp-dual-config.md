@@ -70,7 +70,7 @@ class McpManager:
 ### 3.1 当前实现（2026-08-22）
 
 F1-F11 的目录迁移后，以上旧路径和 `BEFORE_AGENT_RUN` 名称仅保留为历史设计记录；当前
-运行链路为：`features/mcp/plugin.py` 创建 `McpService`，公共服务器通过 `ToolService`
+运行链路为：`plugins/builtin/mcp/plugin.py` 创建 `McpService`，公共服务器通过 `ToolService`
 注册到 global scope，Turn 开始前由 `AgentLoop.tool_registry_for_agent()` 调用
 `McpService.prepare_agent()`。匹配公共配置的服务器复用公共连接；新增或覆盖的私有配置按
 `server name + 配置` 共享连接池，并只把工具注册到 `agent:<id>` scope，随后由

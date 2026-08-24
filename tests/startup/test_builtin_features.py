@@ -11,10 +11,13 @@ async def test_feature_plugins_activate_through_cordis_composition():
     composition = await build_composition({})
     try:
         statuses = {item.id: item for item in composition.plugins.statuses()}
-        expected = {"skill", "mcp", "plan", "team", "schedule", "context-govern", "session-title"}
+        expected = {
+            "skill", "mcp", "plan", "messaging", "task", "team", "schedule",
+            "context-govern", "session-title",
+        }
         assert expected.issubset(statuses)
         assert all(statuses[name].state is FiberState.ACTIVE for name in expected)
-        assert {"skills", "mcp", "schedule", "teams"}.issubset(
+        assert {"skills", "mcp", "schedule"}.issubset(
             composition.context.reflect.store
         )
     finally:

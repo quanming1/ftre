@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "ftre"
-SCHEDULE = SRC / "features" / "schedule"
+SCHEDULE = SRC / "plugins" / "builtin" / "schedule"
 LEGACY_CRON_MODULE = "ftre.services.tools.builtin." + "cron"
 
 

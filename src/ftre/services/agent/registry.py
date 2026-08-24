@@ -1,7 +1,7 @@
 """Agent 运行时身份 Registry。
 
 Registry 只保存稳定的 Agent identity、状态和 scope 信息，不创建 AgentLoop，也
-不持有 SessionLane。删除后再次注册同一个字符串 id 会得到新的 identity，避免
+不持有 Inbox 或 AgentLoop。删除后再次注册同一个字符串 id 会得到新的 identity，避免
 旧 scope 监听器命中新生命周期的 Agent。
 """
 
@@ -10,16 +10,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ftre.platform.hooks import HookScopeCarrier
+from ftre.kernel.hooks import HookScopeCarrier
 
 
 @dataclass(slots=True)
 class AgentRecord:
+    """一个 Agent 生命周期内稳定的 identity 和可观测状态。"""
     agent_id: str
     identity: object
     state: str = "ready"
 
     def summary(self) -> dict[str, Any]:
+        """返回不暴露 identity 对象的诊断摘要。"""
         return {"id": self.agent_id, "state": self.state}
 
 
@@ -30,6 +32,7 @@ class AgentRegistry:
         self._records: dict[str, AgentRecord] = {}
 
     def register(self, agent_id: str, *, state: str = "ready") -> AgentRecord:
+        """注册或更新 Agent；只有首次注册才创建新的 scope identity。"""
         if not agent_id.strip():
             raise ValueError("agent_id must be non-empty")
         record = self._records.get(agent_id)
@@ -51,6 +54,7 @@ class AgentRegistry:
         record.state = state
 
     def dispose(self, agent_id: str) -> bool:
+        """结束 Agent 生命周期，使旧 scope identity 不再命中新记录。"""
         return self._records.pop(agent_id, None) is not None
 
     def list(self) -> list[dict[str, Any]]:

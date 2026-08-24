@@ -1,26 +1,24 @@
-"""F8/F9 Command Plane ingress contracts."""
+"""Command Plane 与 Inbox/Agent Plane 解耦契约。"""
+
+from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
-from ftre.services.agent_loop.runtime.loop.completion_registry import CompletionRegistry
-from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
-from ftre.services.agent_loop.runtime.mailbox.lane import SessionLane
-from ftre.services.command import CommandResult, CommandService
-from ftre.services.messaging.bus import BusMessage
+from ftre.app.gateway.composition import build_composition
+from ftre.plugins.builtin.command import CommandResult, CommandService
+from ftre.services.messaging.bus import MESSAGING_ROUTE_SPEC, BusMessage
 
 
-def _inbound(content: str) -> BusMessage:
+def _inbound(content: str, *, session_id: str = "session-1") -> BusMessage:
     return BusMessage(
         type="user_message",
         from_channel="ws",
         to_channel="agent",
-        from_session="session-1",
-        to_session="session-1",
-        data={"session_id": "session-1", "content": content},
+        from_session=session_id,
+        to_session=session_id,
+        data={"session_id": session_id, "content": content},
         metadata={"request_id": "request-1"},
     )
 
@@ -36,10 +34,8 @@ async def test_command_service_parses_and_dispatches_at_ingress() -> None:
 
     service.register("/hello", handler)
     inbound = _inbound("/hello world")
-
     definition = service.parse({"inbound": inbound})
     result = await service.dispatch_inbound(inbound, definition=definition)
-
     assert definition is not None and definition.command == "/hello"
     assert result == CommandResult.success("done")
     assert seen == [("/hello", "world", "session-1", "ws")]
@@ -57,143 +53,120 @@ async def test_non_command_is_not_parsed_or_dispatched() -> None:
 
     service.register("/hello", handler)
     inbound = _inbound("hello")
-
     assert service.parse({"inbound": inbound}) is None
     assert await service.dispatch_inbound(inbound) is None
     assert called is False
 
 
 @pytest.mark.asyncio
-async def test_unregistered_slash_input_stays_on_command_plane() -> None:
+async def test_unknown_slash_is_command_plane_error_not_agent_input() -> None:
     service = CommandService()
     inbound = _inbound("/compact")
-
     assert service.is_command_input({"inbound": inbound}) is True
     assert service.parse({"inbound": inbound}) is None
-    result = AgentLoop._unavailable_command_result()
+    result = CommandResult.error("命令不可用或未启用")
     assert result.kind == "error"
-    assert result.text == "命令不可用或未启用"
 
 
 @pytest.mark.asyncio
-async def test_unknown_slash_message_is_not_admitted_to_agent_lane() -> None:
-    class _Bus:
-        def __init__(self, inbound):
-            self.inbound = inbound
-            self.resolved = asyncio.Event()
-            self.result = None
-
-        async def subscribe_inbound(self):
-            yield self.inbound
-            await asyncio.Event().wait()
-
-        def resolve_inbound(self, _message_id, result):
-            self.result = result
-            self.resolved.set()
-            return True
-
-        def reject_inbound(self, _message_id, _error):
-            self.resolved.set()
-            return True
-
-        def stop_inbound(self):
-            return None
-
-    inbound = _inbound("/compact")
-    bus = _Bus(inbound)
-    lanes = SimpleNamespace(
-        recover=AsyncMock(),
-        submit=AsyncMock(),
-        dispatch_command=AsyncMock(),
-        cancel_active=AsyncMock(),
-    )
-    loop = object.__new__(AgentLoop)
-    loop.bus = bus
-    loop.commands = CommandService()
-    loop.lanes = lanes
-    loop.hooks = None
-    loop.agent_registry = object()
-    loop._agent_created_emitted = set()
-    loop.completions = CompletionRegistry()
-    loop.publish_command_result = AsyncMock()
-
-    task = asyncio.create_task(loop._consume())
-    await bus.resolved.wait()
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-
-    assert bus.result.accepted is True
-    lanes.submit.assert_not_awaited()
-    lanes.dispatch_command.assert_not_awaited()
-    loop.publish_command_result.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_session_lane_command_does_not_admit_or_execute_turn() -> None:
+async def test_direct_command_dispatch_stays_inside_command_service() -> None:
     service = CommandService()
-    service.register("/hello", lambda _ctx: CommandResult.success())
-    inbound = _inbound("/hello")
-    command = service.parse({"inbound": inbound})
-
-    mailbox = type("Mailbox", (), {})()
-    mailbox.admit = AsyncMock()
-    mailbox.peek = AsyncMock(return_value=None)
-    mailbox.advance_revision = AsyncMock()
-    executor = type("Executor", (), {})()
-    executor.execute = AsyncMock()
-    publish_snapshot = AsyncMock()
-    publish_result = AsyncMock()
-    lane = SessionLane(
-        "session-1",
-        mailbox=mailbox,
-        executor=executor,
-        completion=CompletionRegistry(),
-        publish_snapshot=publish_snapshot,
-        publish_command_result=publish_result,
-    )
-
-    result = await lane.dispatch_command(inbound, command, service)
-
-    assert result.accepted is True
-    mailbox.admit.assert_not_awaited()
-    executor.execute.assert_not_awaited()
-    publish_result.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_command_lifecycle_is_paired_without_opening_a_turn() -> None:
-    service = CommandService()
-    events = []
-
-    async def observe(event_type, payload):
-        events.append((event_type, payload))
-
-    service.bind_lifecycle(observe)
     service.register("/hello", lambda _ctx: CommandResult.success("ok"))
-
-    result = await service.dispatch_inbound(_inbound("/hello value"))
-
+    inbound = _inbound("/hello")
+    result = await service.dispatch_inbound(
+        inbound,
+        definition=service.parse({"inbound": inbound}),
+    )
     assert result == CommandResult.success("ok")
-    assert [event_type for event_type, _ in events] == ["command/run", "command/done"]
-    assert events[0][1]["command_id"] == events[1][1]["command_id"]
-    assert events[0][1]["args"] == "value"
-    assert events[1][1]["kind"] == "success"
 
 
 @pytest.mark.asyncio
-async def test_successful_command_request_id_is_at_most_once() -> None:
+async def test_submit_inbound_ack_does_not_wait_for_slow_handler() -> None:
+    """慢命令不能占住 MessageBus 的 inbound consumer。"""
     service = CommandService()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    seen: list[str] = []
+
+    async def slow_handler(_ctx):
+        seen.append("started")
+        started.set()
+        await release.wait()
+        finished.set()
+        return CommandResult.success("done")
+
+    service.register("/slow", slow_handler)
+    inbound = _inbound("/slow")
+    definition = service.parse({"inbound": inbound})
+
+    assert service.submit_inbound(inbound, definition=definition) is True
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert not finished.is_set()
+    assert seen == ["started"]
+
+    release.set()
+    await asyncio.wait_for(finished.wait(), timeout=1)
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_submit_inbound_is_idempotent_while_request_is_inflight() -> None:
+    """客户端重连重发同一 request_id 时不能重复执行命令。"""
+    service = CommandService()
+    started = asyncio.Event()
+    release = asyncio.Event()
     calls = 0
 
-    async def handler(_ctx):
+    async def slow_handler(_ctx):
         nonlocal calls
         calls += 1
-        return CommandResult.success("once")
+        started.set()
+        await release.wait()
+        return CommandResult.success()
 
-    service.register("/once", handler)
-    inbound = _inbound("/once")
-    first = await service.dispatch_inbound(inbound)
-    second = await service.dispatch_inbound(inbound)
-
-    assert first == second == CommandResult.success("once")
+    service.register("/slow", slow_handler)
+    inbound = _inbound("/slow")
+    definition = service.parse({"inbound": inbound})
+    assert service.submit_inbound(inbound, definition=definition) is True
+    assert service.submit_inbound(inbound, definition=definition) is True
+    await asyncio.wait_for(started.wait(), timeout=1)
+    release.set()
+    await service.close()
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_messaging_command_route_ack_is_independent_from_handler_runtime(tmp_path) -> None:
+    """接入 Hook 只确认命令已接纳，不等待命令本身完成。"""
+    composition = await build_composition(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "plugins": [{"id": "compaction", "enabled": False}],
+        }
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_handler(_ctx):
+        started.set()
+        await release.wait()
+        return CommandResult.success("done")
+
+    commands = composition.context.get("commands")
+    commands.register("/slow", slow_handler)
+    session_id = await composition.context.sessions.create_session("ws")
+    inbound = _inbound("/slow", session_id=session_id)
+    try:
+        result = await asyncio.wait_for(
+            composition.context.hook_runtime.dispatch(
+                MESSAGING_ROUTE_SPEC,
+                inbound,
+            ),
+            timeout=0.5,
+        )
+        assert result.accepted is True
+        await asyncio.wait_for(started.wait(), timeout=1)
+        release.set()
+    finally:
+        await composition.close()

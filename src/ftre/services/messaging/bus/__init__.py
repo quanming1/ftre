@@ -1,18 +1,15 @@
+"""业务消息 Bus、协议模型和 MessageBusService。"""
+
 from .bus import EventBus
+from .ingress import MESSAGING_ROUTE_SPEC, IngressResult
 from .message import (
     GLOBAL_CHANNEL,
     GLOBAL_SESSION,
     BusMessage,
     SessionCommandMessage,
-    SessionMailboxSnapshotMessage,
     TypedBusMessage,
 )
-from .payloads import (
-    CommandMessagePayload,
-    MailboxItemPayload,
-    MailboxPhase,
-    SessionMailboxSnapshotPayload,
-)
+from .payloads import CommandMessagePayload
 from .protocol import (
     AgentRef,
     InboundData,
@@ -26,20 +23,18 @@ from .service import MessageBusService
 __all__ = [
     "GLOBAL_CHANNEL",
     "GLOBAL_SESSION",
+    "MESSAGING_ROUTE_SPEC",
     "AgentRef",
     "BusMessage",
     "CommandMessagePayload",
     "EventBus",
     "InboundData",
     "InboundMetadata",
-    "MailboxItemPayload",
-    "MailboxPhase",
+    "IngressResult",
     "MessageBusService",
     "MessageType",
     "OutboundMetadata",
     "SessionCommandMessage",
-    "SessionMailboxSnapshotMessage",
-    "SessionMailboxSnapshotPayload",
     "TypedBusMessage",
     "coerce_inbound_metadata",
 ]

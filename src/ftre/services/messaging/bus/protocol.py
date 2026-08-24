@@ -14,8 +14,8 @@ Outbound（Agent → Bus → 外部）：
                                 + channel_id/session_id 组成
 
 安全边界：
-    客户端帧只能构造 agent_id（from_client 白名单）。WS frame_id 在边界处
-    转换为 request_id，
+    客户端帧只能构造 agent_id（from_client 白名单）。WS request_id 只作为统一
+    传输相关性标识，
     agent_ref 是 team 机制服务端专属标记——外部构造可用来加载他人 session 的
     成员 profile（目录穿越读取），因此在协议层直接封死。
 """
@@ -32,7 +32,8 @@ MessageType = Literal[
     "agent_event:stream",
     "agent_event:complete",
     "session_event:command_message",
-    "session_event:mailbox_snapshot",
+    "session/queue",
+    "session/status",
     "turn_cancel",
 ]
 
@@ -49,7 +50,7 @@ class AgentRef(BaseModel):
 class InboundMetadata(BaseModel):
     """Inbound 消息 metadata 契约。
 
-    request_id: 请求唯一标识；WS 会把客户端 frame_id 转换为该字段
+    request_id: 请求唯一标识；由统一请求信封提供
     agent_id  : 客户端选择的全局 agent（多 agent 切换）
     agent_ref : 团队成员定位（仅服务端 team 机制可构造）
     """
@@ -75,15 +76,13 @@ class InboundMetadata(BaseModel):
 class InboundData(BaseModel):
     """user_message 载荷契约（inbound data 字段）。
 
-    content 是纯字符串：Inbound（wire）只承载客户端发送的纯文本。
-    结构化 part（[{type,text}] 数组）是 Msg 存储层/前端渲染的形态，
-    不在 wire 协议内——skill part 构造点已随 SkillChip 删除，
-    协议不为死代码买单。
+    content 可以是纯字符串或 ``[{"type": "text", "text": ...}]``；
+    接入边界会把结构化文本归一为 AgentService 的字符串输入。
 
     Command 结果不直接修改 Prompt；Agent Prompt 由 Agent 数据面和 Hook 管线组装。
     """
 
-    content: str = ""
+    content: str | list[dict[str, Any]] = ""
     session_id: str = ""
     attachments: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -100,7 +99,7 @@ class InboundData(BaseModel):
 class OutboundMetadata(BaseModel):
     """Outbound 帧 metadata 契约（ws payload 的 metadata 字段）。
 
-    前端消费：metadata.frame_id（当前兼容 echo）、metadata.session_id（路由）。
+    前端消费：metadata.session_id（路由）；请求相关性位于顶层 request_id。
     """
 
     model_config = ConfigDict(frozen=True)
@@ -111,10 +110,6 @@ class OutboundMetadata(BaseModel):
     # 消息目标 session id（= BusMessage.to_session）。前端多会话并存时
     # 用它把事件路由到正确的对话视图。
     session_id: str = ""
-    # 下行兼容字段：由 request_id 投影为客户端的原始 frame_id。
-    # AgentLoop/SessionLane 不保存也不读取它。
-    frame_id: str = ""
-    request_id: str = ""
     # 本轮使用的全局 agent id（inbound 透传，客户端多 agent 切换时携带）。
     # 未指定时为空串。
     agent_id: str = ""
@@ -135,9 +130,6 @@ class OutboundMetadata(BaseModel):
         return cls(
             channel_id=channel_id,
             session_id=session_id,
-            frame_id=meta.request_id,
-            # 旧桌面端仍以这个字段合并乐观消息；它只是 frame_id 的输出别名。
-            request_id=meta.request_id,
             agent_id=meta.agent_id,
             agent_ref=meta.agent_ref,
         )

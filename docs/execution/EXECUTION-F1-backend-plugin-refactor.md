@@ -13,7 +13,7 @@ F1 PRD 已在 `feature/F1-backend-plugin-refactor` 分支完成开发和验证�
 ### 2.1 运行时与装配
 
 - `src/cordis/`：提供 ftre 使用的 `Context`、`Fiber`、`FiberState`、`Service`、`Inject`、`Effect`，支持 PENDING/ACTIVE、依赖上线/下线重载、LIFO Effect 清理和幂等 dispose。
-- `src/ftre/platform/plugin_runtime/`：Manifest、Catalog、Discovery、Loader、Manager、诊断和 required failure 处理。
+- `src/ftre/kernel/plugin_runtime/`：Manifest、Catalog、Discovery、Loader、Manager、诊断和 required failure 处理。
 - `src/ftre/app/gateway/composition.py`：唯一默认 Composition 清单和启动期路由装配。
 - `src/ftre/app/gateway/bootstrap.py`：Gateway 真实运行时入口；AgentLoop、SessionLane、MessageBus 和 WebSocket 通过公开 Service 接入。
 - `src/ftre/main.py`：收敛为日志、Typer 参数和 GatewayRuntime 转发，不再直接构造业务运行时。

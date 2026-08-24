@@ -27,14 +27,15 @@ from ftre_agent_core.message import (
     ToolCallState,
 )
 
-from ftre.platform.hooks import HookRuntime
-from ftre.services.agent.config import AgentConfig, ContextConfig, LLMConfig
+from ftre.kernel.hooks import HookRuntime
+from ftre.plugins.builtin.command import CommandService
+from ftre.plugins.builtin.command.builtin import register_builtin_commands
+from ftre.services.agent.config import AgentConfig, LLMConfig
 from ftre.services.agent.registry import AgentRegistry
-from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
-from ftre.services.agent_loop.runtime.loop.turn_executor import TurnExecutor
-from ftre.services.command import CommandService
-from ftre.services.command.builtin import register_builtin_commands
+from ftre.services.agent.runtime.engine import AgentLoop
+from ftre.services.agent.runtime.turn_executor import TurnExecutor
 from ftre.services.messaging.bus import BusMessage
+from ftre.services.session.events import SessionEventService
 from ftre.services.session.projection import SessionProjection
 from ftre.services.system_prompt.hooks import (
     SYSTEM_PROMPT_ASSEMBLE_SPEC,
@@ -112,7 +113,6 @@ def _make_executor(agent) -> TurnExecutor:
     loop = object.__new__(AgentLoop)
     config = AgentConfig()
     config.llm = LLMConfig()
-    config.context = ContextConfig()
     loop._injected_config = config
     loop._event_loop = asyncio.get_running_loop()
     loop.hooks = None
@@ -126,6 +126,9 @@ def _make_executor(agent) -> TurnExecutor:
     loop.bus = AsyncMock()
     loop.agent_manager = Mock()
     loop.agent_service = None
+    loop.mcp_service = None
+    loop.tool_service = None
+    loop.inbox = None
     loop._agent_created_emitted = set()
     loop.agent_manager.load = Mock(return_value=None)
     loop.agent_manager.create_agent = Mock(return_value=agent)
@@ -140,6 +143,10 @@ def _make_executor(agent) -> TurnExecutor:
     loop.tracer = Mock()
 
     loop.session_projection = SessionProjection(loop.session_manager)
+    loop.session_events = SessionEventService(
+        SimpleNamespace(projection=loop.session_projection),
+        loop.bus,
+    )
 
     async def emit_session_event(session_id, channel_id, event, *, metadata=None):
         return await AgentLoop.emit_session_event(
@@ -208,7 +215,6 @@ def _enable_builtin_commands(executor):
         return await executor.execute(
             inbound,
             confirm_event=events[-1],
-            persist_input=False,
         )
 
     agents = SimpleNamespace(resume_confirmation=resume_confirmation)
@@ -255,7 +261,16 @@ async def test_tool_ask_pauses_turn_with_success_turn_end():
     agent = PausingAgent()
     executor = _make_executor(agent)
 
-    await executor.execute(_user_inbound())
+    inbound = _user_inbound()
+    turn_id = "turn_test"
+    user_message_id = await executor._loop._persist_inbound_user_message(
+        inbound, turn_id=turn_id
+    )
+    await executor.execute(
+        inbound,
+        turn_id=turn_id,
+        user_message_id=user_message_id,
+    )
 
     frames = _outbound_frames(executor)
 
@@ -279,7 +294,7 @@ async def test_tool_ask_pauses_turn_with_success_turn_end():
     )
     assert pipeline_end["value"]["success"] is True
 
-    # TurnExecutor 不再维护 session 全局 active 集合；SessionLane 持有执行所有权。
+    # TurnExecutor 不再维护 session 全局 active 集合；AgentLoop/AgentService 持有 active Turn 所有权。
 
 
 @pytest.mark.asyncio
@@ -444,7 +459,7 @@ async def test_confirm_resume_uses_structured_prompt_hook():
         SYSTEM_PROMPT_ASSEMBLE_SPEC,
         inject,
         owner="test-prompt",
-        global_listener=True,
+        all_agent_scopes=True,
     )
 
     await _execute_command(executor, _confirm_inbound(approved=True))

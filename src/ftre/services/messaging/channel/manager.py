@@ -1,5 +1,8 @@
-"""
-ChannelManager - Channel 注册、生命周期、outbound 分发
+"""ChannelManager：Channel 注册、生命周期和 outbound 分发的唯一 Owner。
+
+Manager 从 Bus 的全局 outbound 队列取消息，再依据 ``to_channel`` 分发；它不参与
+Session/Agent 业务决策。停止时先取消分发任务，再停止所有 Channel，保证不会在
+Provider 卸载后继续向已关闭的连接发送消息。
 """
 
 import asyncio
@@ -16,10 +19,7 @@ MIRROR_TO_WS_CHANNELS = {"cron"}
 
 
 class ChannelManager:
-    """
-    管理所有 Channel。
-    启动后从 Bus 全局 outbound 队列消费，按 to_channel 分发到对应 Channel。
-    """
+    """管理所有 Channel，并拥有一条 outbound 分发任务。"""
 
     def __init__(self, bus: EventBus):
         self.bus = bus
@@ -28,6 +28,7 @@ class ChannelManager:
         self._started = False
 
     def register(self, channel: Channel) -> None:
+        """登记 Channel；唯一性由上层 ChannelService 在调用前保证。"""
         self._channels[channel.channel_id] = channel
 
     def unregister(self, channel_id: str) -> bool:
@@ -35,6 +36,7 @@ class ChannelManager:
         return self._channels.pop(channel_id, None) is not None
 
     def get(self, channel_id: str) -> Channel | None:
+        """按稳定 channel id 查找已注册协议实现。"""
         return self._channels.get(channel_id)
 
     async def start(self) -> None:

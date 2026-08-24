@@ -9,10 +9,7 @@ from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .payloads import (
-    CommandMessagePayload,
-    SessionMailboxSnapshotPayload,
-)
+from .payloads import CommandMessagePayload
 from .protocol import InboundMetadata, MessageType, coerce_inbound_metadata
 
 # 全局事件标记：to_channel / to_session 设为这个硬编码值时，
@@ -87,12 +84,6 @@ class TypedBusMessage[PayloadT: BaseModel](BusMessage):
                 f"payload={payload_session_id!r}, routes={sorted(routed_sessions)!r}"
             )
         return self
-
-
-class SessionMailboxSnapshotMessage(TypedBusMessage[SessionMailboxSnapshotPayload]):
-    """SessionLane 发出的完整 mailbox 状态快照。"""
-
-    type: Literal["session_event:mailbox_snapshot"] = "session_event:mailbox_snapshot"
 
 
 class SessionCommandMessage(TypedBusMessage[CommandMessagePayload]):

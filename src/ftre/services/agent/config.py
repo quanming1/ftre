@@ -103,18 +103,6 @@ class LLMConfig:
 
 
 @dataclass
-class ContextConfig:
-    """Agent 数据面运行配置。
-
-    压缩阈值、摘要模型和安全余量属于可选 ``ftre-compaction`` 包，不能
-    再放在核心 AgentConfig。核心这里只保留 Mailbox 的容量边界。
-    """
-
-    # 同一 session 可接纳的 pending 请求上限，防止离线入口无限占用磁盘。
-    mailbox_capacity: int = 100
-
-
-@dataclass
 class AgentConfig:
     """Agent 配置"""
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -128,8 +116,6 @@ class AgentConfig:
     # 配置项：agents.title_generation = {"provider": "...", "model": "..."}
     # 设计动机：标题生成是高频小请求，独立挂到便宜/快的模型上，避免占用主对话的高级模型配额。
     title_llm: LLMConfig | None = None
-    # 数据面运行配置。压缩策略不属于核心 AgentConfig，见 ftre-compaction.config。
-    context: ContextConfig = field(default_factory=ContextConfig)
 
 
 # ─── 配置缓存 ──────────────────────────────────────────────────────
@@ -225,8 +211,8 @@ def load_config() -> AgentConfig:
 
     配置来源：
     - model / provider / workspace → ~/.ftre/agents/default/agent.config.json
-    - title_generation / context.mailboxCapacity → config.json 的 agents 顶层
-    - 压缩相关的 agents.context 字段由可选 ftre-compaction 包自行解析
+    - title_generation → config.json 的 agents 顶层
+    - Inbox 容量由 ftre-inbox 包自行解析
     - system_prompt → system_prompt.md 文件
     """
     global _last_config, _last_sig
@@ -289,23 +275,6 @@ def load_config() -> AgentConfig:
     # 系统提示词：从 system_prompt.md 文件加载
     system_prompt = _load_system_prompt()
 
-    # 核心只解析队列容量；压缩包自己解析 agents.context。
-    ctx_raw = agents_cfg.get("context") or {}
-    if not isinstance(ctx_raw, dict):
-        ctx_raw = {}
-
-    context_cfg = ContextConfig(
-        mailbox_capacity=max(
-            1,
-            int(
-                ctx_raw.get(
-                    "mailboxCapacity",
-                    ctx_raw.get("mailbox_capacity", 100),
-                )
-            ),
-        ),
-    )
-
     # 配置日志统一降为 DEBUG，避免每次重新加载刷屏
     is_first_load = _last_config is None
     config_changed = not is_first_load and current_sig != _last_sig
@@ -314,7 +283,6 @@ def load_config() -> AgentConfig:
         f"context_window={llm.context_window}, max_output={llm.max_output}, "
         f"workspace={workspace or '(default)'}, "
         f"title_llm={title_llm.model if title_llm else '(fallback to main)'}, "
-        f"mailbox_capacity={context_cfg.mailbox_capacity}, "
         + (" (重新加载)" if config_changed else "")
     )
 
@@ -323,7 +291,6 @@ def load_config() -> AgentConfig:
         system_prompt=system_prompt,
         workspace=workspace,
         title_llm=title_llm,
-        context=context_cfg,
     )
 
     # 更新缓存

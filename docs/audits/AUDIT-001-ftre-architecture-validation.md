@@ -137,7 +137,7 @@ fs + skills + tools + sessions
 ### 3.5 用于验证边界的理想分解（非迁移方案）
 
 ```text
-features/context_doctor/
+plugins/builtin/context_doctor/
 ├─ plugin.py              # Inject fs/skills/tools/sessions/http
 ├─ audit.py               # 纯组合逻辑
 ├─ scan.py                # 只消费公共 Service
@@ -371,7 +371,7 @@ app/
 └─ cli/
    └─ recovery.py                # Gateway 无法启动时仍可运行
 
-features/savepoint/
+plugins/builtin/savepoint/
 ├─ plugin.py
 ├─ service.py
 ├─ manifest.py

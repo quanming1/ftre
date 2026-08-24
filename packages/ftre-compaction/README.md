@@ -10,7 +10,7 @@ ftre-compaction 是 ftre 的可选上下文压缩发行物。它把“什么时�
 |---|---|
 | config.py | 读取 ConfigService.snapshot()，解析本包自己的阈值、预算和摘要模型 |
 | service.py | 唯一真实实现：token 水位、LLM 摘要、快速裁剪、事件、并发和取消 |
-| hooks.py | 在 agent/pre-step、agent/after-turn、agent/request-error 上接入策略 |
+| hooks.py | 在 inbox/before-claim、agent/after-run、agent/run-error 上接入策略 |
 | commands.py | 注册 /compact 与 /compress-fast，绕过 Agent Turn 直接调用 Service |
 | plugin.py | Cordis 装配入口，把 Service、Hook、Command 和关闭 effect 绑定起来 |
 | events.py | 复用 ftre Session 维护事件名称，不复制事件协议 |
@@ -18,19 +18,20 @@ ftre-compaction 是 ftre 的可选上下文压缩发行物。它把“什么时�
 ## 一次请求的调用链
 
     pending.peek
-      → agent/pre-step
+      → inbox/before-claim
           → 读取 CompactionConfig 快照
           → should_compact
           → compact（必要时）
           → 再次检查水位
       → Lane claim
       → Agent Turn
-      → agent/after-turn
+      → agent/after-run
           → 使用 70% 预压线
 
-LLM 返回上下文溢出时，agent/request-error 只在压缩 progress generation
+LLM 返回上下文溢出时，agent/run-error 只在压缩 progress generation
 确实前进后返回一次 RetryRequest，避免无进展重试死循环。Hook 不直接操作
-Mailbox；pending 的 peek/claim/保留仍由 ftre 核心的 SessionLane 管理。
+Inbox；pending 的 peek/claim/保留全部由本包的 InboxService 管理，ftre 核心只执行
+已交付的 InboundMessage。
 
 ## 配置
 

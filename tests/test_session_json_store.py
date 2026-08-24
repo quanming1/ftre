@@ -83,7 +83,6 @@ async def test_write_and_reload_recovers_state(store):
         "schema_version",
         "session",
         "messages",
-        "mailbox",
         "metadata",
     }
     assert raw["messages"][0]["content"][0]["text"] == "第一条"

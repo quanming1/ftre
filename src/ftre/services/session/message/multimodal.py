@@ -1,4 +1,5 @@
 """
+# 中文说明：多模态消息转换：把 UI 专有内容和图片附件归一为 Provider 可接受的 content parts。
 Build OpenAI-safe user message content from FTRE user message parts.
 
 Internal UI/user parts may contain FTRE-only types such as ``skill``. This

@@ -13,10 +13,14 @@ from types import SimpleNamespace
 import pytest
 from ftre_agent_core.tool import Tool
 
-from ftre.features.mcp.adapter import _convert_parameters, _parse_tool_name, mcp_tool_id
-from ftre.features.mcp.config import parse_mcp_config
-from ftre.features.mcp.connection import McpManager
-from ftre.features.mcp.service import McpService
+from ftre.plugins.builtin.mcp.adapter import (
+    _convert_parameters,
+    _parse_tool_name,
+    mcp_tool_id,
+)
+from ftre.plugins.builtin.mcp.config import parse_mcp_config
+from ftre.plugins.builtin.mcp.connection import McpManager
+from ftre.plugins.builtin.mcp.service import McpService
 from ftre.services.tools import ToolService
 
 # ============================================================
@@ -292,8 +296,8 @@ async def test_private_agent_mcp_is_loaded_into_agent_scope(monkeypatch):
     async def no_global_tools(*_args):
         return []
 
-    monkeypatch.setattr("ftre.features.mcp.service.build_mcp_tools_for_servers", no_global_tools)
-    monkeypatch.setattr("ftre.features.mcp.connection.McpManager.start_and_register", fake_private_start)
+    monkeypatch.setattr("ftre.plugins.builtin.mcp.service.build_mcp_tools_for_servers", no_global_tools)
+    monkeypatch.setattr("ftre.plugins.builtin.mcp.connection.McpManager.start_and_register", fake_private_start)
 
     await service.prepare_agent("worker", {
         "global": {"type": "local", "command": ["global-server"]},
@@ -356,7 +360,7 @@ async def test_mcp_manager_registers_and_disposes_scoped_tools(monkeypatch):
     async def fake_build(_manager):
         return [tool]
 
-    monkeypatch.setattr("ftre.features.mcp.adapter.build_mcp_tools", fake_build)
+    monkeypatch.setattr("ftre.plugins.builtin.mcp.adapter.build_mcp_tools", fake_build)
     await manager._register_tools()
     assert [item.name for item in tools.snapshot("worker")] == [tool.name]
 

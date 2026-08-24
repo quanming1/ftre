@@ -1,5 +1,102 @@
 # Changelog
 
+## [0.3.0] - 2026-08-24
+
+### F21 Command 接入异步化（已完成，未发布）
+
+- 修复 `/compact` 等慢命令占用全局 MessageBus inbound consumer，导致普通消息长时间停留
+  在客户端本地队列的问题。
+- Command Plugin 现在先返回接纳 ACK，再由 CommandService 后台执行命令；同一 request_id
+  在执行中或成功完成后不会重复执行，卸载时会取消后台任务。
+
+### F20 默认 Package 安装与装配（已完成，未发布）
+
+- `ftre` 默认发行依赖纳入 `packages/` 下的 `ftre-inbox`、`ftre-compaction`、
+  `ftre-messaging`、`ftre-task`、`ftre-team`；原有 extras 保留为裁剪安装兼容入口。
+- Composition 默认声明并装配五个 Package Plugin；压缩命令 `/compact`、`/compress-fast`
+  在默认 `/api/commands` 列表中可见，业务 Package 仍可通过配置禁用。
+
+### F19 Session Route Inject 边界收敛（已完成，未发布）
+
+- 新增 `session-routes` Plugin；Session Provider 只拥有 `sessions`/`session_events`，不再
+  通过 `ctx.get("agents"/"inbox")` 迟查跨 Service 依赖。
+- Session HTTP 路由改为显式 Inject、独立 Fiber Effect 和可逆 unload/restart；补充路由
+  生命周期门禁与三个业务 Tool Package 的最小行为回归。
+
+### F18 Tool Package 边界收敛（已完成，未发布）
+
+- 新增 `ftre-messaging`、`ftre-task`、`ftre-team` 三个独立 Tool Package，分别拥有
+  `send_message`、`task` 和 `team_*`/`wait_agent`；它们通过 `inject("inbox")` 使用队列，
+  不再由 Inbox Plugin 注册。
+- `ftre-inbox` 收窄为 Inbox Service、Queue Hook、Worker 和持久化 Owner；清理未被实际工具
+  消费的重复内存 TeamService。
+
+### F17 Inbox 基础 Owner 收敛（已完成，F18 纠偏）
+
+- `ftre-inbox` 在当前 Gateway Composition 中改为必选 Plugin，只拥有 durable queue、
+  admission/claim Hook、Worker 和持久化。
+- 删除 Agent Runtime 的 `_inbox` 和 `runtime_context["inbox"]` 死透传；AgentService 继续只处理
+  `InboundMessage`；Inbox 队列状态归 Inbox Plugin，业务 Tool 生命周期由各自 F18 Package 管理。
+- F16 的无 Inbox 启动结果保留为历史验收快照；当前部署需安装 `ftre[inbox]`。
+
+### F16/C3 Core Hook 面终局收敛（本地已验收）
+
+- Core Tool Hook 从四段收敛为 `tool/before`、`tool/after`，删除 around `tools/execute` 和
+  观察 `tools/result`；`agent/turn-stopping` 改为 `agent/stop-decision`，Core 版本提升到 0.2.0。
+- ftre Host、Inbox、Compaction 和测试迁移到新协议，全系统公共 Hook 从 17 项收敛为 15 项；
+  ftre 版本提升到 0.3.0，两个可选 Package 提升到 0.2.0。
+- 未安装 Inbox 时不登记失败的幽灵 Plugin；安装后通过 entry point 发现，Package 的
+  load/restart/unload、洁净 venv 和 Gateway/WebSocket smoke 均通过。
+- 两仓全量测试 485/238 passed，Core/Host/Package wheel 无测试、缓存和旧 Hook 引用。
+- Windows CLI 后台 Gateway 输出改用 ASCII 状态标记，避免 GBK 控制台编码异常。
+
+### F15 Hook 语义收敛（本地预验收，CI 待触发）
+
+- 将 ftre Host Hook 从 22 项收敛为 10 项，全系统公共 Hook 固定为 17 项；Core 7 项契约冻结。
+- 删除 Agent lifecycle/request/turn-stopped、Session event/flush 和 Inbox 三种细粒度 mutation Hook；
+  `messaging/inbound` 改为 `messaging/route`。
+- 关键 Session/Inbox 状态通知改为 awaited PARALLEL；HookRuntime 统一 Context/Fiber 生命周期，
+  Plugin 不再重复注册 receipt disposer。
+- 补齐 in-flight unload、队列恢复、Package wheel/洁净安装和 Gateway smoke；全量测试 486 passed。
+  F15 GitHub Actions 尚未触发，正式验收待 feature push 后完成。
+
+### F14 轻内核 + Plugin-first（已验收）
+
+- F14.6 收敛 Host Service：Session/Command/Inbox/SessionEvent/Compaction 改为构造注入或公开
+  Hook，删除运行时 callback setter；Agent Runtime 继续只处理已接纳的 `InboundMessage`。
+- F14.7 为 `ftre-inbox`、`ftre-compaction` 增加独立 wheel/entry point 和 Host `inbox`、
+  `compaction`、`full` extras；Plugin discovery 支持安装发行物，未安装可选包时 Host 仍能启动。
+- F14.8 增加无可选包的最小 Composition 与 Builtin Plugin unload 生命周期回归覆盖。
+- 收尾审计删除 WebSocket 临时 Host App、Agent Runtime 的重复 Session 事件出口和 Inbox Hook fallback；补充 claim 失败保留 pending 的生命周期门禁。
+
+### F13 Plugin-first 内核收敛与消息交接（已验收）
+
+- Composition/Bootstrap 不再手工创建业务 Service 或注册业务 HTTP 路由；Agent Runtime、
+  WebSocket、Subagent 和各 Service/Feature 路由均由 Provider Plugin 通过 Inject/Effect
+  装配和清理。
+- Agent Runtime 在 Inbox claim 后、TurnExecutor/LLM 前完成一次正式 UserMessage 历史交接，
+  沿用 request_id 相关性；TurnExecutor 不再持有普通输入持久化 Owner。
+- 保持 `ftre-inbox` 可选：禁用时 Agent Runtime 仍可组合并返回稳定 capability error；新增
+  Owner、路由、重启/卸载、无 Inbox 和公共 Channel 名称架构测试。
+- ftre 全量测试 439 passed；Desktop `pnpm test`（renderer 488 + platform 7）通过；
+  独立 renderer `tsc --noEmit` 的既有测试夹具缺少 `awaitingEcho`，未在本后端阶段修改。
+
+### F12 独立 Inbox Package 与权威队列协议（已验收）
+
+- 新增 `packages/ftre-inbox`：独立双队列、原子 JSON 持久化、旧
+  `mailbox.pending` 一次性迁移、`followup/steer/inject`、Worker、Queue Hook 和
+  权威 `session/queue` 投影。
+- `AgentService` 收敛为 `run(InboundMessage)`；旧 SessionLane、MailboxStore、
+  Session mailbox API、旧快照 payload、queue position 和 `frame_id` 输出别名已移除。
+- WebSocket 使用 `session.prompt`、`session.updateQueue`、`session.cancel` 与独立
+  `session/status`；Command 保持 Agent Plane 旁路。
+- `ftre-agent-core>=0.1.2` 已提供 `agent/before-reasoning`，运行中 steer 可在下一次
+  Reasoning 前作为普通消息进入 Core 上下文；Core wheel/PyPI 发布仍按 F6.12 单独安排。
+- 审计补充：重复或已完成的 request 不再创建无法完成的 receipt；AgentLoop shutdown 会
+  关闭 CompletionRegistry 并唤醒 waiter；Inbox、Compaction 测试和文档中的旧 Owner 名称已清理。
+- 修复执行中删除 Session 的生命周期竞态：删除前等待 active Turn 完整取消和消息投影收尾，
+  最终 Reply 持久化失败时保留投影快照，并跳过已删除 Session 的空通道状态事件。
+
 ## [0.2.6] - 2026-08-22
 
 ### BUG 修复（2026-08-22）

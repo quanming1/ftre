@@ -1,7 +1,7 @@
 # PRD-F5-Schedule Owner 收敛与调度生命周期治理
 
 > F4 已清理大部分迁移壳，但 Schedule 仍存在一组未完成的 Owner 迁移：
-> `features/schedule/channel.py` 只是转发壳，`features/schedule/store.py` 只是重复导出，
+> `plugins/builtin/schedule/channel.py` 只是转发壳，`plugins/builtin/schedule/store.py` 只是重复导出，
 > 真正的 `CronChannel`、`CronScheduler` 和 cron Tool 仍在 `services/tools/builtin/cron.py`，
 > 并由 Gateway Bootstrap 手工创建。F5 将 Schedule 作为完整 Feature 收敛。
 
@@ -23,11 +23,11 @@
 
 | 文件 | 当前行为 | 架构问题 |
 |---|---|---|
-| `features/schedule/channel.py` | `from ftre.services.tools.builtin.cron import CronChannel` | Feature 只暴露转发壳，实际 Channel Owner 在 Tool 层 |
-| `features/schedule/store.py` | 再导出 `ScheduleService` | 与 `service.py` 重复，没有独立职责 |
+| `plugins/builtin/schedule/channel.py` | `from ftre.services.tools.builtin.cron import CronChannel` | Feature 只暴露转发壳，实际 Channel Owner 在 Tool 层 |
+| `plugins/builtin/schedule/store.py` | 再导出 `ScheduleService` | 与 `service.py` 重复，没有独立职责 |
 | `services/tools/builtin/cron.py` | 同时拥有 Store 函数、CronChannel、CronScheduler、cron Tool | 一个文件跨越存储、调度、Channel、Tool 四个层级 |
 | `app/gateway/bootstrap.py` | 手工创建 `CronScheduler` 并启动 | Plugin 生命周期无法接管，关闭顺序和重复启动没有统一 Owner |
-| `features/schedule/router.py` | 直接访问 `service.root` 和 JSON 文件 | Router 绕过 Service API，ScheduleService 不是唯一数据入口 |
+| `plugins/builtin/schedule/router.py` | 直接访问 `service.root` 和 JSON 文件 | Router 绕过 Service API，ScheduleService 不是唯一数据入口 |
 
 ### 1.2 目标
 
@@ -49,28 +49,28 @@
   start/stop、`CronChannel` 的 Channel Contract 和 cron Tool 的注册接口；Router 不得访问
   文件系统或 Service 私有字段。
 - [x] **FR2：CronStore 单一持久化 Owner。** 将 `cron` JSON 的路径解析、读取、原子写入、删除、
-  run_history 更新归入 `features/schedule/store.py` 的实际实现；`ScheduleService` 只编排
+  run_history 更新归入 `plugins/builtin/schedule/store.py` 的实际实现；`ScheduleService` 只编排
   Domain/Store，不再重复 `root.glob` 或直接写 JSON。
 - [x] **FR3：ScheduleService 完整 CRUD。** 提供 `list/get/create/update/delete/append_run` 等
   窄接口，校验 Job ID 和字段；Router、Tool、Scheduler 全部通过 Service 调用。
-- [x] **FR4：CronScheduler 迁入 Feature。** 将调度循环迁入 `features/schedule/scheduler.py`，
+- [x] **FR4：CronScheduler 迁入 Feature。** 将调度循环迁入 `plugins/builtin/schedule/scheduler.py`，
   只依赖 `ScheduleService`、`SessionService`、`MessageBusService`；不再依赖
   `services.tools.builtin.cron` 的全局 `CRON_DIR` 和函数。
 - [x] **FR5：CronChannel 迁入 Feature。** 将静默 Channel 的真实实现放入
-  `features/schedule/channel.py`，通过 `ChannelService` 注册；停止时必须可逆注销，不能留
+  `plugins/builtin/schedule/channel.py`，通过 `ChannelService` 注册；停止时必须可逆注销，不能留
   `services/tools` 的反向依赖。
 - [x] **FR6：cron Tool 迁入 Feature。** 将 cron Tool 的参数定义、校验和执行逻辑放入
-  `features/schedule/tool.py`，由 Schedule Plugin 通过 `ToolService.register(..., owner="schedule")`
+  `plugins/builtin/schedule/tool.py`，由 Schedule Plugin 通过 `ToolService.register(..., owner="schedule")`
   注册，并在 unload 时移除。
 - [x] **FR7：Schedule Plugin 接管生命周期。** Plugin 注入 `message_bus/sessions/channels/tools`
   和必要的 Config，创建 Service/Channel/Scheduler，按“提供 Service → 注册 Channel/Tool →
   启动 Scheduler”的顺序装配；所有资源绑定 `ctx.effect`，重复 close 幂等。
 - [x] **FR8：Bootstrap 解耦。** 从 `app/gateway/bootstrap.py` 删除 `CronScheduler` import、手工
   构造、`start()` 和 `stop()`；Gateway 只通过 Composition 加载 Schedule Plugin。
-- [x] **FR9：Router Service-only。** `features/schedule/router.py` 只调用 Service 公共方法，
+- [x] **FR9：Router Service-only。** `plugins/builtin/schedule/router.py` 只调用 Service 公共方法，
   不访问 `service.root`、`Path`、`json.loads` 或 JSON 文件。
 - [x] **FR10：旧实现与空壳删除。** 删除 `src/ftre/services/tools/builtin/cron.py`，并确保
-  `features/schedule/channel.py`、`store.py`、`tool.py` 都是有实际职责的 Feature 模块，不得
+  `plugins/builtin/schedule/channel.py`、`store.py`、`tool.py` 都是有实际职责的 Feature 模块，不得
   出现单行 re-export 或 `import *`。
 - [x] **FR11：并发与重复启动保护。** Scheduler 同一实例最多一个后台 Task；Plugin 重复激活、
   reload、unload 和 close 不产生重复 Channel、重复 Tool 或悬挂 Task。
@@ -90,7 +90,7 @@
 ### 3.1 目标文件树
 
 ```text
-src/ftre/features/schedule/
+src/ftre/plugins/builtin/schedule/
 ├─ __init__.py
 ├─ plugin.py                 # 唯一装配入口与生命周期
 ├─ service.py                # ScheduleService：公开 Job API
@@ -115,7 +115,7 @@ Schedule Plugin
 禁止方向：
 
 ```text
-features/schedule  -X-> services/tools/builtin/cron
+plugins/builtin/schedule  -X-> services/tools/builtin/cron
 app/gateway        -X-> CronScheduler()
 router             -X-> service.root / JSON 文件
 ```
@@ -157,7 +157,7 @@ class CronScheduler:
 
 ## 5. 验收标准
 
-- [x] **AC1：Owner 清晰。** `features/schedule/channel.py`、`store.py`、`tool.py` 均包含实际
+- [x] **AC1：Owner 清晰。** `plugins/builtin/schedule/channel.py`、`store.py`、`tool.py` 均包含实际
   实现；不存在单行 re-export、`import *` 或对 `services.tools.builtin.cron` 的导入。
 - [x] **AC2：旧实现删除。** `src/ftre/services/tools/builtin/cron.py` 不存在；生产代码和
   测试不再导入该路径。
@@ -179,11 +179,11 @@ class CronScheduler:
 
 ## 6. 测试计划
 
-- `tests/features/schedule/test_store.py`：Store 路径安全、CRUD、损坏文件、原子写入。
-- `tests/features/schedule/test_service.py`：Service 公共接口和字段校验。
-- `tests/features/schedule/test_scheduler.py`：可注入 clock 的 tick、去重、disabled、投递和 stop。
-- `tests/features/schedule/test_plugin.py`：Plugin 激活、Tool/Channel 注册、unload cleanup。
-- `tests/features/schedule/test_router.py`：Router 只通过 Service API。
+- `tests/plugins/builtin/schedule/test_store.py`：Store 路径安全、CRUD、损坏文件、原子写入。
+- `tests/plugins/builtin/schedule/test_service.py`：Service 公共接口和字段校验。
+- `tests/plugins/builtin/schedule/test_scheduler.py`：可注入 clock 的 tick、去重、disabled、投递和 stop。
+- `tests/plugins/builtin/schedule/test_plugin.py`：Plugin 激活、Tool/Channel 注册、unload cleanup。
+- `tests/plugins/builtin/schedule/test_router.py`：Router 只通过 Service API。
 - `tests/architecture/test_f5_schedule_owner.py`：旧 cron 模块、Bootstrap 手工装配和转发壳门禁。
 - `tests/startup/test_composition.py`、`tests/lifecycle/test_effect_cleanup.py`：启动与生命周期回归。
 

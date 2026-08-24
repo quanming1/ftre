@@ -16,9 +16,9 @@ CLI (ftre.main)
   └─ Gateway bootstrap
       └─ Composition Root (app/gateway/composition.py)
           └─ cordis Context / Fiber
-              ├─ Platform: plugin discovery, loading, lifecycle diagnostics
+              ├─ Kernel: plugin discovery, loading, lifecycle diagnostics
               ├─ Services: stateful shared capabilities
-              ├─ Features: product behavior Plugins
+              ├─ Builtin Plugins: product behavior and concrete adapters
               └─ HTTP Host + Channels + Agent data plane
 ```
 
@@ -26,18 +26,18 @@ There is one Composition Root. It declares the built-in Plugin manifests,
 applies configuration, creates the Cordis context, registers startup routes,
 and owns the reversible shutdown path.
 
-### Service, Provider Plugin, and Feature Plugin
+### Service, Provider Plugin, and Builtin Plugin
 
 | Concept | Location | Responsibility |
 | --- | --- | --- |
 | Service | `src/ftre/services/<name>/service.py` | Stateful capability with a stable public key, such as `sessions`, `tools`, `http` or `message_bus` |
 | Provider Plugin | beside the Service in `plugin.py` | Declares `inject`/`provide`, creates or binds the Service, and registers cleanup effects |
-| Feature Plugin | `src/ftre/features/<name>/` | Optional product behavior such as Skill, MCP, Plan, Team, Schedule or context governance |
-| Platform Runtime | `src/ftre/platform/plugin_runtime/` | Manifest validation, explicit discovery, Cordis loading, status and failure diagnostics |
+| Builtin Plugin | `src/ftre/plugins/builtin/<name>/` | Product behavior and concrete adapters such as Command, Skill, MCP, Channel or Schedule |
+| Kernel Runtime | `src/ftre/kernel/plugins/` | Manifest validation, installed entry point discovery, Cordis loading, status and failure diagnostics |
 | App Host | `src/ftre/app/` | Process boundaries only: CLI, Gateway bootstrap, FastAPI and uvicorn |
 
-`services/agent_loop/provider.py` is the internal object-construction boundary
-for the Agent runtime. It is not a Service or Plugin entry point. Plugin
+`services/agent/runtime/` is the private implementation behind the single
+`agents` Service. It is not a second Service or Plugin entry point. Plugin
 entries use `module:attribute` and normally point to an `apply(ctx, config)`
 function.
 
@@ -56,28 +56,29 @@ ftre/
 │     │     ├─ composition.py     # the only default Composition Root
 │     │     ├─ bootstrap.py       # startup/close orchestration
 │     │     └─ http/               # FastAPI Host and uvicorn adapter
-│     ├─ platform/
-│     │  └─ plugin_runtime/       # Catalog → Discovery → Loader → Manager
-│     ├─ services/                 # public stateful runtime capabilities
+│     ├─ kernel/
+│     │  └─ plugins/                # Catalog → Discovery → Loader → Manager
+│     ├─ services/                 # public stable runtime capabilities
 │     │  ├─ config/ filesystem/ http/
 │     │  ├─ messaging/{bus,channel}/
 │     │  ├─ session/ agent/ tools/ workspace/
-│     │  ├─ command/ attachment/ observability/
+│     │  ├─ attachment/ agent/runtime/
 │     │  └─ system_prompt/
-│     ├─ features/                 # optional product Plugins
-│     │  ├─ skill/ mcp/ plan/ team/ schedule/
-│     │  └─ context_govern/
+│     ├─ plugins/builtin/          # product behavior + adapters
+│     │  ├─ command/ trace/ session_title/
+│     │  ├─ channels/{websocket,subagent}/
+│     │  └─ skill/ mcp/ plan/ team/ schedule/ context_govern/
 │     └─ __init__.py                # package boundary
 └─ tests/
    ├─ architecture/               # import boundaries and runtime contracts
    ├─ contracts/                   # Service contracts
    ├─ startup/ lifecycle/          # composition and reversible cleanup
-   └─ hooks/                       # semantic Hook behavior and contracts
+   └─ plugins/                     # Builtin Plugin and package contracts
 ```
 
 The retired root packages (`agent`, `api`, `bus`, `channel`, `plugin`, `session`,
-etc.) are intentionally absent. New code belongs in `app`, `platform`,
-`services` or `features`; external plugins use the explicit runtime manifest
+etc.) are intentionally absent. New code belongs in `app`, `kernel`,
+`services` or `plugins`; external plugins use the explicit runtime manifest
 boundary rather than importing private ftre modules.
 
 ## Startup and lifecycle
@@ -86,7 +87,7 @@ boundary rather than importing private ftre modules.
 2. `build_composition()` builds the default manifest list and creates a
    `PluginManager` over a public Cordis `Context`.
 3. Required Service Plugins are activated first through declared dependencies;
-   optional Feature and external Plugins are activated when enabled.
+   optional Builtin, Package and external Plugins are activated when enabled.
 4. Each Plugin contributes Services, routes, hooks, tools or channels through
    the official `cordis.Context`; every cleanup is registered with a Cordis
    Effect factory such as `ctx.effect(lambda: disposer)`.
@@ -114,28 +115,28 @@ after its manifest is explicitly enabled in `~/.ftre/config.json`:
 ## Agent data plane
 
 ```text
-Channel → MessageBus → AgentLoop → SessionLane → TurnExecutor
-                                      ├─ agent/pre-step Hook → claim
-                                      ├─ agent/after-turn Hook → next pending
-                                      ├─ MailboxStore (pending only)
-                                      └─ messages (durable chat history)
+Channel → MessageBus → messaging/inbound Hook
+                         ├─ Command Plugin → CommandResult（不创建 Turn）
+                         ├─ Inbox Package → pending → claim
+                         └─ AgentService.run(InboundMessage) → Agent Runtime → core
 
 Context compaction is optional: when `ftre-compaction` is explicitly enabled,
-its Service owns the pre-step/after-turn gates and overflow recovery. The core
-SessionLane only provides the Hook barriers and generic maintenance state; it
-does not import or construct a compaction implementation.
+its Service owns the `inbox/before-claim`/`agent/after-turn` gates and overflow recovery. The core
+ftre-inbox owns pending/worker/claim; AgentService only executes an already
+admitted InboundMessage. Compaction remains optional and does not belong to the
+queue or Core Agent implementation.
 ```
 
 Different sessions run concurrently. A session has at most one active turn;
 turn and compaction never overlap. Pending claims are at-most-once. These
-invariants are covered by the SessionLane and lifecycle tests.
+invariants are covered by the Inbox, protocol and lifecycle tests.
 
 ## Built-in capabilities
 
 - **Services:** configuration, filesystem policy/IO, HTTP route registry,
   message bus, channels, sessions, agents/profiles, tools, workspaces,
   commands, attachments, traces and system prompts.
-- **Features:** Skill catalog/loading, global/private MCP, Plan tool, Team
+- **Builtin Plugins:** Skill catalog/loading, global/private MCP, Plan tool, Team
   orchestration, Schedule persistence and context governance hooks.
 - **Extension boundary:** external plugins are loaded only through explicit
   `module:attribute` manifests; they do not import private ftre modules or

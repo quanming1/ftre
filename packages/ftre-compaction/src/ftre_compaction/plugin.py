@@ -18,7 +18,7 @@ from .service import CompactionService
 # config 是公开 ConfigService，不是 AgentConfig。压缩包通过 snapshot() 读取
 # 自己拥有的配置字段；sessions/hook_runtime/commands 则分别对应持久化、Hook
 # 调度和 Command Plane 的稳定契约。
-inject = ("config", "sessions", "hook_runtime", "commands")
+inject = ("config", "sessions", "session_events", "hook_runtime", "commands", "inbox")
 provide = ("compaction",)
 
 
@@ -34,23 +34,18 @@ def apply(ctx: Context, config=None):
         options = config if isinstance(config, dict) else {}
         service = CompactionService(
             session_manager=ctx.sessions,
+            emit_event=ctx.session_events.emit,
             threshold=float(options.get("threshold", 0.8)),
             config_service=ctx.config,
             default_config=CompactionConfig(
                 compact_threshold=float(options.get("threshold", 0.8)),
             ),
         )
-        event_sink = ctx.get("session_events", strict=False)
-        if event_sink is not None:
-            service.bind_event_emitter(event_sink.emit)
         ctx.provide("compaction", service)
-        ctx.effect(service.close, label="ftre-compaction:close")
+        ctx.effect(lambda: service.close, label="ftre-compaction:close")
 
-    for index, receipt in enumerate(register_hooks(ctx, service)):
-        ctx.effect(
-            lambda receipt=receipt: receipt.dispose,
-            label=f"ftre-compaction:hook:{index}",
-        )
+    # HookRuntime 已把每个 receipt 绑定到当前 Plugin Fiber；Plugin 不重复注册 disposer。
+    register_hooks(ctx, service)
     for index, disposer in enumerate(register_commands(ctx.commands, service)):
         ctx.effect(
             lambda disposer=disposer: disposer,

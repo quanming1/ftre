@@ -1,7 +1,7 @@
 import pytest
 from cordis import Context
 
-from ftre.features.context_govern import plugin as context_govern
+from ftre.plugins.builtin.context_govern import plugin as context_govern
 from ftre.services.filesystem.local import LocalFilesystemService
 from ftre.services.system_prompt.service import SystemPromptService
 from ftre.services.workspace.service import WorkspaceService

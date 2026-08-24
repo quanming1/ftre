@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Tool, ToolRegistry
 
-from ftre.platform.hooks import HookRuntime
+from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.hooks import AgentSubject
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.attachment import AttachmentService
@@ -138,7 +138,7 @@ async def test_structured_prompt_hook_replaces_assembly_without_mutable_filter()
         SYSTEM_PROMPT_ASSEMBLE_SPEC,
         rewrite,
         owner="prompt-test",
-        global_listener=True,
+        all_agent_scopes=True,
     )
     result = await runtime.dispatch(
         SYSTEM_PROMPT_ASSEMBLE_SPEC,

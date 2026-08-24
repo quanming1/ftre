@@ -21,8 +21,8 @@ F3 已完成。旧 Plugin Kernel、旧 Builtin Plugin、旧 aggregate API 和无
 ### 2.2 Builtin Plugin
 
 - ContextGovern、Skill、MCP、Plan、Team、Schedule、SessionTitle 的测试改为验证
-  `features/*` 或 `services/*` 的真实 Plugin/Service。
-- SessionTitle generator 下沉到 `services/session/title/generator.py`，Plugin 入口使用
+  `plugins/builtin/*` 或 `services/*` 的真实 Plugin/Service。
+- SessionTitle generator 下沉到 `plugins/builtin/session_title/generator.py`，Plugin 入口使用
   `inject = ("sessions", "system_prompt")` 和 `ctx.on/ctx.effect`。
 - 启动测试确认七个内置 Feature Plugin 为 `ACTIVE`，并验证 Skills/MCP/Schedule/Teams
   Service 已发布。
