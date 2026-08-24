@@ -13,13 +13,12 @@ from ftre.app.gateway.composition import build_composition
 
 
 @pytest.mark.asyncio
-async def test_minimal_host_runs_without_optional_packages(tmp_path) -> None:
-    """Host 缺少 Inbox/Compaction 时仍能组合并暴露单一 Agent Service。"""
+async def test_default_package_set_runs_with_compaction_enabled(tmp_path) -> None:
+    """默认 Package 组合包含 Compaction，并仍能暴露 Agent Service。"""
     composition = await build_composition(
         {
             "sessions_dir": str(tmp_path / "sessions"),
             "plugins": [
-                {"id": "inbox", "disabled": True},
                 {"id": "mcp", "disabled": True},
                 {"id": "skill", "disabled": True},
                 {"id": "plan", "disabled": True},
@@ -33,10 +32,33 @@ async def test_minimal_host_runs_without_optional_packages(tmp_path) -> None:
         statuses = {item.id: item for item in composition.plugins.statuses()}
         assert statuses["agents"].state.name == "ACTIVE"
         assert composition.context.get("agents") is not None
-        assert composition.context.get("inbox", strict=False) is None
-        assert "compaction" not in statuses
+        assert composition.context.get("inbox") is not None
+        assert statuses["compaction"].state.name == "ACTIVE"
+        commands = composition.context.get("commands").list()
+        assert {item["command"] for item in commands} >= {"/compact", "/compress-fast"}
     finally:
         await composition.close()
+        await composition.close()
+
+
+@pytest.mark.asyncio
+async def test_business_package_can_still_be_disabled(tmp_path) -> None:
+    """默认安装不等于强制执行：业务 Package 仍可通过配置禁用并清理自身行为。"""
+    composition = await build_composition(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "plugins": [{"id": "compaction", "enabled": False}],
+        }
+    )
+    try:
+        statuses = {item.id: item for item in composition.plugins.statuses()}
+        assert statuses["agents"].state.name == "ACTIVE"
+        assert "compaction" not in statuses
+        commands = composition.context.get("commands").list()
+        assert not {"/compact", "/compress-fast"}.intersection(
+            item["command"] for item in commands
+        )
+    finally:
         await composition.close()
 
 

@@ -6,7 +6,7 @@ from .hooks import (
     AGENT_BEFORE_REASONING_SPEC,
     AGENT_BEFORE_RUN_SPEC,
     AGENT_RUN_ERROR_SPEC,
-    AGENT_TURN_STOPPING_SPEC,
+    AGENT_STOP_DECISION_SPEC,
 )
 from .registry import AgentRegistry
 from .service import AgentService
@@ -16,7 +16,7 @@ __all__ = [
     "AGENT_BEFORE_REASONING_SPEC",
     "AGENT_BEFORE_RUN_SPEC",
     "AGENT_RUN_ERROR_SPEC",
-    "AGENT_TURN_STOPPING_SPEC",
+    "AGENT_STOP_DECISION_SPEC",
     "AgentDriver",
     "AgentRegistry",
     "AgentRegistryProtocol",

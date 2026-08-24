@@ -149,7 +149,6 @@ class TurnExecutor:
         system_prompt=None,
         hooks=None,
         agent_registry=None,
-        inbox=None,
     ) -> None:
         self._loop = loop
         self._sessions = sessions
@@ -160,10 +159,6 @@ class TurnExecutor:
         self._system_prompt = system_prompt
         self._hooks = hooks
         self._agent_registry = agent_registry
-        # Optional capability exposed to tools/Core Hook integration.  The
-        # Inbox package remains the owner of queue state; this reference is
-        # only a runtime capability and is never used for admission or claim.
-        self._inbox = inbox
 
     # ─── 驱动入口 ────────────────────────────────────────────
 
@@ -405,7 +400,6 @@ class TurnExecutor:
             "sessions": self._sessions,
             "bus": loop.bus,
             "agent": self._agents,
-            "inbox": self._inbox,
             "attachments": self._attachments,
             "llm_config": config.llm,
             "agent_profile": agent_profile,

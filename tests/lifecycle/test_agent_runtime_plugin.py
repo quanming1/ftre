@@ -41,18 +41,11 @@ async def test_gateway_endpoint_override_is_owned_by_websocket_plugin(tmp_path) 
 
 
 @pytest.mark.asyncio
-async def test_agent_service_stays_loadable_without_optional_inbox(tmp_path) -> None:
-    composition = await build_composition(
-        {
-            "sessions_dir": str(tmp_path / "sessions"),
-            "plugins": [{"id": "inbox", "disabled": True}],
-        }
-    )
-    try:
-        assert composition.context.get("inbox", strict=False) is None
-        assert composition.context.get("agents").driver is not None
-        assert composition.context.get("agent_runtime", strict=False) is None
-        status = {item.id: item for item in composition.plugins.statuses()}
-        assert status["agents"].state.name == "ACTIVE"
-    finally:
-        await composition.close()
+async def test_disabling_required_inbox_blocks_gateway_startup(tmp_path) -> None:
+    with pytest.raises(ValueError, match="required plugins cannot be disabled: inbox"):
+        await build_composition(
+            {
+                "sessions_dir": str(tmp_path / "sessions"),
+                "plugins": [{"id": "inbox", "disabled": True}],
+            }
+        )

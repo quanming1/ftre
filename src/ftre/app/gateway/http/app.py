@@ -18,7 +18,7 @@ def create_app(http_service, *, cors_origins: list[str] | None = None) -> FastAP
     """Materialize the frozen HttpService registry and apply desktop CORS policy."""
     # build_app() 把 HttpService 上已注册的路由（健康检查、WS 路径、各 owner 路由）
     # 物化成 FastAPI 实例；title/version 用于 OpenAPI 文档。
-    app = http_service.build_app(title="ftre", version="0.2.4")
+    app = http_service.build_app(title="ftre", version="0.3.0")
 
     # 桌面端开发服务器使用临时端口（如 localhost:48651），若 CORS 只放行裸
     # localhost Origin，浏览器会因缺少 Access-Control-Allow-Origin 响应头，

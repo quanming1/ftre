@@ -14,12 +14,12 @@ from typing import Any
 
 from ftre_agent_core.hooks import (
     AGENT_BEFORE_REASONING_SPEC,
-    AGENT_TURN_STOPPING_SPEC,
+    AGENT_STOP_DECISION_SPEC,
     BeforeReasoningPayload,
     BeforeReasoningResult,
     ContinueTurn,
+    StopDecisionPayload,
     StopTurn,
-    TurnStoppingPayload,
 )
 
 from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
@@ -30,7 +30,7 @@ AGENT_BEFORE_RUN = "agent/before-run"
 AGENT_AFTER_RUN = "agent/after-run"
 AGENT_RUN_ERROR = "agent/run-error"
 AGENT_BEFORE_REASONING = AGENT_BEFORE_REASONING_SPEC.name
-AGENT_TURN_STOPPING = AGENT_TURN_STOPPING_SPEC.name
+AGENT_STOP_DECISION = AGENT_STOP_DECISION_SPEC.name
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +162,7 @@ __all__ = [
     "AGENT_BEFORE_REASONING_SPEC",
     "AGENT_BEFORE_RUN_SPEC",
     "AGENT_RUN_ERROR_SPEC",
-    "AGENT_TURN_STOPPING_SPEC",
+    "AGENT_STOP_DECISION_SPEC",
     "AfterRunPayload",
     "AgentSubject",
     "AllowRun",
@@ -173,6 +173,6 @@ __all__ = [
     "RejectRun",
     "RequestErrorPayload",
     "RetryRequest",
+    "StopDecisionPayload",
     "StopTurn",
-    "TurnStoppingPayload",
 ]

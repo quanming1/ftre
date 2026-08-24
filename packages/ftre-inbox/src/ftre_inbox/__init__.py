@@ -1,4 +1,4 @@
-"""ftre 的可选持久消息 Inbox。
+"""ftre 的持久消息 Inbox Plugin。
 
 根模块只导出轻量模型，避免 ``import ftre_inbox`` 在独立 wheel 中反向加载 ftre
 Gateway。运行时 Service/Plugin 通过显式子模块导入，宿主仍可使用同一个稳定包名。

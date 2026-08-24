@@ -45,7 +45,8 @@ def test_turn_executor_receives_data_plane_services_explicitly() -> None:
         assert forbidden not in source
     assert "self._attachments" in source
     assert "self._system_prompt" in source
-    assert "self._inbox" in source
+    assert "self._inbox" not in source
+    assert '"inbox":' not in source
     assert '"sessions": self._sessions' in source
 
 

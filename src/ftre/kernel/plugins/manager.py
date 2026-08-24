@@ -65,6 +65,7 @@ class PluginManager:
             if isinstance(item, dict)
         }
         selected: list[PluginManifest] = []
+        required_disabled: list[str] = []
         for manifest in self.catalog.values():
             # 这里做的是“选择”，不是启动；入口解析和 Fiber 创建仍留在 Loader。
             override = overrides.get(manifest.id, {})
@@ -72,6 +73,8 @@ class PluginManager:
             if manifest.source.startswith("external:") and not override:
                 continue
             if disabled:
+                if manifest.required:
+                    required_disabled.append(manifest.id)
                 continue
             required = manifest.required or bool(override.get("required", False))
             selected.append(
@@ -86,6 +89,9 @@ class PluginManager:
                     config={**manifest.config, **dict(override.get("config") or {})},
                 )
             )
+        if required_disabled:
+            names = ", ".join(sorted(required_disabled))
+            raise ValueError(f"required plugins cannot be disabled: {names}")
         self._statuses = await self.loader.load(selected)
         return self._statuses
 

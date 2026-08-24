@@ -17,7 +17,7 @@ class InboundMessage:
     """已经归一化、准备交给 AgentService 执行的一条输入。
 
     这是 AgentService 的唯一数据面输入。它不包含 QueueItem、pending、容量或
-    客户端队列状态；可选 Inbox Package 负责决定何时生成它。
+    客户端队列状态；Inbox Plugin 负责决定何时生成它。
     """
 
     session_id: str

@@ -49,7 +49,8 @@ def test_core_agent_config_does_not_own_compaction_settings():
     assert (PACKAGE / "src" / "ftre_compaction" / "config.py").exists()
 
 
-def test_composition_does_not_enable_compaction_by_default():
+def test_composition_declares_compaction_in_default_package_set():
     source = (SRC / "app" / "gateway" / "composition.py").read_text(encoding="utf-8")
     assert "ftre.services.compaction" not in source
     assert "ftre.plugins.builtin.compaction" not in source
+    assert 'PluginManifest("compaction", "ftre_compaction.plugin:apply", "builtin", False, True' in source

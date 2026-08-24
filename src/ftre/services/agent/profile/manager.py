@@ -639,7 +639,6 @@ class AgentManager:
 
         # 构建 + 过滤工具
         registry = build_default_tools(
-            channel_manager=channel_manager,
             tool_registry=tool_registry,
             llm_config=c.llm,
         )

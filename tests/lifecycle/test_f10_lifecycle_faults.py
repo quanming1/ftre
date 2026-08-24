@@ -89,6 +89,10 @@ async def test_inbox_plugin_restart_replaces_closed_service_without_duplicate_li
         first = composition.context.get("inbox")
         assert first is not None and first._closed is False
         assert composition.context.get("agents").driver is not None
+        # Inbox 是多个业务 Package 的 Provider；先撤销消费者，再重启 Provider，
+        # 避免依赖图在同一事件循环中同时做 provider 替换和 consumer 重载。
+        for plugin_id in ("compaction", "team", "task", "messaging"):
+            assert await composition.plugins.unload(plugin_id) is True
         assert await composition.plugins.restart("inbox") is True
         second = composition.context.get("inbox")
         assert second is not first
@@ -105,6 +109,8 @@ async def test_inbox_plugin_unload_releases_worker_state_and_listener():
     composition = await build_composition({})
     service = composition.context.get("inbox")
     try:
+        for plugin_id in ("compaction", "team", "task", "messaging"):
+            assert await composition.plugins.unload(plugin_id) is True
         assert await composition.plugins.unload("inbox") is True
         assert service._closed is True
         assert service.repository._states == {}

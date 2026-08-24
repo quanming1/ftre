@@ -2,6 +2,54 @@
 
 ## [Unreleased] - 2026-08-23
 
+### F21 Command 接入异步化（已完成，未发布）
+
+- 修复 `/compact` 等慢命令占用全局 MessageBus inbound consumer，导致普通消息长时间停留
+  在客户端本地队列的问题。
+- Command Plugin 现在先返回接纳 ACK，再由 CommandService 后台执行命令；同一 request_id
+  在执行中或成功完成后不会重复执行，卸载时会取消后台任务。
+
+### F20 默认 Package 安装与装配（已完成，未发布）
+
+- `ftre` 默认发行依赖纳入 `packages/` 下的 `ftre-inbox`、`ftre-compaction`、
+  `ftre-messaging`、`ftre-task`、`ftre-team`；原有 extras 保留为裁剪安装兼容入口。
+- Composition 默认声明并装配五个 Package Plugin；压缩命令 `/compact`、`/compress-fast`
+  在默认 `/api/commands` 列表中可见，业务 Package 仍可通过配置禁用。
+
+### F19 Session Route Inject 边界收敛（已完成，未发布）
+
+- 新增 `session-routes` Plugin；Session Provider 只拥有 `sessions`/`session_events`，不再
+  通过 `ctx.get("agents"/"inbox")` 迟查跨 Service 依赖。
+- Session HTTP 路由改为显式 Inject、独立 Fiber Effect 和可逆 unload/restart；补充路由
+  生命周期门禁与三个业务 Tool Package 的最小行为回归。
+
+### F18 Tool Package 边界收敛（已完成，未发布）
+
+- 新增 `ftre-messaging`、`ftre-task`、`ftre-team` 三个独立 Tool Package，分别拥有
+  `send_message`、`task` 和 `team_*`/`wait_agent`；它们通过 `inject("inbox")` 使用队列，
+  不再由 Inbox Plugin 注册。
+- `ftre-inbox` 收窄为 Inbox Service、Queue Hook、Worker 和持久化 Owner；清理未被实际工具
+  消费的重复内存 TeamService。
+
+### F17 Inbox 基础 Owner 收敛（已完成，F18 纠偏）
+
+- `ftre-inbox` 在当前 Gateway Composition 中改为必选 Plugin，只拥有 durable queue、
+  admission/claim Hook、Worker 和持久化。
+- 删除 Agent Runtime 的 `_inbox` 和 `runtime_context["inbox"]` 死透传；AgentService 继续只处理
+  `InboundMessage`；Inbox 队列状态归 Inbox Plugin，业务 Tool 生命周期由各自 F18 Package 管理。
+- F16 的无 Inbox 启动结果保留为历史验收快照；当前部署需安装 `ftre[inbox]`。
+
+### F16/C3 Core Hook 面终局收敛（本地已验收）
+
+- Core Tool Hook 从四段收敛为 `tool/before`、`tool/after`，删除 around `tools/execute` 和
+  观察 `tools/result`；`agent/turn-stopping` 改为 `agent/stop-decision`，Core 版本提升到 0.2.0。
+- ftre Host、Inbox、Compaction 和测试迁移到新协议，全系统公共 Hook 从 17 项收敛为 15 项；
+  ftre 版本提升到 0.3.0，两个可选 Package 提升到 0.2.0。
+- 未安装 Inbox 时不登记失败的幽灵 Plugin；安装后通过 entry point 发现，Package 的
+  load/restart/unload、洁净 venv 和 Gateway/WebSocket smoke 均通过。
+- 两仓全量测试 485/238 passed，Core/Host/Package wheel 无测试、缓存和旧 Hook 引用。
+- Windows CLI 后台 Gateway 输出改用 ASCII 状态标记，避免 GBK 控制台编码异常。
+
 ### F15 Hook 语义收敛（本地预验收，CI 待触发）
 
 - 将 ftre Host Hook 从 22 项收敛为 10 项，全系统公共 Hook 固定为 17 项；Core 7 项契约冻结。

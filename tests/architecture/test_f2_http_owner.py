@@ -32,6 +32,8 @@ def test_http_routes_are_contributed_by_their_owner_plugins() -> None:
     assert "register_compat_snapshot" not in source
     assert "register_router" not in source
     session_plugin = (Path(__file__).parents[2] / "src" / "ftre" / "services" / "session" / "plugin.py").read_text(encoding="utf-8")
+    session_routes_plugin = (Path(__file__).parents[2] / "src" / "ftre" / "plugins" / "builtin" / "session_routes" / "plugin.py").read_text(encoding="utf-8")
     profile_plugin = (Path(__file__).parents[2] / "src" / "ftre" / "services" / "agent" / "profile" / "plugin.py").read_text(encoding="utf-8")
-    assert 'owner="sessions"' in session_plugin
+    assert 'owner="sessions"' in session_routes_plugin
+    assert 'ctx.http.register_router' not in session_plugin
     assert 'owner="agent-profiles"' in profile_plugin

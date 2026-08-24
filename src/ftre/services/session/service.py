@@ -159,7 +159,7 @@ class SessionService:
         return await self._repo.get_session(session_id)
 
     def has_session(self, session_id: str) -> bool:
-        """同步只读存在性查询，供可选 Inbox Package 做 admission 校验。"""
+        """同步只读存在性查询，供 Inbox Plugin 做 admission 校验。"""
         return self._repo.get_state(session_id) is not None
 
     def has_request_id(self, session_id: str, request_id: str) -> bool:

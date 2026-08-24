@@ -11,7 +11,7 @@ from ftre.services.agent.hooks import (
 )
 from ftre.services.session.hooks import SESSION_CREATED_SPEC
 from ftre.services.system_prompt.hooks import SYSTEM_PROMPT_ASSEMBLE_SPEC
-from ftre.services.tools.hooks import TOOLS_PRE_EXECUTE_SPEC
+from ftre.services.tools.hooks import TOOL_BEFORE_SPEC
 
 PUBLIC_HOOK_NAMES = {
     AGENT_AFTER_RUN_SPEC.name,
@@ -19,7 +19,7 @@ PUBLIC_HOOK_NAMES = {
     AGENT_BEFORE_RUN_SPEC.name,
     SESSION_CREATED_SPEC.name,
     SYSTEM_PROMPT_ASSEMBLE_SPEC.name,
-    TOOLS_PRE_EXECUTE_SPEC.name,
+    TOOL_BEFORE_SPEC.name,
 }
 
 ROOT = Path(__file__).parents[2]
@@ -32,7 +32,7 @@ def test_public_hook_names_exclude_legacy_filter_names():
     assert "agent/before_run" not in PUBLIC_HOOK_NAMES
     assert "agent/before-run" in PUBLIC_HOOK_NAMES
     assert "agent/before-reasoning" in PUBLIC_HOOK_NAMES
-    assert "tools/pre-execute" in PUBLIC_HOOK_NAMES
+    assert "tool/before" in PUBLIC_HOOK_NAMES
     assert "tool/pre-execute" not in PUBLIC_HOOK_NAMES
     assert "agent/" + "inbox/" + "claimed" not in PUBLIC_HOOK_NAMES
     assert "agent/inbox" not in PUBLIC_HOOK_NAMES

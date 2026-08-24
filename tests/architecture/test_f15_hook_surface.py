@@ -1,8 +1,7 @@
-"""F15 Hook 面基线与目标门禁。
+"""F16 Hook 面终局基线与目标门禁。
 
-该测试从实际导出的 ``HookSpec`` 读取事实，而不是复制生产表格。F15.1 先证明当前
-29 个名称唯一；F15.3 后保留 22 项中间快照，后续迁移批只需要更新目标断言，门禁会阻止
-旧 Hook 以 alias 或第二份 Spec 偷渡回来。
+该测试从实际导出的 ``HookSpec`` 读取事实，而不是复制生产表格。F16 证明 Core C3
+完成后全系统 15 个名称唯一，门禁会阻止旧 Hook 以 alias 或第二份 Spec 偷渡回来。
 """
 
 from __future__ import annotations
@@ -23,15 +22,13 @@ HOST_MODULES = (
 )
 PACKAGE_MODULES = ("ftre_inbox.hooks",)
 
-# F15.4 完成后的目标快照；Core 7 项与 Host/Package 10 项均必须唯一。
+# F16 完成后的目标快照；Core 5 项与 Host/Package 10 项均必须唯一。
 CURRENT_HOOK_NAMES = {
-    "tools/pre-execute",
-    "tools/execute",
-    "tools/post-execute",
-    "tools/result",
+    "tool/before",
+    "tool/after",
     "llm/stream",
     "agent/before-reasoning",
-    "agent/turn-stopping",
+    "agent/stop-decision",
     "agent/before-run",
     "agent/after-run",
     "agent/run-error",
@@ -44,14 +41,12 @@ CURRENT_HOOK_NAMES = {
     "inbox/status-changed",
 }
 
-F15_TARGET_HOOK_NAMES = {
-    "tools/pre-execute",
-    "tools/execute",
-    "tools/post-execute",
-    "tools/result",
+F16_TARGET_HOOK_NAMES = {
+    "tool/before",
+    "tool/after",
     "llm/stream",
     "agent/before-reasoning",
-    "agent/turn-stopping",
+    "agent/stop-decision",
     "agent/before-run",
     "agent/after-run",
     "agent/run-error",
@@ -95,28 +90,26 @@ def _fact_snapshot() -> dict[str, list[tuple[str, str, str, str]]]:
     return snapshot
 
 
-def test_f15_target_snapshot_has_exactly_17_unique_hook_names():
+def test_f16_target_snapshot_has_exactly_15_unique_hook_names():
     snapshot = _fact_snapshot()
     names = [item[0] for group in snapshot.values() for item in group]
     # Agent Host 为了稳定导入面重导出两项 Core Spec；事实门禁按唯一名称计数，
     # 不把同一个对象的公开重导出误判为第二个 Hook Owner。
-    assert len(set(names)) == 17
+    assert len(set(names)) == 15
     assert set(names) == CURRENT_HOOK_NAMES
 
 
-def test_f15_target_set_is_explicit_and_core_boundary_is_frozen():
-    assert len(F15_TARGET_HOOK_NAMES) == 17
+def test_f16_target_set_is_explicit_and_core_boundary_is_frozen():
+    assert len(F16_TARGET_HOOK_NAMES) == 15
     core_names = {
-        "tools/pre-execute",
-        "tools/execute",
-        "tools/post-execute",
-        "tools/result",
+        "tool/before",
+        "tool/after",
         "llm/stream",
         "agent/before-reasoning",
-        "agent/turn-stopping",
+        "agent/stop-decision",
     }
-    assert core_names <= F15_TARGET_HOOK_NAMES
-    assert len(F15_TARGET_HOOK_NAMES - core_names) == 10
+    assert core_names <= F16_TARGET_HOOK_NAMES
+    assert len(F16_TARGET_HOOK_NAMES - core_names) == 10
 
 
 @pytest.mark.parametrize("name", sorted(CURRENT_HOOK_NAMES))
@@ -133,7 +126,7 @@ def test_f15_target_does_not_reintroduce_unscoped_business_terms():
         "session/" + "status",
         "messaging/" + "inbound",
     }
-    assert forbidden.isdisjoint(F15_TARGET_HOOK_NAMES)
+    assert forbidden.isdisjoint(F16_TARGET_HOOK_NAMES)
 
 
 def test_production_hook_registration_uses_context_and_single_runtime_owner():

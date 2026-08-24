@@ -5,7 +5,28 @@ from cordis import FiberState
 from ftre_agent_core.tool import ToolRegistry
 
 from ftre.app.gateway.bootstrap import start_gateway
-from ftre.app.gateway.composition import build_composition
+from ftre.app.gateway.composition import build_composition, default_manifests
+
+
+def test_inbox_is_a_required_gateway_plugin() -> None:
+    """当前 Gateway 必须明确声明 Inbox；缺失时由 required 门禁阻止启动。"""
+
+    inbox = next(item for item in default_manifests() if item.id == "inbox")
+    assert inbox.required is True
+    assert inbox.default_enabled is True
+
+
+def test_default_manifest_includes_every_workspace_package() -> None:
+    """Composition 是默认装配事实源，五个仓内 Package 都必须在清单中出现。"""
+    manifests = {item.id: item for item in default_manifests()}
+    assert {
+        "inbox",
+        "compaction",
+        "messaging",
+        "task",
+        "team",
+    }.issubset(manifests)
+    assert manifests["compaction"].default_enabled is True
 from ftre.plugins.builtin.command import CommandService
 from ftre.services.config import ConfigService
 from ftre.services.messaging.bus import EventBus, MessageBusService

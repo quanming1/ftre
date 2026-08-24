@@ -1,6 +1,6 @@
 [project]
 name = "ftre"
-version = "0.2.6"
+version = "0.3.0"
 description = "ftre - AI 编程助手"
 requires-python = ">=3.12"
 license = {text = "MIT"}
@@ -8,12 +8,19 @@ dependencies = [
     # The official Cordis runtime is installed as the cordis-py distribution;
     # ftre intentionally does not ship a same-name fallback implementation.
     "cordis-py==0.4.0",
-    "ftre-agent-core>=0.1.2",
+    "ftre-agent-core>=0.2.0,<0.3.0",
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.20.0",
     "croniter>=2.0.0",
     "typer>=0.20.0,<1.0.0",
     "mcp>=1.0.0,<2.0",
+    # ftre 的默认发行组合：packages/ 下的每个独立 Package 都随 Host 安装。
+    # Package 仍保留独立 entry point 和生命周期，安装合并不等于 Owner 合并。
+    "ftre-inbox>=0.2.0,<0.3.0",
+    "ftre-compaction>=0.2.0,<0.3.0",
+    "ftre-messaging>=0.1.0,<0.2.0",
+    "ftre-task>=0.1.0,<0.2.0",
+    "ftre-team>=0.1.0,<0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -23,11 +30,19 @@ dev = [
     "httpx",
     "ruff",
 ]
-# 可选能力通过宿主 extras 表达，但不会把它们变成 ftre 的硬依赖。
-# 两个发行物仍以自己的 entry point 注册 Plugin；未安装时 Host 不导入它们。
-inbox = ["ftre-inbox>=0.1.0"]
-compaction = ["ftre-compaction>=0.1.0"]
-full = ["ftre-inbox>=0.1.0", "ftre-compaction>=0.1.0"]
+# 下面的 extras 保留按能力裁剪安装的兼容入口；默认安装已包含全部 Package。
+inbox = ["ftre-inbox>=0.2.0,<0.3.0"]
+messaging = ["ftre-messaging>=0.1.0,<0.2.0"]
+task = ["ftre-task>=0.1.0,<0.2.0"]
+team = ["ftre-team>=0.1.0,<0.2.0"]
+compaction = ["ftre-compaction>=0.2.0,<0.3.0"]
+full = [
+    "ftre-inbox>=0.2.0,<0.3.0",
+    "ftre-messaging>=0.1.0,<0.2.0",
+    "ftre-task>=0.1.0,<0.2.0",
+    "ftre-team>=0.1.0,<0.2.0",
+    "ftre-compaction>=0.2.0,<0.3.0",
+]
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -37,7 +52,14 @@ build-backend = "setuptools.build_meta"
 ftre = "ftre.main:app"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = [
+    "src",
+    "packages/ftre-inbox/src",
+    "packages/ftre-compaction/src",
+    "packages/ftre-messaging/src",
+    "packages/ftre-task/src",
+    "packages/ftre-team/src",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

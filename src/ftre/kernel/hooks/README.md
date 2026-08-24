@@ -49,7 +49,7 @@ Kernel 不维护业务 Hook 名称总表。哪个模块定义了语义，哪个�
 - Agent Hook 由 `services/agent/hooks.py` 定义；
 - Session Hook 由 `services/session/hooks.py` 定义；
 - Tool/LLM Hook 由 Agent Core 或对应 Service 定义；
-- Inbox、Compaction 等可选能力由各自 Package 定义。
+- Inbox、Compaction 等业务能力由各自 Package 定义；Kernel 不感知当前 Gateway 是否必选 Inbox。
 
 Kernel 只知道“如何调度一个合法的 HookSpec”，不应该出现 `compact`、`pending`、
 `session_title` 等产品判断。这样卸载一个可选 Plugin 时，核心不需要增加空实现或

@@ -97,7 +97,7 @@ class AgentLoop:
         self._injected_config = config
         self._event_loop: asyncio.AbstractEventLoop | None = None
         # 直接 AgentService.run 的 active guard。它只记录运行中的 Turn，绝不保存
-        # pending；队列由可选 ftre-inbox Package 独立拥有。
+        # pending；队列由独立 ftre-inbox Package 拥有。
         self._direct_tasks: dict[str, asyncio.Task] = {}
         self._direct_signals: dict[str, asyncio.Event] = {}
         # run_inbound 的父协程还要执行 after-turn/Inbox 唤醒；删除必须等这段
