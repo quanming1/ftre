@@ -155,3 +155,34 @@ def test_production_hook_registration_uses_context_and_single_runtime_owner():
                 assert "context" in keyword_names, path
                 assert "all_agent_scopes" in keyword_names, path
             assert "receipt.dispose" not in text, path
+
+
+def test_retired_host_hook_names_are_absent_from_production_sources():
+    """删除的时机不能只从导出表消失，生产源码也不得继续发布或引用它们。"""
+
+    root = Path(__file__).parents[2]
+    retired = (
+        "agent/before-turn",
+        "agent/after-turn",
+        "agent/request",
+        "agent/request-error",
+        "agent/turn-stopped",
+        "agent/created",
+        "agent/disposed",
+        "agent/error",
+        "agent/session-start",
+        "agent/status",
+        "session/event",
+        "session/flush",
+        "messaging/inbound",
+        "inbox/inserted",
+        "inbox/claimed",
+        "inbox/discarded",
+        "global_listener",
+    )
+    for source_root in (root / "src", root / "packages"):
+        for path in source_root.rglob("*.py"):
+            if "tests" in path.parts or "__pycache__" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8")
+            assert not any(name in text for name in retired), path

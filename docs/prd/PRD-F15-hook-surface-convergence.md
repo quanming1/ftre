@@ -514,6 +514,7 @@ F15 的稳定输入，架构测试必须防止 F15 误删或私自改名。
 | 2026-08-24 | 完成 F15.2/F15.3：Runtime 注册生命周期收敛；Agent Host 删除 lifecycle/request/turn-stopped 并迁移 before-run/after-run/run-error；Messaging inbound 改为 route；F15.3 后唯一快照 22 项 | 先清理无消费者和歧义的 Host Hook，不改变 Core 7 项；Session/Inbox 通知语义留到下一批验证 |
 | 2026-08-24 | 完成 F15.4：Session 只保留 awaited created/disposed；Inbox 只保留 before-claim/changed/status-changed 并将权威通知改为 awaited PARALLEL；删除 Session event/flush 和 Inbox 三种细粒度 mutation | 消除重复事实通知和 detached 状态推送，保证 Session 删除清理、队列 revision 与 WebSocket snapshot 的顺序可等待 |
 | 2026-08-24 | 完成 F15.5：Inbox、Compaction、Command、WebSocket、Session Title 全部迁移目标 Hook；生产扫描清零旧 Host 名、global_listener 和 receipt 二次 Effect | 让 Package/内置 Plugin 的实际消费者与 17 项目标表一致，卸载由 HookRuntime Fiber Owner 统一收尾 |
+| 2026-08-24 | 完成 F15.6/F15.7：补齐 in-flight unload、Session dispose 失败和队列恢复回归；构建并洁净安装 Inbox/Compaction wheel，验证 Core 7 项冻结 | 在最终清理前证明取消/生命周期/Package 发行边界，避免把本地构建目录或 Core sibling 依赖带入验收 |
 | 2026-08-24 | 用户授权按 F15.1-F15.9 串行执行；PRD 由草稿进入开发中，FR/AC 保持未勾选，验收以执行证据为准 | 开始按第二版 Host-only 17 Hook 方案落地，禁止提前宣称完成 |
 | 2026-08-24 | 增加 F15 七批执行提示词，并为后续 F16/Core C3 建立“先配对 PRD、后 Core、再 Host”的七批预案 | 将 PRD 转换为自包含、可验证、带注释/卫生/提交边界的 Agent 执行契约，避免一次性跨仓迁移和未发布 sibling 依赖 |
 | 2026-08-24 | 第二版：F15 从跨仓 29→15 调整为 Host-only 29→17；冻结 Core 7 个 Hook，将 Tool 4→2 和 turn-stopping 改名移入后续 F16/Core C3 候选；同步重写 FR、任务、AC、测试与风险 | 第一版同时修改 HookRuntime、Host、两个 Package 和 Core，交付面过大且会让 Host 债务清理被 Core 发版阻塞；第二版保留终局方向，但先完成单仓可独立验收的收敛 |

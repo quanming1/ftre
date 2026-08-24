@@ -916,13 +916,15 @@ stages:
             date: 2026-08-24
           - id: F15.6
             title: 取消、异常、in-flight、并发与状态顺序测试
-            status: in_progress
+            status: done
+            date: 2026-08-24
           - id: F15.7
             title: Package 独立发行与 Core 边界回归
-            status: todo
+            status: done
+            date: 2026-08-24
           - id: F15.8
             title: 文档、诊断、旧引用与工程卫生清理
-            status: todo
+            status: in_progress
           - id: F15.9
             title: 全量验收、执行报告与收尾
             status: todo

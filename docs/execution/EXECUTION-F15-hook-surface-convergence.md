@@ -104,3 +104,19 @@
   行为和可选卸载语义保持；Command、WebSocket、Session Title 均使用公开目标 Spec。
 - 生产扫描无旧 Host Hook、`global_listener`、receipt 二次 Effect 或 Package 私有跨 Owner import。
 - 证据：Package、启动、生命周期专项 85 passed；架构/契约专项 141 passed；ruff 通过。
+
+## F15.6 / F15.7 结果
+
+- 新增 `tests/lifecycle/test_f15_faults.py`：验证 awaited Session dispose listener、in-flight
+  unload drain 和 OBSERVE 失败脱敏；与既有 Inbox 取消、恢复、pending 去重测试共同覆盖故障矩阵。
+- 证据：F15 生命周期新增 2 passed；此前 lifecycle/startup/Package 85 passed、architecture/contracts
+  141 passed；ruff 通过。
+- Package wheel 已在 repo 外构建：
+  - `ftre_inbox-0.1.0-py3-none-any.whl`，SHA256
+    `2F9CCDF5268D7F57E8BB7AD28F538601795B39BDE4C180FE9D034BA7C899BF03`；
+  - `ftre_compaction-0.1.0-py3-none-any.whl`，SHA256
+    `CF735F6A105815DD189871FC25A749C3BD310F8126227D6B79CC42EED9DE086E`。
+- 两个 wheel 已安装到 `E:\tmp\ftre-f15-clean-site` 并从该路径成功 import；wheel 清单无
+  `__pycache__`、`.pyc`、tests 或 Host 私有源码。Core 7 项名称、DTO 和依赖未修改。
+- 构建生成的 package `build/` 与 `egg-info/` 已移出仓库至
+  `E:\tmp\ftre-f15-generated-trash`，工作区不保留生成物。
