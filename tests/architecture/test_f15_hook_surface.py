@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -138,3 +140,29 @@ def test_baseline_hook_names_have_one_domain_separator(name: str):
 def test_f15_target_does_not_reintroduce_unscoped_business_terms():
     forbidden = {"agent/request", "session/event", "session/status", "messaging/inbound"}
     assert forbidden.isdisjoint(F15_TARGET_HOOK_NAMES)
+
+
+def test_production_hook_registration_uses_context_and_single_runtime_owner():
+    """Hook Runtime 的 Context/Effect 规则由源码门禁保护，避免只靠代码审查。"""
+
+    root = Path(__file__).parents[2]
+    production_roots = (root / "src", root / "packages")
+    for source_root in production_roots:
+        for path in source_root.rglob("*.py"):
+            if "tests" in path.parts or "__pycache__" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8")
+            assert "global_listener" not in text, path
+            tree = ast.parse(text, filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr != "register":
+                    continue
+                receiver = ast.unparse(node.func.value)
+                if "hook_runtime" not in receiver:
+                    continue
+                keyword_names = {keyword.arg for keyword in node.keywords if keyword.arg}
+                assert "context" in keyword_names, path
+                assert "all_agent_scopes" in keyword_names, path
+            assert "receipt.dispose" not in text, path

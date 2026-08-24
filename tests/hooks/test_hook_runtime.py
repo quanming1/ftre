@@ -289,13 +289,12 @@ async def test_agent_scope_uses_context_identity_and_global_observer_sees_both()
         lambda _payload: seen.append("a"),
         owner="agent-a",
         context=agent_a,
-        scope="agent-a",
     )
     runtime.register(
         scoped,
         lambda _payload: seen.append("global"),
         owner="global-observer",
-        global_listener=True,
+        all_agent_scopes=True,
     )
     await runtime.dispatch(scoped, {}, context=agent_a)
     await runtime.dispatch(scoped, {}, context=agent_b)
@@ -329,14 +328,12 @@ async def test_scope_carrier_inherits_parent_and_rejects_rebuilt_same_id():
         lambda _payload: seen.append("parent"),
         owner="parent",
         context=parent_context,
-        scope="parent",
     )
     runtime.register(
         spec,
         lambda _payload: seen.append("child"),
         owner="child",
         context=child_context,
-        scope="child",
     )
     await runtime.dispatch(spec, {}, context=child_context)
     await runtime.dispatch(spec, {}, context=rebuilt_context)

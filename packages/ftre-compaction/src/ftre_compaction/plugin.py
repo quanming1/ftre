@@ -44,11 +44,8 @@ def apply(ctx: Context, config=None):
         ctx.provide("compaction", service)
         ctx.effect(lambda: service.close, label="ftre-compaction:close")
 
-    for index, receipt in enumerate(register_hooks(ctx, service)):
-        ctx.effect(
-            lambda receipt=receipt: receipt.dispose,
-            label=f"ftre-compaction:hook:{index}",
-        )
+    # HookRuntime 已把每个 receipt 绑定到当前 Plugin Fiber；Plugin 不重复注册 disposer。
+    register_hooks(ctx, service)
     for index, disposer in enumerate(register_commands(ctx.commands, service)):
         ctx.effect(
             lambda disposer=disposer: disposer,

@@ -78,9 +78,10 @@ def apply(ctx: Context, config=None):
         on_inbound,
         owner="commands",
         context=ctx,
-        global_listener=True,
+        all_agent_scopes=True,
     )
-    ctx.effect(lambda: receipt.dispose, label="hook:messaging:command")
+    # HookRuntime 已绑定当前 Plugin Fiber；不为同一 receipt 增加第二个 Effect。
+    del receipt
 
 
 def _accepted(message: BusMessage) -> IngressResult:

@@ -57,7 +57,17 @@
 |---|---|
 | `python -m pytest -q tests/architecture/test_f15_hook_surface.py` | 32 passed |
 | `git diff --check` | 通过 |
-| `python -m ruff check --no-cache src tests packages` | F15.1 收尾时重跑并记录 |
+| `python -m pytest -q tests/architecture tests/contracts tests/startup` | 160 passed |
+| `python -m pytest -q tests/hooks tests/contracts packages/ftre-inbox/tests packages/ftre-compaction/tests` | 100 passed |
+| `python -m ruff check --no-cache src tests packages` | 通过 |
+
+## F15.2 进行中
+
+- `HookRuntime.register` 的诊断 scope 不再由调用方传入，Agent 全局监听参数改为
+  `all_agent_scopes`；生产 Hook 注册必须显式传入 `context`。
+- Plugin 不再额外注册 `ctx.effect(...receipt.dispose...)`；Runtime 自己绑定 Fiber 生命周期。
+- 新增 AST 门禁，检查生产 `hook_runtime.register` 的 Context、all-agent 范围和重复 receipt disposer。
+- F15.2 仍待把关键 Session/Inbox Hook 从 EMIT 迁为 awaited PARALLEL，并补齐 in-flight unload 矩阵。
 
 ## 后续批次输入
 
@@ -65,4 +75,3 @@
 - F15.3 只能删除 Host Agent/Messaging 旧名；不得修改 Core 7 个 Hook。
 - F15.4 需要用 Barrier/Event 证明 Session dispose、Inbox revision 和 WebSocket 状态顺序。
 - F15.5 需要保留 `ftre-compaction` 的独立包边界，并处理执行前已有的注释改动而不覆盖它。
-

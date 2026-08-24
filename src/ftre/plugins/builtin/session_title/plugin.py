@@ -37,12 +37,10 @@ def apply(ctx: Context, config=None):
         on_prompt_assemble,
         owner="session-title",
         context=ctx,
-        global_listener=True,
+        all_agent_scopes=True,
     )
-    ctx.effect(
-        lambda: receipt.dispose,
-        label="hook:system-prompt:session-title",
-    )
+    # HookRuntime 已绑定当前 Plugin Fiber；不为同一 receipt 增加第二个 Effect。
+    del receipt
     ctx.effect(lambda: generator.close, label="session-title:close")
     disposer = ctx.system_prompt.register_section(
         PromptSection(

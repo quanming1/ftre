@@ -460,7 +460,7 @@ async def test_confirm_resume_uses_structured_prompt_hook():
         SYSTEM_PROMPT_ASSEMBLE_SPEC,
         inject,
         owner="test-prompt",
-        global_listener=True,
+        all_agent_scopes=True,
     )
 
     await _execute_command(executor, _confirm_inbound(approved=True))

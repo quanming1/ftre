@@ -896,10 +896,11 @@ stages:
         tasks:
           - id: F15.1
             title: Hook、发布者、监听者、Effect 与 Scope 事实基线
-            status: todo
+            status: done
+            date: 2026-08-24
           - id: F15.2
             title: HookRuntime awaited 语义与唯一 Effect Owner
-            status: todo
+            status: in_progress
           - id: F15.3
             title: Host Agent 与 Messaging Hook 删除改名
             status: todo

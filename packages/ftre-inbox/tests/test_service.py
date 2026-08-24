@@ -253,7 +253,7 @@ async def test_discard_hook_removes_only_explicit_candidate(tmp_path):
         INBOX_BEFORE_CLAIM_SPEC,
         policy,
         owner="test-policy",
-        global_listener=True,
+        all_agent_scopes=True,
     )
     await service.start()
     await service.followup(InboundMessage("s1", "drop", "ws", "drop"))

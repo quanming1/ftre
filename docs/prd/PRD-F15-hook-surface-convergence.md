@@ -510,6 +510,7 @@ F15 的稳定输入，架构测试必须防止 F15 误删或私自改名。
 
 | 日期 | 变更内容 | 理由 |
 |---|---|---|
+| 2026-08-24 | F15.1 基线建立并开始 F15.2：新增从真实 Spec 生成 29 项唯一清单的架构测试；生产注册改用 `all_agent_scopes`、不再传入诊断 scope，Plugin 删除 receipt 二次 Effect | 先把当前事实和生命周期 API 固定，避免后续 Hook 删除/改名时引入第二 Owner；Session/Inbox awaited 模式留给 F15.4 完成 |
 | 2026-08-24 | 用户授权按 F15.1-F15.9 串行执行；PRD 由草稿进入开发中，FR/AC 保持未勾选，验收以执行证据为准 | 开始按第二版 Host-only 17 Hook 方案落地，禁止提前宣称完成 |
 | 2026-08-24 | 增加 F15 七批执行提示词，并为后续 F16/Core C3 建立“先配对 PRD、后 Core、再 Host”的七批预案 | 将 PRD 转换为自包含、可验证、带注释/卫生/提交边界的 Agent 执行契约，避免一次性跨仓迁移和未发布 sibling 依赖 |
 | 2026-08-24 | 第二版：F15 从跨仓 29→15 调整为 Host-only 29→17；冻结 Core 7 个 Hook，将 Tool 4→2 和 turn-stopping 改名移入后续 F16/Core C3 候选；同步重写 FR、任务、AC、测试与风险 | 第一版同时修改 HookRuntime、Host、两个 Package 和 Core，交付面过大且会让 Host 债务清理被 Core 发版阻塞；第二版保留终局方向，但先完成单仓可独立验收的收敛 |

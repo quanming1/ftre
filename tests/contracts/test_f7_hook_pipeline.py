@@ -81,14 +81,14 @@ async def test_core_direct_tool_dispatch_pipeline_uses_cordis_runtime():
         seen.append(f"post:{payload.result.output}")
         return await next_()
 
-    runtime.register(TOOLS_PRE_EXECUTE_SPEC, pre, owner="policy", global_listener=True)
-    runtime.register(TOOLS_EXECUTE_SPEC, execute, owner="wrapper", global_listener=True)
-    runtime.register(TOOLS_POST_EXECUTE_SPEC, post, owner="audit", global_listener=True)
+    runtime.register(TOOLS_PRE_EXECUTE_SPEC, pre, owner="policy", all_agent_scopes=True)
+    runtime.register(TOOLS_EXECUTE_SPEC, execute, owner="wrapper", all_agent_scopes=True)
+    runtime.register(TOOLS_POST_EXECUTE_SPEC, post, owner="audit", all_agent_scopes=True)
     runtime.register(
         TOOLS_RESULT_SPEC,
         lambda payload: seen.append(f"result:{payload.result.output}"),
         owner="result",
-        global_listener=True,
+        all_agent_scopes=True,
     )
     call = ToolCallIdentity("call-1", "echo", "session-1", "turn-1", "default")
     payload = ToolPreExecutePayload(call, {"value": "original"}, asyncio.Event())
@@ -125,7 +125,7 @@ async def test_turn_stopping_core_directly_uses_ftre_runtime():
         await next_()
         return ContinueTurn("继续完成剩余工作", source="policy")
 
-    runtime.register(AGENT_TURN_STOPPING_SPEC, continue_work, owner="policy", global_listener=True)
+    runtime.register(AGENT_TURN_STOPPING_SPEC, continue_work, owner="policy", all_agent_scopes=True)
     agent = ReActAgent(model="fake", api_key="fake", hooks=runtime)
     state = RunState()
     state.runtime_context = {
@@ -160,7 +160,7 @@ async def test_structured_prompt_assembly_is_waterfall_replaceable():
         result = await next_()
         return type(result)(result.agent_id, result.session_id, result.workspace, result.contributions, result.text + "\n\npolicy")
 
-    runtime.register(SYSTEM_PROMPT_ASSEMBLE_SPEC, add_section, owner="policy", global_listener=True)
+    runtime.register(SYSTEM_PROMPT_ASSEMBLE_SPEC, add_section, owner="policy", all_agent_scopes=True)
     registry = AgentRegistry()
     registry.ensure("default")
     result = await runtime.dispatch(
