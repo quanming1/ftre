@@ -105,6 +105,10 @@ class AgentLoop:
         self._direct_completion_events: dict[str, asyncio.Event] = {}
         self._direct_parent_tasks: dict[str, asyncio.Task | None] = {}
         self._direct_reservations: set[str] = set()
+        # active Turn 结束后，Compaction 等维护 Hook 仍可能继续运行。这个集合
+        # 是 Agent Runtime 的最小维护状态，不保存队列或维护任务本身；它只让
+        # AgentService/Inbox 知道该 Session 在维护期间仍然 busy。
+        self._maintenance: dict[str, str] = {}
         build_tracer = getattr(traces, "build_tracer", None)
         self.tracer = build_tracer() if callable(build_tracer) else Tracer([])
 
@@ -174,11 +178,18 @@ class AgentLoop:
         return session_id in self._direct_tasks or session_id in self._direct_reservations
 
     def is_active_session(self, session_id: str) -> bool:
-        """只判断 AgentService active Turn，不读取任何 pending 队列。"""
-        return self.is_session_running(session_id) or session_id in self._direct_tasks
+        """判断 active Turn 或维护屏障，不读取任何 pending 队列。"""
+        return (
+            self.is_session_running(session_id)
+            or session_id in self._direct_tasks
+            or session_id in self._maintenance
+        )
 
     def get_session_status(self, session_id: str) -> str:
         """返回 Agent active Turn 的公开 activity；不读取 Inbox pending。"""
+        maintenance = self._maintenance.get(session_id)
+        if maintenance is not None:
+            return maintenance
         if session_id in self._direct_tasks:
             return "running"
         return "idle"
@@ -370,12 +381,17 @@ class AgentLoop:
                             status=(outcome.status if "outcome" in locals() else "cancelled"),
                             cancellation=cancellation,
                             channel_id=message.channel_id,
+                            config=config,
+                            set_maintenance=self._set_maintenance_status(session_id),
                         ),
                         agent_id=metadata.agent_id or "default",
                     )
                 except Exception:
                     logger.exception("[agent-loop] direct agent/after-run failed session=%s", session_id)
             try:
+                # 维护 Hook 已经等待完成；这里清掉兜底状态后再对外发布 idle，
+                # 防止异常 Hook 留下一个永远 compacting 的 Session。
+                self._maintenance.pop(session_id, None)
                 await self._publish_session_status_async(session_id, "idle")
             except Exception:
                 logger.debug("[agent-loop] status idle publish failed", exc_info=True)
@@ -479,6 +495,7 @@ class AgentLoop:
         self._direct_completion_events.clear()
         self._direct_parent_tasks.clear()
         self._direct_reservations.clear()
+        self._maintenance.clear()
         await self.completions.close()
 
     def _load_current_config(self) -> AgentConfig:
@@ -590,3 +607,26 @@ class AgentLoop:
                 data={"session_id": session_id, "status": status},
             )
         )
+
+    def _set_maintenance_status(self, session_id: str):
+        """Return the callback used by after-run maintenance Hooks.
+
+        ``AgentLoop`` 先结束 active Turn，再等待 ``agent/after-run``。如果不把
+        这段等待显式标记为 busy，Inbox 会误以为 Session 已空闲并尝试领取下一条
+        next-turn。压缩 Package 仍拥有实际压缩任务；这里仅维护公开状态和并发
+        屏障，不把压缩实现带回 Agent Runtime。
+        """
+
+        async def set_maintenance(active: bool, reason: str) -> None:
+            if active:
+                # 当前公开维护状态只有 compacting；reason 保留给日志和未来的
+                # 其它维护 Hook，不把任意字符串泄漏成新的状态协议。
+                del reason
+                previous = self._maintenance.get(session_id)
+                self._maintenance[session_id] = "compacting"
+                if previous != "compacting":
+                    await self._publish_session_status_async(session_id, "compacting")
+                return
+            self._maintenance.pop(session_id, None)
+
+        return set_maintenance
