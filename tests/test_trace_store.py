@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from ftre.services.observability.trace.store import (
+from ftre.plugins.builtin.trace.store import (
     SQLiteTraceExporter,
     get_trace,
     get_trace_run,

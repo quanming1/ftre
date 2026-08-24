@@ -254,17 +254,17 @@ infrastructure implementations
 
 | 类别 | 代表位置 | 处理策略 |
 |---|---|---|
-| Loop 间接 Service 引用 | `services/command/builtin.py` | 迁移到直接注入公开 Service |
+| Loop 间接 Service 引用 | `plugins/builtin/command/builtin.py` | 迁移到直接注入公开 Service |
 | TurnExecutor 穿透 Session | `services/agent_loop/runtime/loop/turn_executor.py` | 由 Provider/Runtime 明确传递窄依赖，删除 `loop.session_manager` 读取 |
 | 手工 runtime 组装 | `app/gateway/bootstrap.py`、`services/agent_loop/provider.py` | 保留 Composition 装配职责，删除重复构造和动态回退 |
 | `Any` Service 聚合 | `AgentRuntimeServices` | 改为公开 Contract/Protocol 或稳定 Service 类型 |
 | 必选依赖宽松读取 | 多个 `plugin.py` 的 `ctx.get(..., strict=False)` | 必选依赖改为 Inject 失败诊断，可选依赖单独标注 |
-| Feature 跨层具体实现 import | `features/mcp/adapter.py`、`features/plan/plugin.py` 等 | 改为公开 Service/Contract；保留纯数据类型直连 |
+| Feature 跨层具体实现 import | `plugins/builtin/mcp/adapter.py`、`plugins/builtin/plan/plugin.py` 等 | 改为公开 Service/Contract；保留纯数据类型直连 |
 | 工具直接调用 AgentLoop | `tools/builtin/task.py`、`team.py` 等 | 改用 `AgentService`/公开 Driver |
 | Tool 旧 Session 注入键 | `Injected("session_manager")` 与公开 `sessions` Service key 不一致 | 统一为 `Injected("sessions")`，运行时上下文只发布公开 Service key |
 | 全局路径/配置读取 | Agent config、Trace、MCP 连接等 | 通过 Config/Filesystem Service 注入 |
 | 动态兼容与死代码 | `getattr`、旧 facade、空目录、缓存 | 清理并增加架构门禁 |
-| Title 后台线程 | `services/session/title/generator.py` 守护线程无 Fiber disposer | 增加 stop flag、worker registry、bounded join，并绑定 `ctx.effect(generator.close)` |
+| Title 后台线程 | `plugins/builtin/session_title/generator.py` 守护线程无 Fiber disposer | 增加 stop flag、worker registry、bounded join，并绑定 `ctx.effect(generator.close)` |
 | 纯图片编码转换 | `services/attachment/codec.py` 被 Session 消息归一化直接调用 | 明确保留为无状态 Infrastructure Helper；它不持有 Service、路径或全局状态，不承担落盘 Owner |
 
 此表是初始基线，F9.1 扫描后必须补充文件、Owner、风险和验收测试。
@@ -324,7 +324,7 @@ infrastructure implementations
 ## 7. 验收标准
 
 - [x] **AC1：依赖图完整**
-  - 所有 `services/`、`features/`、`app/` 的跨模块依赖都有 Owner、来源、目标、状态
+  - 所有 `services/`、`plugins/builtin/`、`app/` 的跨模块依赖都有 Owner、来源、目标、状态
     和测试证据。
 
 - [x] **AC2：Inject/Provide 门禁**

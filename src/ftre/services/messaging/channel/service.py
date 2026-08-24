@@ -1,4 +1,8 @@
-"""Public channel registry facade with lifecycle-aware registration."""
+"""Channel Service：协议通道注册和生命周期门面。
+
+Service 不解析 WebSocket 帧、不消费 Agent 事件；具体协议由 providers 实现，
+这里仅保证注册唯一、启动/停止顺序和发送目标明确。
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,7 @@ from .manager import ChannelManager
 
 
 class ChannelService:
-    """Own channel registration while leaving protocol behavior to providers."""
+    """拥有 Channel 注册表，协议行为留给各 Provider。"""
     key = "channels"
 
     def __init__(self, manager: ChannelManager) -> None:
@@ -52,5 +56,6 @@ class ChannelService:
         await channel.send(message)
 
     def snapshot(self) -> tuple[dict[str, str], ...]:
+        """返回通道注册诊断，不暴露 manager 内部可变字典。"""
         channels = getattr(self.manager, "_channels", {})
         return tuple({"channel_id": key, "owner": "builtin", "state": "registered"} for key in channels)

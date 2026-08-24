@@ -18,14 +18,14 @@ send_message 工具 - 向另一个 session 发送一条消息
 """
 
 import asyncio
+import uuid
 
 from ftre_agent_core.message import AssistantMsg
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
+from ftre.services.agent.contracts import InboundMessage
 from ftre.services.messaging.bus import BusMessage
-from ftre.services.messaging.channel.providers.subagent.channel import (
-    SUBAGENT_CHANNEL_ID,
-)
+from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
 
 # kind=invoke 时拼到 content 头部的来源标注模板
 _INVOKE_PREFIX_TEMPLATE = (
@@ -47,6 +47,7 @@ def create_send_message_tool(channel_manager) -> Tool:
         bus=Injected("bus"),  # noqa: B008 - MessageBus transport context
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
+        inbox=Injected("inbox"),  # noqa: B008 - optional ftre-inbox Package
     ) -> str:
         # ── 通用前置校验 ────────────────────────────────────
         if caller_channel == SUBAGENT_CHANNEL_ID:
@@ -59,6 +60,8 @@ def create_send_message_tool(channel_manager) -> Tool:
             return f"[error] 频道不存在: {channel_id}"
         if event_loop is None:
             return "[error] runtime context 未注入完整"
+        if inbox is None:
+            return "[error] ftre-inbox 未启用，无法投递异步消息"
         if channel_id == caller_channel and session_id == caller_session:
             return "[error] 不能给当前 session 发消息（直接在回复中输出即可）"
         if kind not in ("notify", "invoke"):
@@ -90,16 +93,14 @@ def create_send_message_tool(channel_manager) -> Tool:
                 content=content,
                 caller_channel=caller_channel or "",
                 caller_session=caller_session or "",
+                inbox=inbox,
             )
             if not ack.accepted:
                 return (
                     f"[error] 目标消息队列已满: {channel_id}:{session_id} "
                     f"(reason={ack.error})"
                 )
-            return (
-                f"已排队 {channel_id}:{session_id} "
-                f"(request_id={ack.request_id}, position={ack.queue_position})"
-            )
+            return f"已提交 {channel_id}:{session_id} (request_id={ack.request_id})"
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 发送失败: {type(e).__name__}: {e}"
 
@@ -206,6 +207,7 @@ def _do_invoke(
     content: str,
     caller_channel: str,
     caller_session: str,
+    inbox=None,
 ) -> object:
     # 来源归因：唯一让被唤起 agent 知道"这是别的 session 发来的"的方式，
     # 是把出处写进它能看见的内容里（LLM 不会读 metadata）。
@@ -214,22 +216,17 @@ def _do_invoke(
         from_session=caller_session or "(unknown)",
         content=content,
     )
-    data = {
-        "content": prefixed_content,
-        "session_id": target_session_id,
-    }
     if agent_service is None:
         raise RuntimeError("runtime context 未注入 agent")
-    inbound = BusMessage(
-        type="user_message",
-        from_channel=target_channel.channel_id,
-        from_session=target_session_id,
-        to_channel=target_channel.channel_id,
-        to_session=target_session_id,
-        data=data,
-    )
-    # AgentService.submit 返回时 state.json 的 Mailbox 已经原子落盘；这才是 invoke 的
-    # "发送成功"边界，而不是仅仅放进 EventBus 内存队列。
-    return asyncio.run_coroutine_threadsafe(
-        agent_service.submit(inbound), event_loop
-    ).result(timeout=10)
+    if inbox is not None:
+        message = InboundMessage(
+            session_id=target_session_id,
+            request_id=f"invoke_{uuid.uuid4().hex}",
+            channel_id=target_channel.channel_id,
+            content=prefixed_content,
+            source="plugin",
+        )
+        return asyncio.run_coroutine_threadsafe(
+            inbox.followup(message), event_loop
+        ).result(timeout=10)
+    raise RuntimeError("ftre-inbox 未启用")

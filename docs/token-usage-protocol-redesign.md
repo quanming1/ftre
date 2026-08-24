@@ -1045,9 +1045,9 @@ E:\binn\ftre-desktop
 packages/renderer/src/services/api.ts
 packages/renderer/src/stores/chat.ts
 packages/renderer/src/stores/session.ts
-packages/renderer/src/features/chat/AssistantMessage.tsx
-packages/renderer/src/features/chat/ChatMessageList.tsx
-packages/renderer/src/features/chat/TokenRing.tsx
+packages/renderer/src/plugins/builtin/chat/AssistantMessage.tsx
+packages/renderer/src/plugins/builtin/chat/ChatMessageList.tsx
+packages/renderer/src/plugins/builtin/chat/TokenRing.tsx
 packages/renderer/src/stores/chat.protocol.test.ts
 packages/renderer/src/stores/session.test.ts
 ```

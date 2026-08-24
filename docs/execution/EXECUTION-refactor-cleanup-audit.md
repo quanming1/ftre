@@ -74,13 +74,13 @@ Gateway smoke                                    → GATEWAY START OK / GATEWAY 
 | `src/ftre/app/gateway/http/server.py` | 未被 App、Composition 或测试引用；监听生命周期由外部 Gateway Host 管理 |
 | `src/ftre/app/gateway/http/server_plugin.py` | 无 manifest/入口引用，属于未启用的旧 Server Plugin |
 | `src/ftre/app/gateway/http/service_plugin.py` | 默认清单已使用 `services.http.plugin:apply`，该文件只是旧入口 |
-| `src/ftre/features/mcp/private.py` | `private_scope` 无调用方；MCP 私有配置由 Feature Service 处理 |
-| `src/ftre/features/skill/store.py` | 仅重导出 `SkillService`，真实 Owner 是 `features/skill/service.py` |
+| `src/ftre/plugins/builtin/mcp/private.py` | `private_scope` 无调用方；MCP 私有配置由 Feature Service 处理 |
+| `src/ftre/plugins/builtin/skill/store.py` | 仅重导出 `SkillService`，真实 Owner 是 `plugins/builtin/skill/service.py` |
 | `src/ftre/services/agent/events.py` | `AgentLifecycleEvent` 无调用方，语义 Hook 已由 `services/agent/hooks.py` 提供 |
 | `src/ftre/services/session/compat.py` | `SessionManager` 兼容别名无调用方，旧 Session 入口已退役 |
 | `src/ftre/services/system_prompt/base.md` | 只有 HTML 注释，却会被注册进 Prompt；应用基座实际由 `services/agent/config.py` 加载 |
 | `src/ftre/services/config/models.py` | `ConfigValue` 无消费者、未公开导出 |
-| `src/ftre/services/session/title/config.py` | `TitleConfig` 无消费者；真实配置模型是 `generator.py` 的 `TitleGenConfig` |
+| `src/ftre/plugins/builtin/session_title/config.py` | `TitleConfig` 无消费者；真实配置模型是 `generator.py` 的 `TitleGenConfig` |
 
 同时删除：
 
@@ -94,15 +94,15 @@ Gateway smoke                                    → GATEWAY START OK / GATEWAY 
 - Session/Trace/JSON 数据格式的读取迁移逻辑，负责已有用户数据恢复。
 - `WebSocketChannel` 的隔离测试 Bus fallback，只在未提供完整 Durable Service 的测试场景使用。
 - 工具、MCP、附件和进程管理中的异常边界与系统 PATH fallback，属于运行时容错而非模块兼容壳。
-- `features/schedule/channel.py`、`store.py` 和 `tool.py`，分别承担 Cron Channel、持久化 Store
-  和 Tool factory，均由 `features/schedule/plugin.py` 的动态能力组合使用。
+- `plugins/builtin/schedule/channel.py`、`store.py` 和 `tool.py`，分别承担 Cron Channel、持久化 Store
+  和 Tool factory，均由 `plugins/builtin/schedule/plugin.py` 的动态能力组合使用。
 
 ### 4.1 已核验但不在本轮删除范围的债务
 
 | 位置 | 证据 | 处理结论 |
 |---|---|---|
 | `services/messaging/channel/providers/{websocket,subagent}/plugin.py` | 没有默认 manifest 引用；`bootstrap.py` 在真实 Gateway 路径手工构造 Channel | 不是无引用安全删除项，保留并列为后续“Channel Provider 单一入口”重构 |
-| `services/messaging/channel/providers/websocket/channel.py` | 真实负责 WS 协议、连接 attach、快照和附件校验，623 行 | 真实 Owner，不作为死代码删除；后续可拆为协议/连接/附件适配子模块 |
+| `plugins/builtin/channels/websocket/channel.py` | 真实负责 WS 协议、连接 attach、快照和附件校验，623 行 | 真实 Owner，不作为死代码删除；后续可拆为协议/连接/附件适配子模块 |
 | `services/session/service.py`、`persistence/repository.py` | 承担 Session CRUD、Mailbox admission、持久化和生命周期，均被 Runtime/Router 使用 | 真实数据面 Owner；后续按职责拆分，不做机械切文件 |
 | `services/tools/builtin/team.py` | Team 工具拥有多条用户可调用行为和 Agent/Session 注入 | 真实行为 Owner；后续可按 Tool family 拆分 |
 | `src/ftre/system_prompt.md` | 被 `services/agent/config.py` 唯一加载，内容是实际系统提示词 | 保留；与已删除的无效 `services/system_prompt/base.md` 不是同一资源 |
@@ -124,7 +124,7 @@ Gateway smoke                                    → GATEWAY START OK / GATEWAY 
 删除后专项验证：
 
 ```text
-python -m pytest -q tests/architecture tests/startup tests/lifecycle tests/features/schedule
+python -m pytest -q tests/architecture tests/startup tests/lifecycle tests/plugins/builtin/schedule
 69 passed
 python -m ruff check --no-cache src tests
 All checks passed!
@@ -182,7 +182,7 @@ python -m vulture src/ftre --min-confidence 90: 无高置信度死代码
 
 | 检查项 | 结果 |
 |---|---|
-| 核心压缩 Owner | `src/ftre/services/compaction`、`src/ftre/features/compaction`、`ContextGate` 均不存在 |
+| 核心压缩 Owner | `src/ftre/services/compaction`、`src/ftre/plugins/builtin/compaction`、`ContextGate` 均不存在 |
 | 可选压缩 Owner | `packages/ftre-compaction/src/ftre_compaction` 唯一提供 Service、三条 Hook 和两个命令 |
 | Agent 数据面 | `SessionLane` 仅保留 `peek → Hook → claim → Turn → after-turn`，未导入压缩实现 |
 | 旧生产 import | AST 复核 `ftre.plugin/agent/session/bus/channel/command/tools/api/config/mcp`：0 条 |
@@ -234,3 +234,138 @@ inject 表达仍是独立后置项，不影响本轮代码、生命周期和质�
 - 清理没有实际消费者的历史 consolidation_ratio、idle_compaction 和 silent 配置示例，
   避免继续承诺不存在的行为；
 - 新增配置解析、核心 Owner 门禁和包级中文说明测试。
+
+## F12 审计复审（2026-08-23）
+
+### 范围与边界
+
+- 仓库：`E:\ftre`；当前分支：`develop`。
+- 只修改 ftre 仓库源码、测试和架构文档；未修改桌面端、`E:\ftre-agent-core`、
+  `E:\cordis-py` 或用户 `C:\Users\蒋全明\.ftre` 数据。
+- 工作区在审计开始前已经包含 F12 的累计未提交改动和多个用户生成的 GitHub 临时
+  文件；本轮不执行 commit、merge、push、release，也不删除这些不在审计范围内的文件。
+
+### Owner、引用和生命周期结论
+
+| 检查项 | 结果 |
+|---|---|
+| 旧 ftre 数据面包/模块 | `src/ftre/plugin`、`agent`、`session`、`bus`、`channel`、`command`、`tools`、`api`、`config`、`mcp` 均不存在；生产 AST 未发现旧 import |
+| Inbox Owner | `packages/ftre-inbox` 唯一拥有 QueueItem、双队列、Repository、worker、claim 和 wire snapshot |
+| Agent/Turn 边界 | `AgentService` 只执行 `InboundMessage`；TurnExecutor 的 Inbox 依赖改为 Provider 显式传入，不再从 AgentLoop `getattr` 查找 |
+| Plugin 必选依赖 | Inbox Plugin 改用声明的 `sessions`、`agents`、`hook_runtime` 句柄；去除宽松依赖查找 |
+| unload/restart | Inbox close 取消 worker、取消 receipt，并清理 agent、Hook Runtime、snapshot/status/before-claim 回调；Hook Runtime 绑定增加 disposer |
+| 历史文档 | `AGENTS.md`、`docs/prd/README.md` 明确 F12 当前契约；A/B 的 SessionLane/Mailbox 图标为历史记录，不再作为当前 Owner |
+
+### 本轮修改
+
+1. 修复 `ftre-inbox` unload/restart 的外部引用泄漏，避免旧 Composition、Bus、Session 和
+   HookRuntime 被闭包保活。
+2. 将 TurnExecutor 的 Inbox runtime capability 改为显式构造依赖，并增加 F9 架构门禁与
+   测试夹具声明。
+3. 清理当前架构文档中把旧 SessionLane/Mailbox 描述成运行契约的歧义。
+4. 盘点并准备清理 `packages/ftre-inbox/build`、`__pycache__` 和测试缓存；不触碰用户临时文件。
+
+### 复审验证
+
+```text
+python -m pytest -q packages/ftre-inbox/tests tests/architecture/test_f9_service_injection.py tests/lifecycle/test_f10_lifecycle_faults.py tests/architecture/test_f12_inbox_boundaries.py
+→ 37 passed
+
+python -m pytest -q
+→ 418 passed（修复测试夹具后）
+
+python -m ruff check --no-cache src tests packages/ftre-inbox/src packages/ftre-inbox/tests packages/ftre-compaction/src packages/ftre-compaction/tests
+→ All checks passed
+
+python -m vulture src/ftre packages/ftre-inbox/src packages/ftre-compaction/src --min-confidence 90
+→ 无高置信度死代码
+
+python -c "import yaml; yaml.safe_load(open('docs/TODO.yaml', encoding='utf-8')); print('TODO YAML OK')"
+→ TODO YAML OK
+
+python -m pip wheel --no-deps --no-cache-dir --wheel-dir E:\ftre\.audit-wheel packages/ftre-inbox
+→ ftre_inbox-0.1.0-py3-none-any.whl
+
+Gateway smoke（start_gateway → close）
+→ GATEWAY START OK / GATEWAY CLOSE OK
+
+git diff --check
+→ 通过
+```
+
+### 生成物与最终状态
+
+测试和构建会重新生成缓存；必须在最后一次测试后删除并复核：`__pycache__`、`.pyc`、
+`.pytest_cache`、`.ruff_cache`、`build`、`dist` 和 `*.egg-info`。审计结束时源码/测试/包
+范围内应为 0 个；当前 Git 工作区仍不干净，这是审计开始前已存在的 F12 累计修改和用户
+临时文件造成的，不能通过删除或重置来伪造干净状态。
+
+### 当时复审记录
+
+- F12/C2 当时仍等待独立 Core Step Hook 授权；该项已在后续跨仓库阶段完成，见下方最新复审。
+- F6.12 cordis-py PyPI 发行物切换仍按 TODO 保持 todo，属于用户明确后置的独立阶段。
+
+## 最新复审：F12 Inbox + C2 before-reasoning（2026-08-23）
+
+### 范围与边界
+
+- `E:\ftre`：`feature/F12-agent-before-reasoning`，F12 Inbox、Hook 命名、WebSocket
+  endpoint、PRD/TODO/执行报告和后端测试。
+- `E:\ftre-agent-core`：`feature/C2-agent-before-reasoning`，Core
+  `agent/before-reasoning` 契约、ReAct 调用点、测试和版本依赖。
+- 未修改桌面端 `E:\binn\ftre-desktop`、`E:\cordis-py` 或用户运行数据；未执行
+  commit、push、merge、release。
+
+### Owner 迁移表
+
+| 旧位置/入口 | 新 Owner | 删除/迁移证据 |
+|---|---|---|
+| `agent/pre-step` / `AgentStepPayload` | ftre `agent/before-turn`：一次 InboundMessage 的 Turn 准入 | 运行时代码与测试已无旧符号；`tests/architecture/test_f6_hook_boundaries.py` 锁定新名称 |
+| Core 缺失的 active Step Hook | Core `agent/before-reasoning`：每次 LLM Reasoning 前 | `hooks.py` Spec + `react_runner.py` 调用点；Core/ftre active-steer 集成通过 |
+| Session `mailbox.pending` / `SessionLane` | `packages/ftre-inbox`：Repository、双队列、worker、claim、wire snapshot | `tests/architecture/test_f12_inbox_boundaries.py`；旧 mailbox runtime tree 无 Python 文件 |
+| SessionService mailbox Owner | SessionService 只拥有 Session/Msg 历史；InboxService 拥有 pending | Service 文档、Repository 迁移测试和唯一 Owner 架构门禁 |
+
+### 生命周期与入口审计
+
+- Composition Root 仍只有 `src/ftre/app/gateway/composition.py`；运行时由
+  `bootstrap.py` 统一接线并逆序关闭 AgentLoop、ChannelManager、Composition、Session。
+- Inbox Plugin 的 worker、Hook listener、snapshot/status 回调和 Agent 引用均绑定
+  close/effect；Inbox close 会取消 worker/receipt 并清空外部回调。重复或已完成的
+  `next-turn` request 不再新建无法完成的 receipt，`steer`/`inject` 不创建 Turn receipt。
+- AgentLoop shutdown 会关闭 CompletionRegistry，清空 waiter/cache 并给 in-flight waiter
+  明确的 `RuntimeError`，避免进程关闭后悬挂协程。
+- Core 不持有 Plugin 注册表、QueueItem、Session 或 Inbox；Hook Dispatcher、scope 和
+  failure policy 由宿主提供。
+- Gateway runtime 启动、取消和清理 smoke 通过；真实 FastAPI WebSocket endpoint 覆盖
+  attach、queue/steer prompt、edit、remove、cancel、reconnect。
+
+### 验证与清理证据
+
+```text
+ftre:             python -m pytest -q                       -> 425 passed
+ftre-agent-core:  python -m pytest -q                       -> 238 passed
+两仓库:           python -m ruff check --no-cache ...       -> All checks passed
+两仓库:           git diff --check                           -> passed
+WebSocket:        tests/startup/test_f12_ws_smoke.py         -> passed
+Active steer:     packages/ftre-inbox/tests/test_plugin_hook.py -> passed
+```
+
+- 最终搜索：运行时代码中无 `AGENT_PRE_STEP`、`AgentStepPayload`、`ContinueStep`、
+  `RejectStep` 或 `agent/pre-step`；历史 PRD/执行记录中的引用均保留在历史说明或变更记录中。
+- 测试基线文件已从误导性的 `test_session_lane.py` 重命名为
+  `tests/test_inbox_service.py`，内容仍覆盖迁移后的 Inbox 行为。
+- Compaction 回归测试和 Inbox README/test 文档已移除当前语境中的旧
+  `SessionLane`/`CompactManager` Owner 名称；`legacy_mailbox` 仅保留在一次性迁移边界。
+- 已确认并删除仓库根目录未跟踪的 GitHub review 临时文件：`gh-pr*.json`、
+  `gh-reviews*.json/txt`、`gr.json`、`pr1505_reviews.json`、`tmp_body.txt`。
+- 最后一次测试后清理 `__pycache__`、`.pyc`、`.pytest_cache`、`.ruff_cache`、`build`、
+  `dist`、`*.egg-info`；两个仓库剩余数量均为 **0**；源码范围空目录为 **0**。
+- 重新构建独立包：`ftre_inbox-0.1.0-py3-none-any.whl` 与
+  `ftre_compaction-0.1.0-py3-none-any.whl` 均成功生成。
+
+### 最终状态
+
+- F12 与 C2 PRD：已验收；TODO 阶段和任务：done；CHANGELOG/执行报告已同步。
+- F6.12 cordis-py PyPI 发布仍是独立 todo，不属于本轮审计范围。
+- 工作区仍不干净：包含此前累计的用户改动和本轮实现，且按仓库规则未擅自提交或
+  push；这不是通过删除或 reset 伪造的“干净”状态。

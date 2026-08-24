@@ -19,7 +19,7 @@
 当前上下文压缩的真实实现位于：
 
 ```text
-features/compaction/service.py → CompactionService
+plugins/builtin/compaction/service.py → CompactionService
 services/compaction/contracts.py → CompactionPort
 ```
 
@@ -40,7 +40,7 @@ ftre 当前只有一个压缩实现的情况引入了额外概念和跨层跳转
 ```text
 services/compaction/service.py → CompactionService（唯一真实实现）
 services/compaction/plugin.py  → 创建并 provide("compaction")
-features/compaction/plugin.py  → 只注册 compaction 相关 Hook
+plugins/builtin/compaction/plugin.py  → 只注册 compaction 相关 Hook
 ```
 
 完成后：
@@ -70,7 +70,7 @@ ftre 的公共 Service，负责压缩任务的状态、并发、LLM 摘要、快
 
 ### 2.2 Compaction Feature Hook
 
-位于 `features/compaction/plugin.py` 的行为插件，只负责把 CompactionService 接入
+位于 `plugins/builtin/compaction/plugin.py` 的行为插件，只负责把 CompactionService 接入
 Agent Hook 管线：
 
 - `agent/pre-step`：执行水位检查和必要的压缩；
@@ -91,7 +91,7 @@ Feature Hook 不创建 CompactionService，不持有独立压缩状态，不直�
 ### 3.1 Service Owner 迁移
 
 - [x] **FR1：真实实现迁入 Service 层**
-  - 将 `features/compaction/service.py` 迁移为
+  - 将 `plugins/builtin/compaction/service.py` 迁移为
     `services/compaction/service.py`；
   - 保留 `CompactionService` 的公开行为、并发锁、任务表和事件出口；
   - 迁移后生产代码只能从 `ftre.services.compaction` 获取实现。
@@ -106,7 +106,7 @@ Feature Hook 不创建 CompactionService，不持有独立压缩状态，不直�
   - 新增 `services/compaction/plugin.py`，声明
     `inject = ("sessions",)`、`provide = ("compaction",)`；
   - Plugin 创建 `CompactionService(session_manager=ctx.sessions)` 并发布唯一实例；
-  - `features/compaction/plugin.py` 不得调用 `ctx.provide("compaction", ...)`。
+  - `plugins/builtin/compaction/plugin.py` 不得调用 `ctx.provide("compaction", ...)`。
 
 ### 3.2 Feature Hook 拆分
 
@@ -139,7 +139,7 @@ Feature Hook 不创建 CompactionService，不持有独立压缩状态，不直�
 ### 3.4 清理与一致性
 
 - [x] **FR8：旧文件与旧导出清理**
-  - 删除 `features/compaction/service.py`、`services/compaction/contracts.py`；
+  - 删除 `plugins/builtin/compaction/service.py`、`services/compaction/contracts.py`；
   - 更新两个 `__init__.py`、架构测试、契约测试、文档和导入；
   - 不保留单行转发、兼容 re-export 或旧 Port 别名。
 
@@ -164,7 +164,7 @@ src/ftre/
 │     ├─ service.py           # 唯一真实实现与并发状态
 │     └─ plugin.py            # inject sessions → provide compaction
 │
-└─ features/
+└─ plugins/builtin/
    └─ compaction/
       ├─ __init__.py
       └─ plugin.py             # 只注册 pre-step / request-error Hook
@@ -224,7 +224,7 @@ service.bind_event_emitter(emit_event)
 ### 6.1 架构测试
 
 - `services/compaction/service.py` 存在且包含真实实现；
-- `features/compaction/service.py` 和 `services/compaction/contracts.py` 不存在；
+- `plugins/builtin/compaction/service.py` 和 `services/compaction/contracts.py` 不存在；
 - 生产代码没有 `CompactionPort`；
 - 只有 Service Plugin 提供 `compaction`；Feature Plugin 只声明 Inject；
 - AgentLoop/Command/ContextGate 不导入 Feature 实现。
@@ -294,6 +294,6 @@ service.bind_event_emitter(emit_event)
 
 F11 已将本 PRD 的 Service Owner 实现进一步移入可选发行物
 `packages/ftre-compaction`。因此本 PRD 中 `src/ftre/services/compaction`、
-`src/ftre/features/compaction`、ContextGate 以及“默认必选 compaction Plugin”的描述
+`src/ftre/plugins/builtin/compaction`、ContextGate 以及“默认必选 compaction Plugin”的描述
 均为 F10 历史基线；当前实现和验收以
 [`PRD-F11-compaction-gate-hook.md`](PRD-F11-compaction-gate-hook.md) 为准。

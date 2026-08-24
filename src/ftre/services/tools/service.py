@@ -1,4 +1,9 @@
-"""Global and scoped tool contribution registry."""
+"""Tool Service：全局工具、Agent scoped 工具和限制策略的唯一注册表。
+
+全局 ``ToolRegistry`` 只保存可执行工具；Service 额外保存 owner/source/scope，
+并在每个 Agent 请求时生成隔离 view。这样一个 Agent 的 allow/deny 或 scoped shadow
+不会修改其他 Agent 的工具视图，Plugin 卸载也能通过 disposer 撤销贡献。
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ from .types import ToolContribution
 
 
 class ToolService:
-    """Own tool registration, per-agent restrictions, and disposable contributions."""
+    """拥有工具注册、Agent 限制和可逆贡献。"""
     key = "tools"
 
     def __init__(self, registry: ToolRegistry | None = None) -> None:

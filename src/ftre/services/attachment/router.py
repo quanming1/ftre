@@ -1,4 +1,5 @@
 """HTTP routes for root-confined attachment images."""
+# 中文说明：附件 HTTP 路由：通过 AttachmentService 做 root 校验和读取，不能接受任意本地路径。
 
 from __future__ import annotations
 

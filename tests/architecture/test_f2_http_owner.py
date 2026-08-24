@@ -6,7 +6,7 @@ from pathlib import Path
 ROOTS = (
     Path(__file__).parents[2] / "src" / "ftre" / "app" / "gateway",
     Path(__file__).parents[2] / "src" / "ftre" / "services",
-    Path(__file__).parents[2] / "src" / "ftre" / "features",
+    Path(__file__).parents[2] / "src" / "ftre" / "plugins",
 )
 
 
@@ -27,8 +27,11 @@ def test_new_http_hosts_do_not_import_aggregate_api_or_setters() -> None:
     assert violations == []
 
 
-def test_composition_route_snapshot_has_owner_routes() -> None:
+def test_http_routes_are_contributed_by_their_owner_plugins() -> None:
     source = (Path(__file__).parents[2] / "src" / "ftre" / "app" / "gateway" / "composition.py").read_text(encoding="utf-8")
     assert "register_compat_snapshot" not in source
-    assert "build_router(sessions, agents)" in source
-    assert "build_router(profiles)" in source
+    assert "register_router" not in source
+    session_plugin = (Path(__file__).parents[2] / "src" / "ftre" / "services" / "session" / "plugin.py").read_text(encoding="utf-8")
+    profile_plugin = (Path(__file__).parents[2] / "src" / "ftre" / "services" / "agent" / "profile" / "plugin.py").read_text(encoding="utf-8")
+    assert 'owner="sessions"' in session_plugin
+    assert 'owner="agent-profiles"' in profile_plugin

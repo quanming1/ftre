@@ -1,4 +1,9 @@
-"""Ordered, scoped system-prompt contribution registry."""
+"""System Prompt Service：有序、按 scope 的 system prompt 贡献注册表。
+
+Prompt section 的生产者是 Plugin，AgentLoop 只在一次请求中调用 assemble；Service
+不读写 Session 历史，也不把可变 section 列表暴露给模型。每次组装可生成 receipt，
+用于诊断“哪些 prompt 被纳入了本轮”。
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ from .types import PromptAssembly, PromptContribution, PromptSection
 
 
 class SystemPromptService:
-    """Assemble prompt sections while retaining an audit receipt per request."""
+    """组装可见 prompt section，并为每次请求保留审计 receipt。"""
     key = "system_prompt"
 
     def __init__(self) -> None:

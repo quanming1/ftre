@@ -8,7 +8,7 @@ dependencies = [
     # The official Cordis runtime is installed as the cordis-py distribution;
     # ftre intentionally does not ship a same-name fallback implementation.
     "cordis-py==0.4.0",
-    "ftre-agent-core>=0.1.1",
+    "ftre-agent-core>=0.1.2",
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.20.0",
     "croniter>=2.0.0",
@@ -23,6 +23,11 @@ dev = [
     "httpx",
     "ruff",
 ]
+# 可选能力通过宿主 extras 表达，但不会把它们变成 ftre 的硬依赖。
+# 两个发行物仍以自己的 entry point 注册 Plugin；未安装时 Host 不导入它们。
+inbox = ["ftre-inbox>=0.1.0"]
+compaction = ["ftre-compaction>=0.1.0"]
+full = ["ftre-inbox>=0.1.0", "ftre-compaction>=0.1.0"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

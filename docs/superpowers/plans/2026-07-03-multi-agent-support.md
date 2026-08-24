@@ -1410,7 +1410,7 @@ git commit -m "test: add integration tests for AgentManager lifecycle"
 **Repo:** `E:\binn\ftre-desktop\`
 **Files:**
 - Modify: `packages/renderer/src/services/api.ts` — replace mock `fetchChatAgents` with real `GET /api/agents`
-- Modify: `packages/renderer/src/features/chat/AgentSelector.tsx` — adapt to new API response shape
+- Modify: `packages/renderer/src/plugins/builtin/chat/AgentSelector.tsx` — adapt to new API response shape
 - Modify: `packages/renderer/src/stores/chat.ts` — default `agentId` from `"code_agent"` to `"default"`
 
 **Current state:** `AgentSelector.tsx` already exists and renders a dropdown. `fetchChatAgents()` is a hardcoded mock returning one `code_agent`. `chat.ts` already has `agentId` state + `setAgentId` + sends `agent_id` in WS `metadata`. The only missing piece is connecting to the real backend API.
@@ -1462,7 +1462,7 @@ export async function fetchChatAgents(
 
 - [ ] **Step 2: Update `AgentSelector.tsx` to remove workspace dependency and adapt filtering**
 
-In `packages/renderer/src/features/chat/AgentSelector.tsx`:
+In `packages/renderer/src/plugins/builtin/chat/AgentSelector.tsx`:
 
 1. Remove the `useWorkspace` import and `workspace` state (line 14, 22) — agent list is now global, not per-workspace.
 
@@ -1513,7 +1513,7 @@ Expected: no errors in the modified files (pre-existing errors in other files ar
 
 ```bash
 cd E:\binn\ftre-desktop
-git add packages/renderer/src/services/api.ts packages/renderer/src/features/chat/AgentSelector.tsx packages/renderer/src/stores/chat.ts packages/renderer/src/stores/chat.test.ts packages/renderer/src/stores/session.test.ts packages/renderer/src/test/performance-verification.test.ts
+git add packages/renderer/src/services/api.ts packages/renderer/src/plugins/builtin/chat/AgentSelector.tsx packages/renderer/src/stores/chat.ts packages/renderer/src/stores/chat.test.ts packages/renderer/src/stores/session.test.ts packages/renderer/src/test/performance-verification.test.ts
 git commit -m "feat: wire AgentSelector to real GET /api/agents endpoint"
 ```
 

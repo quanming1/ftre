@@ -1,4 +1,5 @@
-"""WebSocket 只通过 Bus request/reply 取得 durable admission ACK。"""
+"""WebSocket attach 与现代 Queue/Status baseline。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,89 +8,121 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from starlette.websockets import WebSocketState
 
+from ftre.plugins.builtin.channels.websocket.channel import WebSocketChannel
 from ftre.services.messaging.bus import EventBus
-from ftre.services.messaging.channel.providers.websocket.channel import WebSocketChannel
 
 
 class FakeWebSocket:
     def __init__(self):
         self.sent: list[dict] = []
-        self.application_state = WebSocketState.CONNECTED
+        self.application_state = 1
 
     async def send_text(self, text: str) -> None:
         self.sent.append(json.loads(text))
 
 
-@pytest.mark.asyncio
-async def test_attach_reads_agent_loop_mailbox_snapshot():
-    channel = WebSocketChannel(EventBus())
-    channel._session_projection = AsyncMock()
-    channel._session_projection.snapshot = AsyncMock(return_value=[])
-    channel._session_projection.session_event_snapshot = AsyncMock(return_value=[])
-    channel._session_snapshot_provider = AsyncMock()
-    channel._session_snapshot_provider.get_mailbox_snapshot = AsyncMock(
-        return_value={"revision": 3, "pending": [{"request_id": "request-b"}]}
-    )
+class _Inbox:
+    def __init__(self):
+        self.item = SimpleNamespace(request_id="queued-1")
 
+    async def wire_snapshot(self, session_id):
+        return {
+            "session_id": session_id,
+            "items": [{"id": "request-b", "placement": "queued", "message": {"content": []}}],
+        }
+
+    async def snapshot(self, _session_id):
+        return SimpleNamespace(next_turn=(self.item,), next_step=())
+
+    async def promote(self, _session_id, _item_id):
+        return True
+
+    async def edit(self, _session_id, _item_id, _content, _attachments):
+        return True
+
+    async def remove(self, _session_id, _item_id):
+        return True
+
+
+@pytest.mark.asyncio
+async def test_attach_reads_inbox_queue_and_status_baseline():
+    projection = SimpleNamespace(
+        snapshot=AsyncMock(return_value=[]),
+        session_event_snapshot=AsyncMock(return_value=[]),
+    )
+    channel = WebSocketChannel(
+        EventBus(),
+        session_projection=projection,
+        inbox_provider=_Inbox(),
+        status_provider=lambda _sid: "idle",
+    )
     ws = FakeWebSocket()
     await channel._on_message(
-        json.dumps({"type": "attach", "data": {"session_id": "ws_sess_test"}}), ws
+        json.dumps({"type": "attach", "payload": {"session_id": "s1"}}), ws
     )
-
     assert ws.sent[0]["type"] == "reply_snapshot"
-    assert ws.sent[0]["data"]["mailbox"]["pending"][0]["request_id"] == "request-b"
+    assert ws.sent[1]["type"] == "session/queue"
+    assert ws.sent[1]["payload"]["items"][0]["placement"] == "queued"
+    assert ws.sent[2]["type"] == "session/status"
+    assert "frame_id" not in ws.sent[0]
 
 
 @pytest.mark.asyncio
-async def test_user_message_ack_waits_for_bus_reply():
+async def test_prompt_ack_waits_for_bus_reply_and_uses_request_envelope():
     bus = EventBus()
     channel = WebSocketChannel(bus)
     ws = FakeWebSocket()
     received = asyncio.create_task(channel._on_message(
         json.dumps({
-            "frame_id": "client-frame-1",
-            "type": "user_message",
-            "data": {"session_id": "ws_sess_test", "content": "hello"},
+            "request_id": "client-1",
+            "type": "session.prompt",
+            "payload": {"session_id": "s1", "mode": "queue", "content": "hello"},
         }),
         ws,
     ))
-
     inbound = await anext(bus.subscribe_inbound())
     assert not received.done()
-    bus.resolve_inbound(
-        inbound.id,
-        SimpleNamespace(
-            accepted=True,
-            session_id="ws_sess_test",
-            request_id="request-a",
-            queue_position=1,
-            created=True,
-        ),
-    )
+    bus.resolve_inbound(inbound.id, SimpleNamespace(accepted=True, session_id="s1"))
     await received
-
     assert ws.sent == [{
-        "frame_id": "client-frame-1",
-        "type": "message_ack",
-        "data": {
-            "session_id": "ws_sess_test",
-            "request_id": "request-a",
-                "queue_position": 1,
-            "created": True,
-        },
-        "metadata": {"channel_id": "ws", "session_id": "ws_sess_test"},
+        "request_id": "client-1",
+        "ok": True,
+        "value": {"accepted": True, "session_id": "s1"},
     }]
 
 
 @pytest.mark.asyncio
-async def test_user_message_without_frame_id_is_rejected_before_bus():
+async def test_prompt_without_request_id_is_rejected_before_bus():
     bus = EventBus()
     channel = WebSocketChannel(bus)
     ws = FakeWebSocket()
     await channel._on_message(
-        json.dumps({"type": "user_message", "data": {"session_id": "s", "content": "x"}}), ws
+        json.dumps({"type": "session.prompt", "payload": {"session_id": "s", "content": "x"}}),
+        ws,
     )
-    assert ws.sent[0]["data"]["code"] == "missing_request_id"
+    assert ws.sent[0]["error"]["code"] == "missing_request_id"
     assert bus._inbound_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_update_queue_steer_returns_unified_ack():
+    channel = WebSocketChannel(EventBus(), inbox_provider=_Inbox())
+    ws = FakeWebSocket()
+    await channel._on_message(
+        json.dumps({
+            "type": "session.updateQueue",
+            "request_id": "update-1",
+            "payload": {
+                "session_id": "s1",
+                "item_id": "queued-1",
+                "action": {"kind": "steer"},
+            },
+        }),
+        ws,
+    )
+    assert ws.sent == [{
+        "request_id": "update-1",
+        "ok": True,
+        "value": {"accepted": True, "session_id": "s1", "item_id": "queued-1"},
+    }]

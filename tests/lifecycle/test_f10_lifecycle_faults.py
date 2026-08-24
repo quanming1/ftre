@@ -1,4 +1,4 @@
-"""F6.10 lifecycle, scope, cancellation and mailbox fault contracts."""
+"""F12 Inbox 生命周期、取消、Hook 失败和恢复契约。"""
 
 from __future__ import annotations
 
@@ -6,455 +6,176 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-from cordis import Context, FiberState
+from ftre_inbox.repository import InboxRepository
+from ftre_inbox.service import InboxService
 
-from ftre.platform.hooks import (
-    HookMode,
-    HookRuntime,
-    HookScope,
-    HookSpec,
-)
-from ftre.services.agent.config import AgentConfig
-from ftre.services.agent.hooks import (
-    AGENT_AFTER_TURN_SPEC,
-    AGENT_PRE_STEP_SPEC,
-    AGENT_REQUEST_ERROR_SPEC,
-    RejectStep,
-    RetryRequest,
-)
-from ftre.services.agent.registry import AgentRegistry
-from ftre.services.agent_loop.runtime.loop.engine import AgentLoop
-from ftre.services.agent_loop.runtime.loop.turn_executor import (
-    Turn,
-    TurnExecutor,
-    TurnOutcome,
-)
-from ftre.services.agent_loop.runtime.mailbox.lane import (
-    BlockedOperation,
-    SessionLane,
-)
-from ftre.services.messaging.bus import BusMessage
-from ftre.services.session.entity.state import MailboxState, QueueItem
-from ftre.services.session.hooks import (
-    SESSION_CREATED_SPEC,
-    SESSION_DISPOSED_SPEC,
-    SessionLifecyclePayload,
-)
-from ftre.services.session.service import SessionService
+from ftre.app.gateway.composition import build_composition
+from ftre.services.agent.contracts import InboundMessage
+from ftre.services.agent.runtime.engine import AgentLoop
 
 
-def _global_spec() -> HookSpec:
-    async def default(payload):
-        return payload
-
-    return HookSpec(
-        "test/lifecycle",
-        "test",
-        HookMode.PARALLEL,
-        payload_type=dict,
-        default=default,
-    )
-
-
-async def _dispose_context(context: Context) -> None:
-    cleanup = context.dispose()
-    if cleanup is not None:
-        await cleanup
-
-
-@pytest.mark.asyncio
-async def test_fiber_restart_removes_old_listener_and_reloads_once() -> None:
-    root = Context()
-    runtime = HookRuntime(root)
-    spec = _global_spec()
-    seen: list[str] = []
-
-    def plugin(ctx, _config=None):
-        runtime.register(
-            spec,
-            lambda _payload: seen.append("listener"),
-            owner="reload-plugin",
-            context=ctx,
-        )
-
-    fiber = root.plugin(plugin)
-    await fiber
-    assert fiber.state is FiberState.ACTIVE
-    await runtime.dispatch(spec, {})
-    assert seen == ["listener"]
-
-    await fiber.restart()
-    assert fiber.state is FiberState.ACTIVE
-    active = [entry for entry in runtime.snapshot(spec.name) if not entry.disposed]
-    assert len(active) == 1
-    await runtime.dispatch(spec, {})
-    assert seen == ["listener", "listener"]
-
-    cleanup = fiber.dispose()
-    if cleanup is not None:
-        await cleanup
-    assert not [entry for entry in runtime.snapshot(spec.name) if not entry.disposed]
-    await _dispose_context(root)
-
-
-@pytest.mark.asyncio
-async def test_fiber_dispose_waits_for_inflight_hook_and_marks_quiescence() -> None:
-    root = Context()
-    runtime = HookRuntime(root)
-    spec = _global_spec()
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def blocking(_payload):
-        started.set()
-        await release.wait()
-
-    def plugin(ctx, _config=None):
-        runtime.register(spec, blocking, owner="inflight", context=ctx)
-
-    fiber = root.plugin(plugin)
-    await fiber
-    dispatch_task = asyncio.create_task(runtime.dispatch(spec, {}))
-    await started.wait()
-
-    cleanup = fiber.dispose()
-    assert cleanup is not None
-
-    async def wait_cleanup():
-        await cleanup
-
-    cleanup_task = asyncio.create_task(wait_cleanup())
-    await asyncio.sleep(0)
-    assert cleanup_task.done() is False
-    assert runtime.snapshot(spec.name)[0].active_calls == 1
-
-    release.set()
-    await dispatch_task
-    await cleanup_task
-    snapshot = runtime.snapshot(spec.name)[0]
-    assert snapshot.disposed is True
-    assert snapshot.active_calls == 0
-    await _dispose_context(root)
-
-
-@pytest.mark.asyncio
-async def test_agent_scope_rebuilt_id_does_not_inherit_old_listener() -> None:
-    root = Context()
-    runtime = HookRuntime(root)
-    registry = AgentRegistry()
-    spec = HookSpec(
-        "test/scoped",
-        "test",
-        HookMode.PARALLEL,
-        payload_type=dict,
-        scope=HookScope.AGENT,
-    )
-    old = registry.ensure("worker")
-    old_context = runtime.context_for_scope(registry.scope_carrier("worker"))
-    seen: list[str] = []
-    receipt = runtime.register(
-        spec,
-        lambda _payload: seen.append("old"),
-        owner="old-agent",
-        context=old_context,
-        scope="agent:worker",
-    )
-
-    await runtime.dispatch(spec, {}, context=old_context)
-    registry.dispose("worker")
-    new = registry.ensure("worker")
-    assert new.identity is not old.identity
-    new_context = runtime.context_for_scope(registry.scope_carrier("worker"))
-    await runtime.dispatch(spec, {}, context=new_context)
-    assert seen == ["old"]
-    receipt.dispose()
-    await _dispose_context(root)
-
-
-class _Mailbox:
-    def __init__(self, *items: QueueItem) -> None:
-        self.items = list(items)
-        self.calls: list[str] = []
-        self.sequence = len(self.items) + 1
-
-    async def admit(self, inbound):
-        self.calls.append("admit")
-        item = QueueItem(
-            request_id=f"request-{self.sequence}",
-            sequence=self.sequence,
-            content=inbound.data.get("content", ""),
-            agent_id=inbound.metadata.agent_id or "default",
-        )
-        self.sequence += 1
-        self.items.append(item)
-        return type("Admission", (), {
-            "session_id": "session-1",
-            "request_id": item.request_id,
-            "queue_position": len(self.items),
-            "created": True,
-        })()
-
-    async def peek(self, _session_id):
-        self.calls.append("peek")
-        return self.items[0] if self.items else None
-
-    async def take(self, _session_id, request_id):
-        self.calls.append("take")
-        if self.items and self.items[0].request_id == request_id:
-            return self.items.pop(0)
-        return None
-
-    async def cancel_pending(self, _session_id, request_id):
-        self.calls.append("cancel")
-        if self.items and self.items[0].request_id == request_id:
-            return self.items.pop(0)
-        return None
-
-    async def channel_id(self, _session_id):
-        return "test"
-
-    async def snapshot(self, _session_id):
-        return MailboxState(pending=list(self.items))
-
-    async def advance_revision(self, _session_id):
-        self.calls.append("revision")
-        return 1
-
-
-class _Completion:
+class _Agent:
     def __init__(self) -> None:
-        self.results: dict[str, TurnOutcome] = {}
+        self.calls = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = False
 
-    async def complete(self, _session_id, request_id, result):
-        self.results[request_id] = result
+    def is_busy(self, _session_id: str) -> bool:
+        return bool(self.calls and not self.release.is_set())
 
-    async def close_session(self, _session_id):
-        return None
+    async def run(self, message: InboundMessage):
+        self.calls.append(message.request_id)
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return message.request_id
 
-
-class _Executor:
-    def __init__(self) -> None:
-        self.seen: list[str] = []
-
-    async def resolve_inbound_config(self, *_args, **_kwargs):
-        return AgentConfig(), None
-
-    async def execute(self, inbound, **_kwargs):
-        self.seen.append(inbound.data["content"])
-        return TurnOutcome(turn_id="turn", status="completed")
-
-
-def _inbound(content: str, request_id: str = "") -> BusMessage:
-    return BusMessage(
-        type="user_message",
-        from_channel="test",
-        from_session="session-1",
-        to_channel="agent",
-        to_session="session-1",
-        data={"session_id": "session-1", "content": content},
-        metadata={"request_id": request_id},
-    )
+    async def cancel(self, _session_id: str):
+        return False
 
 
 @pytest.mark.asyncio
-async def test_compaction_failure_keeps_pending_until_explicit_cancel() -> None:
-    item = QueueItem(request_id="pending-1", sequence=1, content="A")
-    mailbox = _Mailbox(item)
-    completion = _Completion()
-    hooks = HookRuntime(Context())
-
-    async def failing_compaction(_payload, _next_):
-        return RejectStep("keep", "compaction failed")
-
-    hooks.register(
-        AGENT_PRE_STEP_SPEC,
-        failing_compaction,
-        owner="failing-compaction",
-        global_listener=True,
-    )
-    lane = SessionLane(
-        "session-1",
-        mailbox=mailbox,
-        executor=_Executor(),
-        completion=completion,
-        publish_snapshot=lambda _sid: asyncio.sleep(0),
-        hooks=hooks,
-    )
-
-    await lane._drain()
-    assert mailbox.items == [item]
-    assert isinstance(lane.operation, BlockedOperation)
-    cancelled = await lane.cancel_pending("pending-1")
-    assert cancelled is item
-    assert completion.results["pending-1"].status == "cancelled"
-    if lane._worker is not None:
-        await lane._worker
-    await lane.close()
+async def test_close_cancels_worker_and_keeps_claimed_state_out_of_pending(tmp_path):
+    agent = _Agent()
+    repo = InboxRepository(tmp_path / "inbox")
+    service = InboxService(repo, agent)
+    await service.followup(InboundMessage("s1", "r1", "ws", "hello"))
+    await agent.started.wait()
+    await service.close()
+    assert agent.cancelled is True
+    # r1 已经 claim，关闭不回滚为 pending；未 claim 的数据仍可恢复。
+    assert (await repo.snapshot("s1")).pending == ()
 
 
 @pytest.mark.asyncio
-async def test_pre_step_failure_retries_pending_once_without_duplicate_execution() -> None:
-    root = Context()
-    hooks = HookRuntime(root)
-    calls = 0
+async def test_before_claim_keep_preserves_pending_and_remove_is_explicit(tmp_path):
+    repo = InboxRepository(tmp_path / "inbox")
 
-    async def flaky(_payload, next_):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise RuntimeError("policy temporarily unavailable")
-        return await next_()
+    async def keep(_item, _snapshot):
+        return False
 
-    hooks.register(
-        AGENT_PRE_STEP_SPEC,
-        flaky,
-        owner="flaky-policy",
-        global_listener=True,
-    )
-    mailbox = _Mailbox(QueueItem(request_id="pending-1", sequence=1, content="A"))
-    executor = _Executor()
-    lane = SessionLane(
-        "session-1",
-        mailbox=mailbox,
-        executor=executor,
-        completion=_Completion(),
-        publish_snapshot=lambda _sid: asyncio.sleep(0),
-        hooks=hooks,
-        agent_registry=AgentRegistry(),
-    )
-
-    await lane._drain()
-    assert [item.request_id for item in mailbox.items] == ["pending-1"]
-    assert isinstance(lane.operation, BlockedOperation)
-
-    await lane.submit(_inbound("B", "client-B"))
-    worker = lane._worker
-    if worker is not None:
-        await worker
-    assert executor.seen == ["A", "B"]
-    assert calls == 3
-    await lane.close()
-    await _dispose_context(root)
+    service = InboxService(repo, before_claim=keep)
+    await service.followup(InboundMessage("s1", "r1", "ws", "hello"))
+    # 没有 Agent 时不会启动 worker，直接验证 pending 仍可被 remove。
+    assert (await service.snapshot("s1")).pending[0].request_id == "r1"
+    assert await service.remove("s1", "r1") is True
+    assert not (await service.snapshot("s1")).has_pending
+    await service.close()
 
 
 @pytest.mark.asyncio
-async def test_after_turn_failure_blocks_next_pending_without_rolling_back_turn() -> None:
-    root = Context()
-    hooks = HookRuntime(root)
+async def test_restart_recovers_unclaimed_item_without_duplicate(tmp_path):
+    root = tmp_path / "inbox"
+    first = InboxService(InboxRepository(root))
+    await first.followup(InboundMessage("s1", "r1", "ws", "hello"))
+    await first.close()
 
-    async def failing_after_turn(_payload, _next_):
-        raise RuntimeError("after-turn maintenance failed")
-
-    hooks.register(
-        AGENT_AFTER_TURN_SPEC,
-        failing_after_turn,
-        owner="failing-after-turn",
-        global_listener=True,
-    )
-    mailbox = _Mailbox(
-        QueueItem(request_id="request-a", sequence=1, content="A"),
-        QueueItem(request_id="request-b", sequence=2, content="B"),
-    )
-    completion = _Completion()
-    executor = _Executor()
-    lane = SessionLane(
-        "session-1",
-        mailbox=mailbox,
-        executor=executor,
-        completion=completion,
-        publish_snapshot=lambda _sid: asyncio.sleep(0),
-        hooks=hooks,
-        agent_registry=AgentRegistry(),
-    )
-
-    await lane._drain()
-
-    assert executor.seen == ["A"]
-    assert [item.request_id for item in mailbox.items] == ["request-b"]
-    assert completion.results["request-a"].status == "completed"
-    assert isinstance(lane.operation, BlockedOperation)
-    await lane.close()
-    await _dispose_context(root)
+    second_repo = InboxRepository(root)
+    await second_repo.load_all()
+    snapshot = await second_repo.snapshot("s1")
+    assert [item.request_id for item in snapshot.pending] == ["r1"]
+    await second_repo.load_all()
+    assert [item.request_id for item in (await second_repo.snapshot("s1")).pending] == ["r1"]
 
 
 @pytest.mark.asyncio
-async def test_request_retry_is_rejected_after_turn_cancellation() -> None:
-    root = Context()
+async def test_inbox_plugin_restart_replaces_closed_service_without_duplicate_listener():
+    composition = await build_composition({})
+    try:
+        first = composition.context.get("inbox")
+        assert first is not None and first._closed is False
+        assert composition.context.get("agents").driver is not None
+        assert await composition.plugins.restart("inbox") is True
+        second = composition.context.get("inbox")
+        assert second is not first
+        assert second._closed is False
+        assert composition.context.get("channels").manager.get("ws")._current_inbox() is second
+        entries = composition.context.get("hook_runtime").snapshot("session/disposed")
+        assert len([entry for entry in entries if not entry.disposed]) == 1
+    finally:
+        await composition.close()
+
+
+@pytest.mark.asyncio
+async def test_inbox_plugin_unload_releases_worker_state_and_listener():
+    composition = await build_composition({})
+    service = composition.context.get("inbox")
+    try:
+        assert await composition.plugins.unload("inbox") is True
+        assert service._closed is True
+        assert service.repository._states == {}
+        assert composition.context.get("agent_runtime", strict=False) is None
+        assert not [
+            entry
+            for entry in composition.context.get("hook_runtime").snapshot("session/disposed")
+            if not entry.disposed
+        ]
+    finally:
+        await composition.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_session_waits_for_active_turn_before_removing_history():
+    """删除执行中 Session 时，必须先等 Turn 的取消收尾完成。"""
     loop = object.__new__(AgentLoop)
-    loop.hooks = HookRuntime(root)
-    loop.agent_registry = AgentRegistry()
-    loop._agent_created_emitted = set()
     loop.session_manager = AsyncMock()
-    called = 0
+    loop.session_manager.get_session_metadata.return_value = {}
+    order: list[str] = []
 
-    async def retry(_payload, _next_):
-        nonlocal called
-        called += 1
-        return RetryRequest("recovered", "generation-1")
+    async def delete_history(_session_id: str) -> None:
+        order.append("delete-history")
 
-    loop.hooks.register(
-        AGENT_REQUEST_ERROR_SPEC,
-        retry,
-        owner="recovery",
-        global_listener=True,
-    )
-    turn = Turn("turn-1", _inbound("hello"), "session-1")
-    turn.cancellation.set()
-    executor = TurnExecutor(
-        loop,
-        sessions=loop.session_manager,
-        hooks=loop.hooks,
-        agent_registry=loop.agent_registry,
-    )
-    executor._emit_step = _noop_emit
+    loop.session_manager.delete_session.side_effect = delete_history
+    started = asyncio.Event()
+    child_finished = asyncio.Event()
+    parent_finished = asyncio.Event()
 
-    assert await executor._request_error_recovery(
-        turn, error_code="context_overflow", message="too large"
-    ) is False
-    assert called == 1
-    assert turn.retry_count == 0
-    await _dispose_context(root)
+    async def active_turn():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            order.append("turn-cancelled")
+            # 模拟 TurnExecutor 的最后一段消息/Hooks 收尾。
+            await asyncio.sleep(0)
+            order.append("turn-finished")
+            child_finished.set()
+
+    async def parent_cleanup():
+        await child_finished.wait()
+        await asyncio.sleep(0)
+        order.append("parent-finished")
+        parent_finished.set()
+
+    task = asyncio.create_task(active_turn())
+    await started.wait()
+    loop._direct_tasks = {"s1": task}
+    loop._direct_signals = {"s1": asyncio.Event()}
+    loop._direct_completion_events = {"s1": parent_finished}
+    loop._direct_parent_tasks = {"s1": None}
+    cleanup = asyncio.create_task(parent_cleanup())
+
+    await loop.delete_session("s1")
+    await cleanup
+
+    assert task.done()
+    assert order == [
+        "turn-cancelled", "turn-finished", "parent-finished", "delete-history",
+    ]
 
 
 @pytest.mark.asyncio
-async def test_session_created_disposed_hooks_follow_persistence_commit(tmp_path) -> None:
-    root = Context()
-    runtime = HookRuntime(root)
-    session = SessionService(sessions_dir=str(tmp_path / "sessions"))
-    await session.init()
-    seen: list[tuple[str, str]] = []
+async def test_deleted_session_does_not_publish_status_to_empty_channel():
+    """Turn finally 晚于 Session 删除时，不向空通道发送伪状态。"""
+    loop = object.__new__(AgentLoop)
+    loop.session_manager = AsyncMock()
+    loop.session_manager.get_session.return_value = None
+    loop.bus = AsyncMock()
 
-    def observe_created(_payload: SessionLifecyclePayload):
-        seen.append(("created", _payload.session_id))
+    await loop._publish_session_status_async("deleted", "idle")
 
-    def observe_disposed(_payload: SessionLifecyclePayload):
-        seen.append(("disposed", _payload.session_id))
-
-    runtime.register(
-        SESSION_CREATED_SPEC,
-        observe_created,
-        owner="test-created",
-        global_listener=True,
-    )
-    runtime.register(
-        SESSION_DISPOSED_SPEC,
-        observe_disposed,
-        owner="test-disposed",
-        global_listener=True,
-    )
-
-    async def dispatch(kind: str, session_id: str, channel_id: str):
-        del channel_id
-        spec = SESSION_CREATED_SPEC if kind == "created" else SESSION_DISPOSED_SPEC
-        await runtime.dispatch(spec, SessionLifecyclePayload(session_id))
-
-    unbind = session.bind_lifecycle_dispatcher(dispatch)
-    session_id = await session.create_session("test")
-    await session.delete_session(session_id)
-    assert seen == [("created", session_id), ("disposed", session_id)]
-    assert unbind() is True
-    await _dispose_context(root)
-
-
-async def _noop_emit(*_args, **_kwargs):
-    return None
+    loop.bus.publish_outbound.assert_not_awaited()

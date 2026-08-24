@@ -523,7 +523,7 @@ Expected: no errors
 
 ```bash
 cd E:\binn\ftre-desktop
-git add packages/renderer/src/features/chat/AgentBar.tsx
+git add packages/renderer/src/plugins/builtin/chat/AgentBar.tsx
 git commit -m "feat: create AgentBar component merging agent + model selection"
 ```
 
@@ -586,9 +586,9 @@ Expected: no errors (or only pre-existing errors in other files)
 
 ```bash
 cd E:\binn\ftre-desktop
-git add packages/renderer/src/features/chat/ChatInput.tsx
-git rm packages/renderer/src/features/chat/AgentSelector.tsx
-git rm packages/renderer/src/features/chat/ModelSelector.tsx
+git add packages/renderer/src/plugins/builtin/chat/ChatInput.tsx
+git rm packages/renderer/src/plugins/builtin/chat/AgentSelector.tsx
+git rm packages/renderer/src/plugins/builtin/chat/ModelSelector.tsx
 git commit -m "feat: replace AgentSelector + ModelSelector with AgentBar in ChatInput"
 ```
 

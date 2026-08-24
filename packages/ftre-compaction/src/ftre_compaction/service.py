@@ -2,7 +2,7 @@
 CompactionService — 上下文压缩 Service 的唯一真实实现
 
 设计：
-- agent/pre-step 在领取下一条请求前做强制水位检查并等待压缩
+- inbox/before-claim 在领取下一条请求前做强制水位检查并等待压缩
 - /compact 手动：立即压缩
 - /compress-fast：零 LLM 成本裁剪旧 ToolResultBlock 输出
 
@@ -99,7 +99,7 @@ class CompactionService:
     """上下文压缩 Service（全异步），由本包 Plugin 唯一创建。
 
     Service 只依赖 ftre 的公开 Session 事件和 LLM 配置对象。它不认识
-    SessionLane、TurnExecutor 或 Gateway；这些对象通过 Hook/Command 在
+    Inbox worker、TurnExecutor 或 Gateway；这些对象通过 Hook/Command 在
     外层调用它。这个边界是“卸载压缩包后核心仍可运行”的关键。
     """
 
@@ -126,16 +126,6 @@ class CompactionService:
 
     async def _noop_event(self, _session_id: str, _channel_id: str, _event) -> None:
         return None
-
-    def bind_event_emitter(self, emit_event) -> None:
-        """绑定公开的 Session 事件出口。
-
-        Service 不直接推送 WebSocket，也不直接写 Session projection；开始、
-        完成和失败都发成统一 CustomEvent，由 ftre 的事件出口负责投影及广播。
-        """
-        if not callable(emit_event):
-            raise TypeError("compaction event emitter must be callable")
-        self._emit_event = emit_event
 
     def progress_generation(self, session_id: str) -> int:
         """Return the in-process generation advanced by durable compaction progress."""
@@ -647,7 +637,7 @@ class CompactionService:
                 name=CompactEventName.FAILED,
                 value={"reason": reason},
             ))
-        except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
+        except Exception:  # noqa: BLE001 - 事件出口失败不能掩盖压缩任务本身的结果
             logger.debug(f"[compact] 通知失败失败: {reason}")
 
     async def cancel_compact(self, session_id: str) -> bool:

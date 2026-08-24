@@ -1,9 +1,8 @@
-"""压缩包拥有的 Agent 语义 Hook。
+"""压缩包拥有的 Agent/Inbox Hook。
 
-Hook 是本包与 Agent 数据面的唯一连接点：核心只提供 ``pre-step``、
-``after-turn`` 和 ``request-error`` 契约，压缩包在这些边界上决定何时检查
-水位、何时等待压缩以及 overflow 后是否允许一次重试。Hook 不接触
-MailboxStore，也不自己 claim pending；队列和串行化仍由 SessionLane 负责。
+压缩包通过 ``inbox/before-claim`` 负责交付前水位门控，通过
+``agent/after-turn`` 做轮后维护，通过 ``agent/request-error`` 做 overflow 恢复。
+它不接触 Inbox 私有 Repository，也不需要知道 Agent worker 如何调度。
 """
 
 from __future__ import annotations
@@ -11,12 +10,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, EnterClaim, RejectClaim
+
 from ftre.services.agent.config import load_config
 from ftre.services.agent.hooks import (
     AGENT_AFTER_TURN_SPEC,
-    AGENT_PRE_STEP_SPEC,
     AGENT_REQUEST_ERROR_SPEC,
-    RejectStep,
     RequestErrorPayload,
     RetryRequest,
 )
@@ -78,25 +77,6 @@ def register_hooks(ctx, service) -> list[object]:
             if mark is not None and marked:
                 await mark(False, "")
 
-    async def on_pre_step(payload, next_):
-        if payload.cancellation.is_set() or payload.config is None or not payload.channel_id:
-            return await next_()
-        try:
-            compaction_config = service.config_for(payload.config)
-            await run_compaction(
-                payload,
-                threshold=compaction_config.compact_threshold,
-                extra_tokens=max(1, len(payload.candidate.content) // 3),
-            )
-        except Exception as exc:  # noqa: BLE001 - Hook owns the blocking policy
-            logger.warning(
-                "[compaction] pre-step failed session=%s: %s",
-                payload.session_id,
-                exc,
-            )
-            return RejectStep("keep", f"上下文压缩失败：{exc}")
-        return await next_()
-
     async def on_after_turn(payload, next_):
         if payload.cancellation.is_set() or payload.config is None or not payload.channel_id:
             return await next_()
@@ -140,14 +120,34 @@ def register_hooks(ctx, service) -> list[object]:
             )
         return await next_()
 
+    async def on_inbox_before_claim(payload, _next_):
+        """Inbox Package 的领取前门控；失败时保留 pending。"""
+        config_value = load_config()
+        try:
+            needed = await service.should_compact(
+                payload.session_id,
+                payload.channel_id,
+                config_value,
+                threshold=service.config_for(config_value).compact_threshold,
+                extra_tokens=max(1, len(payload.candidate.content) // 3),
+                compaction_config=service.config_for(config_value),
+            )
+            if needed:
+                await service.compact(
+                    payload.session_id,
+                    payload.channel_id,
+                    config=config_value,
+                    trigger="auto",
+                    compaction_config=service.config_for(config_value),
+                )
+            return EnterClaim(payload.candidate.request_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - keep pending on policy failure
+            logger.warning("[compaction] inbox before-claim failed session=%s: %s", payload.session_id, exc)
+            return RejectClaim("keep", f"上下文压缩失败：{exc}")
+
     receipts = [
-        ctx.hook_runtime.register(
-            AGENT_PRE_STEP_SPEC,
-            on_pre_step,
-            owner="ftre-compaction",
-            context=ctx,
-            global_listener=True,
-        ),
         ctx.hook_runtime.register(
             AGENT_AFTER_TURN_SPEC,
             on_after_turn,
@@ -163,6 +163,15 @@ def register_hooks(ctx, service) -> list[object]:
             global_listener=True,
         ),
     ]
+    receipts.append(
+        ctx.hook_runtime.register(
+            INBOX_BEFORE_CLAIM_SPEC,
+            on_inbox_before_claim,
+            owner="ftre-compaction",
+            context=ctx,
+            global_listener=True,
+        )
+    )
     return receipts
 
 

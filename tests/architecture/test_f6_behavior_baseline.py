@@ -12,7 +12,7 @@ ROOT = Path(__file__).parents[2]
 BASELINE_TESTS = {
     "agent": (
         "tests/test_agent_manager.py",
-        "tests/test_session_lane.py",
+        "tests/test_inbox_service.py",
         "tests/test_turn_lifecycle.py",
     ),
     "tool": ("tests/test_plugin_tools.py", "tests/test_confirm_commands.py"),

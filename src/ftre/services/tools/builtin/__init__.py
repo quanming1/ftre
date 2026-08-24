@@ -75,7 +75,7 @@ def build_default_tools(
     """构建默认工具集：bash + read + write + edit + set_workspace
     + task + send_message + 插件注册的全局工具。
 
-    Cron is contributed by ``features.schedule`` through ``ToolService``;
+    Cron is contributed by the ``plugins.builtin.schedule`` Plugin through ``ToolService``;
     keeping it out of this provider prevents a second, unowned registration.
 
     Args:

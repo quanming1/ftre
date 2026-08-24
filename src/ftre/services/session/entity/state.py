@@ -1,8 +1,7 @@
 """Session 的持久化状态模型。
 
-Mailbox 只保存尚未开始的 ``pending`` 输入；运行中的 Turn 与完成结果都属于
-Gateway 内存运行态。聊天历史只写入 ``messages``，进程中断后用户可以依据已有
-UserMessage 发出“继续”，但不会自动重放可能已产生副作用的工具调用。
+队列已经迁移到独立的 ``ftre-inbox`` Package。这里仅保留 Session 身份、消息历史和
+metadata；旧 state.json 中的 ``mailbox`` 字段只在解析时丢弃，具体迁移由 Inbox 包完成。
 """
 from __future__ import annotations
 
@@ -10,7 +9,7 @@ import json
 from typing import Any, Literal
 
 from ftre_agent_core.message import Msg
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CURRENT_SCHEMA_VERSION = 1
 _MSG_ALLOWED_KEYS = frozenset(Msg.model_fields)
@@ -24,12 +23,14 @@ def _check_msg_shape(item: Any) -> None:
 
 
 class UnsupportedAgentStateVersion(ValueError):
+    """磁盘 state.json schema 版本超出当前代码支持范围。"""
     def __init__(self, version: Any):
         self.version = version
         super().__init__(f"不支持的 AgentState schema_version: {version!r}")
 
 
 class SessionState(BaseModel):
+    """state.json 中的会话元信息，不包含消息和 mailbox 内容。"""
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -41,52 +42,23 @@ class SessionState(BaseModel):
     updated_at: str
 
 
-class QueueItem(BaseModel):
-    """已接纳、尚未执行的用户请求。
-
-    这是 mailbox 唯一需要写入 ``state.json`` 的业务对象。会话和 Channel
-    已由它所属的 state 文件确定，Bus 信封只在进程内传递，因此不要在这里
-    再复制路由、时间戳或自由 metadata。
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    request_id: str
-    sequence: int
-    content: str = ""
-    attachments: list[dict[str, Any]] = Field(default_factory=list)
-    # 仅保留执行时选择全局 agent 所需的信息；未指定时使用 default。
-    agent_id: str = "default"
-
-
-class MailboxState(BaseModel):
-    """持久化等待队列；不记录 active 或完成历史。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    revision: int = 0
-    next_sequence: int = 1
-    pending: list[QueueItem] = Field(default_factory=list)
-
-    @field_validator("pending")
-    @classmethod
-    def _validate_pending(cls, value: list[QueueItem]) -> list[QueueItem]:
-        ids = [item.request_id for item in value]
-        if len(ids) != len(set(ids)):
-            raise ValueError("duplicate request_id in mailbox.pending")
-        sequences = [item.sequence for item in value]
-        if sequences != sorted(sequences):
-            raise ValueError("mailbox.pending must be ordered by sequence")
-        return value
-
 class AgentStateFile(BaseModel):
+    """一个 Session 的完整磁盘快照：元信息、消息和 metadata。"""
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = 1
     session: SessionState
     messages: list[Msg] = Field(default_factory=list)
-    mailbox: MailboxState = Field(default_factory=MailboxState)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_mailbox(cls, value: Any) -> Any:
+        """让旧 state 可以先被 SessionService 读取，再由 Inbox 包完成迁移。"""
+        if isinstance(value, dict) and "mailbox" in value:
+            value = dict(value)
+            value.pop("mailbox", None)
+        return value
 
     @field_validator("messages", mode="before")
     @classmethod
@@ -106,6 +78,7 @@ class AgentStateFile(BaseModel):
 
 
 def parse_agent_state(data: dict[str, Any]) -> AgentStateFile:
+    """校验 schema version 和字段形状后解析 AgentStateFile。"""
     if not isinstance(data, dict):
         raise ValueError("AgentState 必须是 JSON 对象")  # noqa: TRY004 legacy compatibility boundary reviewed in F1
     version = data.get("schema_version")
@@ -115,4 +88,5 @@ def parse_agent_state(data: dict[str, Any]) -> AgentStateFile:
 
 
 def parse_agent_state_json(payload: str | bytes) -> AgentStateFile:
+    """从 JSON 文本解析当前版本 AgentStateFile。"""
     return parse_agent_state(json.loads(payload))

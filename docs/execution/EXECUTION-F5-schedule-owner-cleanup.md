@@ -4,7 +4,7 @@
 
 F5 已完成。Schedule 不再把 Store、Channel、Scheduler 和 Tool 混在
 `services/tools/builtin/cron.py` 中，也不再由 Gateway Bootstrap 手工启动。现在由
-`features/schedule` 统一拥有数据持久化、Job API、调度投递、静默 Channel、cron Tool
+`plugins/builtin/schedule` 统一拥有数据持久化、Job API、调度投递、静默 Channel、cron Tool
 和 Plugin 生命周期。
 
 本阶段只修改 `E:\ftre`，未修改 Desktop、`ftre-agent-core`、Octo 或客户端。
@@ -14,7 +14,7 @@ F5 已完成。Schedule 不再把 Store、Channel、Scheduler 和 Tool 混在
 ### 2.1 Schedule Owner 文件树
 
 ```text
-src/ftre/features/schedule/
+src/ftre/plugins/builtin/schedule/
 ├─ plugin.py                 # 组合 Service、Channel、Tool、Scheduler
 ├─ service.py                # ScheduleService：唯一 Job 公共 API
 ├─ store.py                  # CronStore：路径安全、JSON、原子写入
@@ -71,11 +71,11 @@ git diff --check
 
 新增验证覆盖：
 
-- `tests/features/schedule/test_store.py`：路径穿越、损坏 JSON、原子写入、CRUD、run_history；
-- `tests/features/schedule/test_service.py`：完整 CRUD 与字段校验；
-- `tests/features/schedule/test_scheduler.py`：到期/禁用/并发 tick、重复 start/stop；
-- `tests/features/schedule/test_plugin.py`：Channel、Tool、Scheduler 注册与卸载清理；
-- `tests/features/schedule/test_router.py`：HTTP CRUD 仅通过 Service；
+- `tests/plugins/builtin/schedule/test_store.py`：路径穿越、损坏 JSON、原子写入、CRUD、run_history；
+- `tests/plugins/builtin/schedule/test_service.py`：完整 CRUD 与字段校验；
+- `tests/plugins/builtin/schedule/test_scheduler.py`：到期/禁用/并发 tick、重复 start/stop；
+- `tests/plugins/builtin/schedule/test_plugin.py`：Channel、Tool、Scheduler 注册与卸载清理；
+- `tests/plugins/builtin/schedule/test_router.py`：HTTP CRUD 仅通过 Service；
 - `tests/architecture/test_f5_schedule_owner.py`：旧模块删除、Bootstrap 解耦、Owner 真实实现。
 
 ## 5. 验收对照

@@ -1,10 +1,10 @@
 import base64
 import os
 
-from ftre.services.attachment import AttachmentService
-from ftre.services.messaging.channel.providers.websocket.channel import (
+from ftre.plugins.builtin.channels.websocket.channel import (
     _persist_attachments,
 )
+from ftre.services.attachment import AttachmentService
 
 
 def test_persist_attachments_replaces_data_with_path(tmp_path):

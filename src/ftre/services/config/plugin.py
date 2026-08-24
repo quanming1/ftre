@@ -1,4 +1,8 @@
-"""Provider Plugin for the user configuration Service."""
+"""配置 Service 的 Provider Plugin。
+
+配置是许多 Plugin 的上游依赖，因此它必须先于业务 Plugin 发布；若 Composition
+已提供测试/嵌入环境专用实例，Provider 不覆盖它。
+"""
 
 from __future__ import annotations
 
@@ -8,14 +12,22 @@ from cordis import Context
 
 from .service import ConfigService
 
-inject = ()
+inject = ("http",)
 provide = ("config",)
 
 
 async def apply(ctx: Context, config: dict[str, Any] | None = None):
     """Create the config owner; Composition-injected instances take precedence."""
     existing = ctx.get("config", strict=False)
-    if existing is not None:
-        return
-    service = ConfigService(initial=config if isinstance(config, dict) and config.get("initial") else None)
-    ctx.provide("config", service)
+    if existing is None:
+        # ``config`` 是该 Plugin 的 manifest 局部配置，不是完整的
+        # ~/.ftre/config.json。ConfigService 必须自己读取配置文件；否则默认的
+        # 空 manifest dict 会覆盖真实 providers/models，客户端就会看到空模型列表。
+        service = ConfigService()
+        ctx.provide("config", service)
+    else:
+        service = existing
+    from .router import build_router
+
+    disposer = ctx.http.register_router(build_router(service), owner="config")
+    ctx.effect(lambda: disposer, label="http:config")

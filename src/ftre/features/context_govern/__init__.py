@@ -1,2 +1,0 @@
-"""Context governance behavior plugin."""
-

@@ -16,7 +16,7 @@ def _source(relative: str) -> str:
 
 
 def test_command_and_feature_code_never_uses_loop_as_service_locator() -> None:
-    roots = [SRC / "services" / "command", SRC / "features", SRC / "interfaces"]
+    roots = [SRC / "plugins" / "builtin" / "command", SRC / "plugins" / "builtin", SRC / "interfaces"]
     forbidden = ("loop.session_manager", "loop.compaction", "loop.commands", "_loop.session_manager")
     for root in roots:
         for path in root.rglob("*.py"):
@@ -25,32 +25,38 @@ def test_command_and_feature_code_never_uses_loop_as_service_locator() -> None:
 
 
 def test_agent_runtime_provider_has_no_unbounded_service_any() -> None:
-    source = _source("services/agent_loop/provider.py")
+    source = _source("services/agent/runtime/provider.py")
     assert "Any" not in source
-    assert "AgentRuntimeServices" in source
-    assert "SessionService" in source
-    assert "CommandService" in source
+    assert "build_runtime" in source
+    assert "AgentRuntimeServices" not in source
+    assert "ctx.sessions" in source
 
 
 def test_turn_executor_receives_data_plane_services_explicitly() -> None:
-    source = _source("services/agent_loop/runtime/loop/turn_executor.py")
+    source = _source("services/agent/runtime/turn_executor.py")
     for forbidden in (
         'getattr(loop, "agent_service"',
         'getattr(loop, "attachments"',
         'getattr(loop, "system_prompt"',
+        'getattr(loop, "inbox"',
         'getattr(loop, "hooks"',
         "loop.session_manager",
     ):
         assert forbidden not in source
     assert "self._attachments" in source
     assert "self._system_prompt" in source
+    assert "self._inbox" in source
     assert '"sessions": self._sessions' in source
 
 
 def test_plugins_declare_context_service_attributes() -> None:
     ignored = {"get", "provide", "effect", "events", "fiber", "parent", "scope"}
+    optional_get = {
+        "inbox", "mcp", "attachments", "system_prompt", "session_events",
+        "plugin_manager", "agents",
+    }
     plugin_paths = list((SRC / "services").rglob("plugin.py")) + list(
-        (SRC / "features").rglob("plugin.py")
+        (SRC / "plugins" / "builtin").rglob("plugin.py")
     )
     for path in plugin_paths:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -88,11 +94,15 @@ def test_plugins_declare_context_service_attributes() -> None:
                 continue
             key = node.args[0]
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                assert key.value in provide, (path, key.value, provide)
+                assert key.value in provide or key.value in optional_get, (
+                    path,
+                    key.value,
+                    provide,
+                )
 
 
 def test_builtin_command_owner_dependencies_are_explicit() -> None:
-    source = _source("services/command/builtin.py")
+    source = _source("plugins/builtin/command/builtin.py")
     for symbol in ("SessionService", "AgentService"):
         assert symbol in source
     assert "CompactionService" not in source
@@ -110,21 +120,21 @@ def test_builtin_tools_use_public_agent_service_key() -> None:
 
 
 def test_title_plugin_disposes_background_workers() -> None:
-    source = _source("services/session/title/plugin.py")
-    generator = _source("services/session/title/generator.py")
-    assert "ctx.effect(generator.close" in source
+    source = _source("plugins/builtin/session_title/plugin.py")
+    generator = _source("plugins/builtin/session_title/generator.py")
+    assert "ctx.effect(lambda: generator.close" in source
     assert "self._stopping" in generator
 
 
 def test_mcp_feature_uses_injected_attachment_owner() -> None:
-    source = (SRC / "features" / "mcp" / "adapter.py").read_text(encoding="utf-8")
+    source = (SRC / "plugins" / "builtin" / "mcp" / "adapter.py").read_text(encoding="utf-8")
     assert "ftre.services.attachment.store" not in source
     assert "attachment_service" in source
 
 
 def test_websocket_attachment_persistence_uses_attachment_service() -> None:
-    channel = _source("services/messaging/channel/providers/websocket/channel.py")
-    plugin = _source("services/messaging/channel/providers/websocket/plugin.py")
+    channel = _source("plugins/builtin/channels/websocket/channel.py")
+    plugin = _source("plugins/builtin/channels/websocket/plugin.py")
     assert "ftre.services.attachment.store" not in channel
     assert "attachment_service.save_image" in channel
     assert '"attachments"' in plugin

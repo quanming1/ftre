@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Tool, ToolRegistry
 
-from ftre.platform.hooks import HookRuntime
+from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.hooks import AgentSubject
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.attachment import AttachmentService

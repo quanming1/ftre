@@ -1,4 +1,5 @@
 """Structured system-prompt assembly Hook contract."""
+# 中文说明：System Prompt assemble Hook 契约：传递结构化 PromptAssembly 和 receipt，不让监听器修改 Service 内部列表。
 
 from __future__ import annotations
 
@@ -7,16 +8,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ftre.platform.hooks import (
-    SYSTEM_PROMPT_ASSEMBLE,
-    HookFailurePolicy,
-    HookMode,
-    HookScope,
-    HookSpec,
-)
+from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
 from ftre.services.agent.hooks import AgentSubject
 
 from .types import PromptAssembly
+
+SYSTEM_PROMPT_ASSEMBLE = "system-prompt/assemble"
 
 
 @dataclass(frozen=True, slots=True)

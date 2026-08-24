@@ -1,4 +1,4 @@
-"""CompactManager CustomEvent → SessionProjection 改造测试。
+"""CompactionService CustomEvent → SessionProjection 改造测试。
 
 验收标准（新协议）：
 - compact done 由 SessionProjection 投影为 messages 中一条 user/compact Msg；
@@ -318,7 +318,7 @@ async def test_compress_fast_invalidates_stale_usage_anchor(env):
 
     回归场景：摘要失败 → fast 裁剪成功，但锚点 assistant Msg 上记录的
     last_call_usage 仍是裁剪前实算值，should_compact 永远判过线 →
-    SessionLane BLOCKED 死锁（"压缩后上下文仍超过安全水位"）。
+    Inbox blocked 死锁（"压缩后上下文仍超过安全水位"）。
     """
     from ftre_agent_core.message import (
         MsgToken,

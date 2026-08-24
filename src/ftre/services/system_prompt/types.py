@@ -1,3 +1,5 @@
+"""System Prompt Service 的 section、贡献和最终组装模型。"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -7,6 +9,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class PromptSection:
+    """由 Plugin 注册的 prompt 来源，可按 priority/scope 参与组装。"""
     name: str
     content: str | None = None
     factory: Callable[[dict[str, Any]], str] | None = None
@@ -19,7 +22,7 @@ class PromptSection:
 
 @dataclass(frozen=True, slots=True)
 class PromptContribution:
-    """One rendered, immutable section in a PromptAssembly."""
+    """PromptAssembly 中已经渲染完成的一段不可变 section。"""
 
     name: str
     content: str
@@ -31,7 +34,7 @@ class PromptContribution:
 
 @dataclass(frozen=True, slots=True)
 class PromptAssembly:
-    """Complete prompt input passed through ``system-prompt/assemble``."""
+    """经 ``system-prompt/assemble`` Hook 传递的完整 prompt 输入。"""
 
     agent_id: str
     session_id: str

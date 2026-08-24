@@ -1,4 +1,9 @@
-"""Single owner of ~/.ftre/config.json and its revisioned snapshots."""
+"""配置 Service：``~/.ftre/config.json`` 的唯一 Owner。
+
+Service 同时维护内存快照、revision 和 watcher；持久化由 ``JsonConfigStore`` 完成。
+调用方只拿不可变快照或提交 patch，不能直接持有内部 dict，这样 optimistic
+concurrency 和原子写入才有单一语义。
+"""
 
 from __future__ import annotations
 
@@ -17,17 +22,19 @@ logger = logging.getLogger(__name__)
 
 
 class ConfigConflictError(RuntimeError):
+    """提交者基于旧 revision 写入时抛出的并发冲突。"""
     code = "config_revision_conflict"
 
 
 @dataclass(frozen=True)
 class ConfigSnapshot:
+    """一次配置提交后的防御性快照。"""
     revision: int
     value: dict[str, Any]
 
 
 class ConfigService:
-    """Own config memory, atomic persistence, revisions, and watcher callbacks."""
+    """拥有配置内存、原子持久化、revision 和 watcher 回调。"""
     key = "config"
 
     def __init__(self, path: Path | str = CONFIG_PATH, initial: dict[str, Any] | None = None) -> None:
@@ -38,6 +45,7 @@ class ConfigService:
 
     @property
     def path(self) -> Path:
+        """返回配置文件路径，供诊断显示，不允许调用方替换 Store。"""
         return self._store.path
 
     def snapshot(self) -> ConfigSnapshot:

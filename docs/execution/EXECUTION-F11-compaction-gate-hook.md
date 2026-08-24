@@ -7,7 +7,7 @@ Agent Hook 和两个压缩命令已收敛到可独立构建的 `packages/ftre-co
 
 ## 代码落点
 
-- `src/ftre/platform/hooks/names.py`：新增稳定名称 `agent/after-turn`。
+- `src/ftre/kernel/hooks/names.py`：新增稳定名称 `agent/after-turn`。
 - `src/ftre/services/agent/hooks.py`：新增 `AfterTurnPayload` 和控制型 Hook Spec。
 - `src/ftre/services/agent_loop/runtime/mailbox/lane.py`：只负责
   `peek → pre-step → claim → Turn → after-turn`，以通用 `MaintenanceOperation` 和

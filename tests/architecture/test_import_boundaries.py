@@ -18,15 +18,15 @@ def _imports(path: Path) -> set[str]:
 
 
 def test_new_layers_do_not_import_private_kernel_or_upward_layers() -> None:
-    new_layers = [ROOT / "app", ROOT / "platform", ROOT / "services", ROOT / "features"]
+    new_layers = [ROOT / "app", ROOT / "kernel", ROOT / "services", ROOT / "plugins"]
     for layer in new_layers:
         for path in layer.rglob("*.py"):
             imports = _imports(path)
             assert not any("ftre.plugin.kernel" in item for item in imports), path
-            if layer.name == "platform":
-                assert not any(item.startswith("ftre.features") for item in imports), path
+            if layer.name == "kernel":
+                assert not any(item.startswith("ftre.plugins.builtin") for item in imports), path
             if layer.name == "services":
-                assert not any(item.startswith(("ftre.features", "ftre.app")) for item in imports), path
+                assert not any(item.startswith(("ftre.plugins.builtin", "ftre.app")) for item in imports), path
 
 
 def test_cli_is_only_a_forwarder() -> None:

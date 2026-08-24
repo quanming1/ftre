@@ -7,11 +7,13 @@
 写盘采用临时文件 + fsync + os.replace 原子替换，写盘成功后才提交内存缓存。
 
 会话数据只从 ``sessions/`` 目录中的当前 JSON 模型读取，不提供旧格式迁移。
+
+Repository 是 SessionService 的存储实现，不是可被 Feature 直接注入的 Service；
+只有 SessionService 能决定什么时候写入消息、什么时候发出 lifecycle/flush Hook。
 """
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 import re
 import time
@@ -31,8 +33,6 @@ from ftre.services.session.entity.models import (
 )
 from ftre.services.session.entity.state import (
     AgentStateFile,
-    MailboxState,
-    QueueItem,
     SessionState,
 )
 
@@ -47,10 +47,6 @@ DEFAULT_DB_PATH = str(CONFIG_PATH.parent / "sessions.db")
 
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
-
-
-def _epoch_to_iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts).astimezone().isoformat()
 
 
 def _iso_to_epoch(value: str | None) -> float:
@@ -136,6 +132,18 @@ class SessionRepository:
             return None
         return state
 
+    def has_request_id(self, session_id: str, request_id: str) -> bool:
+        """查询正式消息历史中是否已经提交过 request_id。"""
+        if not request_id:
+            return False
+        state = self._states.get(session_id)
+        if state is None:
+            return False
+        return any(
+            message.metadata.get("request_id") == request_id
+            for message in state.messages
+        )
+
     def all_states(self) -> list[tuple[str, AgentStateFile]]:
         """全部 (session_id, 状态) 快照列表，供启动期全量扫描类业务使用。"""
         return list(self._states.items())
@@ -218,6 +226,7 @@ class SessionRepository:
         session = state.session
         return SessionModel(
             id=session.id,
+            agent_id=session.agent_id,
             channel_id=session.channel_id,
             title=session.title,
             workspace=session.workspace,
@@ -541,182 +550,6 @@ class SessionRepository:
             entry["session_count"] += 1
             entry["latest_at"] = max(entry["latest_at"], updated)
         return sorted(grouped.values(), key=lambda e: e["latest_at"], reverse=True)
-
-    # ============================================================
-    # Mailbox（SessionLane 的持久请求队列）
-    # ============================================================
-
-    @staticmethod
-    def _find_pending_request(
-        state: AgentStateFile, request_id: str
-    ) -> QueueItem | None:
-        """只在持久化 pending 中查找尚未领取的重复请求。"""
-        if not request_id:
-            return None
-        return next(
-            (
-                item
-                for item in state.mailbox.pending
-                if item.request_id == request_id
-            ),
-            None,
-        )
-
-    @staticmethod
-    def _has_persisted_user_message(
-        state: AgentStateFile, request_id: str
-    ) -> bool:
-        """messages 是领取后请求的持久化幂等凭据，不另存完成结果。"""
-        if not request_id:
-            return False
-        return any(
-            message.role == "user"
-            and str(message.metadata.get("request_id") or "") == request_id
-            for message in state.messages
-        )
-
-    async def admit_request(
-        self,
-        session_id: str,
-        *,
-        request_id: str,
-        content: str,
-        attachments: list[dict[str, Any]],
-        agent_id: str,
-        capacity: int = 100,
-    ) -> tuple[bool, int]:
-        """原子接纳一条消息；返回 ``(created, queue_position)``。
-
-        ``request_id`` 在一个 session 内是幂等键。只有 state.json 原子
-        落盘成功以后才返回 created=True，因此调用方可以把 accepted 当成耐久确认。
-        """
-        # 下面整个临界区保证幂等检查、容量检查、sequence 分配和 state.json 提交不可分割；
-        # 重试同一个 request_id 只返回已有接纳结果，不会再次执行工具副作用。
-        async with self._store.lock_for(session_id):
-            state = self._require_state(session_id)
-            existing = self._find_pending_request(state, request_id)
-            if existing is not None:
-                position = next(
-                    index
-                    for index, item in enumerate(state.mailbox.pending, start=1)
-                    if item.request_id == existing.request_id
-                )
-                return False, position
-            if self._has_persisted_user_message(state, request_id):
-                # 已被领取的请求一定已将 UserMessage 写入 messages；即使 Gateway
-                # 后续中断，也不应因同一 request_id 重试而重复执行。
-                return False, 0
-
-            used = len(state.mailbox.pending)
-            if used >= capacity:
-                raise OverflowError(f"mailbox 已满: {used}/{capacity}")
-
-            now = _now_iso()
-            new_state = state.model_copy(deep=True)
-            item = QueueItem(
-                request_id=request_id,
-                sequence=new_state.mailbox.next_sequence,
-                content=content,
-                attachments=copy.deepcopy(attachments),
-                agent_id=agent_id or "default",
-            )
-            new_state.mailbox.next_sequence += 1
-            new_state.mailbox.pending.append(item)
-            new_state.mailbox.revision += 1
-            new_state.session.updated_at = now
-            await self.commit(new_state)
-            return True, len(new_state.mailbox.pending)
-
-    async def peek_request(self, session_id: str) -> QueueItem | None:
-        async with self._store.lock_for(session_id):
-            state = self._states.get(session_id)
-            if state is None or not state.mailbox.pending:
-                return None
-            return state.mailbox.pending[0].model_copy(deep=True)
-
-    async def take_pending_request(
-        self, session_id: str, request_id: str
-    ) -> QueueItem | None:
-        """原子移除队首，交给 SessionLane 的内存执行态。
-
-        这是刻意选择的 at-most-once 交接点：提交后崩溃不会自动重放该请求。
-        TurnExecutor 随后会将 UserMessage 写入 messages；若恰在两者之间崩溃，
-        用户消息允许丢失，这是本项目明确接受的少数异常语义。
-        """
-        async with self._store.lock_for(session_id):
-            state = self._require_state(session_id)
-            if (
-                not state.mailbox.pending
-                or state.mailbox.pending[0].request_id != request_id
-            ):
-                return None
-            new_state = state.model_copy(deep=True)
-            now = _now_iso()
-            item = new_state.mailbox.pending.pop(0)
-            new_state.mailbox.revision += 1
-            new_state.session.updated_at = now
-            await self.commit(new_state)
-            return item.model_copy(deep=True)
-
-    async def cancel_pending_request(
-        self,
-        session_id: str,
-        request_id: str,
-    ) -> QueueItem | None:
-        """原子移除一条仍在 pending 的消息。
-
-        已被 SessionLane 领取的请求不在磁盘队列中，必须走 cancel_current。
-        取消后不写完成结果：横幅只依赖 pending，移除后下个快照自然消失。
-        """
-        async with self._store.lock_for(session_id):
-            state = self._require_state(session_id)
-            index = next(
-                (
-                    index
-                    for index, item in enumerate(state.mailbox.pending)
-                    if item.request_id == request_id
-                ),
-                -1,
-            )
-            if index < 0:
-                return None
-
-            now = _now_iso()
-            new_state = state.model_copy(deep=True)
-            item = new_state.mailbox.pending.pop(index)
-            new_state.mailbox.revision += 1
-            new_state.session.updated_at = now
-            await self.commit(new_state)
-            return item.model_copy(deep=True)
-
-    async def mailbox_snapshot(self, session_id: str) -> MailboxState:
-        async with self._store.lock_for(session_id):
-            state = self._states.get(session_id)
-            if state is None:
-                return MailboxState()
-            return state.mailbox.model_copy(deep=True)
-
-    async def advance_mailbox_revision(self, session_id: str) -> int:
-        """推进 mailbox 快照版本，但不记录任何运行态对象。
-
-        ``pending`` 未变化时，SessionLane 仍可能发生 ``running → idle``、
-        ``running → compacting`` 等对客户端可见的状态变化。revision 是这些
-        快照的单调版本号；它只保存一个整数，绝不把 active 或完成结果写回磁盘。
-        """
-        async with self._store.lock_for(session_id):
-            state = self._require_state(session_id)
-            new_state = state.model_copy(deep=True)
-            new_state.mailbox.revision += 1
-            new_state.session.updated_at = _now_iso()
-            await self.commit(new_state)
-            return new_state.mailbox.revision
-
-    async def mailbox_session_ids(self) -> list[str]:
-        return [
-            session_id
-            for session_id, state in self._states.items()
-            if state.mailbox.pending
-        ]
 
     # ============================================================
     # Message（Msg 快照）

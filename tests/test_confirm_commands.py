@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock
 import pytest
 from ftre_agent_core.message import AssistantMsg, ToolCallBlock, ToolCallState
 
-from ftre.services.command import CommandService
-from ftre.services.command.builtin import register_builtin_commands
+from ftre.plugins.builtin.command import CommandService
+from ftre.plugins.builtin.command.builtin import register_builtin_commands
 from ftre.services.messaging.bus import BusMessage
 
 
