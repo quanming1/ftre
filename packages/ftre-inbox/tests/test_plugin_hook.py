@@ -39,6 +39,10 @@ class SequenceLLM:
             yield chunk
 
 
+def _provide_plugin_dependencies(context: Context) -> None:
+    """为 Inbox Plugin 提供它真正声明的公开 Service 依赖。"""
+
+
 def _tool_sequence():
     return [
         BlockStart(index=0, block_type="tool-call"),
@@ -68,6 +72,7 @@ async def test_plugin_consumes_next_step_through_core_hook(tmp_path):
     context.provide("hook_runtime", runtime)
     context.provide("sessions", None)
     context.provide("agents", BusyAgent())
+    _provide_plugin_dependencies(context)
 
     await apply(context, {"inbox_dir": str(tmp_path)})
     inbox = context.get("inbox", strict=False)
@@ -102,6 +107,7 @@ async def test_running_core_turn_consumes_steer_before_next_reasoning(tmp_path):
     context.provide("hook_runtime", runtime)
     context.provide("sessions", None)
     context.provide("agents", BusyAgent())
+    _provide_plugin_dependencies(context)
     await apply(context, {"inbox_dir": str(tmp_path)})
     inbox = context.get("inbox", strict=False)
     registry = AgentRegistry()

@@ -6,15 +6,19 @@ from pathlib import Path
 
 from cordis import Context
 
-from ftre.services.messaging.bus import MESSAGING_INBOUND_SPEC
+from ftre.services.messaging.bus import MESSAGING_ROUTE_SPEC
 
 from .repository import InboxRepository
 from .service import InboxService
 
-# Inbox must be activated after Agent Runtime is available.  Cordis may settle
+# Inbox must be activated after Agent Runtime is available. Cordis may settle
 # independent Fibers in parallel; declaring this dependency prevents a race in
 # which Inbox becomes ACTIVE before it can bind its admission handler to the
 # AgentLoop, leaving the runtime on its ``inbox-unavailable`` fallback.
+#
+# send_message/task/team are deliberately not dependencies here. They are three
+# independent business Packages which consume ``inbox``; using Inbox does not
+# make them Inbox-owned.
 inject = ("sessions", "agents", "hook_runtime")
 provide = ("inbox",)
 
@@ -81,13 +85,14 @@ async def apply(ctx: Context, config=None):
         return await service.handle_bus_message(message)
 
     inbound_receipt = ctx.hook_runtime.register(
-        MESSAGING_INBOUND_SPEC,
+        MESSAGING_ROUTE_SPEC,
         on_inbound,
         owner="ftre-inbox",
         context=ctx,
-        global_listener=True,
+        all_agent_scopes=True,
     )
-    ctx.effect(lambda: inbound_receipt.dispose, label="inbox:messaging-inbound")
+    # HookRuntime 绑定当前 Plugin Fiber；这里不再为同一 receipt 创建第二个 disposer。
+    del inbound_receipt
     await service.start()
     # SessionService emits the public disposed Hook; Inbox only reacts to that
     # fact and never replaces SessionService's lifecycle dispatcher.
@@ -118,12 +123,10 @@ async def apply(ctx: Context, config=None):
             AGENT_BEFORE_REASONING_SPEC,
             on_before_reasoning,
             owner="ftre-inbox",
-            global_listener=True,
+            context=ctx,
+            all_agent_scopes=True,
         )
-        ctx.effect(
-            lambda: before_reasoning_receipt.dispose,
-            label="inbox:agent-before-reasoning",
-        )
+        del before_reasoning_receipt
 
         async def on_session_disposed(payload):
             await service.delete_session(payload.session_id)
@@ -132,7 +135,8 @@ async def apply(ctx: Context, config=None):
             SESSION_DISPOSED_SPEC,
             on_session_disposed,
             owner="ftre-inbox",
-            global_listener=True,
+            context=ctx,
+            all_agent_scopes=True,
         )
-        ctx.effect(lambda: receipt.dispose, label="inbox:session-disposed")
+        del receipt
     ctx.effect(lambda: service.close, label="inbox:close")

@@ -1,4 +1,4 @@
-"""Gateway startup facade used by the CLI and embedders."""
+"""Gateway startup entrypoint used by the CLI and embedders."""
 # Gateway 启停边界：创建唯一 Composition、构建 FastAPI Host，并在关闭时按依赖逆序释放资源。
 #
 # 与 composition.py 的分工：

@@ -262,7 +262,7 @@ E:/ftre/
 │     │  ├─ tools/
 │     │  ├─ system_prompt/
 │     │  ├─ messaging/
-│     │  │  ├─ hooks.py                   # messaging/inbound 等业务 HookSpec
+│     │  │  ├─ hooks.py                   # messaging/route 等业务 HookSpec
 │     │  │  ├─ bus/                       # transport-neutral event plane
 │     │  │  └─ channels/                  # Channel registry/base contract
 │     │  ├─ workspace/
@@ -362,7 +362,7 @@ WebSocket / HTTP / Subagent / Schedule
           MessageBusService
                   │
                   v
-       messaging/inbound Hook
+       messaging/route Hook
           │                 │
           │ slash command   │ ordinary input
           v                 v
@@ -379,7 +379,7 @@ WebSocket / HTTP / Subagent / Schedule
                                       │
                          SessionService 写正式历史
                                       │
-                         agent/before-turn Hook
+                         agent/before-run Hook
                                       │
                              private Agent runtime
                                       │
@@ -389,14 +389,14 @@ WebSocket / HTTP / Subagent / Schedule
                     │                                   │
                     └──────── Session events ──────────┘
                                       │
-                         agent/after-turn Hook
+                         agent/after-run Hook
                                       │
                        MessageBus → Channel outbound
 ```
 
 关键语义：
 
-- `messaging/inbound` HookSpec 由 Messaging Owner 定义，Kernel 不认识它；
+- `messaging/route` HookSpec 由 Messaging Owner 定义，Kernel 不认识它；
 - Command Plugin 只消费命令，不能创建 Agent Turn；
 - Inbox Package 只拥有 pending/claim/worker，不进入 Agent Runtime；
 - AgentService 只接收 `InboundMessage`，并且不知道消息来源；
@@ -683,3 +683,4 @@ F14 只有在以下事实同时成立时才可以标记“已验收”：
 | 2026-08-24 | 完成 F14.8-F14.10：最小/默认 Composition 与可选 Plugin 生命周期矩阵通过；清理旧生产路径、空目录、生成物和陈旧 README；完成架构/契约/生命周期/启动/全量 pytest、ruff、wheel、洁净 venv 和 Gateway 组合 smoke | 终局架构、包发行边界、生命周期和文档均有可复现证据；`data/sessions.db` 与 `.ftre-inbox` 用户数据按边界保留 | FR1-FR12、AC1-AC13 全部验收通过，提交和验证明细见 F14 执行报告 |
 | 2026-08-24 | 收尾审计修复 WebSocket Channel 的 post-composition setter/临时 App 运行路径、补齐共享 HttpService App 物化；将 MCP 放到 Agent Provider 前、Trace 改为可选；删除 Inbox HookSpec 的 no-op fallback，并为 claim 持久化失败增加 blocked/保留 pending 的 Task 防护 | 让 concrete Channel、可选能力和独立 Package 真正遵守构造注入、唯一 Host App、可选失败不阻断和无未处理后台 Task 的边界 | AC3、AC6、AC7、AC10、AC11、AC12 复审证据见执行报告 |
 | 2026-08-24 | 二次收尾审计删除 Agent Runtime 内残留的 SessionProjection/Hook/Bus fallback，统一委托 SessionEventService；运行时单测改用真实 SessionEventService fixture，并新增唯一事件出口门禁 | 消除 Session 事件的第二 Owner，确保 Agent Runtime 只执行 active Turn，不再持有 Session 投影和广播语义 | AC4、AC6、AC9、AC10 复审证据见执行报告 |
+| 2026-08-24 | F17 后续修正：Inbox 在当前 Gateway Composition 中改为必选 Plugin，只收敛队列 Service/Hook/Worker；业务 Tool 的独立 Package 发行边界由 F18 完成 | F14 已验收的“可选发行物”与当前产品数据面“必须有队列”是两个维度；F17 明确运行时门禁而不把业务 Tool 误归入 Inbox | F17/F18 PRD；历史无 Inbox 洁净启动证据保留为 F14 验收记录 |

@@ -150,7 +150,7 @@ class HttpService:
         """返回路由诊断快照，不暴露 handler/router 引用。"""
         return tuple({"method": r.method, "path": r.path, "kind": r.kind, "owner": r.owner} for r in self._routes)
 
-    def build_app(self, *, title: str = "ftre", version: str = "0.2.4"):
+    def build_app(self, *, title: str = "ftre", version: str = "0.3.0"):
         """Materialize current contributions; callers freeze the registry afterwards."""
         from fastapi import FastAPI
 

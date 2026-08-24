@@ -1,6 +1,6 @@
 """Agent 运行时 Hook 契约。
 
-这里仅描述 Agent active Turn 的语义：请求解析、请求错误、Step 边界、Turn 收尾和
+这里仅描述 Agent active Run 的语义：Run 准入、运行错误和 Run 收尾
 生命周期。pending、队列目标以及 claim 观察都属于 ``ftre-inbox`` Package，绝不在
 本模块不定义 Inbox 的 pending 类型。
 """
@@ -14,30 +14,23 @@ from typing import Any
 
 from ftre_agent_core.hooks import (
     AGENT_BEFORE_REASONING_SPEC,
-    AGENT_TURN_STOPPING_SPEC,
+    AGENT_STOP_DECISION_SPEC,
     BeforeReasoningPayload,
     BeforeReasoningResult,
     ContinueTurn,
+    StopDecisionPayload,
     StopTurn,
-    TurnStoppingPayload,
 )
 
 from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
 from ftre.services.agent.config import AgentConfig
 
 # Agent Service owns lifecycle and active-turn names; Kernel only dispatches them.
-AGENT_CREATED = "agent/created"
-AGENT_DISPOSED = "agent/disposed"
-AGENT_ERROR = "agent/error"
-AGENT_BEFORE_TURN = "agent/before-turn"
-AGENT_AFTER_TURN = "agent/after-turn"
-AGENT_REQUEST = "agent/request"
-AGENT_REQUEST_ERROR = "agent/request-error"
-AGENT_SESSION_START = "agent/session-start"
-AGENT_STATUS = "agent/status"
-AGENT_TURN_STOPPED = "agent/turn-stopped"
+AGENT_BEFORE_RUN = "agent/before-run"
+AGENT_AFTER_RUN = "agent/after-run"
+AGENT_RUN_ERROR = "agent/run-error"
 AGENT_BEFORE_REASONING = AGENT_BEFORE_REASONING_SPEC.name
-AGENT_TURN_STOPPING = AGENT_TURN_STOPPING_SPEC.name
+AGENT_STOP_DECISION = AGENT_STOP_DECISION_SPEC.name
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,8 +42,8 @@ class AgentSubject:
 
 
 @dataclass(frozen=True, slots=True)
-class BeforeTurnPayload:
-    """一次 InboundMessage 进入 Agent 前的 Turn 级准入输入。"""
+class BeforeRunPayload:
+    """一条已交付 InboundMessage 进入 Agent Run 前的准入输入。"""
 
     agent: AgentSubject
     session_id: str
@@ -62,22 +55,22 @@ class BeforeTurnPayload:
 
 
 @dataclass(frozen=True, slots=True)
-class AllowTurn:
-    """默认允许本次 InboundMessage 创建 active Turn。"""
+class AllowRun:
+    """默认允许本次 InboundMessage 创建 active Run。"""
 
     context: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
-class RejectTurn:
-    """阻止本次 InboundMessage 进入 active Turn；pending 仍由 Inbox 持有。"""
+class RejectRun:
+    """阻止本次 InboundMessage 进入 active Run；pending 仍由 Inbox 持有。"""
 
     reason: str
 
 
 @dataclass(frozen=True, slots=True)
-class AfterTurnPayload:
-    """Turn 完成后的可等待维护边界。"""
+class AfterRunPayload:
+    """Run 完成后的可等待维护边界。"""
 
     agent: AgentSubject
     session_id: str
@@ -91,19 +84,8 @@ class AfterTurnPayload:
 
 
 @dataclass(frozen=True, slots=True)
-class AgentRequestPayload:
-    """一次已交付 Agent request 的 Hook 输入。"""
-
-    agent: AgentSubject
-    session_id: str
-    turn_id: str
-    config: AgentConfig
-    cancellation: asyncio.Event
-
-
-@dataclass(frozen=True, slots=True)
 class RequestErrorPayload:
-    """LLM/Tool 请求失败时传给错误 Hook 的结构化上下文。"""
+    """一次 Agent Run 失败时传给错误 Hook 的结构化上下文。"""
 
     agent: AgentSubject
     session_id: str
@@ -131,98 +113,41 @@ class RetryRequest:
             raise ValueError("RetryRequest.max_attempts must be positive")
 
 
-@dataclass(frozen=True, slots=True)
-class TurnStoppedPayload:
-    """已完成停止决策后的只读通知。"""
-
-    agent: AgentSubject
-    session_id: str
-    turn_id: str
-    status: str
-    request_id: str
-    cancellation: asyncio.Event
-
-
-@dataclass(frozen=True, slots=True)
-class AgentLifecyclePayload:
-    """Agent 生命周期观察视图；只包含身份和状态坐标。"""
-
-    agent: AgentSubject
-    state: str
-    session_id: str = ""
-    turn_id: str = ""
-    error_code: str = ""
-    message: str = ""
-
-
-async def _allow_turn(payload: BeforeTurnPayload) -> AllowTurn:
-    return AllowTurn(payload.context)
-
-
-async def _keep_request(payload: AgentRequestPayload) -> AgentConfig:
-    return payload.config
+async def _allow_run(payload: BeforeRunPayload) -> AllowRun:
+    return AllowRun(payload.context)
 
 
 async def _stop_on_error(payload: RequestErrorPayload) -> None:
     return None
 
 
-async def _continue_after_turn(payload: AfterTurnPayload) -> None:
+async def _continue_after_run(payload: AfterRunPayload) -> None:
     return None
 
-
-def _observe_nothing(_payload) -> None:
-    return None
-
-
-def _observation_spec(name: str, payload_type: type) -> HookSpec:
-    return HookSpec(
-        name,
-        "agent",
-        HookMode.EMIT,
-        failure_policy=HookFailurePolicy.OBSERVE,
-        payload_type=payload_type,
-        result_type=type(None),
-        default=_observe_nothing,
-        scope=HookScope.AGENT,
-    )
-
-
-AGENT_BEFORE_TURN_SPEC = HookSpec(
-    AGENT_BEFORE_TURN,
+AGENT_BEFORE_RUN_SPEC = HookSpec(
+    AGENT_BEFORE_RUN,
     "agent",
     HookMode.WATERFALL,
     failure_policy=HookFailurePolicy.PROPAGATE,
-    payload_type=BeforeTurnPayload,
-    result_type=(AllowTurn, RejectTurn),
-    default=_allow_turn,
+    payload_type=BeforeRunPayload,
+    result_type=(AllowRun, RejectRun),
+    default=_allow_run,
     scope=HookScope.AGENT,
 )
 
-AGENT_AFTER_TURN_SPEC = HookSpec(
-    AGENT_AFTER_TURN,
+AGENT_AFTER_RUN_SPEC = HookSpec(
+    AGENT_AFTER_RUN,
     "agent",
     HookMode.WATERFALL,
     failure_policy=HookFailurePolicy.PROPAGATE,
-    payload_type=AfterTurnPayload,
+    payload_type=AfterRunPayload,
     result_type=type(None),
-    default=_continue_after_turn,
+    default=_continue_after_run,
     scope=HookScope.AGENT,
 )
 
-AGENT_REQUEST_SPEC = HookSpec(
-    AGENT_REQUEST,
-    "agent",
-    HookMode.WATERFALL,
-    failure_policy=HookFailurePolicy.PROPAGATE,
-    payload_type=AgentRequestPayload,
-    result_type=AgentConfig,
-    default=_keep_request,
-    scope=HookScope.AGENT,
-)
-
-AGENT_REQUEST_ERROR_SPEC = HookSpec(
-    AGENT_REQUEST_ERROR,
+AGENT_RUN_ERROR_SPEC = HookSpec(
+    AGENT_RUN_ERROR,
     "agent",
     HookMode.WATERFALL,
     failure_policy=HookFailurePolicy.PROPAGATE,
@@ -232,40 +157,22 @@ AGENT_REQUEST_ERROR_SPEC = HookSpec(
     scope=HookScope.AGENT,
 )
 
-AGENT_TURN_STOPPED_SPEC = _observation_spec(AGENT_TURN_STOPPED, TurnStoppedPayload)
-AGENT_CREATED_SPEC = _observation_spec(AGENT_CREATED, AgentLifecyclePayload)
-AGENT_DISPOSED_SPEC = _observation_spec(AGENT_DISPOSED, AgentLifecyclePayload)
-AGENT_ERROR_SPEC = _observation_spec(AGENT_ERROR, AgentLifecyclePayload)
-AGENT_SESSION_START_SPEC = _observation_spec(AGENT_SESSION_START, AgentLifecyclePayload)
-AGENT_STATUS_SPEC = _observation_spec(AGENT_STATUS, AgentLifecyclePayload)
-
-
 __all__ = [
-    "AGENT_AFTER_TURN_SPEC",
+    "AGENT_AFTER_RUN_SPEC",
     "AGENT_BEFORE_REASONING_SPEC",
-    "AGENT_BEFORE_TURN_SPEC",
-    "AGENT_CREATED_SPEC",
-    "AGENT_DISPOSED_SPEC",
-    "AGENT_ERROR_SPEC",
-    "AGENT_REQUEST_ERROR_SPEC",
-    "AGENT_REQUEST_SPEC",
-    "AGENT_SESSION_START_SPEC",
-    "AGENT_STATUS_SPEC",
-    "AGENT_TURN_STOPPED_SPEC",
-    "AGENT_TURN_STOPPING_SPEC",
-    "AfterTurnPayload",
-    "AgentLifecyclePayload",
-    "AgentRequestPayload",
+    "AGENT_BEFORE_RUN_SPEC",
+    "AGENT_RUN_ERROR_SPEC",
+    "AGENT_STOP_DECISION_SPEC",
+    "AfterRunPayload",
     "AgentSubject",
-    "AllowTurn",
+    "AllowRun",
     "BeforeReasoningPayload",
     "BeforeReasoningResult",
-    "BeforeTurnPayload",
+    "BeforeRunPayload",
     "ContinueTurn",
-    "RejectTurn",
+    "RejectRun",
     "RequestErrorPayload",
     "RetryRequest",
+    "StopDecisionPayload",
     "StopTurn",
-    "TurnStoppedPayload",
-    "TurnStoppingPayload",
 ]

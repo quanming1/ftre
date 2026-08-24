@@ -31,13 +31,9 @@ from ftre_agent_core.message import Msg
 
 from ftre.services.agent.config import AgentConfig, load_config
 from ftre.services.agent.hooks import (
-    AGENT_REQUEST_ERROR_SPEC,
-    AGENT_REQUEST_SPEC,
-    AGENT_TURN_STOPPED_SPEC,
-    AgentRequestPayload,
+    AGENT_RUN_ERROR_SPEC,
     RequestErrorPayload,
     RetryRequest,
-    TurnStoppedPayload,
 )
 from ftre.services.messaging.bus import BusMessage
 from ftre.services.session.message.multimodal import build_user_content
@@ -153,7 +149,6 @@ class TurnExecutor:
         system_prompt=None,
         hooks=None,
         agent_registry=None,
-        inbox=None,
     ) -> None:
         self._loop = loop
         self._sessions = sessions
@@ -164,10 +159,6 @@ class TurnExecutor:
         self._system_prompt = system_prompt
         self._hooks = hooks
         self._agent_registry = agent_registry
-        # Optional capability exposed to tools/Core Hook integration.  The
-        # Inbox package remains the owner of queue state; this reference is
-        # only a runtime capability and is never used for admission or claim.
-        self._inbox = inbox
 
     # ─── 驱动入口 ────────────────────────────────────────────
 
@@ -218,14 +209,11 @@ class TurnExecutor:
             )
             turn.status = TurnStatus.ERROR
         finally:
-        # Agent Core now invokes agent/turn-stopping before finalization.  The
-        # Gateway only publishes the post-decision observation here.
             # 无论正常完成、异常还是取消，都必须在离开 execute() 前关闭开放中的
             # reply/tool 生命周期并发送 PIPELINE_END。Inbox 在这里返回之后
             # 清除自己的内存运行态并唤醒同进程等待者；聊天事实已经写入 messages。
             if turn.agent is not None:
                 await self._finalize(turn)
-            await self._notify_turn_stopped(turn)
             await self._emit_step(
                 turn,
                 "PIPELINE_END",
@@ -311,9 +299,6 @@ class TurnExecutor:
             # create_agent() 也会以 profile.llm 为最终值；这里保持快照与真实
             # Agent 完全一致，避免 hook/test double 返回了另一套 llm。
             turn.config.llm = copy.deepcopy(agent_profile.llm)
-        hook_config = await self._request_config(turn, turn.config)
-        turn.config = copy.deepcopy(hook_config)
-
         # ── 创建本轮私有 Agent；取消由 AgentService 持有的 Turn task 传播 ──
         await self._create_agent(
             turn,
@@ -358,8 +343,6 @@ class TurnExecutor:
             workspace=workspace,
         )
         context_msgs = [_as_msg(r) for r in records]
-        hook_config = await self._request_config(turn, hook_config)
-
         # 复用默认权限规则，注入历史 context
         state = loop.agent_manager._default_agent_state()
         state.context = context_msgs
@@ -417,7 +400,6 @@ class TurnExecutor:
             "sessions": self._sessions,
             "bus": loop.bus,
             "agent": self._agents,
-            "inbox": self._inbox,
             "attachments": self._attachments,
             "llm_config": config.llm,
             "agent_profile": agent_profile,
@@ -607,26 +589,6 @@ class TurnExecutor:
         ):
             turn.final_content = message.get_text_content() or turn.final_content
 
-    async def _request_config(self, turn: Turn, config: AgentConfig) -> AgentConfig:
-        """Run the typed request waterfall before creating/running ReActAgent."""
-        loop = self._loop
-        agent_id = turn.inbound.metadata.agent_id or "default"
-        payload = AgentRequestPayload(
-            agent=loop.agent_subject(agent_id),
-            session_id=turn.session_id,
-            turn_id=turn.turn_id,
-            config=copy.deepcopy(config),
-            cancellation=turn.cancellation,
-        )
-        result = await loop.dispatch_agent_hook(
-            AGENT_REQUEST_SPEC, payload, agent_id=agent_id
-        )
-        if not isinstance(result, AgentConfig):
-            raise TypeError("agent/request must return AgentConfig")
-        if turn.cancellation.is_set():
-            raise asyncio.CancelledError
-        return copy.deepcopy(result)
-
     async def _assemble_prompt(
         self,
         turn: Turn,
@@ -704,11 +666,11 @@ class TurnExecutor:
         )
         try:
             result = await loop.dispatch_agent_hook(
-                AGENT_REQUEST_ERROR_SPEC, payload, agent_id=agent_id
+                AGENT_RUN_ERROR_SPEC, payload, agent_id=agent_id
             )
         except Exception:
             logger.exception(
-                "[turn-executor] agent/request-error failed session=%s",
+                "[turn-executor] agent/run-error failed session=%s",
                 turn.session_id,
             )
             return False
@@ -727,21 +689,6 @@ class TurnExecutor:
             attempt=turn.retry_count,
         )
         return True
-
-    async def _notify_turn_stopped(self, turn: Turn) -> None:
-        """Publish the post-finalization observation exactly once per Turn."""
-        agent_id = turn.inbound.metadata.agent_id or "default"
-        payload = TurnStoppedPayload(
-            agent=self._loop.agent_subject(agent_id),
-            session_id=turn.session_id,
-            turn_id=turn.turn_id,
-            status=turn.status.value,
-            request_id=turn.inbound.metadata.request_id,
-            cancellation=turn.cancellation,
-        )
-        await self._loop.dispatch_agent_hook(
-            AGENT_TURN_STOPPED_SPEC, payload, agent_id=agent_id
-        )
 
     # ─── 工具方法 ──────────────────────────────────────────
 

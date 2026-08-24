@@ -15,9 +15,6 @@ from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
 from .models import QueueItem, QueueTarget
 
 INBOX_BEFORE_CLAIM = "inbox/before-claim"
-INBOX_INSERTED = "inbox/inserted"
-INBOX_CLAIMED = "inbox/claimed"
-INBOX_DISCARDED = "inbox/discarded"
 INBOX_CHANGED = "inbox/changed"
 INBOX_STATUS_CHANGED = "inbox/status-changed"
 
@@ -44,16 +41,6 @@ class RejectClaim:
 
 
 @dataclass(frozen=True, slots=True)
-class InboxMutationPayload:
-    """队列 mutation 的只读观察视图。"""
-
-    session_id: str
-    item: QueueItem
-    target: QueueTarget
-    operation: Literal["inserted", "claimed", "discarded"]
-
-
-@dataclass(frozen=True, slots=True)
 class InboxChangedPayload:
     """队列事实已持久化，可供协议适配器读取最新权威快照。"""
 
@@ -66,10 +53,6 @@ class InboxStatusPayload:
 
     session_id: str
     status: str
-
-
-def _observe(_payload: InboxMutationPayload) -> None:
-    return None
 
 
 async def _enter(payload: BeforeClaimPayload) -> EnterClaim:
@@ -87,26 +70,10 @@ INBOX_BEFORE_CLAIM_SPEC = HookSpec(
     scope=HookScope.GLOBAL,
 )
 
-def _observe_spec(name: str):
-    return HookSpec(
-        name,
-        "inbox",
-        HookMode.EMIT,
-        failure_policy=HookFailurePolicy.OBSERVE,
-        payload_type=InboxMutationPayload,
-        result_type=type(None),
-        default=_observe,
-        scope=HookScope.GLOBAL,
-    )
-
-
-INBOX_INSERTED_SPEC = _observe_spec(INBOX_INSERTED)
-INBOX_CLAIMED_SPEC = _observe_spec(INBOX_CLAIMED)
-INBOX_DISCARDED_SPEC = _observe_spec(INBOX_DISCARDED)
 INBOX_CHANGED_SPEC = HookSpec(
     INBOX_CHANGED,
     "inbox",
-    HookMode.EMIT,
+    HookMode.PARALLEL,
     failure_policy=HookFailurePolicy.OBSERVE,
     payload_type=InboxChangedPayload,
     result_type=type(None),
@@ -116,7 +83,7 @@ INBOX_CHANGED_SPEC = HookSpec(
 INBOX_STATUS_CHANGED_SPEC = HookSpec(
     INBOX_STATUS_CHANGED,
     "inbox",
-    HookMode.EMIT,
+    HookMode.PARALLEL,
     failure_policy=HookFailurePolicy.OBSERVE,
     payload_type=InboxStatusPayload,
     result_type=type(None),
@@ -129,18 +96,11 @@ __all__ = [
     "INBOX_BEFORE_CLAIM_SPEC",
     "INBOX_CHANGED",
     "INBOX_CHANGED_SPEC",
-    "INBOX_CLAIMED",
-    "INBOX_CLAIMED_SPEC",
-    "INBOX_DISCARDED",
-    "INBOX_DISCARDED_SPEC",
-    "INBOX_INSERTED",
-    "INBOX_INSERTED_SPEC",
     "INBOX_STATUS_CHANGED",
     "INBOX_STATUS_CHANGED_SPEC",
     "BeforeClaimPayload",
     "EnterClaim",
     "InboxChangedPayload",
-    "InboxMutationPayload",
     "InboxStatusPayload",
     "RejectClaim",
 ]

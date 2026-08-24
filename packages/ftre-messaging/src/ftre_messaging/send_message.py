@@ -33,8 +33,8 @@ _INVOKE_PREFIX_TEMPLATE = (
 )
 
 
-def create_send_message_tool(channel_manager) -> Tool:
-    """创建 send_message 工具"""
+def create_send_message_tool(channel_manager, inbox) -> Tool:
+    """创建由 messaging Plugin 拥有、可消费 Inbox 的跨 Session 消息工具。"""
 
     def send_message(
         channel_id: str,
@@ -47,7 +47,6 @@ def create_send_message_tool(channel_manager) -> Tool:
         bus=Injected("bus"),  # noqa: B008 - MessageBus transport context
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
-        inbox=Injected("inbox"),  # noqa: B008 - optional ftre-inbox Package
     ) -> str:
         # ── 通用前置校验 ────────────────────────────────────
         if caller_channel == SUBAGENT_CHANNEL_ID:
@@ -60,8 +59,6 @@ def create_send_message_tool(channel_manager) -> Tool:
             return f"[error] 频道不存在: {channel_id}"
         if event_loop is None:
             return "[error] runtime context 未注入完整"
-        if inbox is None:
-            return "[error] ftre-inbox 未启用，无法投递异步消息"
         if channel_id == caller_channel and session_id == caller_session:
             return "[error] 不能给当前 session 发消息（直接在回复中输出即可）"
         if kind not in ("notify", "invoke"):
@@ -85,6 +82,8 @@ def create_send_message_tool(channel_manager) -> Tool:
                 return f"已通知 {channel_id}:{session_id}"
 
             # kind == "invoke"
+            if inbox is None:
+                return "[error] Inbox Service 未就绪，无法唤起目标 Agent"
             ack = _do_invoke(
                 target_channel=target_channel,
                 event_loop=event_loop,

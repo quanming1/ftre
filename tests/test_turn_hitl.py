@@ -146,7 +146,6 @@ def _make_executor(agent) -> TurnExecutor:
     loop.session_events = SessionEventService(
         SimpleNamespace(projection=loop.session_projection),
         loop.bus,
-        HookRuntime(Context()),
     )
 
     async def emit_session_event(session_id, channel_id, event, *, metadata=None):
@@ -460,7 +459,7 @@ async def test_confirm_resume_uses_structured_prompt_hook():
         SYSTEM_PROMPT_ASSEMBLE_SPEC,
         inject,
         owner="test-prompt",
-        global_listener=True,
+        all_agent_scopes=True,
     )
 
     await _execute_command(executor, _confirm_inbound(approved=True))

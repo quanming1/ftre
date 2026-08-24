@@ -34,8 +34,6 @@ from ftre.services.session.entity.state import AgentStateFile, SessionState
 from ftre.services.session.hooks import (
     SESSION_CREATED_SPEC,
     SESSION_DISPOSED_SPEC,
-    SESSION_FLUSH_SPEC,
-    SessionFlushPayload,
     SessionLifecyclePayload,
 )
 from ftre.services.session.persistence.repository import SessionRepository
@@ -75,18 +73,10 @@ class SessionService:
         # 流式 Reply 投影属于 Session 数据面；把它放在 SessionService 内部，
         # 避免 Agent Runtime 变成 WebSocket 的第二个 Projection Owner。
         self._projection = SessionProjection(self)
-        # Session 是 flush/lifecycle Hook 的语义 Owner；Agent Runtime 不再通过
-        # setter 把回调塞进来。未接入 Runtime 的嵌入式 Session 仍可持久化，
+        # Session 是 lifecycle Hook 的语义 Owner；Agent Runtime 不再通过 setter
+        # 把回调塞进来。未接入 Runtime 的嵌入式 Session 仍可持久化，
         # 只是没有运行时观察者。
         self._hook_runtime = hook_runtime
-
-    async def flush(self, session_id: str = "", *, reason: str = "manual") -> None:
-        """Run the public Session flush Hook after durable writes settle."""
-        if self._hook_runtime is not None:
-            await self._hook_runtime.dispatch(
-                SESSION_FLUSH_SPEC,
-                SessionFlushPayload(session_id, reason, asyncio.Event()),
-            )
 
     async def _emit_lifecycle(
         self, kind: str, session_id: str, channel_id: str = ""
@@ -169,7 +159,7 @@ class SessionService:
         return await self._repo.get_session(session_id)
 
     def has_session(self, session_id: str) -> bool:
-        """同步只读存在性查询，供可选 Inbox Package 做 admission 校验。"""
+        """同步只读存在性查询，供 Inbox Plugin 做 admission 校验。"""
         return self._repo.get_state(session_id) is not None
 
     def has_request_id(self, session_id: str, request_id: str) -> bool:

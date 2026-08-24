@@ -18,13 +18,34 @@
 > 唯一 Plugin/Service Owner 通过 Inject/Hook 协作；Queue → History 交接、Owner Plugin 路由
 > 和可选能力降级均已验证。
 
-> **F14 草稿（2026-08-24）**：
+> **F14 已验收（2026-08-24）**：
 > [`PRD-F14-final-plugin-first-architecture.md`](PRD-F14-final-plugin-first-architecture.md)
-> 是后续架构迁移的终局契约。目标目录统一为 `app/kernel/services/plugins/packages`，
+> 是当前目录和 Owner 边界的终局契约。目标目录统一为 `app/kernel/services/plugins/packages`，
 > `AgentLoop` 降为 AgentService 私有 Runtime，产品能力由 Builtin/External Plugin 管理，
-> `ftre-inbox` 与 `ftre-compaction` 保持独立可选 Package。F14 定稿前不据此开发。
-> 分批实施提示词见
-> [`docs/execution/prompts/F14/`](../execution/prompts/F14/README.md)，必须在 PRD 定稿后按编号串行执行。
+> `packages/` 下的五个 Package 保持独立发行边界；当前 Gateway 默认安装并装配 Inbox、Compaction、Messaging、Task、Team，业务 Package 仍可按配置禁用。分批实施提示词及其历史执行顺序见
+> [`docs/execution/prompts/F14/`](../execution/prompts/F14/README.md)。
+
+> **F20 已验收（2026-08-24）**：
+> [`PRD-F20-default-package-install.md`](PRD-F20-default-package-install.md) 将仓内五个 Package
+> 纳入 `ftre` 默认发行依赖和 Composition 清单；extras 保留为裁剪安装兼容入口，不再是默认
+> 安装压缩、消息、任务和团队能力的前置条件。
+
+> **F15 开发中（2026-08-24）**：
+> [`PRD-F15-hook-surface-convergence.md`](PRD-F15-hook-surface-convergence.md)
+> 负责收敛 F6-F14 演进后留下的 Hook 语义债务。第二版把交付面限定在 ftre Host 与仓内
+> Package：Host Hook 22→10、全系统 29→17，Core 7 个 Hook 原样冻结；删除幽灵 Hook、
+> 重复通知和 Host 旧名，修复 EMIT 承载关键异步清理的竞态，并让一次监听器注册只归属于
+> 一个 Cordis Fiber Owner。Tool Hook 4→2 与停止决策改名留给后续独立 Core 阶段。
+> F15 已按用户授权进入开发阶段。分批执行契约见
+> [`docs/execution/prompts/F15/`](../execution/prompts/F15/README.md)；后续终局阶段的配对 PRD 与
+> 跨仓执行预案见 [`docs/execution/prompts/F16-C3/`](../execution/prompts/F16-C3/README.md)。
+
+> **F16/C3 已验收（2026-08-24）**：
+> [`PRD-F16-core-hook-surface-convergence.md`](PRD-F16-core-hook-surface-convergence.md) 与
+> `E:\ftre-agent-core\docs\prd\PRD-C3-hook-surface-convergence.md` 配对，目标是把 Core
+> Tool Hook 4→2、`agent/turn-stopping` 改为 `agent/stop-decision`，使全系统公共 Hook 17→15。
+> 两个 PRD 已完成批次 00–06；Core Hook 7→5、全系统 17→15，两个可选 Package 通过
+> wheel/洁净 venv/生命周期验证。
 
 ## 当前运行契约（F12）
 
@@ -37,8 +58,8 @@ WS/HTTP/Plugin
         → inbox/before-claim
         → 原子 claim
         → AgentService.run(InboundMessage)
-        → Agent Core / agent/after-turn
-    → session/queue + session/status + session/event
+        → Agent Core / agent/after-run
+    → session/queue + session/status
 ```
 
 当前所有权只有三条：
@@ -295,11 +316,11 @@ Hook、命令和算法移动到可选发行物 `packages/ftre-compaction`。当�
 ftre-compaction/plugin.py
   → 创建 CompactionService
   → provide("compaction")
-  → 注册 inbox/before-claim、agent/after-turn、agent/request-error
+  → 注册 inbox/before-claim、agent/after-run、agent/run-error
   → 注册 /compact、/compress-fast
 ```
 
-Agent 的两个相邻边界必须区分：`agent/before-turn` 只负责一次
+Agent 的两个相邻边界必须区分：`agent/before-run` 只负责一次
 `InboundMessage` 的 Turn 准入；`agent/before-reasoning` 由 `ftre-agent-core` 在每次
 真正调用 LLM 前触发，`ftre-inbox` 可在这里消费运行中的 `next-step`。
 
@@ -315,3 +336,19 @@ Agent 的两个相邻边界必须区分：`agent/before-turn` 只负责一次
 F10 中关于 `src/ftre/services/compaction`、`src/ftre/plugins/builtin/compaction` 和
 `ContextGate` 的路径描述是历史记录；当前实现以
 [`PRD-F11-compaction-gate-hook.md`](PRD-F11-compaction-gate-hook.md) 为准。
+
+## 14. Inbox 与业务 Tool Owner 收敛（F17/F18）
+
+F17 将当前 Gateway 的 Inbox 从“可选能力”调整为“必选 Plugin”，并让
+`ftre-inbox` 只拥有持久队列、Queue Hook、Worker 和 claim 生命周期。Agent Runtime 只执行
+已交付的 `InboundMessage`，不再保存或透传 Inbox 句柄。
+
+F18 进一步把使用 Inbox 的三个业务 Tool 按职责拆为独立 Package：
+`ftre-messaging` 拥有 `send_message`，`ftre-task` 拥有 `task`，`ftre-team` 拥有
+`team_*`/`wait_agent`。依赖 Inbox 不代表属于 Inbox；详细边界见
+[`PRD-F17-inbox-tool-owner-convergence.md`](PRD-F17-inbox-tool-owner-convergence.md) 和
+[`PRD-F18-tool-package-boundaries.md`](PRD-F18-tool-package-boundaries.md)。
+
+F19 又将 Session HTTP 路由从 Session Provider 中拆为 `session-routes` Plugin；Session
+Provider 不再迟查 Agent/Inbox，路由通过显式 Inject 注册并随 Fiber 可逆清理。详见
+[`PRD-F19-session-route-inject-boundary.md`](PRD-F19-session-route-inject-boundary.md)。

@@ -1,9 +1,9 @@
-"""F14.7 Package 发行边界门禁。
+"""F14.7/F20 Package 发行边界门禁。
 
-这些断言只检查可自动验证的发行事实：Host extras 不变成硬依赖，两个可选
-发行物都有唯一 entry point，源码不反向拿 Host 私有 Runtime/Repository，且
-仓库中不能把缓存或构建产物打进 wheel。真正的 wheel 构建和洁净 venv 安装
-在执行报告中运行，因为它们需要隔离的临时环境。
+这些断言检查可自动验证的发行事实：默认 Host 组合包含全部仓内 Package，extras
+仍可表达裁剪组合；每个发行物都有唯一 entry point，源码不反向拿 Host 私有
+Runtime/Repository，且仓库中不能把缓存或构建产物打进 wheel。真正的 wheel 构建
+和洁净 venv 安装在执行报告中运行，因为它们需要隔离的临时环境。
 """
 
 from __future__ import annotations
@@ -22,21 +22,40 @@ def _project(path: Path) -> dict:
     return tomllib.loads((path / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
 
-def test_host_extras_are_optional_package_edges() -> None:
-    """Host 只声明可选安装组合，不在源码或依赖中硬编码两个 Package。"""
+def test_host_default_distribution_contains_all_workspace_packages() -> None:
+    """默认发行组合包含全部仓内 Package，extras 只保留裁剪安装兼容入口。"""
     project = _project(ROOT)
+    dependencies = set(project["dependencies"])
+    assert {
+        "ftre-inbox>=0.2.0,<0.3.0",
+        "ftre-compaction>=0.2.0,<0.3.0",
+        "ftre-messaging>=0.1.0,<0.2.0",
+        "ftre-task>=0.1.0,<0.2.0",
+        "ftre-team>=0.1.0,<0.2.0",
+    }.issubset(dependencies)
     extras = project["optional-dependencies"]
-    assert extras["inbox"] == ["ftre-inbox>=0.1.0"]
-    assert extras["compaction"] == ["ftre-compaction>=0.1.0"]
-    assert extras["full"] == ["ftre-inbox>=0.1.0", "ftre-compaction>=0.1.0"]
-    assert all("ftre-inbox" not in item and "ftre-compaction" not in item for item in project["dependencies"])
+    assert extras["inbox"] == ["ftre-inbox>=0.2.0,<0.3.0"]
+    assert extras["compaction"] == ["ftre-compaction>=0.2.0,<0.3.0"]
+    assert extras["messaging"] == ["ftre-messaging>=0.1.0,<0.2.0"]
+    assert extras["task"] == ["ftre-task>=0.1.0,<0.2.0"]
+    assert extras["team"] == ["ftre-team>=0.1.0,<0.2.0"]
+    assert extras["full"] == [
+        "ftre-inbox>=0.2.0,<0.3.0",
+        "ftre-messaging>=0.1.0,<0.2.0",
+        "ftre-task>=0.1.0,<0.2.0",
+        "ftre-team>=0.1.0,<0.2.0",
+        "ftre-compaction>=0.2.0,<0.3.0",
+    ]
 
 
-def test_optional_packages_have_one_entry_point_and_metadata() -> None:
-    """每个发行物都能被 Plugin discovery 识别，且版本/README/build 元数据完整。"""
+def test_workspace_packages_have_one_entry_point_and_metadata() -> None:
+    """默认发行组合中的每个 Package 都有唯一 entry point 和完整发行元数据。"""
     expected = {
         "ftre-inbox": ("inbox", "ftre_inbox.plugin:apply"),
         "ftre-compaction": ("compaction", "ftre_compaction.plugin:apply"),
+        "ftre-messaging": ("messaging", "ftre_messaging.plugin:apply"),
+        "ftre-task": ("task", "ftre_task.plugin:apply"),
+        "ftre-team": ("team", "ftre_team.plugin:apply"),
     }
     for package_name, (plugin_id, entry) in expected.items():
         package = PACKAGES / package_name

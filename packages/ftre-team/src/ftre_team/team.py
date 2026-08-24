@@ -23,7 +23,8 @@ team 工具集 — 让主 agent（leader）组建并管理一个由多个 subage
   1. inbound 消息携带的 agent_ref（team 工具投递时附加，sub_agent 必须等于本 session）
   2. 成员 session 自身 metadata['team_member'] 结构性绑定（任意入口兜底）
   解析后走与全局 agent 完全相同的组装路径（AGENTS.md 注入、llm 覆盖等）。
-  目录布局/读写/绑定形状全部收口在 ftre/agent/sub_agent_profile.py。
+  目录布局/读写/绑定形状由 Host 的公开 AgentProfileService 收口，Team Package 只通过
+  `inject("agent_profiles")` 使用它。
   teams 的写路径经 SessionRepository.mutate_session_metadata 原子读-改-写，
   并行 tool call 不丢更新。
 - 成员以 **session_id 为键** 存在 team.members 下。team_say / team_agent_status /
@@ -51,7 +52,6 @@ from datetime import UTC, datetime
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
 from ftre.services.agent.contracts import InboundMessage
-from ftre.services.agent.profile import sub_agent as sub_agent_profile
 from ftre.services.messaging.bus import AgentRef, InboundMetadata
 from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
 
@@ -168,19 +168,22 @@ def _member_last_text(session_manager, event_loop, member_sid: str) -> str | Non
     return None
 
 
-def create_team_tools(channel_manager) -> list[Tool]:
+def create_team_tools(channel_manager, inbox, agent_profiles) -> list[Tool]:
     """构建 team 工具集，返回 6 个 Tool。
+
+    该工厂属于 ``ftre-team``；团队关系落在 SessionService metadata，Inbox 只负责成员
+    消息的耐久接纳和完成屏障。
 
     Args:
         channel_manager: ChannelManager 实例，通过其中的 SubagentChannel 投递 inbound。
     """
     return [
         _create_team_create_tool(),
-        _create_team_add_agent_tool(channel_manager),
-        _create_team_say_tool(channel_manager),
+        _create_team_add_agent_tool(channel_manager, inbox, agent_profiles),
+        _create_team_say_tool(channel_manager, inbox),
         _create_team_agent_status_tool(),
-        _create_team_delete_tool(),
-        _create_wait_agent_tool(),
+        _create_team_delete_tool(agent_profiles),
+        _create_wait_agent_tool(inbox),
     ]
 
 
@@ -264,7 +267,7 @@ def _create_team_create_tool() -> Tool:
 
 
 # ── team_add_agent ─────────────────────────────────────────────
-def _create_team_add_agent_tool(channel_manager) -> Tool:
+def _create_team_add_agent_tool(channel_manager, inbox, agent_profiles) -> Tool:
     def team_add_agent(
         team_id: str,
         agent_name: str,
@@ -274,7 +277,6 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
-        inbox=Injected("inbox"),  # noqa: B008 - optional ftre-inbox Package
         caller_channel: str = Injected("channel_id"),
         workspace=Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
     ) -> str:
@@ -305,8 +307,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         # 成员工作区继承 leader 当前工作区
         member_workspace = ""
         try:
-            from ._workspace import WorkspaceAccessor
-            if isinstance(workspace, WorkspaceAccessor):
+            if hasattr(workspace, "get"):
                 member_workspace = workspace.get()
         except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
             pass
@@ -326,7 +327,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         # 成员 profile 落盘（先全量校验后写盘）：<leader session>/sub_agents/<member>/
         # 格式与全局 agent 同构（AGENTS.md + agent.config.json）
         try:
-            sub_agent_profile.write_member_profile(
+            agent_profiles.write_team_member_profile(
                 session_manager, session_id, member_sid,
                 role=role, overrides=profile,
             )
@@ -338,7 +339,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
             return f"[error] 写入成员 profile 失败: {type(e).__name__}: {e}"
 
         # 成员 session 的结构性绑定：任意入口的消息都能解析出成员 profile
-        binding = sub_agent_profile.build_team_member_binding(
+        binding = agent_profiles.build_team_member_binding(
             session_id, team_id.strip(), agent_name.strip()
         )
         try:
@@ -349,7 +350,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
                 event_loop,
             )
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
-            sub_agent_profile.delete_member_profile(session_manager, session_id, member_sid)
+            agent_profiles.delete_team_member_profile(session_manager, session_id, member_sid)
             try:
                 _run_async(agent_service.delete_session(member_sid), event_loop)
             except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
@@ -374,7 +375,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
         try:
             _mutate_teams(session_manager, event_loop, session_id, _register)
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
-            sub_agent_profile.delete_member_profile(session_manager, session_id, member_sid)
+            agent_profiles.delete_team_member_profile(session_manager, session_id, member_sid)
             try:
                 _run_async(agent_service.delete_session(member_sid), event_loop)
             except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
@@ -458,7 +459,7 @@ def _create_team_add_agent_tool(channel_manager) -> Tool:
 
 
 # ── team_say ───────────────────────────────────────────────────
-def _create_team_say_tool(channel_manager) -> Tool:
+def _create_team_say_tool(channel_manager, inbox) -> Tool:
     def team_say(
         team_id: str,
         session_id: str,
@@ -467,11 +468,12 @@ def _create_team_say_tool(channel_manager) -> Tool:
         event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
-        inbox=Injected("inbox"),  # noqa: B008 - optional ftre-inbox Package
         caller_channel: str = Injected("channel_id"),
     ) -> str:
-        if not parent_session_id or event_loop is None or session_manager is None or inbox is None:
+        if not parent_session_id or event_loop is None or session_manager is None:
             return "[error] runtime context 未注入完整"
+        if inbox is None:
+            return "[error] Inbox Service 未就绪"
         guard = _guard_not_subagent(caller_channel)
         if guard:
             return guard
@@ -665,7 +667,7 @@ def _create_team_agent_status_tool() -> Tool:
 
 
 # ── team_delete ────────────────────────────────────────────────
-def _create_team_delete_tool() -> Tool:
+def _create_team_delete_tool(agent_profiles) -> Tool:
     def team_delete(
         team_id: str,
         session_id: str = Injected("session_id"),
@@ -712,7 +714,7 @@ def _create_team_delete_tool() -> Tool:
             except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 failed += 1
             # 双保险：绑定缺失时也确保 profile 目录被清
-            sub_agent_profile.delete_member_profile(session_manager, session_id, msid)
+            agent_profiles.delete_team_member_profile(session_manager, session_id, msid)
 
         msg = f"已解散团队 {team_id}（'{team.get('name')}'），删除 {deleted} 个成员 session。"
         if failed:
@@ -737,18 +739,19 @@ def _create_team_delete_tool() -> Tool:
 
 
 # ── wait_agent ─────────────────────────────────────────────────
-def _create_wait_agent_tool() -> Tool:
+def _create_wait_agent_tool(inbox) -> Tool:
     def wait_agent(
         session_ids: list | None = None,
         parent_session_id: str = Injected("session_id"),
         event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
-        inbox=Injected("inbox"),  # noqa: B008 - optional ftre-inbox Package
         caller_channel: str = Injected("channel_id"),
     ) -> str:
-        if not parent_session_id or event_loop is None or agent_service is None or session_manager is None or inbox is None:
+        if not parent_session_id or event_loop is None or agent_service is None or session_manager is None:
             return "[error] runtime context 未注入完整"
+        if inbox is None:
+            return "[error] Inbox Service 未就绪"
         guard = _guard_not_subagent(caller_channel)
         if guard:
             return guard
@@ -768,8 +771,8 @@ def _create_wait_agent_tool() -> Tool:
         if unknown:
             return f"[error] 以下 session 不属于你的任何团队: {unknown}"
 
-        # Coordinator 的 quiescent barrier 覆盖 Turn、轮后压缩和已接纳 FIFO。
-        # 它不依赖 session 级一次性事件，因此多条排队消息不会误唤醒。
+        # quiescent barrier 覆盖 Turn、轮后压缩和已接纳 FIFO；它不依赖
+        # session 级一次性事件，因此多条排队消息不会误唤醒。
         results: list[str] = []
         for sid in sids:
             try:

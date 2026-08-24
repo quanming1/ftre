@@ -12,7 +12,7 @@ from cordis import Context
 from .events import SessionEventService
 from .service import SessionService
 
-inject = ("hook_runtime", "http", "message_bus")
+inject = ("hook_runtime", "message_bus")
 provide = ("sessions", "session_events")
 
 
@@ -31,7 +31,7 @@ async def apply(ctx: Context, config=None):
     if ctx.get("session_events", strict=False) is None:
         ctx.provide(
             "session_events",
-            SessionEventService(service, ctx.message_bus.bus, ctx.hook_runtime),
+            SessionEventService(service, ctx.message_bus.bus),
         )
 
     # Composition tests and embedders may provide a narrow Session contract
@@ -39,15 +39,3 @@ async def apply(ctx: Context, config=None):
     # participates in these lifecycle hooks.
     if isinstance(service, SessionService):
         ctx.effect(lambda: service.close, label="sessions:close")
-
-    from .router import build_router
-
-    disposer = ctx.http.register_router(
-        build_router(
-            service,
-            lambda: ctx.get("agents", strict=False),
-            lambda: ctx.get("inbox", strict=False),
-        ),
-        owner="sessions",
-    )
-    ctx.effect(lambda: disposer, label="http:sessions")

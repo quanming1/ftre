@@ -46,8 +46,10 @@ def _wrap_with_preamble(prompt: str) -> str:
 def _run_async(coro, event_loop, timeout: float | None = 10.0):
     """跨线程执行 coroutine 并等结果"""
     return asyncio.run_coroutine_threadsafe(coro, event_loop).result(timeout=timeout)
-def create_task_tool(channel_manager) -> Tool:
+def create_task_tool(channel_manager, inbox) -> Tool:
     """创建 task 工具
+
+    该工厂属于 ``ftre-task``；Inbox 只是它用于耐久投递和等待的公开依赖。
 
     Args:
         channel_manager: ChannelManager 实例。task 通过其中注册的 SubagentChannel
@@ -62,7 +64,6 @@ def create_task_tool(channel_manager) -> Tool:
         event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
-        inbox=Injected("inbox"),  # noqa: B008 - optional ftre-inbox Package
         workspace=Injected("workspace"),  # noqa: B008 - public WorkspaceAccessor runtime key
     ) -> str:
         if not prompt or not prompt.strip():
@@ -70,7 +71,7 @@ def create_task_tool(channel_manager) -> Tool:
         if event_loop is None or session_manager is None or agent_service is None:
             return "[error] runtime context 未注入完整"
         if inbox is None:
-            return "[error] ftre-inbox 未启用，无法派发 subagent"
+            return "[error] Inbox Service 未就绪，无法派发 subagent"
         if caller_channel == SUBAGENT_CHANNEL_ID:
             return (
                 "[error] subagent 内不允许再次调用 task，"
@@ -93,8 +94,7 @@ def create_task_tool(channel_manager) -> Tool:
                     caller_workspace = working_dir.strip()
                 else:
                     try:
-                        from ._workspace import WorkspaceAccessor
-                        if isinstance(workspace, WorkspaceAccessor):
+                        if hasattr(workspace, "get"):
                             caller_workspace = workspace.get()
                     except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
                         pass
@@ -109,19 +109,16 @@ def create_task_tool(channel_manager) -> Tool:
 
             wrapped_prompt = _wrap_with_preamble(prompt)
 
-            if inbox is not None:
-                ack = _run_async(
-                    inbox.followup(InboundMessage(
-                        session_id=sid,
-                        request_id=f"task_{uuid.uuid4().hex}",
-                        channel_id=SUBAGENT_CHANNEL_ID,
-                        content=wrapped_prompt,
-                        source="plugin",
-                    )),
-                    event_loop,
-                )
-            else:
-                raise RuntimeError("ftre-inbox 未启用")
+            ack = _run_async(
+                inbox.followup(InboundMessage(
+                    session_id=sid,
+                    request_id=f"task_{uuid.uuid4().hex}",
+                    channel_id=SUBAGENT_CHANNEL_ID,
+                    content=wrapped_prompt,
+                    source="plugin",
+                )),
+                event_loop,
+            )
             if not ack.accepted:
                 return f"[error] subagent 消息接纳失败: {ack.error}"
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1

@@ -15,7 +15,7 @@ from ftre.kernel.hooks import (
     HookSpec,
     context_for_scope,
 )
-from ftre.services.agent.hooks import AGENT_BEFORE_TURN
+from ftre.services.agent.hooks import AGENT_BEFORE_RUN
 
 
 def _spec(mode: HookMode, *, failure=HookFailurePolicy.PROPAGATE) -> HookSpec:
@@ -23,7 +23,7 @@ def _spec(mode: HookMode, *, failure=HookFailurePolicy.PROPAGATE) -> HookSpec:
         return payload
 
     return HookSpec(
-        AGENT_BEFORE_TURN,
+        AGENT_BEFORE_RUN,
         "agent",
         mode,
         failure_policy=failure,
@@ -36,9 +36,9 @@ def test_hook_spec_rejects_unstable_names_and_requires_waterfall_default():
     with pytest.raises(ValueError, match="domain/name"):
         HookSpec("invalid", "agent", HookMode.EMIT, payload_type=dict)
     with pytest.raises(ValueError, match="requires an explicit default"):
-        HookSpec("agent/request", "agent", HookMode.WATERFALL, payload_type=dict)
+        HookSpec("agent/run-error", "agent", HookMode.WATERFALL, payload_type=dict)
     with pytest.raises(TypeError, match="HookSpec.mode"):
-        HookSpec("agent/request", "agent", "serial", payload_type=dict)  # type: ignore[arg-type]
+        HookSpec("agent/run-error", "agent", "serial", payload_type=dict)  # type: ignore[arg-type]
 
 
 def test_hook_spec_is_immutable():
@@ -186,7 +186,7 @@ async def test_observer_failure_is_diagnosed_without_blocking_dispatch():
     await runtime.dispatch(spec, {})
 
     assert seen == ["healthy"]
-    assert runtime.diagnostics[0].hook == AGENT_BEFORE_TURN
+    assert runtime.diagnostics[0].hook == AGENT_BEFORE_RUN
     assert runtime.diagnostics[0].owner == "broken-plugin"
     assert runtime.diagnostics[0].exception_type == "RuntimeError"
 
@@ -209,7 +209,7 @@ async def test_result_type_is_checked_at_the_dispatch_boundary():
     context = Context()
     runtime = HookRuntime(context)
     spec = HookSpec(
-        "agent/request",
+        "agent/run-error",
         "agent",
         HookMode.BAIL,
         payload_type=dict,
@@ -289,13 +289,12 @@ async def test_agent_scope_uses_context_identity_and_global_observer_sees_both()
         lambda _payload: seen.append("a"),
         owner="agent-a",
         context=agent_a,
-        scope="agent-a",
     )
     runtime.register(
         scoped,
         lambda _payload: seen.append("global"),
         owner="global-observer",
-        global_listener=True,
+        all_agent_scopes=True,
     )
     await runtime.dispatch(scoped, {}, context=agent_a)
     await runtime.dispatch(scoped, {}, context=agent_b)
@@ -307,7 +306,7 @@ async def test_scope_carrier_inherits_parent_and_rejects_rebuilt_same_id():
     context = Context()
     runtime = HookRuntime(context)
     spec = HookSpec(
-        AGENT_BEFORE_TURN,
+        AGENT_BEFORE_RUN,
         "agent",
         HookMode.PARALLEL,
         payload_type=dict,
@@ -329,14 +328,12 @@ async def test_scope_carrier_inherits_parent_and_rejects_rebuilt_same_id():
         lambda _payload: seen.append("parent"),
         owner="parent",
         context=parent_context,
-        scope="parent",
     )
     runtime.register(
         spec,
         lambda _payload: seen.append("child"),
         owner="child",
         context=child_context,
-        scope="child",
     )
     await runtime.dispatch(spec, {}, context=child_context)
     await runtime.dispatch(spec, {}, context=rebuilt_context)

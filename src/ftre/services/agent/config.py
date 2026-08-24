@@ -212,7 +212,7 @@ def load_config() -> AgentConfig:
     配置来源：
     - model / provider / workspace → ~/.ftre/agents/default/agent.config.json
     - title_generation → config.json 的 agents 顶层
-    - Inbox 容量由可选 ftre-inbox 包自行解析
+    - Inbox 容量由 ftre-inbox 包自行解析
     - system_prompt → system_prompt.md 文件
     """
     global _last_config, _last_sig

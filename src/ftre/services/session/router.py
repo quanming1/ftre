@@ -12,13 +12,9 @@ import json
 from fastapi import APIRouter, HTTPException, Request
 
 
-def build_router(sessions, agents, inbox=None) -> APIRouter:
+def build_router(sessions, agents, inbox) -> APIRouter:
     """Build the session HTTP surface from public Service handles."""
     router = APIRouter()
-
-    def current(value):
-        """Resolve a late-loaded optional Service at request time."""
-        return value() if callable(value) else value
 
     @router.post("/sessions")
     async def create_session(channel_id: str, title: str = "", workspace: str = ""):
@@ -40,7 +36,7 @@ def build_router(sessions, agents, inbox=None) -> APIRouter:
         offset = max(offset, 0)
         items = await sessions.list_sessions(limit, offset, channel_id, workspace)
         total = await sessions.count_sessions(channel_id=channel_id, workspace=workspace)
-        agent_service = current(agents)
+        agent_service = agents
         for item in items:
             item["running"] = agent_service.is_session_busy(item["id"])
             item["activity"] = agent_service.get_session_status(item["id"])
@@ -80,7 +76,7 @@ def build_router(sessions, agents, inbox=None) -> APIRouter:
     async def delete_session(session_id: str):
         if await sessions.get_session(session_id) is None:
             raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
-        await current(agents).delete_session(session_id)
+        await agents.delete_session(session_id)
         return {"status": "deleted", "session_id": session_id}
 
     @router.post("/sessions/{session_id}/fork")
@@ -96,8 +92,8 @@ def build_router(sessions, agents, inbox=None) -> APIRouter:
         limit_turns: int | None = None,
         before_ts: float | None = None,
     ):
-        agent_service = current(agents)
-        inbox_service = current(inbox)
+        agent_service = agents
+        inbox_service = inbox
         status = agent_service.get_session_status(session_id)
         queue = await inbox_service.wire_snapshot(session_id) if inbox_service is not None else None
         session = await sessions.get_session(session_id)

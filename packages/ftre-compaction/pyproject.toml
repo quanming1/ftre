@@ -1,14 +1,14 @@
 [project]
 name = "ftre-compaction"
-version = "0.1.0"
+version = "0.2.0"
 description = "Optional context compaction hooks and service for ftre"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "ftre>=0.2.6",
-    "ftre-inbox>=0.1.0",
+    "ftre>=0.3.0,<0.4.0",
+    "ftre-inbox>=0.2.0,<0.3.0",
     "cordis-py==0.4.0",
-    "ftre-agent-core>=0.1.2",
+    "ftre-agent-core>=0.2.0,<0.3.0",
 ]
 
 [build-system]

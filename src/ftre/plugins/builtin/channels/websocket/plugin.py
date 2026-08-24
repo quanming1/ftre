@@ -86,9 +86,10 @@ def apply(ctx: Context, config=None):
                 callback,
                 owner="websocket-channel",
                 context=ctx,
-                global_listener=True,
+                all_agent_scopes=True,
             )
-            ctx.effect(lambda receipt=receipt: receipt.dispose, label=label)
+            # HookRuntime 已绑定当前 Plugin Fiber；不再重复登记 receipt disposer。
+            del receipt, label
 
     def status_provider(session_id: str) -> str:
         inbox = current_inbox()

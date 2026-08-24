@@ -50,3 +50,43 @@ class AgentProfileService:
     def update_prompt(self, agent_id: str, filename: str, content: str) -> None:
         """Write one allow-listed prompt file through the profile owner."""
         self.manager.write_prompt(agent_id, filename, content)
+
+    # 团队 Package 只能注入这个公开 Service，不能 import profile 目录下的私有存储
+    # helper。成员 profile 仍由 Agent Profile Owner 负责路径、校验、落盘和清理。
+    def write_team_member_profile(
+        self,
+        session_manager,
+        leader_session_id: str,
+        member_session_id: str,
+        role: str,
+        overrides: dict,
+    ):
+        """为 Team 成员写入与全局 Agent 同构的 profile。"""
+        from . import sub_agent
+
+        return sub_agent.write_member_profile(
+            session_manager,
+            leader_session_id,
+            member_session_id,
+            role=role,
+            overrides=overrides,
+        )
+
+    def delete_team_member_profile(
+        self, session_manager, leader_session_id: str, member_session_id: str
+    ) -> bool:
+        """删除一个 Team 成员 profile，保持成员目录清理的唯一 Owner。"""
+        from . import sub_agent
+
+        return sub_agent.delete_member_profile(
+            session_manager, leader_session_id, member_session_id
+        )
+
+    @staticmethod
+    def build_team_member_binding(
+        leader_session_id: str, team_id: str, name: str
+    ) -> dict:
+        """构造 Team 成员 metadata 绑定，保持绑定形状稳定。"""
+        from . import sub_agent
+
+        return sub_agent.build_team_member_binding(leader_session_id, team_id, name)

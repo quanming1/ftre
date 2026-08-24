@@ -31,7 +31,7 @@ def default_manifests() -> list[PluginManifest]:
     #   - required=False：可选 Plugin（plugins/builtin/*），失败只记录状态、不阻塞启动；
         #   - 顺序即装载顺序：先 Host Service，再 Agent Provider，最后是可选 Plugin；
         #     每个 Provider 的 inject 必须在自身 apply 前已经存在。
-    return [
+    manifests = [
         # ── 基础服务层（services，全部必选）──
         # 按依赖顺序排列：config 是配置事实源，filesystem 是 IO 策略，
         # http 提供路由注册表，其余服务依次建立在它们之上。
@@ -42,7 +42,7 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("message-bus", "ftre.services.messaging.bus.plugin:apply", "builtin", True, True, description="business message plane"),
         PluginManifest("tools", "ftre.services.tools.plugin:apply", "builtin", True, True, description="scoped tool registry"),
         PluginManifest("agent-profiles", "ftre.services.agent.profile.plugin:apply", "builtin", True, True, description="agent profile merge"),
-        PluginManifest("sessions", "ftre.services.session.plugin:apply", "builtin", True, True, description="session persistence facade"),
+        PluginManifest("sessions", "ftre.services.session.plugin:apply", "builtin", True, True, description="session persistence service"),
         PluginManifest("commands", "ftre.plugins.builtin.command.plugin:apply", "builtin", True, True, description="command registry"),
         PluginManifest("workspaces", "ftre.services.workspace.plugin:apply", "builtin", True, True, description="workspace boundary"),
         PluginManifest("channels", "ftre.services.messaging.channel.plugin:apply", "builtin", True, True, description="channel registry"),
@@ -51,24 +51,34 @@ def default_manifests() -> list[PluginManifest]:
         # MCP Service；Trace 是独立观察能力，失败不能阻断基础 Agent。
         PluginManifest("mcp", "ftre.plugins.builtin.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
         PluginManifest("traces", "ftre.plugins.builtin.trace.plugin:apply", "builtin", False, True, description="trace persistence"),
-        # Agent Provider 同时发布 agents 和私有执行 Runtime；可选 Inbox
-        # 在它之后接管 pending/worker。
+        # Agent Provider 同时发布 agents 和私有执行 Runtime；Inbox 在它之后
+        # 接管 pending/worker。Inbox 只提供队列，不注册依赖它的业务 Tool。
         PluginManifest("agents", "ftre.services.agent.plugin:apply", "builtin", True, True, description="agent service and private runtime"),
-        # 可选独立队列包：未安装时 AgentService 仍可直接执行 InboundMessage；
-        # 安装后由该 Package 接管 pending、worker 和 session queue 协议。
-        PluginManifest("inbox", "ftre_inbox.plugin:apply", "builtin", False, True, description="optional durable inbox package"),
+        # 当前 Gateway 的基础数据面必须有 Inbox；缺失时由 required Plugin 门禁
+        # 直接失败，不允许启动一个没有队列行为的半成品 Host。
+        PluginManifest("inbox", "ftre_inbox.plugin:apply", "builtin", True, True, description="durable inbox queue"),
+        # 仓内 Package 默认随 ftre 安装并由同一 Composition 装配；Compaction 仍是
+        # 可禁用的业务能力，故不把它提升为 Gateway 必选 Plugin。
+        PluginManifest("compaction", "ftre_compaction.plugin:apply", "builtin", False, True, description="context compaction"),
+        PluginManifest("session-routes", "ftre.plugins.builtin.session_routes.plugin:apply", "builtin", True, True, description="session HTTP routes"),
         PluginManifest("subagent-channel", "ftre.plugins.builtin.channels.subagent.plugin:apply", "builtin", True, True, description="internal subagent channel"),
         PluginManifest("websocket-channel", "ftre.plugins.builtin.channels.websocket.plugin:apply", "builtin", True, True, description="desktop WebSocket channel"),
+        # 三个可独立发行的业务 Tool Package；它们消费 Inbox，但不属于 Inbox。
+        # 默认发行组合会安装并装载它们，required=False 仍允许用户按配置禁用业务能力，
+        # 并让缺失 Package 时保留诊断而不破坏基础 Agent 启动。
+        PluginManifest("messaging", "ftre_messaging.plugin:apply", "builtin", False, True, description="cross-session messaging tools"),
+        PluginManifest("task", "ftre_task.plugin:apply", "builtin", False, True, description="subagent task tools"),
+        PluginManifest("team", "ftre_team.plugin:apply", "builtin", False, True, description="team collaboration tools"),
         # ── 产品行为与适配器 Plugin（可选）──
         # 这些 Plugin 只消费上面的公开 Service key，不访问私有实现；
         # required=False 表示能力缺失（如 MCP 未配置）不应阻止 Gateway 启动。
         PluginManifest("skill", "ftre.plugins.builtin.skill.plugin:apply", "builtin", False, True, description="skill catalog and tool"),
         PluginManifest("plan", "ftre.plugins.builtin.plan.plugin:apply", "builtin", False, True, description="plan behavior"),
-        PluginManifest("team", "ftre.plugins.builtin.team.plugin:apply", "builtin", False, True, description="team lifecycle"),
         PluginManifest("schedule", "ftre.plugins.builtin.schedule.plugin:apply", "builtin", False, True, description="cron persistence"),
         PluginManifest("context-govern", "ftre.plugins.builtin.context_govern.plugin:apply", "builtin", True, True, description="workspace governance"),
         PluginManifest("session-title", "ftre.plugins.builtin.session_title.plugin:apply", "builtin", False, True, description="title behavior"),
     ]
+    return manifests
 
 
 @dataclass

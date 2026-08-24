@@ -87,7 +87,7 @@ async def test_scheduler_concurrent_ticks_do_not_duplicate_or_leave_task(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_scheduler_uses_message_bus_service_facade(tmp_path) -> None:
+async def test_scheduler_uses_message_bus_service(tmp_path) -> None:
     """The real Gateway injects MessageBusService, not the raw EventBus."""
     schedule = ScheduleService(tmp_path)
     schedule.create({

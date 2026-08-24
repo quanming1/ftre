@@ -106,9 +106,9 @@ def gateway(
         config_host, config_port = load_gateway_address()
         ok, message, status = runtime.start(port=port or config_port, host=host or config_host or "127.0.0.1")
         if not ok:
-            print(f"✗ Gateway not started: {message}")
+            print(f"[ERROR] Gateway not started: {message}")
             raise typer.Exit(1)
-        print("✓ ftre gateway started in background")
+        print("[OK] ftre gateway started in background")
         print(f"  PID: {status.pid}\n  Port: {status.port}\n  Logs: {status.log_path}")
         return
     asyncio.run(run_gateway(port=port, host=host))
@@ -129,9 +129,9 @@ def gateway_stop(timeout: int = typer.Option(20, "--timeout", help="停止超时
     """请求后台 Gateway 优雅退出，并报告超时原因。"""
     ok, message, status = GatewayRuntime().stop(timeout_s=timeout)
     if ok:
-        print("✓ Gateway stopped.")
+        print("[OK] Gateway stopped.")
     else:
-        print(f"✗ Gateway not stopped: {message}")
+        print(f"[ERROR] Gateway not stopped: {message}")
         if status.pid is not None:
             print(f"  PID: {status.pid}")
 
@@ -145,9 +145,9 @@ def gateway_restart(
     """停止旧进程后重新启动 Gateway，沿用显式 host/port 参数。"""
     ok, message, status = GatewayRuntime().restart(port=port, host=host, timeout_s=timeout)
     if not ok:
-        print(f"✗ Gateway not restarted: {message}")
+        print(f"[ERROR] Gateway not restarted: {message}")
         raise typer.Exit(1)
-    print(f"✓ Gateway restarted.\n  PID: {status.pid}\n  Port: {status.port}\n  Logs: {status.log_path}")
+    print(f"[OK] Gateway restarted.\n  PID: {status.pid}\n  Port: {status.port}\n  Logs: {status.log_path}")
 
 
 @gateway_app.command("logs")

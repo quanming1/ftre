@@ -866,3 +866,273 @@ stages:
             title: 最终验收与执行报告
             status: done
             date: 2026-08-24
+
+      - id: F15
+        title: Hook 语义收敛与生命周期安全
+        status: in_progress
+        date: 2026-08-24
+        prd: docs/prd/PRD-F15-hook-surface-convergence.md
+        prd_status: 开发中
+        depends_on:
+          - F14
+        implementation_boundary: 只修改 E:\ftre Host 与仓内 packages；Core 7 个 Hook 冻结不变
+        follow_up: Tool Hook 4→2 与 agent/turn-stopping 改名待 F15 后另立 F16 / Core C3
+        modules:
+          - src/ftre/kernel/hooks/
+          - src/ftre/services/agent/hooks.py
+          - src/ftre/services/agent/runtime/
+          - src/ftre/services/session/hooks.py
+          - src/ftre/services/messaging/bus/ingress.py
+          - src/ftre/services/system_prompt/hooks.py
+          - packages/ftre-inbox/
+          - packages/ftre-compaction/
+          - src/ftre/plugins/builtin/command/
+          - src/ftre/plugins/builtin/channels/websocket/
+          - tests/hooks/
+          - tests/architecture/
+          - tests/contracts/
+          - tests/lifecycle/
+        acceptance: Host Hook 从 22 个收敛为 10 个，全系统公共 Hook 从 29 个收敛为 PRD 冻结的 17 个稳定边界；Core 7 个 Hook 保持不变；幽灵 Hook、重复通知、Host 旧名和重复 Effect 清零；关键异步清理与权威状态通知全部 awaited；Inbox/Compaction 可选生命周期、全量测试、Package wheel、Gateway smoke 和 ftre CI 通过
+        tasks:
+          - id: F15.1
+            title: Hook、发布者、监听者、Effect 与 Scope 事实基线
+            status: done
+            date: 2026-08-24
+          - id: F15.2
+            title: HookRuntime awaited 语义与唯一 Effect Owner
+            status: done
+            date: 2026-08-24
+          - id: F15.3
+            title: Host Agent 与 Messaging Hook 删除改名
+            status: done
+            date: 2026-08-24
+          - id: F15.4
+            title: Session、Inbox 与 WebSocket 通知收敛
+            status: done
+            date: 2026-08-24
+          - id: F15.5
+            title: Compaction、Inbox、Command 与 Session Title 消费迁移
+            status: done
+            date: 2026-08-24
+          - id: F15.6
+            title: 取消、异常、in-flight、并发与状态顺序测试
+            status: done
+            date: 2026-08-24
+          - id: F15.7
+            title: Package 独立发行与 Core 边界回归
+            status: done
+            date: 2026-08-24
+          - id: F15.8
+            title: 文档、诊断、旧引用与工程卫生清理
+            status: done
+            date: 2026-08-24
+          - id: F15.9
+            title: 全量验收、执行报告与收尾
+            status: in_progress
+
+      - id: F16
+        title: Core Hook 面终局收敛与 Host 迁移
+        status: done
+        date: 2026-08-24
+        prd: docs/prd/PRD-F16-core-hook-surface-convergence.md
+        prd_status: 已验收
+        completion_date: 2026-08-24
+        depends_on:
+          - F15
+          - C3（E:\ftre-agent-core）
+        implementation_boundary: 只修改 E:\ftre Host 与仓内 packages；Core 协议由配对 C3 负责，客户端不在范围内
+        follow_up: F15 收尾后先完成 Core C3，再升级 Host 依赖并完成两仓洁净安装与 E2E
+        modules:
+          - pyproject.toml / uv.lock 或 requirements 锁定文件
+          - src/ftre/kernel/hooks/
+          - src/ftre/services/agent/
+          - src/ftre/services/tools/
+          - packages/ftre-inbox/
+          - packages/ftre-compaction/
+          - tests/hooks/
+          - tests/contracts/
+          - tests/startup/
+          - docs/execution/matrices/
+        acceptance: 全系统公共 Hook 从 F15 冻结的 17 个收敛为 15 个；Host/Package 无旧 Core 名称、alias、双 dispatch 或桥接层；Core 新 wheel 可洁净安装；无 Inbox/Compaction 时 Host 仍可启动；两仓测试、ruff、wheel、Gateway/E2E 和工程卫生门禁通过
+        tasks:
+          - id: F16.1
+            title: 两仓只读基线与消费者冻结
+            status: done
+            date: 2026-08-24
+          - id: F16.2
+            title: Core C3 Tool 两段协议迁移
+            status: done
+            date: 2026-08-24
+          - id: F16.3
+            title: Core C3 Stop Decision 改名
+            status: done
+            date: 2026-08-24
+          - id: F16.4
+            title: Core 发行候选与版本边界
+            status: done
+            date: 2026-08-24
+          - id: F16.5
+            title: Host、Package 与测试迁移
+            status: done
+            date: 2026-08-24
+          - id: F16.6
+            title: 两仓洁净安装、E2E 与最终收尾
+            status: done
+            date: 2026-08-24
+
+      - id: F17
+        title: Inbox Tool Owner 收敛与 Agent Runtime 去队列透传
+        status: done
+        date: 2026-08-24
+        prd: docs/prd/PRD-F17-inbox-tool-owner-convergence.md
+        prd_status: 已验收
+        completion_date: 2026-08-24
+        depends_on:
+          - F16
+        implementation_boundary: 只修改 E:\\ftre Host 与仓内 packages/ftre-inbox；不修改客户端、Agent Core、cordis-py
+        acceptance: Inbox Plugin 成为当前 Gateway 必选 Plugin 并唯一拥有 Inbox 队列 Service/Hook/Worker；Agent Runtime 删除 _inbox 和 runtime_context 透传；业务 Tool Owner 在 F18 拆分为 messaging/task/team Package；F17 基础生命周期、行为、全量质量门禁和 Gateway smoke 通过
+        tasks:
+          - id: F17.1
+            title: Owner 依赖基线与 PRD/TODO 定稿
+            status: done
+            date: 2026-08-24
+          - id: F17.2
+            title: Inbox Plugin 接管 Inbox 队列 Service/Hook/Worker
+            status: done
+            date: 2026-08-24
+          - id: F17.3
+            title: Agent Runtime 删除 Inbox 死透传
+            status: done
+            date: 2026-08-24
+          - id: F17.4
+            title: 必选 Plugin 与生命周期故障回归
+            status: done
+            date: 2026-08-24
+          - id: F17.5
+            title: 全量验收、文档同步与工程卫生
+            status: done
+            date: 2026-08-24
+
+      - id: F18
+        title: 消息、任务与团队 Tool Package 边界收敛
+        status: done
+        date: 2026-08-24
+        prd: docs/prd/PRD-F18-tool-package-boundaries.md
+        prd_status: 已验收
+        completion_date: 2026-08-24
+        depends_on:
+          - F17
+        implementation_boundary: 只修改 E:\\ftre Host 与仓内 packages；不修改客户端、E:\\ftre-agent-core、E:\\cordis-py
+        acceptance: ftre-inbox 只拥有 Inbox Service/Queue Hook/Worker；send_message、task、team_* 分别由 ftre-messaging、ftre-task、ftre-team 独立 Plugin/Package 拥有；无重复 TeamService；缺少可选业务 Package 时 Host 可启动；三包生命周期、wheel、全量质量门禁和 Gateway smoke 通过
+        tasks:
+          - id: F18.1
+            title: Owner 基线、PRD/TODO 定稿与 F17 文档纠偏
+            status: done
+            date: 2026-08-24
+          - id: F18.2
+            title: messaging/task Package 迁移与生命周期接线
+            status: done
+            date: 2026-08-24
+          - id: F18.3
+            title: team Package 迁移与重复 TeamService 清理
+            status: done
+            date: 2026-08-24
+          - id: F18.4
+            title: Inbox 收窄、Composition/extras 与依赖诊断
+            status: done
+            date: 2026-08-24
+          - id: F18.5
+            title: 架构、行为、生命周期、发行与旧引用测试
+            status: done
+            date: 2026-08-24
+          - id: F18.6
+            title: 全量验收、执行报告与工程卫生
+            status: done
+            date: 2026-08-24
+
+      - id: F19
+        title: Session HTTP 路由 Plugin 化与 Inject 边界收敛
+        status: done
+        date: 2026-08-24
+        prd: docs/prd/PRD-F19-session-route-inject-boundary.md
+        prd_status: 已验收
+        completion_date: 2026-08-24
+        depends_on:
+          - F18
+        implementation_boundary: 只修改 E:\\ftre Host、测试和文档；不修改客户端、E:\\ftre-agent-core、E:\\cordis-py
+        acceptance: Session Provider 只拥有 sessions/session_events；session-routes Plugin 通过 Inject 注册 Session HTTP 路由；移除跨 Service 动态 ctx.get；路由/生命周期/全量质量门禁和 Gateway smoke 通过
+        tasks:
+          - id: F19.1
+            title: Session Provider 与路由 Owner 基线
+            status: done
+            date: 2026-08-24
+          - id: F19.2
+            title: session-routes Plugin 迁移与显式 Inject
+            status: done
+            date: 2026-08-24
+          - id: F19.3
+            title: 架构、启动、生命周期与路由回归
+            status: done
+            date: 2026-08-24
+          - id: F19.4
+            title: 全量验收、执行报告与工程卫生
+            status: done
+
+      - id: F20
+        title: 默认安装与装配全部仓内 Package
+        status: done
+        date: 2026-08-24
+        prd: docs/prd/PRD-F20-default-package-install.md
+        prd_status: 已验收
+        depends_on:
+          - F18
+          - F19
+        implementation_boundary: 只修改 E:\\ftre Host、仓内 packages、测试和文档；不修改客户端、E:\\ftre-agent-core、E:\\cordis-py
+        modules:
+          - pyproject.toml
+          - src/ftre/app/gateway/composition.py
+          - packages/
+          - tests/architecture/
+          - tests/lifecycle/
+          - tests/startup/
+        acceptance: 安装 ftre 默认包含 packages 下的 Inbox、Compaction、Messaging、Task、Team；默认 Composition 加载五个 Package Plugin；压缩命令通过 /api/commands 可见；可禁用业务 Package；全量质量门禁和 Gateway smoke 通过
+        tasks:
+          - id: F20.1
+            title: 默认依赖与 entry point 基线
+            status: done
+          - id: F20.2
+            title: Composition 默认 Package Manifest
+            status: done
+          - id: F20.3
+            title: 安装、装配、禁用与命令回归测试
+            status: done
+          - id: F20.4
+            title: 文档同步、质量门禁与 Gateway 验收
+            status: done
+            date: 2026-08-24
+
+      - id: F21
+        title: Command 接入异步化与消息入口隔离
+        status: done
+        date: 2026-08-24
+        prd: docs/prd/PRD-F21-command-ingress-async.md
+        prd_status: 已验收
+        completion_date: 2026-08-24
+        depends_on:
+          - F20
+        implementation_boundary: 只修改 ftre Host Command Service/Plugin、测试和文档；不修改客户端、Agent Core、cordis-py 或压缩算法
+        acceptance: 慢 Command 不阻塞 MessageBus inbound consumer；普通消息在命令执行期间仍能进入 Inbox；request_id 重试不重复执行；Command Plugin unload 能取消后台任务；全量测试、ruff、Gateway WebSocket smoke 通过
+        tasks:
+          - id: F21.1
+            title: 定位全局 inbound 阻塞并建立回归测试
+            status: done
+          - id: F21.2
+            title: CommandService 后台提交与 request_id 幂等
+            status: done
+          - id: F21.3
+            title: Command Plugin 立即 ACK 与生命周期清理
+            status: done
+          - id: F21.4
+            title: 全量验收、Gateway smoke 与工程卫生
+            status: done
+            date: 2026-08-24

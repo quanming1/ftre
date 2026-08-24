@@ -159,21 +159,20 @@ class HookRuntime:
         prepend: bool = False,
         once: bool = False,
         context: Context | None = None,
-        scope: str = "global",
-        global_listener: bool = False,
+        all_agent_scopes: bool = False,
     ) -> HookReceipt:
         """注册一个监听器并返回幂等 disposer。
 
-        ``context`` 是 scope carrier：全局 Hook 使用根 Context；Agent Hook
-        传入由 Agent identity 派生的 Cordis isolate Context。scope 文本只用于
-        诊断，不能替代 Context 对象的身份隔离。
+        ``context`` 是 scope carrier：Plugin 必须传入自己的 Cordis Context；全局
+        Hook 也不能静默落到根 Context。Agent Hook 传入由 Agent identity 派生的
+        isolate Context。诊断 scope 从 Context/策略推导，调用方不能再传入第二份字符串。
 
         参数语义：
 
         * ``owner``：声明谁拥有这条行为，卸载诊断和资源清理都依赖它；
         * ``prepend``：只表达“放到现有监听器之前”，不引入任意数字优先级；
         * ``once``：交给 Cordis 的一次性监听器语义处理；
-        * ``global_listener``：Agent-scoped Hook 的全局策略是否也要收到所有
+        * ``all_agent_scopes``：Agent-scoped Hook 的全局策略是否也要收到所有
           isolate dispatch；普通 Agent listener 不应随意打开它。
 
         注册后要么由调用方保存 receipt 并主动 dispose，要么依靠当前 Fiber 的
@@ -181,11 +180,9 @@ class HookRuntime:
         """
         if not owner.strip():
             raise ValueError("Hook owner must be non-empty")
-        if not scope.strip():
-            raise ValueError("Hook scope must be non-empty")
         if not callable(listener):
             raise TypeError("Hook listener must be callable")
-        if spec.scope is HookScope.AGENT and context is None and not global_listener:
+        if spec.scope is HookScope.AGENT and context is None and not all_agent_scopes:
             raise ValueError(f"{spec.name} requires an agent scope context")
 
         # 同一个 Hook 名必须永远对应同一份契约。否则不同 Plugin 可能用不同
@@ -202,7 +199,7 @@ class HookRuntime:
         registration = _Registration(
             spec=spec,
             owner=owner,
-            scope=scope,
+            scope=("global" if all_agent_scopes or context is None else "agent"),
             order=(0 if prepend else len(entries)),
             once=once,
         )
@@ -218,7 +215,7 @@ class HookRuntime:
         # Cordis 自己拥有 Fiber Effect，Runtime 不另建生命周期树。
         registration_context = context or self._ctx
         options: dict[str, Any] = {"prepend": prepend}
-        if spec.scope is HookScope.GLOBAL or global_listener:
+        if spec.scope is HookScope.GLOBAL or all_agent_scopes:
             # 全局监听器也必须能收到 scoped dispatch；Cordis 用 global 选项
             # 让它不被 isolate 过滤掉。
             options["global"] = True
@@ -269,7 +266,7 @@ class HookRuntime:
             hook=spec.name,
             owner=owner,
             mode=spec.mode,
-            scope=scope,
+            scope=registration.scope,
             listener_order=registration.order,
             once=once,
             dispose=dispose,
