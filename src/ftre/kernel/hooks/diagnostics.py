@@ -24,7 +24,7 @@ class HookDiagnostic:
     时的并发调用数，可帮助判断卸载/关闭时是否存在正在执行的异步监听器。
     """
 
-    hook: str  # 稳定的 Hook 名，例如 ``agent/request``。
+    hook: str  # 稳定的 Hook 名，例如 ``agent/run-error``。
     owner: str  # 注册监听器的 Plugin 或 Service Owner。
     mode: HookMode  # 该 Hook 的调度模式。
     scope: str  # 面向人类的作用域标签，不参与真正的身份匹配。

@@ -17,8 +17,8 @@ from ftre_inbox.models import QueueItem
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.hooks import (
-    AGENT_AFTER_TURN_SPEC,
-    AfterTurnPayload,
+    AGENT_AFTER_RUN_SPEC,
+    AfterRunPayload,
     AgentSubject,
 )
 from ftre.services.agent.registry import AgentRegistry
@@ -71,7 +71,7 @@ async def test_after_turn_compaction_is_owned_by_package_hook():
     receipts = register_hooks(context, service)
     registry = AgentRegistry()
     record = registry.ensure("default")
-    payload = AfterTurnPayload(
+    payload = AfterRunPayload(
         agent=AgentSubject("default", record.identity),
         session_id="session-1",
         turn_id="turn-1",
@@ -82,7 +82,7 @@ async def test_after_turn_compaction_is_owned_by_package_hook():
         config=_config(),
     )
     result = await context.get("hook_runtime").dispatch(
-        AGENT_AFTER_TURN_SPEC,
+        AGENT_AFTER_RUN_SPEC,
         payload,
         context=context.get("hook_runtime").context_for_scope(
             registry.scope_carrier("default")

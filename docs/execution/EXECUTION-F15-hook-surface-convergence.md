@@ -75,3 +75,14 @@
 - F15.3 只能删除 Host Agent/Messaging 旧名；不得修改 Core 7 个 Hook。
 - F15.4 需要用 Barrier/Event 证明 Session dispose、Inbox revision 和 WebSocket 状态顺序。
 - F15.5 需要保留 `ftre-compaction` 的独立包边界，并处理执行前已有的注释改动而不覆盖它。
+
+## F15.2 / F15.3 结果
+
+- F15.2：Runtime 注册参数改为 `all_agent_scopes`，诊断 scope 从 Context/策略推导；生产
+  Plugin 注册显式传入 Context；receipt 的生命周期由 Runtime Fiber Effect 单独管理。
+- F15.3：Agent Host 10 项收敛为 `agent/before-run`、`agent/after-run`、`agent/run-error`；
+  删除 Agent lifecycle/request/turn-stopped Spec 及 dispatch；`messaging/inbound` 改为
+  `messaging/route`，Command 与 Inbox 保持原有路由顺序。
+- F15.3 后唯一 Hook 快照为 22 项（Core 7 + Agent 3 + Session 4 + Messaging 1 + Prompt 1 + Inbox 6）。
+- 证据：F15 Hook/契约/Package 专项 91 passed，ruff 通过；Session/Inbox awaited 和三种 mutation
+  Hook 仍属于 F15.4。

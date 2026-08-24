@@ -11,7 +11,7 @@ from ftre_compaction.plugin import apply
 from ftre.kernel.hooks import HookRuntime
 from ftre.plugins.builtin.command import CommandService
 from ftre.services.agent.hooks import (
-    AGENT_REQUEST_ERROR_SPEC,
+    AGENT_RUN_ERROR_SPEC,
     AgentSubject,
     RequestErrorPayload,
     RetryRequest,
@@ -57,7 +57,7 @@ async def test_compaction_service_and_feature_hooks_register_separately():
 
     assert context.get("compaction") is not None
     hooks = {item.hook for item in runtime.snapshot()}
-    assert hooks == {"agent/after-turn", "agent/request-error", "inbox/before-claim"}
+    assert hooks == {"agent/after-run", "agent/run-error", "inbox/before-claim"}
     await context.dispose()
 
 
@@ -94,7 +94,7 @@ async def test_overflow_hook_retries_only_after_generation_advances():
         config=_config(),
     )
     result = await runtime.dispatch(
-        AGENT_REQUEST_ERROR_SPEC,
+        AGENT_RUN_ERROR_SPEC,
         payload,
         context=runtime.context_for_scope(registry.scope_carrier("default")),
     )
@@ -106,7 +106,7 @@ async def test_overflow_hook_retries_only_after_generation_advances():
 
     service.compact_if_needed = no_progress
     no_retry = await runtime.dispatch(
-        AGENT_REQUEST_ERROR_SPEC,
+        AGENT_RUN_ERROR_SPEC,
         payload,
         context=runtime.context_for_scope(registry.scope_carrier("default")),
     )

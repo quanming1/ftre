@@ -13,7 +13,7 @@ import inspect
 from ftre.kernel.hooks import HookRuntime
 
 from .bus import EventBus
-from .ingress import MESSAGING_INBOUND_SPEC, IngressResult
+from .ingress import MESSAGING_ROUTE_SPEC, IngressResult
 
 
 class MessageBusService:
@@ -58,7 +58,7 @@ class MessageBusService:
                 try:
                     result = None
                     if self._hooks is not None:
-                        result = self._hooks.dispatch(MESSAGING_INBOUND_SPEC, message)
+                        result = self._hooks.dispatch(MESSAGING_ROUTE_SPEC, message)
                         if inspect.isawaitable(result):
                             result = await result
                     if result is None:

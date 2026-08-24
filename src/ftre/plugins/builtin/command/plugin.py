@@ -10,7 +10,7 @@ from __future__ import annotations
 from cordis import Context
 
 from ftre.services.messaging.bus import (
-    MESSAGING_INBOUND_SPEC,
+    MESSAGING_ROUTE_SPEC,
     BusMessage,
     CommandMessagePayload,
     IngressResult,
@@ -74,7 +74,7 @@ def apply(ctx: Context, config=None):
         return _accepted(message)
 
     receipt = ctx.hook_runtime.register(
-        MESSAGING_INBOUND_SPEC,
+        MESSAGING_ROUTE_SPEC,
         on_inbound,
         owner="commands",
         context=ctx,

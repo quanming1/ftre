@@ -6,7 +6,7 @@ from pathlib import Path
 
 from cordis import Context
 
-from ftre.services.messaging.bus import MESSAGING_INBOUND_SPEC
+from ftre.services.messaging.bus import MESSAGING_ROUTE_SPEC
 
 from .repository import InboxRepository
 from .service import InboxService
@@ -81,7 +81,7 @@ async def apply(ctx: Context, config=None):
         return await service.handle_bus_message(message)
 
     inbound_receipt = ctx.hook_runtime.register(
-        MESSAGING_INBOUND_SPEC,
+        MESSAGING_ROUTE_SPEC,
         on_inbound,
         owner="ftre-inbox",
         context=ctx,

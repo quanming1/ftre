@@ -30,8 +30,8 @@ def test_optional_package_is_single_compaction_owner():
     assert (PACKAGE / "src" / "ftre_compaction" / "commands.py").exists()
     source = (PACKAGE / "src" / "ftre_compaction" / "hooks.py").read_text(encoding="utf-8")
     assert "INBOX_BEFORE_CLAIM_SPEC" in source
-    assert "AGENT_AFTER_TURN_SPEC" in source
-    assert "AGENT_REQUEST_ERROR_SPEC" in source
+    assert "AGENT_AFTER_RUN_SPEC" in source
+    assert "AGENT_RUN_ERROR_SPEC" in source
 
 
 def test_core_agent_config_does_not_own_compaction_settings():

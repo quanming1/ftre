@@ -1,7 +1,7 @@
 """F15 Hook 面基线与目标门禁。
 
 该测试从实际导出的 ``HookSpec`` 读取事实，而不是复制生产表格。F15.1 先证明当前
-29 个名称唯一、分属 Core/Host/Package；后续迁移批只需要更新目标断言，门禁会阻止
+29 个名称唯一；F15.3 后保留 22 项中间快照，后续迁移批只需要更新目标断言，门禁会阻止
 旧 Hook 以 alias 或第二份 Spec 偷渡回来。
 """
 
@@ -23,6 +23,7 @@ HOST_MODULES = (
 )
 PACKAGE_MODULES = ("ftre_inbox.hooks",)
 
+# F15.3 完成后的中间快照；F15.4 继续把 Session/Inbox 收敛到目标 17 项。
 CURRENT_HOOK_NAMES = {
     "tools/pre-execute",
     "tools/execute",
@@ -31,21 +32,14 @@ CURRENT_HOOK_NAMES = {
     "llm/stream",
     "agent/before-reasoning",
     "agent/turn-stopping",
-    "agent/before-turn",
-    "agent/after-turn",
-    "agent/request",
-    "agent/request-error",
-    "agent/turn-stopped",
-    "agent/created",
-    "agent/disposed",
-    "agent/error",
-    "agent/session-start",
-    "agent/status",
+    "agent/before-run",
+    "agent/after-run",
+    "agent/run-error",
     "session/created",
     "session/disposed",
     "session/event",
     "session/flush",
-    "messaging/inbound",
+    "messaging/route",
     "system-prompt/assemble",
     "inbox/before-claim",
     "inbox/inserted",
@@ -106,12 +100,12 @@ def _fact_snapshot() -> dict[str, list[tuple[str, str, str, str]]]:
     return snapshot
 
 
-def test_f15_baseline_has_exactly_29_unique_hook_names():
+def test_f15_migration_snapshot_has_exactly_22_unique_hook_names():
     snapshot = _fact_snapshot()
     names = [item[0] for group in snapshot.values() for item in group]
     # Agent Host 为了稳定导入面重导出两项 Core Spec；事实门禁按唯一名称计数，
     # 不把同一个对象的公开重导出误判为第二个 Hook Owner。
-    assert len(set(names)) == 29
+    assert len(set(names)) == 22
     assert set(names) == CURRENT_HOOK_NAMES
 
 

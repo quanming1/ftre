@@ -19,15 +19,12 @@ from ftre.kernel.hooks import HookRuntime, HookSpec
 from ftre.services.agent.config import AgentConfig
 from ftre.services.agent.contracts import InboundMessage
 from ftre.services.agent.hooks import (
-    AGENT_AFTER_TURN_SPEC,
-    AGENT_BEFORE_TURN_SPEC,
-    AGENT_CREATED_SPEC,
-    AGENT_DISPOSED_SPEC,
-    AfterTurnPayload,
-    AgentLifecyclePayload,
+    AGENT_AFTER_RUN_SPEC,
+    AGENT_BEFORE_RUN_SPEC,
+    AfterRunPayload,
     AgentSubject,
-    BeforeTurnPayload,
-    RejectTurn,
+    BeforeRunPayload,
+    RejectRun,
 )
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.messaging.bus import (
@@ -94,12 +91,10 @@ class AgentLoop:
         self.agent_registry = agent_registry or AgentRegistry()
         self.system_prompt = system_prompt
         self.session_events = session_events
-        self._agent_created_emitted: set[str] = set()
         self.hooks = hook_runtime or (
             HookRuntime(event_hub) if isinstance(event_hub, Context) else None
         )
         self._injected_config = config
-        self._startup_task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         # 直接 AgentService.run 的 active guard。它只记录运行中的 Turn，绝不保存
         # pending；队列由可选 ftre-inbox Package 独立拥有。
@@ -154,20 +149,6 @@ class AgentLoop:
                 return None
             result = spec.default(payload)
             return await result if inspect.isawaitable(result) else result
-        registry = self.agent_registry
-        created_emitted = self._agent_created_emitted
-        if spec.name != AGENT_CREATED_SPEC.name and agent_id not in created_emitted:
-            created_emitted.add(agent_id)
-            record = registry.ensure(agent_id)
-            created_payload = AgentLifecyclePayload(
-                agent=AgentSubject(agent_id, record.identity),
-                state="created",
-            )
-            await self._dispatch_agent_hook(
-                AGENT_CREATED_SPEC,
-                created_payload,
-                agent_id=agent_id,
-            )
         return await self._dispatch_agent_hook(spec, payload, agent_id=agent_id)
 
     async def _dispatch_agent_hook(self, spec: HookSpec, payload, *, agent_id: str):
@@ -185,13 +166,8 @@ class AgentLoop:
         return await hooks.dispatch(spec, payload, context=scope_context)
 
     def start(self) -> None:
-        """Start Agent lifecycle observation without consuming the MessageBus."""
+        """Start the active Run runtime without consuming the MessageBus."""
         self._event_loop = asyncio.get_running_loop()
-        if self._startup_task is None or self._startup_task.done():
-            self._startup_task = asyncio.create_task(
-                self._emit_existing_agent_created(),
-                name="agent:created-events",
-            )
 
     def is_session_running(self, session_id: str) -> bool:
         """该 session 是否有正在跑的 ReActAgent。"""
@@ -305,8 +281,8 @@ class AgentLoop:
             agent_id = metadata.agent_id or "default"
             current = self.agent_registry.ensure(agent_id)
             step_decision = await self._dispatch_agent_hook(
-                AGENT_BEFORE_TURN_SPEC,
-                BeforeTurnPayload(
+                AGENT_BEFORE_RUN_SPEC,
+                BeforeRunPayload(
                     agent=AgentSubject(agent_id, current.identity),
                     session_id=session_id,
                     turn_id=turn_id,
@@ -317,7 +293,7 @@ class AgentLoop:
                 ),
                 agent_id=agent_id,
             )
-            if isinstance(step_decision, RejectTurn):
+            if isinstance(step_decision, RejectRun):
                 return TurnOutcome(
                     turn_id=turn_id,
                     status="error",
@@ -385,8 +361,8 @@ class AgentLoop:
                 try:
                     record = self.agent_registry.ensure(metadata.agent_id or "default")
                     await self._dispatch_agent_hook(
-                        AGENT_AFTER_TURN_SPEC,
-                        AfterTurnPayload(
+                        AGENT_AFTER_RUN_SPEC,
+                        AfterRunPayload(
                             agent=AgentSubject(metadata.agent_id or "default", record.identity),
                             session_id=session_id,
                             turn_id=turn_id,
@@ -398,7 +374,7 @@ class AgentLoop:
                         agent_id=metadata.agent_id or "default",
                     )
                 except Exception:
-                    logger.exception("[agent-loop] direct agent/after-turn failed session=%s", session_id)
+                    logger.exception("[agent-loop] direct agent/after-run failed session=%s", session_id)
             try:
                 await self._publish_session_status_async(session_id, "idle")
             except Exception:
@@ -490,12 +466,7 @@ class AgentLoop:
         await self.session_manager.delete_session(session_id)
 
     async def stop(self) -> None:
-        """优雅关闭：取消 active Turn 并清理 Agent Hook scope。"""
-        if self._startup_task:
-            self._startup_task.cancel()
-            await asyncio.gather(self._startup_task, return_exceptions=True)
-            self._startup_task = None
-
+        """优雅关闭：取消 active Run；Hook scope 由 Plugin Fiber 管理。"""
         direct_tasks = tuple(self._direct_tasks.values())
         for task in direct_tasks:
             task.cancel()
@@ -509,56 +480,6 @@ class AgentLoop:
         self._direct_parent_tasks.clear()
         self._direct_reservations.clear()
         await self.completions.close()
-
-        await self._dispose_agent_scopes()
-
-    async def _dispose_agent_scopes(self) -> None:
-        """Close Agent scope observations before the Provider detaches its driver."""
-        hooks = self.hooks
-        if hooks is None:
-            return
-        registry = self.agent_registry
-        for record in tuple(registry.list()):
-            agent_id = record["id"]
-            current = registry.ensure(agent_id)
-            payload = AgentLifecyclePayload(
-                agent=AgentSubject(agent_id, current.identity),
-                state="disposed",
-            )
-            try:
-                await self._dispatch_agent_hook(
-                    AGENT_DISPOSED_SPEC,
-                    payload,
-                    agent_id=agent_id,
-                )
-            except Exception:
-                logger.exception("[agent-loop] agent/disposed failed agent=%s", agent_id)
-            registry.dispose(agent_id)
-
-    async def _emit_existing_agent_created(self) -> None:
-        """Publish created once for identities supplied by AgentService at startup."""
-        hooks = self.hooks
-        registry = self.agent_registry
-        if hooks is None or registry is None:
-            return
-        emitted = self._agent_created_emitted
-        for record in tuple(registry.list()):
-            if record["id"] in emitted:
-                continue
-            agent_id = record["id"]
-            current = registry.ensure(agent_id)
-            try:
-                await self._dispatch_agent_hook(
-                    AGENT_CREATED_SPEC,
-                    AgentLifecyclePayload(
-                        agent=AgentSubject(agent_id, current.identity),
-                        state="created",
-                    ),
-                    agent_id=agent_id,
-                )
-            except Exception:
-                logger.exception("[agent-loop] agent/created failed agent=%s", agent_id)
-            emitted.add(agent_id)
 
     def _load_current_config(self) -> AgentConfig:
         """读取当前生效的配置（委托给 TurnExecutor）。"""

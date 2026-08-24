@@ -36,8 +36,8 @@ def test_message_bus_dispatches_commands_before_inbox_admission() -> None:
     command_source = _text("plugins/builtin/command/plugin.py")
     assert "_parse_ingress_command" not in agent_source
     assert "_inbound_handler" not in agent_source
-    assert '"messaging/inbound"' in bus_source
-    assert "MESSAGING_INBOUND_SPEC" in command_source
+    assert '"messaging/route"' in bus_source
+    assert "MESSAGING_ROUTE_SPEC" in command_source
 
 
 def test_command_layer_does_not_import_private_agent_runtime() -> None:

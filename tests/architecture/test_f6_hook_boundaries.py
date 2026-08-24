@@ -5,19 +5,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from ftre.services.agent.hooks import (
-    AGENT_AFTER_TURN_SPEC,
+    AGENT_AFTER_RUN_SPEC,
     AGENT_BEFORE_REASONING_SPEC,
-    AGENT_BEFORE_TURN_SPEC,
+    AGENT_BEFORE_RUN_SPEC,
 )
-from ftre.services.session.hooks import SESSION_EVENT_SPEC
+from ftre.services.session.hooks import SESSION_CREATED_SPEC
 from ftre.services.system_prompt.hooks import SYSTEM_PROMPT_ASSEMBLE_SPEC
 from ftre.services.tools.hooks import TOOLS_PRE_EXECUTE_SPEC
 
 PUBLIC_HOOK_NAMES = {
-    AGENT_AFTER_TURN_SPEC.name,
+    AGENT_AFTER_RUN_SPEC.name,
     AGENT_BEFORE_REASONING_SPEC.name,
-    AGENT_BEFORE_TURN_SPEC.name,
-    SESSION_EVENT_SPEC.name,
+    AGENT_BEFORE_RUN_SPEC.name,
+    SESSION_CREATED_SPEC.name,
     SYSTEM_PROMPT_ASSEMBLE_SPEC.name,
     TOOLS_PRE_EXECUTE_SPEC.name,
 }
@@ -30,15 +30,13 @@ LEGACY_IMPORT = "ftre.services.agent.runtime.hooks"
 def test_public_hook_names_exclude_legacy_filter_names():
     assert "agent/before_messages_build" not in PUBLIC_HOOK_NAMES
     assert "agent/before_run" not in PUBLIC_HOOK_NAMES
-    assert "agent/before-turn" in PUBLIC_HOOK_NAMES
+    assert "agent/before-run" in PUBLIC_HOOK_NAMES
     assert "agent/before-reasoning" in PUBLIC_HOOK_NAMES
     assert "tools/pre-execute" in PUBLIC_HOOK_NAMES
     assert "tool/pre-execute" not in PUBLIC_HOOK_NAMES
     assert "agent/inbox/claimed" not in PUBLIC_HOOK_NAMES
     assert "agent/inbox" not in PUBLIC_HOOK_NAMES
-    from ftre_inbox.hooks import INBOX_CLAIMED
-
-    assert INBOX_CLAIMED == "inbox/claimed"
+    assert "inbox/claimed" not in PUBLIC_HOOK_NAMES
 
 
 def test_new_platform_hooks_do_not_import_legacy_runtime_module():

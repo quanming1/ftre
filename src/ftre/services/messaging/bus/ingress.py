@@ -1,11 +1,11 @@
-"""Messaging inbound Hook contract.
+"""Messaging route Hook contract.
 
-MessageBus owns transport correlation and publishes one normalized inbound
+MessageBus owns transport correlation and publishes one normalized route
 boundary. Command and Inbox Plugins decide whether they handle a message;
 Agent Runtime does not inspect either product concept.
 """
-# Messaging inbound Hook 契约（由 Messaging Owner 定义，Kernel 不认识它——PRD-F14 §8）。
-# MessageBus 负责传输相关性，发布唯一的规范化 inbound 边界；
+# Messaging route Hook 契约（由 Messaging Owner 定义，Kernel 不认识它——PRD-F14 §8）。
+# MessageBus 负责传输相关性，发布唯一的规范化 route 边界；
 # Command Plugin 与 Inbox Package 各自决定是否处理某条消息；
 # Agent Runtime 不检查 Command/Queue 概念，只消费最终交付的 InboundMessage。
 
@@ -38,12 +38,12 @@ async def _unhandled(_message: BusMessage) -> IngressResult | None:
     return None
 
 
-# messaging/inbound：WATERFALL 控制型 Hook——
+# messaging/route：WATERFALL 控制型 Hook——
 #   - 监听器按注册顺序尝试接管消息，返回 IngressResult 即短路（后续监听器不再执行）；
 #   - 全部返回 None 表示无消费者（如未装 Inbox 时普通输入 → capability error）；
 #   - failure_policy=PROPAGATE：监听器异常向上抛，不静默吞错（接入口是关键路径）。
-MESSAGING_INBOUND_SPEC = HookSpec(
-    "messaging/inbound",
+MESSAGING_ROUTE_SPEC = HookSpec(
+    "messaging/route",
     "messaging",
     HookMode.WATERFALL,
     failure_policy=HookFailurePolicy.PROPAGATE,
@@ -54,4 +54,4 @@ MESSAGING_INBOUND_SPEC = HookSpec(
 )
 
 
-__all__ = ["MESSAGING_INBOUND_SPEC", "IngressResult"]
+__all__ = ["MESSAGING_ROUTE_SPEC", "IngressResult"]
