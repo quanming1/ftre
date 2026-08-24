@@ -20,9 +20,10 @@ async def apply(ctx: Context, config: dict[str, Any] | None = None):
     """Create the config owner; Composition-injected instances take precedence."""
     existing = ctx.get("config", strict=False)
     if existing is None:
-        # PluginManager passes the composition snapshot directly. ConfigService
-        # is the sole owner of that snapshot; bootstrap must not seed a copy.
-        service = ConfigService(initial=config if isinstance(config, dict) else None)
+        # ``config`` 是该 Plugin 的 manifest 局部配置，不是完整的
+        # ~/.ftre/config.json。ConfigService 必须自己读取配置文件；否则默认的
+        # 空 manifest dict 会覆盖真实 providers/models，客户端就会看到空模型列表。
+        service = ConfigService()
         ctx.provide("config", service)
     else:
         service = existing
