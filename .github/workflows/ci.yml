@@ -40,6 +40,11 @@ jobs:
           pip install -e ./cordis-py
           pip install -e ./ftre-agent-core
           pip install -e .
+          # Inbox/Compaction are optional at runtime, but the repository test
+          # suite imports their public contracts directly. Install the local
+          # packages instead of resolving the published extras from PyPI.
+          pip install -e ./packages/ftre-inbox
+          pip install -e ./packages/ftre-compaction
           pip install pytest pytest-asyncio
 
       - name: Syntax check
