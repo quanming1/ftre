@@ -81,4 +81,5 @@
 ## 最终状态
 
 - F25 PRD/TODO/CHANGELOG 与代码证据一致。
-- 当前工作树保留本批未提交修改；未执行任何 Git 提交或外部发布操作。
+- F25 功能提交：`0f4ca99 feat(F25): 实现压缩三路并行摘要`。
+- PR #54 已合入 `develop`，合入提交：`c9bac5b`；本地 `develop` 已同步 `origin/develop` 且工作树干净。
