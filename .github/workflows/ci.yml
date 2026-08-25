@@ -22,7 +22,7 @@ jobs:
           repository: quanming1/ftre-agent-core
           # B2 Responses 重放修复已合入 Core develop；用合入提交固定跨仓合同，
           # 避免 CI 使用旧 tag 漏测 status-free Item 重放。
-          ref: fb63b25cad596344f9df7f1462b2da892a01f261
+          ref: 4a214f3e538023a0aa13dcc9b102281adc66609d
           path: ftre-agent-core
 
       - name: Checkout cordis-py
