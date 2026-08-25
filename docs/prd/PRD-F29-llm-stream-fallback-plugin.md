@@ -108,3 +108,4 @@
 |---|---|---|
 | 2026-08-25 | 初始草案：将 Stream Fallback 从 F28 拆为独立 Package，消费 `llm/stream` 的 attempt/max_attempts | Retry Policy 与模型切换属于两个不同 Owner，必须分别生命周期管理和验收 |
 | 2026-08-25 | 完成 `ftre-llm-fallback`、ConfigService.resolve_llm、最后一次无输出切换、失败/取消/协议和 Fiber 生命周期回归 | fallback 不复制 Retry Loop，不读取 Agent/Session 私有状态，也不递归调用自身 |
+| 2026-08-25 | 配合 Core B2 Responses 修复：Host Session 保留 `response_metadata.output_items`，下一轮仅通过 Responses 适配器筛选重放，Chat Completions 丢弃该扩展字段 | 避免跨协议泄漏传输元数据，并修复 thinking 请求携带返回态 `status` 的 400 |
