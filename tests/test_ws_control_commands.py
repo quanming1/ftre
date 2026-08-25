@@ -21,7 +21,10 @@ class FakeWebSocket:
 
 @pytest.mark.asyncio
 async def test_prompt_command_text_is_forwarded_to_command_plane():
-    channel = WebSocketChannel(EventBus())
+    async def wire_snapshot(session_id):
+        return {"session_id": session_id, "revision": 0, "items": []}
+
+    channel = WebSocketChannel(EventBus(), inbox_provider=SimpleNamespace(wire_snapshot=wire_snapshot))
     ws = FakeWebSocket()
     received = asyncio.create_task(channel._on_message(
         json.dumps({
@@ -37,7 +40,8 @@ async def test_prompt_command_text_is_forwarded_to_command_plane():
     assert message.type == "user_message"
     assert message.data["content"] == "/allow call_1"
     assert message.metadata.request_id == "f1"
-    assert ws.sent[-1]["ok"] is True
+    assert ws.sent[-1]["type"] == "session/queue"
+    assert ws.sent[-1]["payload"]["revision"] == 0
 
 
 @pytest.mark.asyncio

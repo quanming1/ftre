@@ -40,7 +40,14 @@ class SequenceLLM:
 
 
 def _provide_plugin_dependencies(context: Context) -> None:
-    """为 Inbox Plugin 提供它真正声明的公开 Service 依赖。"""
+    """为 Inbox Plugin 提供它真正声明的公开 Service 依赖。
+
+    这两个测试只验证队列 admission 与 Core Hook 的连接，不需要真实的
+    SessionEventService；但 `session_events` 仍是 Inbox 的必需注入边界，
+    因此用显式的空能力填充最小测试上下文，而不是让 Plugin 回退到隐式
+    `ctx.get()`。
+    """
+    context.provide("session_events", None)
 
 
 def _tool_sequence():

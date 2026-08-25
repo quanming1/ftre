@@ -17,9 +17,7 @@ async def repository(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_update_messages_commits_once_and_preserves_order(
-    repository, monkeypatch,
-):
+async def test_update_messages_commits_once_and_preserves_order(repository, monkeypatch):
     session_id = await repository.create_session("ws")
     first = UserMsg(name="default", content="first")
     second = AssistantMsg(name="default", content="second")
@@ -37,9 +35,7 @@ async def test_update_messages_commits_once_and_preserves_order(
 
     commit_spy.assert_awaited_once()
     messages = await repository.get_messages_by_session(session_id)
-    assert [message["id"] for message in messages] == [
-        first.id, second.id, third.id,
-    ]
+    assert [message["id"] for message in messages] == [first.id, second.id, third.id]
     assert [message["content"][0]["text"] for message in messages] == [
         "first-updated", "second", "third-updated",
     ]
@@ -65,12 +61,8 @@ async def test_update_messages_rejects_cross_session_without_partial_update(
         await repository.update_messages([first, second])
 
     commit_spy.assert_not_awaited()
-    assert (
-        await repository.get_messages_by_session(first_session)
-    )[0]["content"][0]["text"] == "first"
-    assert (
-        await repository.get_messages_by_session(second_session)
-    )[0]["content"][0]["text"] == "second"
+    assert (await repository.get_messages_by_session(first_session))[0]["content"][0]["text"] == "first"
+    assert (await repository.get_messages_by_session(second_session))[0]["content"][0]["text"] == "second"
 
 
 @pytest.mark.asyncio
