@@ -141,7 +141,7 @@ ftre.main
 
 ## Agent 数据面不变量
 
-当前运行数据面仍是 `Channel → EventBus → AgentLoop ingress → ftre-inbox（可选）→ AgentService/TurnExecutor`；
+当前运行数据面是 `Channel → EventBus → AgentLoop ingress → ftre-inbox（默认必选 Plugin）→ AgentService/TurnExecutor`；
 F13 的目标数据面是 `Channel Plugin → Ingress → CommandService 或 InboxService → AgentService`，
 AgentLoop 不再拥有 Command/Inbox 的业务分流：
 
@@ -151,8 +151,8 @@ AgentLoop 不再拥有 Command/Inbox 的业务分流：
 - `ftre-inbox` 的 `next-turn`/`next-step`、pending、容量和恢复不进入 AgentService；`messages` 是聊天历史，
   `CompletionRegistry` 仅保存进程内等待。
 - Channel 负责接入与协议，EventBus 只负责传输，`ftre-inbox` 负责 admission、队列串行化和
-  claim，AgentService 负责 active Turn；未安装 Inbox 时普通输入明确返回 capability error，
-  不回退旧 Lane。
+  claim，AgentService 负责 active Turn。默认 Composition 将 Inbox 声明为 required；若嵌入式
+  Host 自定义 Composition 不装载它，启动应明确失败或由接入层返回 capability error，不能回退旧 Lane。
 
 ## 插件开发约定
 

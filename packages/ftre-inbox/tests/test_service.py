@@ -38,6 +38,23 @@ class CancellableAgent(FakeAgent):
         return True
 
 
+class BlockingFirstAgent(FakeAgent):
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run(self, message):
+        self.running.add(message.session_id)
+        self.received.append(message)
+        if len(self.received) == 1:
+            self.started.set()
+            await self.release.wait()
+        self.running.remove(message.session_id)
+        self.done.set()
+        return {"status": "completed"}
+
+
 @pytest.mark.asyncio
 async def test_followup_starts_worker_and_inject_does_not(tmp_path):
     agent = FakeAgent()
@@ -60,12 +77,68 @@ async def test_followup_starts_worker_and_inject_does_not(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_idle_steer_falls_back_to_a_normal_agent_turn(tmp_path):
+    """没有 active Turn 时，steer 也必须被 worker 交付而不能卡在 next-step。"""
+    agent = FakeAgent()
+    service = InboxService(InboxRepository(tmp_path), agent)
+    await service.start()
+
+    await service.steer(InboundMessage("s1", "steer-idle", "ws", "直接执行"))
+    await asyncio.wait_for(agent.done.wait(), timeout=1)
+
+    assert [message.request_id for message in agent.received] == ["steer-idle"]
+    assert not (await service.snapshot("s1")).has_pending
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_steer_arriving_during_a_turn_runs_after_that_turn(tmp_path):
+    """没有新的 Reasoning 边界时，pending steer 仍由 Inbox fallback 为下一 Turn。"""
+    agent = BlockingFirstAgent()
+    service = InboxService(InboxRepository(tmp_path), agent)
+    await service.start()
+
+    await service.followup(InboundMessage("s1", "turn-1", "ws", "先执行"))
+    await asyncio.wait_for(agent.started.wait(), timeout=1)
+    await service.steer(InboundMessage("s1", "steer-1", "ws", "下一轮插入"))
+    assert [item.request_id for item in (await service.snapshot("s1")).next_step] == ["steer-1"]
+
+    agent.release.set()
+    for _ in range(100):
+        if len(agent.received) == 2 and not (await service.snapshot("s1")).has_pending:
+            break
+        await asyncio.sleep(0.01)
+    assert [message.request_id for message in agent.received] == ["turn-1", "steer-1"]
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_steering_is_isolated_between_sessions(tmp_path):
+    agent = FakeAgent()
+    service = InboxService(InboxRepository(tmp_path), agent)
+    await service.start()
+
+    await service.steer(InboundMessage("s1", "step-1", "ws", "会话一"))
+    await service.steer(InboundMessage("s2", "step-2", "ws", "会话二"))
+    for _ in range(100):
+        if len(agent.received) == 2:
+            break
+        await asyncio.sleep(0.01)
+
+    assert {message.session_id for message in agent.received} == {"s1", "s2"}
+    assert not (await service.snapshot("s1")).has_pending
+    assert not (await service.snapshot("s2")).has_pending
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_queue_snapshot_wire_hides_internal_targets(tmp_path):
     service = InboxService(InboxRepository(tmp_path))
     await service.followup(InboundMessage("s1", "r1", "ws", "hello"))
     wire = await service.wire_snapshot("s1")
     assert wire == {
         "session_id": "s1",
+        "revision": 1,
         "items": [{
             "id": "r1",
             "placement": "queued",

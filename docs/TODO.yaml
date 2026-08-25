@@ -1136,3 +1136,91 @@ stages:
             title: 全量验收、Gateway smoke 与工程卫生
             status: done
             date: 2026-08-24
+
+      - id: F22
+        title: 运行中 Steering 消息注入与协议闭环
+        status: done
+        prd: docs/prd/PRD-F22-runtime-steering-message-injection.md
+        prd_status: 已验收
+        date: 2026-08-24
+        completed_date: 2026-08-24
+        depends_on:
+          - F21
+          - F12
+          - F15
+        implementation_boundary: F22.1-F22.4 只修改 E:\\ftre Host、ftre-inbox Package、测试和协议文档；F22.5-F22.6 在 E:\\binn\\ftre-desktop 独立分支实施客户端交互；不修改 E:\\ftre-agent-core 或 E:\\cordis-py
+        acceptance: session.prompt 的 mode 从接入层完整传递到 Inbox；queue 项可由客户端按钮升级为 steer；steer 在 active Turn 的下一次 agent/before-reasoning 边界只消费一次并能恢复；UserMessage 先落库并回显到 MessageList，session/queue 随后移除对应项目且无视觉空窗；queue 旧语义不变；全量质量门禁与跨仓 E2E 通过
+        tasks:
+          - id: F22.1
+            title: 协议数据流基线与 mode 丢失回归
+            status: done
+          - id: F22.2
+            title: Inbox Steering 交付事务与历史持久化
+            status: done
+          - id: F22.3
+            title: active Turn、自然结束与重启边界
+            status: done
+          - id: F22.4
+            title: WebSocket/Package/架构测试与文档收尾
+            status: done
+          - id: F22.5
+            title: 客户端 queue→steer 按钮与状态投影
+            status: done
+          - id: F22.6
+            title: UserMessage/队列交接与跨仓无卡顿 E2E
+            status: done
+
+      - id: F23
+        title: Steering 安全边界与多 AssistantMessage 持久化
+        status: done
+        prd: docs/prd/PRD-F23-steering-message-boundary.md
+        prd_status: 已验收
+        date: 2026-08-24
+        completed_date: 2026-08-24
+        depends_on:
+          - F22
+        paired_stage: E:\ftre-agent-core C4；E:\binn\ftre-desktop B4
+        implementation_boundary: 修改 ftre Host/ftre-inbox/Session Projection 和测试；配套 Core C4、Desktop B4 独立实施；不修改 cordis-py
+        acceptance: 等待当前 LLM/Tool 完成并 checkpoint Assistant A 后持久化 UserMessage；Core 下一次 Reasoning 产生唯一 message_id 的 Assistant B；三端均为 A→User→B；删除 F22 Host segment 方案；普通 queue、idle fallback、取消、恢复、Package 生命周期和全量门禁通过
+        tasks:
+          - id: F23.1
+            title: Core message_id 消费契约与跨仓基线
+            status: done
+          - id: F23.2
+            title: Inbox checkpoint→User→claim 安全顺序
+            status: done
+          - id: F23.3
+            title: SessionProjection 按 message_id 投影
+            status: done
+          - id: F23.4
+            title: 删除人工 segment 与宽泛重排 API
+            status: done
+          - id: F23.5
+            title: Gateway、恢复、生命周期与跨仓验收
+            status: done
+
+      - id: F24
+        title: Queue Operation Response 与 Inbox 快照统一协议
+        status: done
+        prd: docs/prd/PRD-F24-queue-operation-response.md
+        prd_status: 已验收
+        date: 2026-08-25
+        completed_date: 2026-08-25
+        depends_on:
+          - F23
+        paired_stage: E:\binn\ftre-desktop B5
+        implementation_boundary: 修改 ftre WebSocket/Inbox 协议、测试和文档；配套 Desktop B5 消费协议；不修改 Agent Core、cordis-py 或客户端之外的仓库
+        acceptance: session.prompt 与 session.updateQueue 成功响应直接携带最新 session/queue 快照和服务端 revision；客户端以同一响应完成请求结算与队列投影；后台 claim 仍可主动推送 session/queue；原始 inbox.json 不暴露；旧 ACK 解析与队列操作双阶段状态机删除；steering 在 claim 前不可 edit/remove；错误响应保留 request_id/ok/error；普通 queue、steer、claim、失败、重试、重连和全量质量门禁通过
+        tasks:
+          - id: F24.1
+            title: Queue Operation Response PRD、wire schema 与 revision 基线
+            status: done
+          - id: F24.2
+            title: ftre WebSocket 操作响应合并队列快照
+            status: done
+          - id: F24.3
+            title: Inbox wire snapshot revision 与错误边界
+            status: done
+          - id: F24.4
+            title: 后端协议、生命周期和 Gateway 回归
+            status: done

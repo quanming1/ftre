@@ -71,8 +71,10 @@ WS/HTTP/Plugin
 | `SessionService` | Session 身份、配置、正式消息历史和生命周期 Hook | Inbox pending、worker 和队列协议 |
 
 客户端只理解 `session.prompt`、`session.updateQueue`、`session.cancel`、
-`session/queue`、`session/status` 和统一 ACK/error envelope；`next-turn`、
-`next-step`、revision、capacity、source 不泄漏到 wire。
+`session/queue`、`session/status` 和统一 error envelope。Inbox 操作成功通过同一
+`session/queue` Queue Operation Response 返回 `request_id`、`revision` 和完整 `items`；
+`session.cancel` 因不修改 Inbox 保留控制 ACK。`next-turn`、`next-step`、capacity、source
+和原始 `inbox.json` 不泄漏到 wire。
 
 ## 1. 历史阶段地图（非当前运行契约）
 

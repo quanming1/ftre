@@ -16,6 +16,7 @@ from .protocol import (
     InboundMetadata,
     MessageType,
     OutboundMetadata,
+    PromptMode,
     coerce_inbound_metadata,
 )
 from .service import MessageBusService
@@ -34,6 +35,7 @@ __all__ = [
     "MessageBusService",
     "MessageType",
     "OutboundMetadata",
+    "PromptMode",
     "SessionCommandMessage",
     "TypedBusMessage",
     "coerce_inbound_metadata",

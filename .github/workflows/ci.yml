@@ -21,7 +21,7 @@ jobs:
         with:
           repository: quanming1/ftre-agent-core
           # F16 绑定 Core C3 的破坏性 Hook 协议；主仓库合入前必须先发布对应 tag。
-          ref: v0.2.0
+          ref: v0.2.1
           path: ftre-agent-core
 
       - name: Checkout cordis-py

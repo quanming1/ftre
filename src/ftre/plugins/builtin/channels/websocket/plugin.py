@@ -28,8 +28,10 @@ def apply(ctx: Context, config=None):
     projection = getattr(ctx.sessions, "projection", None)
 
     def current_inbox():
-        # Inbox may be restarted independently; resolving through Context keeps
-        # this protocol provider from retaining a disposed Service instance.
+        # 这里是有意保留的动态解析例外：Inbox 可独立 restart，WebSocket Channel
+        # 必须继续存活并切换到新 Service，不能把已 dispose 的实例捕获进闭包。
+        # 这不是缺失依赖的静默 fallback；Composition 已把 Inbox 声明为 required，
+        # 缺失时启动门禁失败，运行中实例消失时操作返回 inbox-unavailable。
         return ctx.get("inbox", strict=False)
 
     async def publish_snapshot(session_id: str) -> None:
@@ -59,9 +61,11 @@ def apply(ctx: Context, config=None):
             )
         )
 
-    # Inbox emits these facts after each durable mutation.  Listening to the
-    # Hook rather than binding callbacks to one Inbox instance makes restart
-    # and unload safe: the listener resolves the current Service each time.
+    # Inbox emits these facts after each durable mutation. Listening to the Hook
+    # rather than binding callbacks to one Inbox instance makes restart safe:
+    # the listener resolves the current Service each time. The HookSpec is a
+    # stable public contract owned by the Package; the WebSocket Plugin owns
+    # only the outbound adapter and its disposer.
     inbox = current_inbox()
     inbox_changed_spec = getattr(inbox, "changed_hook_spec", None)
     inbox_status_spec = getattr(inbox, "status_hook_spec", None)
