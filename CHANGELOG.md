@@ -1,5 +1,30 @@
 # Changelog
 
+### F29 LLM Stream Fallback Plugin（已完成，未发布）
+
+- 新增 `ftre-llm-fallback` Package：仅在最后一次 Core attempt、主模型尚无任何流式输出且
+  错误码命中配置时调用备用模型；前序失败仍由 Core Retry 处理。
+- ConfigService 新增公开 `resolve_llm(provider, model)` 快照解析；取消、overflow、部分输出、
+  未知错误和备用失败均不递归 fallback。
+
+### F28 LLM Error Recovery Plugin（已完成，未发布）
+
+- 新增 `ftre-llm-recovery` 可选 Package，消费 Core `llm/error`，按错误码配置 retry/stop
+  和退避建议；Core 仍唯一拥有重试执行器。
+- 默认安装但可配置禁用；overflow/context_length 继续由 `ftre-compaction` 处理，Plugin
+  支持 Fiber restart/unload 且不残留 listener。
+
+### F27 Compaction 用户消息确定性生成（开发中）
+
+- `all_user_messages` 改由 `ftre-compaction` 按 Msg 快照代码生成，LLM 不再承担机械性复述。
+- 默认 `chunkTokens` 调整为 200000，显式配置仍可覆盖。
+
+### F26 Compaction 按 token 分块摘要（开发中）
+
+- 压缩内容默认按约 100k token、保持 Msg 边界切块，每个 chunk 只交给一个 LLM，避免多个
+  Worker 重复处理完整 Session；chunk 并发数、超时、重试和 token 上限均可配置。
+- 分块摘要按原始顺序本地确定性合并，保留现有 `state_snapshot`、Hook、Session 和 WebSocket 协议。
+
 ### F25 Compaction 三路并行摘要（已完成，未发布）
 
 - `ftre-compaction` 对同一 Session 快照并行运行 intent/technical/continuity 三个摘要 Worker，

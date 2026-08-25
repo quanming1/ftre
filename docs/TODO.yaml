@@ -869,10 +869,10 @@ stages:
 
       - id: F15
         title: Hook 语义收敛与生命周期安全
-        status: in_progress
+        status: done
         date: 2026-08-24
         prd: docs/prd/PRD-F15-hook-surface-convergence.md
-        prd_status: 开发中
+        prd_status: 已验收
         depends_on:
           - F14
         implementation_boundary: 只修改 E:\ftre Host 与仓内 packages；Core 7 个 Hook 冻结不变
@@ -1257,3 +1257,96 @@ stages:
             title: 全量验收、Package 构建与执行报告
             status: done
             date: 2026-08-25
+      - id: F26
+        title: Compaction 按 token 分块摘要
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F26-compaction-token-chunks.md
+        prd_status: 已验收
+        depends_on:
+          - F25
+        implementation_boundary: 只修改 E:\ftre 的 ftre-compaction Package、测试、配置文档和执行记录；不修改 Agent Core、客户端、Inbox、WebSocket 和 Session 持久化协议
+        acceptance: 每约 200k token 内容按 Msg 边界切块，每块一个 LLM，受限并发，确定性合并，压缩速度和失败安全回归通过
+        tasks:
+          - id: F26.1
+            title: token 分块与配置契约
+            status: done
+            date: 2026-08-25
+          - id: F26.2
+            title: chunk LLM 调度与确定性合并
+            status: done
+            date: 2026-08-25
+          - id: F26.3
+            title: 失败取消与全量验收
+            status: done
+            date: 2026-08-25
+      - id: F27
+        title: Compaction 用户消息确定性生成
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F27-compaction-deterministic-user-messages.md
+        prd_status: 已验收
+        completed_date: 2026-08-25
+        depends_on:
+          - F26
+        implementation_boundary: 只修改 E:\ftre 的 ftre-compaction Package、测试、配置文档和执行记录；不修改 Agent Core、客户端、Inbox、WebSocket 和 Session 持久化协议
+        acceptance: 用户消息清单由代码按顺序生成且不由 LLM 输出；默认 chunkTokens 为 200000；配置、并发、失败安全和 Package 质量门禁通过
+      - id: F28
+        title: LLM Error Hook 与可插拔恢复策略
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F28-llm-recovery-plugin.md
+        prd_status: 已验收
+        completed_date: 2026-08-25
+        depends_on:
+          - F27
+        paired_stage: E:\\ftre-agent-core C5
+        implementation_boundary: 只修改 E:\\ftre Host 的 LLM Hook 重导出、可选 ftre-llm-recovery Package、配置、测试和文档；不修改客户端、Inbox、Compaction 算法、Session 持久化或 Cordis
+        modules:
+          - src/ftre/services/llm/hooks.py（Core 契约窄重导出）
+          - packages/ftre-llm-recovery/（策略 Plugin/Package）
+          - tests/architecture/、tests/contracts/、tests/lifecycle/
+        acceptance: ftre 可消费 Core C5 的同一 llm/error Spec；恢复 Package 只提供 retry/stop 策略，不复制 Core Retry Loop；未安装/禁用时默认重试不变；overflow 继续由 ftre-compaction 处理；Package 生命周期、独立 wheel、洁净安装、全量质量门禁和 Gateway smoke 通过
+        tasks:
+          - id: F28.1
+            title: Host/Core 契约基线与依赖版本冻结
+            status: done
+          - id: F28.2
+            title: llm-recovery Package 策略与配置
+            status: done
+          - id: F28.3
+            title: 生命周期、Compaction 协同与失败安全
+            status: done
+          - id: F28.4
+            title: 独立发行、跨仓回归与最终验收
+            status: done
+      - id: F29
+        title: LLM Stream Fallback Plugin
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F29-llm-stream-fallback-plugin.md
+        prd_status: 已验收
+        completed_date: 2026-08-25
+        depends_on:
+          - F28
+        paired_stage: E:\\ftre-agent-core C6
+        implementation_boundary: 只修改 E:\\ftre Host 的 ConfigService 公共模型解析、可选 ftre-llm-fallback Package、配置、测试和发行文档；不修改 Agent Core Retry Loop、客户端、Inbox、Compaction 算法、Session 持久化或 Cordis
+        modules:
+          - src/ftre/services/config/（公开模型解析窄接口，如确有必要）
+          - src/ftre/services/llm/hooks.py（Core Hook 重导出复核）
+          - packages/ftre-llm-fallback/（Stream Fallback Plugin）
+          - tests/architecture/、tests/contracts/、tests/lifecycle/
+        acceptance: fallback 仅在最后一次 attempt 且主模型无有效输出时执行一次；前序失败全部由 Core Retry 处理；备用失败不递归；未安装/禁用时主模型直连；Config/Package 生命周期、wheel、洁净安装、Compaction 协同和全量质量门禁通过
+        tasks:
+          - id: F29.1
+            title: ConfigService 模型解析与跨仓版本基线
+            status: done
+          - id: F29.2
+            title: llm-stream fallback Package 与最后一次 attempt 策略
+            status: done
+          - id: F29.3
+            title: 错误、取消、部分输出与重复 fallback 回归
+            status: done
+          - id: F29.4
+            title: 生命周期、独立发行与 Gateway 验收
+            status: done

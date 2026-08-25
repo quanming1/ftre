@@ -3,13 +3,14 @@ from types import SimpleNamespace
 
 import pytest
 from ftre_agent_core.llm.events import TextDeltaChunk
-from ftre_agent_core.message import UserMsg
+from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
 from ftre_compaction.config import CompactionConfig
 from ftre_compaction.service import (
-    _SUMMARY_WORKERS,
     CompactionService,
-    _merge_summary_parts,
-    _parse_worker_sections,
+    _build_user_messages_section,
+    _chunk_messages_by_tokens,
+    _merge_chunk_summaries,
+    _parse_chunk_sections,
 )
 
 
@@ -26,21 +27,40 @@ def _config():
     )
 
 
-def _record(message):
-    return message.model_dump(mode="json")
+def _record(content: str):
+    return UserMsg(content=content).model_dump(mode="json")
 
 
-def _worker_name(prompt: str) -> str:
-    for spec in _SUMMARY_WORKERS:
-        if f"<{spec.sections[0]}>...</{spec.sections[0]}>" in prompt:
-            return spec.name
-    raise AssertionError(f"unknown worker prompt: {prompt}")
+def _chunk_summary(label: str) -> str:
+    return f"<state_snapshot><current_work>{label}</current_work></state_snapshot>"
+
+
+def test_user_message_section_is_deterministic_and_skips_compaction_messages():
+    records = [
+        UserMsg(name=MsgName.DEFAULT, content="第一条").model_dump(mode="json"),
+        AssistantMsg(content="助手回复").model_dump(mode="json"),
+        UserMsg(
+            name=MsgName.COMPACT,
+            content="旧摘要里的用户消息不应再次当作原始输入",
+            metadata={"hide": True},
+        ).model_dump(mode="json"),
+        AssistantMsg(
+            name=MsgName.COMPACT_FAST,
+            content="工具输出已裁剪",
+        ).model_dump(mode="json"),
+        UserMsg(name=MsgName.DEFAULT, content="第二条").model_dump(mode="json"),
+    ]
+
+    section = _build_user_messages_section(records)
+
+    assert "第一条" in section and "第二条" in section
+    assert "旧摘要里的用户消息" not in section
+    assert "助手回复" not in section
+    assert section.index("第一条") < section.index("第二条")
 
 
 @pytest.mark.asyncio
-async def test_parallel_workers_share_snapshot_and_overlap(monkeypatch):
-    active = 0
-    peak = 0
+async def test_user_message_section_is_not_requested_from_llm_and_preserves_previous_summary(monkeypatch):
     prompts: list[str] = []
 
     class FakeAdapter:
@@ -48,19 +68,87 @@ async def test_parallel_workers_share_snapshot_and_overlap(monkeypatch):
             pass
 
         async def stream(self, messages):
+            prompts.append(str(messages[-1]["content"]))
+            yield TextDeltaChunk(text=_chunk_summary("摘要"))
+
+    monkeypatch.setattr(
+        "ftre_compaction.service.create_llm_handler",
+        lambda _api_type, **kwargs: FakeAdapter(**kwargs),
+    )
+    service = CompactionService(session_manager=None)
+    result = await service._run_compact_llm(
+        [_record("新增用户消息")],
+        config=_config(),
+        previous_summary=(
+            "<state_snapshot><all_user_messages>用户消息 1: 旧用户消息"
+            "</all_user_messages></state_snapshot>"
+        ),
+        compaction_config=CompactionConfig(chunk_tokens=100),
+    )
+
+    assert result is not None
+    assert "旧用户消息" in result and "新增用户消息" in result
+    assert "<all_user_messages>" not in prompts[0]
+
+
+def test_chunk_messages_by_tokens_preserves_message_boundaries():
+    messages = [_record("甲" * 60), _record("乙" * 60), _record("丙" * 60)]
+
+    chunks = _chunk_messages_by_tokens(messages, 100)
+
+    assert [[item["content"][0]["text"] for item in chunk] for chunk in chunks] == [
+        ["甲" * 60],
+        ["乙" * 60],
+        ["丙" * 60],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_each_chunk_calls_one_llm_and_merges_in_order(monkeypatch, caplog):
+    prompts: list[str] = []
+
+    class FakeAdapter:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def stream(self, messages):
+            prompts.append(str(messages[-1]["content"]))
+            yield TextDeltaChunk(text=_chunk_summary(f"chunk-{len(prompts)}"))
+
+    monkeypatch.setattr(
+        "ftre_compaction.service.create_llm_handler",
+        lambda _api_type, **kwargs: FakeAdapter(**kwargs),
+    )
+    service = CompactionService(session_manager=None)
+    caplog.set_level("INFO", logger="ftre_compaction.service")
+    result = await service._run_compact_llm(
+        [_record("甲" * 60), _record("乙" * 60), _record("丙" * 60)],
+        config=_config(),
+        compaction_config=CompactionConfig(chunk_tokens=100, chunk_parallelism=3),
+    )
+
+    assert len(prompts) == 3
+    assert result is not None
+    assert result.index("chunk-1") < result.index("chunk-2") < result.index("chunk-3")
+    assert sum("chunk=" in record.message and "call tokens=" in record.message for record in caplog.records) == 3
+    assert all("model=summary-model" in record.message for record in caplog.records if "call tokens=" in record.message)
+
+
+@pytest.mark.asyncio
+async def test_chunk_parallelism_limits_inflight_llm_calls(monkeypatch):
+    active = 0
+    peak = 0
+
+    class FakeAdapter:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def stream(self, _messages):
             nonlocal active, peak
-            prompt = str(messages[-1]["content"])
-            prompts.append(prompt)
             active += 1
             peak = max(peak, active)
-            await asyncio.sleep(0.03)
-            spec = next(item for item in _SUMMARY_WORKERS if item.name == _worker_name(prompt))
-            yield TextDeltaChunk(
-                text="\n".join(
-                    f"<{section}>{spec.name}-{section}</{section}>"
-                    for section in spec.sections
-                )
-            )
+            await asyncio.sleep(0.02)
+            yield TextDeltaChunk(text=_chunk_summary("done"))
             active -= 1
 
     monkeypatch.setattr(
@@ -69,39 +157,57 @@ async def test_parallel_workers_share_snapshot_and_overlap(monkeypatch):
     )
     service = CompactionService(session_manager=None)
     result = await service._run_compact_llm(
-        [_record(UserMsg(content="请保留这个请求"))],
+        [_record("消息" * 60) for _ in range(5)],
         config=_config(),
-        compaction_config=CompactionConfig(parallel_workers=3),
+        compaction_config=CompactionConfig(chunk_tokens=100, chunk_parallelism=2),
     )
 
-    assert peak == 3
-    assert len(prompts) == 3
     assert result is not None
-    assert result.index("<primary_request_and_intent>") < result.index(
-        "<key_technical_concepts>"
-    ) < result.index("<problem_solving>")
+    assert peak == 2
 
 
 @pytest.mark.asyncio
-async def test_parallel_worker_retries_only_failed_part(monkeypatch):
-    calls: dict[str, int] = {}
+async def test_only_first_chunk_receives_previous_summary(monkeypatch):
+    prompts: list[str] = []
 
     class FakeAdapter:
         def __init__(self, **_kwargs):
             pass
 
         async def stream(self, messages):
-            prompt = str(messages[-1]["content"])
-            name = _worker_name(prompt)
-            calls[name] = calls.get(name, 0) + 1
-            if name == "intent" and calls[name] == 1:
+            prompts.append(str(messages[-2]["content"]))
+            yield TextDeltaChunk(text=_chunk_summary("chunk"))
+
+    monkeypatch.setattr(
+        "ftre_compaction.service.create_llm_handler",
+        lambda _api_type, **kwargs: FakeAdapter(**kwargs),
+    )
+    service = CompactionService(session_manager=None)
+    await service._run_compact_llm(
+        [_record("甲" * 60), _record("乙" * 60)],
+        config=_config(),
+        previous_summary="旧摘要",
+        compaction_config=CompactionConfig(chunk_tokens=100, chunk_parallelism=2),
+    )
+
+    assert "旧摘要" in prompts[0]
+    assert "旧摘要" not in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_failed_chunk_retries_only_that_chunk(monkeypatch):
+    calls = 0
+
+    class FakeAdapter:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def stream(self, _messages):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
                 return
-            spec = next(item for item in _SUMMARY_WORKERS if item.name == name)
-            yield TextDeltaChunk(
-                text="\n".join(
-                    f"<{section}>{name}</{section}>" for section in spec.sections
-                )
-            )
+            yield TextDeltaChunk(text=_chunk_summary("ok"))
 
     monkeypatch.setattr(
         "ftre_compaction.service.create_llm_handler",
@@ -109,68 +215,62 @@ async def test_parallel_worker_retries_only_failed_part(monkeypatch):
     )
     service = CompactionService(session_manager=None)
     result = await service._run_compact_llm(
-        [_record(UserMsg(content="需要重试的摘要"))],
+        [_record("甲" * 60), _record("乙" * 60)],
         config=_config(),
-        compaction_config=CompactionConfig(parallel_retry_attempts=1),
+        compaction_config=CompactionConfig(
+            chunk_tokens=100,
+            chunk_parallelism=1,
+            chunk_retry_attempts=1,
+        ),
     )
 
     assert result is not None
-    assert calls == {"intent": 2, "technical": 1, "continuity": 1}
+    assert calls == 3
 
 
 @pytest.mark.asyncio
-async def test_parallel_worker_cancellation_propagates_to_all_parts(monkeypatch):
+async def test_chunk_cancellation_cancels_all_children(monkeypatch):
     started = asyncio.Event()
-    release = asyncio.Event()
-    active = 0
     cancelled = 0
 
-    async def slow_worker(*_args, **_kwargs):
-        nonlocal active, cancelled
-        active += 1
-        if active == len(_SUMMARY_WORKERS):
-            started.set()
+    async def slow_chunk(*_args, **_kwargs):
+        nonlocal cancelled
+        started.set()
         try:
-            await release.wait()
-            return {}
+            await asyncio.Event().wait()
         finally:
             cancelled += 1
 
     service = CompactionService(session_manager=None)
-    monkeypatch.setattr(service, "_run_summary_worker", slow_worker)
+    monkeypatch.setattr(service, "_run_summary_chunk", slow_chunk)
     task = asyncio.create_task(
         service._run_compact_llm(
-            [_record(UserMsg(content="需要取消的摘要"))],
+            [_record("甲" * 60), _record("乙" * 60)],
             config=_config(),
-            compaction_config=CompactionConfig(parallel_workers=3),
+            compaction_config=CompactionConfig(chunk_tokens=100, chunk_parallelism=2),
         )
     )
     await asyncio.wait_for(started.wait(), timeout=1)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert cancelled == len(_SUMMARY_WORKERS)
+    assert cancelled == 2
 
 
-def test_merge_rejects_missing_worker_section():
-    parts = {
-        spec.name: {section: "内容" for section in spec.sections}
-        for spec in _SUMMARY_WORKERS
-    }
-    parts["technical"].pop("errors_and_fixes")
-    assert _merge_summary_parts(parts) is None
-
-
-def test_worker_parser_accepts_wrapped_xml_and_strips_analysis():
-    spec = _SUMMARY_WORKERS[0]
-    raw = (
-        "<analysis>内部草稿</analysis>"
-        "<state_snapshot>"
-        "<primary_request_and_intent>保留登录目标</primary_request_and_intent>"
-        "<all_user_messages>用户要求中文</all_user_messages>"
-        "</state_snapshot>"
+def test_chunk_parser_allows_partial_sections_and_merge_is_deterministic():
+    first = _parse_chunk_sections(
+        "<state_snapshot><current_work>第一块</current_work></state_snapshot>"
     )
-    assert _parse_worker_sections(raw, spec) == {
-        "primary_request_and_intent": "保留登录目标",
-        "all_user_messages": "用户要求中文",
-    }
+    second = _parse_chunk_sections(
+        "<state_snapshot><next_step>第二块</next_step></state_snapshot>"
+    )
+
+    assert first is not None and second is not None
+    merged = _merge_chunk_summaries([first, second])
+    assert merged is not None
+    assert merged.index("<current_work>") < merged.index("<next_step>")
+    assert "第一块" in merged and "第二块" in merged
+
+
+def test_chunk_parser_rejects_empty_output():
+    assert _parse_chunk_sections("<state_snapshot></state_snapshot>") is None

@@ -26,6 +26,8 @@ def test_all_workspace_packages_are_default_dependencies() -> None:
         "ftre-messaging>=0.1.0,<0.2.0",
         "ftre-task>=0.1.0,<0.2.0",
         "ftre-team>=0.1.0,<0.2.0",
+        "ftre-llm-recovery>=0.1.0,<0.2.0",
+        "ftre-llm-fallback>=0.1.0,<0.2.0",
     }
     assert expected <= dependencies
 
@@ -38,6 +40,8 @@ def test_each_workspace_package_declares_unique_plugin_entry() -> None:
         "ftre-messaging": ("messaging", "ftre_messaging.plugin:apply"),
         "ftre-task": ("task", "ftre_task.plugin:apply"),
         "ftre-team": ("team", "ftre_team.plugin:apply"),
+        "ftre-llm-recovery": ("llm-recovery", "ftre_llm_recovery.plugin:apply"),
+        "ftre-llm-fallback": ("llm-fallback", "ftre_llm_fallback.plugin:apply"),
     }
     for package_name, (plugin_id, entry) in expected.items():
         project = tomllib.loads(
@@ -55,6 +59,8 @@ def test_default_composition_declares_all_workspace_package_plugins() -> None:
         "messaging": "ftre_messaging.plugin:apply",
         "task": "ftre_task.plugin:apply",
         "team": "ftre_team.plugin:apply",
+        "llm-recovery": "ftre_llm_recovery.plugin:apply",
+        "llm-fallback": "ftre_llm_fallback.plugin:apply",
     }
     assert {item: manifests[item].entry for item in expected} == expected
     assert all(manifests[item].default_enabled for item in expected)

@@ -129,8 +129,13 @@ def _assistant_messages(msg: Msg, *, include_images: bool) -> list[dict[str, Any
     """Split one aggregate assistant Msg at tool-result/hint boundaries."""
     output: list[dict[str, Any]] = []
     pending = []
+    groups = msg.metadata.get("responses_output_item_groups")
+    if not isinstance(groups, list):
+        groups = []
+    group_index = 0
 
     def flush() -> None:
+        nonlocal group_index
         if not pending:
             return
         provider_message = to_openai_message(list(pending), role="assistant")
@@ -139,6 +144,15 @@ def _assistant_messages(msg: Msg, *, include_images: bool) -> list[dict[str, Any
             or provider_message.get("tool_calls")
             or provider_message.get("reasoning_content")
         ):
+            # Responses 原始 Output Item 是下一轮协议重放所需的传输元数据，
+            # 不能混入 content，也不能让 UI/Session 把它当作可见消息。
+            if group_index < len(groups) and isinstance(groups[group_index], list):
+                provider_message["responses_output_items"] = [
+                    dict(item)
+                    for item in groups[group_index]
+                    if isinstance(item, dict)
+                ]
+            group_index += 1
             output.append(provider_message)
         pending.clear()
 

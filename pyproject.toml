@@ -21,6 +21,8 @@ dependencies = [
     "ftre-messaging>=0.1.0,<0.2.0",
     "ftre-task>=0.1.0,<0.2.0",
     "ftre-team>=0.1.0,<0.2.0",
+    "ftre-llm-recovery>=0.1.0,<0.2.0",
+    "ftre-llm-fallback>=0.1.0,<0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +37,8 @@ inbox = ["ftre-inbox>=0.2.0,<0.3.0"]
 messaging = ["ftre-messaging>=0.1.0,<0.2.0"]
 task = ["ftre-task>=0.1.0,<0.2.0"]
 team = ["ftre-team>=0.1.0,<0.2.0"]
+llm-recovery = ["ftre-llm-recovery>=0.1.0,<0.2.0"]
+llm-fallback = ["ftre-llm-fallback>=0.1.0,<0.2.0"]
 compaction = ["ftre-compaction>=0.2.0,<0.3.0"]
 full = [
     "ftre-inbox>=0.2.0,<0.3.0",
@@ -42,6 +46,8 @@ full = [
     "ftre-task>=0.1.0,<0.2.0",
     "ftre-team>=0.1.0,<0.2.0",
     "ftre-compaction>=0.2.0,<0.3.0",
+    "ftre-llm-recovery>=0.1.0,<0.2.0",
+    "ftre-llm-fallback>=0.1.0,<0.2.0",
 ]
 
 [build-system]
@@ -59,6 +65,8 @@ pythonpath = [
     "packages/ftre-messaging/src",
     "packages/ftre-task/src",
     "packages/ftre-team/src",
+    "packages/ftre-llm-recovery/src",
+    "packages/ftre-llm-fallback/src",
 ]
 
 [tool.setuptools.packages.find]

@@ -13,6 +13,9 @@ from ftre_agent_core.hooks import (
     AGENT_STOP_DECISION_SPEC as CORE_STOP_SPEC,
 )
 from ftre_agent_core.hooks import (
+    LLM_ERROR_SPEC as CORE_LLM_ERROR_SPEC,
+)
+from ftre_agent_core.hooks import (
     LLM_STREAM_SPEC as CORE_LLM_SPEC,
 )
 from ftre_agent_core.hooks import (
@@ -30,7 +33,7 @@ from ftre_agent_core.types import ReplyFinishedReason
 from ftre.kernel.hooks import HookRuntime
 from ftre.services.agent.hooks import AGENT_STOP_DECISION_SPEC, AgentSubject
 from ftre.services.agent.registry import AgentRegistry
-from ftre.services.llm import LLM_STREAM_SPEC
+from ftre.services.llm import LLM_ERROR_SPEC, LLM_STREAM_SPEC
 from ftre.services.session.hooks import SESSION_DISPOSED_SPEC, SessionLifecyclePayload
 from ftre.services.system_prompt import SystemPromptService
 from ftre.services.system_prompt.hooks import (
@@ -51,6 +54,7 @@ async def test_ftre_reexports_core_hook_contracts_without_duplicate_owner():
     from ftre.services.tools.hooks import ToolBeforePayload as FtreToolPayload
 
     assert AGENT_STOP_DECISION_SPEC is CORE_STOP_SPEC
+    assert LLM_ERROR_SPEC is CORE_LLM_ERROR_SPEC
     assert LLM_STREAM_SPEC is CORE_LLM_SPEC
     assert FtreStopPayload is StopDecisionPayload
     assert FtreLlmPayload.__module__ == "ftre_agent_core.hooks"
