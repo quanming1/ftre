@@ -13,6 +13,11 @@
 | 关联文档 | `docs/TODO.yaml` 阶段 F12；`PRD-F6-semantic-hook-system.md`；`PRD-F8-command-plane-agent-plane.md`；`PRD-F11-compaction-gate-hook.md`；`docs/prd/README.md`；`AGENTS.md`；`docs/PROCESS.md` |
 | 参考实现 | `E:\deepseek-harness` 的 Agent Inbox、`session.prompt`、`session.updateQueue`、`session/queue` |
 
+> 当前协议说明：F12 是已验收的历史阶段。队列 Owner、`session/queue` 权威快照和
+> `next-turn/next-step` 边界仍然有效；操作成功响应中的旧 admission ACK 示例已由
+> F24 Queue Operation Response 取代，当前字段以 `PRD-F24-queue-operation-response.md`
+> 和 `docs/prd/README.md` 为准。
+
 ## 1. 背景与问题
 
 ### 1.1 重构前实现（已退役）
@@ -704,3 +709,4 @@ continuation 次数限制。
 | 2026-08-23 | 修复执行中删除 Session 的竞态：删除路径等待 active Turn 收尾；ReplyProjection 在最终快照持久化成功前保留 active 状态；已删除 Session 不再发布空 `to_channel` 状态 | 日志暴露 `REPLY_END` 晚于 Session 删除，导致 `message 不存在`、助手回复丢失和空通道告警 | AC11、AC14、AC17、AC18；新增生命周期与投影回归测试 |
 | 2026-08-24 | 修复 Inbox 与 Agent Runtime 的并发装载竞态：`ftre-inbox` 通过 Inject 显式声明 `agent_runtime` 依赖，确保 Inbox ACTIVE 前完成 admission handler 绑定；新增启动绑定回归断言 | 独立 Fiber 并发 settle 时，Inbox 可能先 ACTIVE 但未绑定 AgentLoop，客户端发送消息会收到 `inbox-unavailable` | AC1、AC5、AC14；全量测试 439 passed |
 | 2026-08-24 | F17/F18 后续收敛：当前 Gateway 将 Inbox 作为必选 Plugin；Inbox 只拥有队列 Service/Hook/Worker，`send_message`、`task`、`team_*`/`wait_agent` 分别迁入三个业务 Package，Agent Runtime 删除 Inbox 透传 | 修复 `TurnExecutor._inbox` 未接线导致 `Injected("inbox")` 永远为 None，同时避免把使用 Inbox 的业务 Tool 误归入队列 Owner | F17/F18 PRD；不改变 Inbox Package 的独立发布能力 |
+| 2026-08-25 | 补充 F24 协议覆盖说明；旧 admission ACK 示例仅作为历史记录 | 避免历史示例被误当作当前 WebSocket 成功响应 | F24 AC1、AC6 |

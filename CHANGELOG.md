@@ -1,5 +1,29 @@
 # Changelog
 
+### F24 Queue Operation Response（已完成，未发布）
+
+- `session.prompt` 与 `session.updateQueue` 成功后统一返回 `type=session/queue`，将
+  `request_id`、操作结果和 Inbox `revision/items` 放进同一个响应；取消指令仍保留独立控制 ACK。
+- 删除 WebSocket admission ACK 的 `value.accepted` 成功路径；原始 `inbox.json`、`next_turn`、
+  `next_step` 不进入 wire payload，重复 request_id 继续由 Inbox 幂等处理。
+
+### F23 Steering 消息边界（已完成，未发布）
+
+- Inbox 在 `agent/before-reasoning` 安全边界执行 `checkpoint → UserMessage 落库/广播 → claim`，
+  失败时 pending 保留，重试复用稳定 UserMessage id。
+- SessionProjection 改按 Core `message_id` 聚合，同一 `reply_id` 下自然持久化
+  `Assistant A → UserMessage → Assistant B`；删除 Host 的 segment、重排 API 和 capability flag。
+- Desktop B4 只按服务端 `message_id` 投影，USER_MESSAGE 与 queue snapshot 乱序时保持无空窗。
+
+### F22 Runtime Steering（已完成，未发布）
+
+- `session.prompt` 的 `mode=queue|steer` 在 WebSocket、Bus 和 Inbox 间完整保真；非法 mode
+  明确拒绝，旧客户端缺省仍按 queue。
+- Steering 在 `agent/before-reasoning` Hook 中 DB-first 持久化并广播 `USER_MESSAGE`，再
+  claim Inbox；Session 写入失败时 pending 保留，重试使用稳定 message id 幂等。
+- 客户端队列横幅新增“插入当前运行”按钮，服务端 placement 切换为 steering 后等待
+  `USER_MESSAGE` 交接，不创建第二条消息，也不产生消失→出现的视觉空窗。
+
 ## [0.3.0] - 2026-08-24
 
 ### F21 Command 接入异步化（已完成，未发布）

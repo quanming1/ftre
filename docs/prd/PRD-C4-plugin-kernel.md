@@ -1,7 +1,12 @@
-# PRD-C4-Cordis 风格插件内核
+# PRD-C4-Cordis 风格插件内核（历史阶段）
 
 > 状态生命周期：草稿 → 评审 → approved（定稿）→ 开发中 → 已验收
 > 本 PRD 依据 DeepSeek Harness 的 Cordis 插件框架（`cordiverse/cordis`，MIT）设计；研究分析见 `docs/design-plugin-kernel.md`。
+>
+> **历史边界（2026-08-24）：** 本阶段已由 F1/F13/F14 的 `src/ftre/kernel`、Cordis
+> Runtime、Composition 和 Plugin Provider 实现接管；`src/ftre/plugin/kernel`、旧
+> `FtrePluginApi` 与本文中的早期 API 不再是当前运行契约。本文保留为设计决策和迁移
+> 证据，当前新增代码必须遵循 `PRD-F14-final-plugin-first-architecture.md`。
 
 ## 元信息
 
@@ -9,7 +14,7 @@
 |---|---|
 | 阶段 | C4 |
 | 名称 | Cordis 风格插件内核（依赖注入 + 生命周期 + 事件 + 配置树） |
-| 状态 | 开发中 |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-14 |
 | 定稿日期 | 2026-08-14 |
 | 关联文档 | docs/TODO.yaml 阶段 C4；AGENTS.md `<plugins>`；docs/design-plugin-kernel.md（Cordis 研究分析） |
@@ -389,5 +394,6 @@ class HelloPlugin(Plugin):
 |---|---|---|
 | 2026-08-14 | 初始定稿（评审中）：Cordis 风格插件内核设计，含 FR1-FR10、AC1-AC10 | 基于 DeepSeek Harness Cordis 框架研究（design-plugin-kernel.md），升级 ftre 插件体系以支持依赖声明、生命周期、自动清理、事件 5 模式、配置树 |
 | 2026-08-14 | 补充技术方案概念详解：配置树（3.2）、生命周期状态机（3.3）、插件编写迁移前后对比示例（3.4） | 评审反馈：原文档概念讲解不足，需用 Example 说清配置树、生命周期流程 |
+| 2026-08-24 | 标记为历史阶段，补充 F1/F13/F14 当前 Owner 边界 | TODO 已验收，旧内核已由当前 Composition/Cordis Runtime 接管，避免后续开发误读旧 API |
 | 2026-08-14 | FR1-FR10 实现完成，AC1-AC9 通过；后端 314 项测试、Octo 40 项回归及真实配置网关生命周期冒烟通过 | 接管中断开发后完成内核、内置插件、Octo 迁移与验证；补齐遗留 `module` 配置兼容；AC10 仅剩全仓历史 Ruff 基线待处理 |
 | 2026-08-14 | 新增第 7 章插件开发指南（引导阅读）：插件位置、三步新增、最小模板、可 inject service、ctx 便捷方法、hook 事件、配置启停、生命周期要点；原变更记录顺延为第 8 章 | 补齐面向插件开发者的"如何新增插件"引导文档（此前仅内核实现设计，无开发者上手指南） |
