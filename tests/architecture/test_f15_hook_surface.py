@@ -1,7 +1,7 @@
 """F16 Hook 面终局基线与目标门禁。
 
-该测试从实际导出的 ``HookSpec`` 读取事实，而不是复制生产表格。F16 证明 Core C3
-完成后全系统 15 个名称唯一，门禁会阻止旧 Hook 以 alias 或第二份 Spec 偷渡回来。
+该测试从实际导出的 ``HookSpec`` 读取事实，而不是复制生产表格。C5 增加 llm/error 后，
+全系统 16 个名称仍必须唯一，门禁会阻止旧 Hook 以 alias 或第二份 Spec 偷渡回来。
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ CURRENT_HOOK_NAMES = {
     "tool/before",
     "tool/after",
     "llm/stream",
+    "llm/error",
     "agent/before-reasoning",
     "agent/stop-decision",
     "agent/before-run",
@@ -45,6 +46,7 @@ F16_TARGET_HOOK_NAMES = {
     "tool/before",
     "tool/after",
     "llm/stream",
+    "llm/error",
     "agent/before-reasoning",
     "agent/stop-decision",
     "agent/before-run",
@@ -90,21 +92,22 @@ def _fact_snapshot() -> dict[str, list[tuple[str, str, str, str]]]:
     return snapshot
 
 
-def test_f16_target_snapshot_has_exactly_15_unique_hook_names():
+def test_f16_target_snapshot_has_exactly_16_unique_hook_names():
     snapshot = _fact_snapshot()
     names = [item[0] for group in snapshot.values() for item in group]
     # Agent Host 为了稳定导入面重导出两项 Core Spec；事实门禁按唯一名称计数，
     # 不把同一个对象的公开重导出误判为第二个 Hook Owner。
-    assert len(set(names)) == 15
+    assert len(set(names)) == 16
     assert set(names) == CURRENT_HOOK_NAMES
 
 
 def test_f16_target_set_is_explicit_and_core_boundary_is_frozen():
-    assert len(F16_TARGET_HOOK_NAMES) == 15
+    assert len(F16_TARGET_HOOK_NAMES) == 16
     core_names = {
         "tool/before",
         "tool/after",
         "llm/stream",
+        "llm/error",
         "agent/before-reasoning",
         "agent/stop-decision",
     }

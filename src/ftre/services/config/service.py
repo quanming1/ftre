@@ -63,6 +63,48 @@ class ConfigService:
                 return copy.deepcopy(config) if isinstance(config, dict) else {}
         return {}
 
+    def resolve_llm(self, provider_name: str, model_id: str) -> dict[str, Any] | None:
+        """Resolve a provider/model pair for an LLM Plugin.
+
+        这是 ConfigService 对外公开的最小模型解析边界：调用方只能拿到一次
+        防御性快照，不能访问内部配置字典或 AgentProfile。返回值包含构造
+        Core Adapter 所需的协议和凭据，但本方法不记录、不打印 API key。
+        未找到 provider/model 时返回 ``None``，由调用方决定是否放弃可选能力。
+        """
+        if not isinstance(provider_name, str) or not provider_name:
+            return None
+        if not isinstance(model_id, str) or not model_id:
+            return None
+        provider = self._value.get("providers", {}).get(provider_name, {})
+        if not isinstance(provider, dict):
+            return None
+        models = provider.get("models", ())
+        if not isinstance(models, (list, tuple)):
+            return None
+        model_entry = next(
+            (
+                item
+                for item in models
+                if isinstance(item, dict) and item.get("id") == model_id
+            ),
+            None,
+        )
+        if model_entry is None:
+            return None
+        raw_api_type = model_entry.get("api_type") or provider.get("api_type") or "completions"
+        result: dict[str, Any] = {
+            "provider": provider_name,
+            "model": model_id,
+            "api_key": provider.get("api_key", ""),
+            "api_base": provider.get("api_base", ""),
+            "api_type": raw_api_type if isinstance(raw_api_type, str) else "completions",
+            "reasoning_effort": model_entry.get("reasoning_effort", ""),
+        }
+        max_output = model_entry.get("max_output")
+        if isinstance(max_output, int) and max_output > 0:
+            result["max_output"] = max_output
+        return result
+
     def watch(self, callback: Callable[[ConfigSnapshot], Any]) -> Callable[[], bool]:
         """Subscribe to committed snapshots and return an idempotent disposer."""
         self._watchers.append(callback)

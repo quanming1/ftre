@@ -69,6 +69,8 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("messaging", "ftre_messaging.plugin:apply", "builtin", False, True, description="cross-session messaging tools"),
         PluginManifest("task", "ftre_task.plugin:apply", "builtin", False, True, description="subagent task tools"),
         PluginManifest("team", "ftre_team.plugin:apply", "builtin", False, True, description="team collaboration tools"),
+        PluginManifest("llm-recovery", "ftre_llm_recovery.plugin:apply", "builtin", False, True, description="LLM retry policy"),
+        PluginManifest("llm-fallback", "ftre_llm_fallback.plugin:apply", "builtin", False, True, description="last-attempt LLM fallback"),
         # ── 产品行为与适配器 Plugin（可选）──
         # 这些 Plugin 只消费上面的公开 Service key，不访问私有实现；
         # required=False 表示能力缺失（如 MCP 未配置）不应阻止 Gateway 启动。

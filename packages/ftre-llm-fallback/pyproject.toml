@@ -1,0 +1,21 @@
+[project]
+name = "ftre-llm-fallback"
+version = "0.1.0"
+description = "Optional last-attempt LLM stream fallback Plugin for ftre"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ftre>=0.3.0,<0.4.0",
+    "ftre-agent-core>=0.2.0,<0.3.0",
+    "cordis-py==0.4.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.entry-points."ftre.plugins"]
+llm-fallback = "ftre_llm_fallback.plugin:apply"
+
+[tool.setuptools.packages.find]
+where = ["src"]

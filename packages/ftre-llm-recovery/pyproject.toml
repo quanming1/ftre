@@ -1,0 +1,21 @@
+[project]
+name = "ftre-llm-recovery"
+version = "0.1.0"
+description = "Optional retry/stop policy Plugin for ftre LLM errors"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ftre>=0.3.0,<0.4.0",
+    "ftre-agent-core>=0.2.0,<0.3.0",
+    "cordis-py==0.4.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.entry-points."ftre.plugins"]
+llm-recovery = "ftre_llm_recovery.plugin:apply"
+
+[tool.setuptools.packages.find]
+where = ["src"]

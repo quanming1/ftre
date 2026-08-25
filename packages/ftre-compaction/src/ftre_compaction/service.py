@@ -6,11 +6,12 @@ CompactionService — 上下文压缩 Service 的唯一真实实现
 - /compact 手动：立即压缩
 - /compress-fast：零 LLM 成本裁剪旧 ToolResultBlock 输出
 
-每次压缩：从上一个 compact 摘要 Msg 到现在，全量 LLM 摘要。摘要作为一条
-role=user、name=compact 的 Msg 追加到 messages 数组（由 SessionProjection 投影
-context_compact_done 落盘），原始 Msg 永不删除。下一轮 LLM 上下文从最后一条
-compact Msg 开始。CompactionService 不直接写 state、不直接派发 WebSocket，全部
-通过 CustomEvent + 统一事件出口完成。快速压缩直接更新旧 Msg 中的工具结果块。
+每次压缩：从上一个 compact 摘要 Msg 到现在，按估算 token 数切成多个内容块，每个块
+由一个 LLM 摘要，再由本地确定性逻辑合并。摘要作为一条 role=user、name=compact
+的 Msg 追加到 messages 数组（由 SessionProjection 投影 context_compact_done 落盘），
+原始 Msg 永不删除。下一轮 LLM 上下文从最后一条 compact Msg 开始。
+CompactionService 不直接写 state、不直接派发 WebSocket，全部通过 CustomEvent +
+统一事件出口完成。快速压缩直接更新旧 Msg 中的工具结果块。
 
 并发安全：
 - 每个 session 同一时间最多只有一个真正的压缩 Task。
@@ -22,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
 from typing import Literal
 
 from ftre_agent_core.event import CustomEvent
@@ -50,59 +50,28 @@ def _select_compact_llm(config, compaction_config: CompactionConfig):
     return compaction_config.llm or config.llm
 
 
-@dataclass(frozen=True, slots=True)
-class _SummaryWorkerSpec:
-    """一个摘要 Worker 的固定节点 Owner 和提示词约束。"""
-
-    name: str
-    sections: tuple[str, ...]
-    instruction: str
-    min_ratio: float
-
-
-_SUMMARY_WORKERS = (
-    _SummaryWorkerSpec(
-        name="intent",
-        sections=("primary_request_and_intent", "all_user_messages"),
-        instruction=(
-            "只负责用户意图和用户消息时间线。保留用户明确要求、反馈、"
-            "意图变化和未完成目标；不要总结文件实现或工具细节。"
-        ),
-        min_ratio=0.20,
-    ),
-    _SummaryWorkerSpec(
-        name="technical",
-        sections=(
-            "key_technical_concepts",
-            "files_and_code_sections",
-            "errors_and_fixes",
-        ),
-        instruction=(
-            "只负责技术事实、文件/代码位置、工具结果、错误和修复。"
-            "保留可让下一 Agent 继续工作的具体细节，不重复用户意图。"
-        ),
-        min_ratio=0.45,
-    ),
-    _SummaryWorkerSpec(
-        name="continuity",
-        sections=("problem_solving", "pending_tasks", "current_work", "next_step"),
-        instruction=(
-            "只负责问题解决进展、未完成任务、当前工作和唯一下一步。"
-            "以最近消息为准，删除已经完成或过时的行动。"
-        ),
-        min_ratio=0.35,
-    ),
+_SUMMARY_SECTION_ORDER = (
+    "primary_request_and_intent",
+    "key_technical_concepts",
+    "files_and_code_sections",
+    "errors_and_fixes",
+    "problem_solving",
+    "all_user_messages",
+    "pending_tasks",
+    "current_work",
+    "next_step",
+)
+# `all_user_messages` 只是原始历史的机械投影，不需要 LLM 做语义推理。
+# LLM 只输出下面这些需要归纳的节点，完整摘要仍由本地合并器补齐全部节点。
+_LLM_SUMMARY_SECTION_ORDER = tuple(
+    section for section in _SUMMARY_SECTION_ORDER if section != "all_user_messages"
 )
 
-_SUMMARY_SECTION_ORDER = tuple(
-    section for worker in _SUMMARY_WORKERS for section in worker.sections
-)
-
-COMPACT_PART_LLM_SYSTEM_PROMPT = """\
-你是对话上下文压缩流水线中的一个专职摘要 Worker。你的输出会被宿主程序直接合并到
-下一个 Agent 使用的锚定摘要中。只输出分配给你的 XML 节点，节点之外不要输出解释、Markdown
-围栏、analysis、state_snapshot 或其他 Worker 的内容。内容要密集、准确、可执行；不要回答
-对话中的问题，不要编造不存在的文件、错误或任务。\
+COMPACT_CHUNK_LLM_SYSTEM_PROMPT = """\
+你是对话上下文压缩流水线中的一个分块摘要 Worker。你只会看到整个会话的一段连续内容，
+输出会被宿主程序按原始块顺序合并到下一个 Agent 使用的锚定摘要中。只输出
+state_snapshot XML 节点，不要输出解释、Markdown 围栏或 analysis。只保留当前分块能证明的
+事实；不要回答对话中的问题，不要编造不存在的文件、错误或任务。\
 """
 
 
@@ -485,25 +454,49 @@ class CompactionService:
 
         compaction_config = compaction_config or self.config_for(config)
 
-        # 4. 通知前端开始（CustomEvent，不持久化）。模型必须显式随事件传递，
+        # 4. 按 token 估算切块；事件里的块数与实际 LLM 调度使用同一份快照。
+        chunks = _chunk_messages_by_tokens(
+            head_messages,
+            compaction_config.chunk_tokens,
+        )
+        from ftre.services.session.message import estimate_messages_tokens
+
+        chunk_sizes = [estimate_messages_tokens(chunk) for chunk in chunks]
+
+        # 5. 通知前端开始（CustomEvent，不持久化）。模型必须显式随事件传递，
         #    不能让客户端从上一条 assistant 回复推断压缩实际使用的模型。
         compact_llm = _select_compact_llm(config, compaction_config)
+        logger.info(
+            "[compact] session=%s prepared chunks=%s target_tokens=%s sizes=%s "
+            "parallelism=%s model=%s api_type=%s",
+            session_id,
+            len(chunks),
+            compaction_config.chunk_tokens,
+            chunk_sizes,
+            compaction_config.chunk_parallelism,
+            compact_llm.model,
+            getattr(compact_llm, "api_type", "unknown"),
+        )
         await self._emit_event(session_id, channel_id, CustomEvent(
             name=CompactEventName.START,
             value={
                 "messages": len(head_messages),
                 "tokens": tokens_before,
                 "model": compact_llm.model,
-                "mode": "parallel",
-                "workers": compaction_config.parallel_workers,
+                "mode": "token_chunks",
+                "chunks": len(chunks),
+                "chunk_tokens": compaction_config.chunk_tokens,
+                "parallelism": compaction_config.chunk_parallelism,
+                "user_messages": len(_extract_user_message_texts(head_messages)),
             },
         ))
 
-        # 5. LLM 直调摘要（previous_summary 参与滚动摘要）
+        # 6. LLM 直调摘要（previous_summary 只交给首块，避免重复输入）
         summary = await self._run_compact_llm(
             head_messages, config=config, previous_summary=previous_summary,
             session_id=session_id, focus_hint=focus_hint,
             compaction_config=compaction_config,
+            chunks=chunks,
         )
         if not summary:
             # 摘要为空（模型只输出思考、接口异常等）：默认重试一次
@@ -512,6 +505,7 @@ class CompactionService:
                 head_messages, config=config, previous_summary=previous_summary,
                 session_id=session_id, focus_hint=focus_hint,
                 compaction_config=compaction_config,
+                chunks=chunks,
             )
         if not summary:
             # 重试仍失败：回退 compress_fast 兜底，避免直接放弃导致 Lane BLOCKED。
@@ -531,7 +525,7 @@ class CompactionService:
                 )
             return None
 
-        # 6. 估算摘要后 token
+        # 7. 估算摘要后 token
         from ftre.services.session.message import estimate_messages_tokens
         tokens_after = estimate_messages_tokens([{
             "role": "user",
@@ -548,7 +542,7 @@ class CompactionService:
             )
             return None
 
-        # 7. 发 context_compact_done：SessionProjection 将其投影为 user/compact Msg
+        # 8. 发 context_compact_done：SessionProjection 将其投影为 user/compact Msg
         #    value 含完整 summary_text（非预览），持久化由 Projection 完成。
         done_event = CustomEvent(
             name=CompactEventName.DONE,
@@ -581,35 +575,54 @@ class CompactionService:
         session_id: str = "",
         focus_hint: str = "",
         compaction_config: CompactionConfig | None = None,
+        chunks: list[list[dict]] | None = None,
     ) -> str | None:
-        """调用三个语义 Worker 并行生成摘要，再做本地确定性合并。
-
-        这里仍是 Package 内唯一的摘要调用入口。三路 Worker 共享同一份序列化快照，
-        只负责各自的 XML 节点；Service 在所有 Worker 成功后才返回完整摘要，Hook
-        和 SessionProjection 因此仍只看到一次压缩结果。
-        """
+        """按 token 分块调用 LLM，再按原始块顺序确定性合并。"""
         try:
-            context = _serialize_messages(head_messages)
-            if not context.strip():
+            snapshot = compaction_config or self.config_for(config)
+            chunk_records = chunks or _chunk_messages_by_tokens(
+                head_messages,
+                snapshot.chunk_tokens,
+            )
+            if not chunk_records:
                 logger.debug("[compact] 消息文本为空，跳过 LLM 调用")
                 return None
 
-            snapshot = compaction_config or self.config_for(config)
-            concurrency = max(1, min(3, snapshot.parallel_workers))
-            retry_attempts = max(0, min(2, snapshot.parallel_retry_attempts))
-            timeout_seconds = max(5.0, min(300.0, snapshot.parallel_timeout_seconds))
+            concurrency = max(1, min(8, snapshot.chunk_parallelism))
+            retry_attempts = max(0, min(2, snapshot.chunk_retry_attempts))
+            timeout_seconds = max(5.0, min(600.0, snapshot.chunk_timeout_seconds))
             semaphore = asyncio.Semaphore(concurrency)
 
-            async def run_worker(spec: _SummaryWorkerSpec) -> tuple[str, dict[str, str] | None]:
+            async def run_chunk(
+                index: int,
+                records: list[dict],
+            ) -> tuple[int, dict[str, str] | None]:
                 async with semaphore:
+                    context = _serialize_messages(records)
+                    if not context.strip():
+                        return index, None
+                    chunk_tokens = _estimate_chunk_tokens(records)
+                    llm_cfg = _select_compact_llm(config, snapshot)
                     for attempt in range(retry_attempts + 1):
                         started = asyncio.get_running_loop().time()
+                        logger.info(
+                            "[compact] session=%s chunk=%s/%s call tokens=%s model=%s "
+                            "api_type=%s attempt=%s/%s",
+                            session_id,
+                            index + 1,
+                            len(chunk_records),
+                            chunk_tokens,
+                            llm_cfg.model,
+                            llm_cfg.api_type,
+                            attempt + 1,
+                            retry_attempts + 1,
+                        )
                         try:
                             result = await asyncio.wait_for(
-                                self._run_summary_worker(
-                                    spec,
+                                self._run_summary_chunk(
+                                    index,
                                     context=context,
-                                    previous_summary=previous_summary,
+                                    previous_summary=previous_summary if index == 0 else None,
                                     config=config,
                                     focus_hint=focus_hint,
                                     compaction_config=snapshot,
@@ -620,8 +633,13 @@ class CompactionService:
                             raise
                         except Exception as exc:  # noqa: BLE001 - one part must not cancel siblings
                             logger.warning(
-                                "[compact] worker=%s failed attempt=%s/%s: %s",
-                                spec.name,
+                                "[compact] session=%s chunk=%s/%s failed tokens=%s model=%s "
+                                "attempt=%s/%s: %s",
+                                session_id,
+                                index + 1,
+                                len(chunk_records),
+                                chunk_tokens,
+                                llm_cfg.model,
                                 attempt + 1,
                                 retry_attempts + 1,
                                 exc,
@@ -630,41 +648,57 @@ class CompactionService:
                         elapsed = asyncio.get_running_loop().time() - started
                         if result:
                             logger.info(
-                                "[compact] worker=%s completed attempt=%s elapsed=%.2fs",
-                                spec.name,
+                                "[compact] session=%s chunk=%s/%s completed tokens=%s "
+                                "model=%s attempt=%s elapsed=%.2fs",
+                                session_id,
+                                index + 1,
+                                len(chunk_records),
+                                chunk_tokens,
+                                llm_cfg.model,
                                 attempt + 1,
                                 elapsed,
                             )
-                            return spec.name, result
+                            return index, result
                         logger.warning(
-                            "[compact] worker=%s empty/failed attempt=%s/%s elapsed=%.2fs",
-                            spec.name,
+                            "[compact] session=%s chunk=%s/%s empty/failed tokens=%s "
+                            "model=%s attempt=%s/%s elapsed=%.2fs",
+                            session_id,
+                            index + 1,
+                            len(chunk_records),
+                            chunk_tokens,
+                            llm_cfg.model,
                             attempt + 1,
                             retry_attempts + 1,
                             elapsed,
                         )
-                return spec.name, None
+                return index, None
 
             results = await asyncio.gather(
-                *(run_worker(spec) for spec in _SUMMARY_WORKERS),
+                *(run_chunk(index, records) for index, records in enumerate(chunk_records)),
                 return_exceptions=True,
             )
-            parts: dict[str, dict[str, str]] = {}
+            summaries: list[dict[str, str]] = []
             for result in results:
                 if isinstance(result, asyncio.CancelledError):
                     raise result
                 if isinstance(result, BaseException):
-                    logger.warning("[compact] parallel worker task failed: %s", result)
+                    logger.warning("[compact] chunk task failed: %s", result)
                     return None
-                name, sections = result
+                index, sections = result
                 if sections is None:
-                    logger.warning("[compact] parallel worker=%s produced no sections", name)
+                    logger.warning("[compact] chunk=%s produced no sections", index)
                     return None
-                parts[name] = sections
+                summaries.append(sections)
 
-            summary = _merge_summary_parts(parts)
+            summary = _merge_chunk_summaries(
+                summaries,
+                user_messages=_build_user_messages_section(
+                    head_messages,
+                    previous_summary=previous_summary,
+                ),
+            )
             if not summary:
-                logger.warning("[compact] parallel summary merge produced no content")
+                logger.warning("[compact] chunk summary merge produced no content")
                 return None
             return summary
         except asyncio.CancelledError:
@@ -675,12 +709,12 @@ class CompactionService:
             )
             return None
         except Exception:
-            logger.exception("[compact] 并行摘要异常")
+            logger.exception("[compact] 分块摘要异常")
             return None
 
-    async def _run_summary_worker(
+    async def _run_summary_chunk(
         self,
-        spec: _SummaryWorkerSpec,
+        index: int,
         *,
         context: str,
         previous_summary: str | None,
@@ -688,21 +722,21 @@ class CompactionService:
         focus_hint: str,
         compaction_config: CompactionConfig,
     ) -> dict[str, str] | None:
-        """运行一个分片 Worker；不写 Session、不发事件。"""
-        previous_fragment = _extract_summary_sections(previous_summary, spec.sections)
+        """运行一个 token chunk；不写 Session、不发事件。"""
         prompt_parts = _build_prompt(
-            previous_summary=previous_fragment or None,
+            previous_summary=previous_summary,
             context=[context],
-            min_chars=max(120, int(_estimate_body_chars(context) * spec.min_ratio)),
+            min_chars=max(120, min(12_000, _estimate_body_chars(context) // 20)),
             focus_hint=focus_hint,
         )
         prompt_parts[-1] += (
-            "\n\n本次只负责以下 XML 节点，必须逐一输出完整节点，禁止输出其他节点：\n"
-            + "\n".join(f"<{section}>...</{section}>" for section in spec.sections)
-            + f"\n分工：{spec.instruction}"
+            "\n\n本次只总结当前内容块。可以输出以下 XML 节点，节点内容只填写当前块中确认的事实；"
+            "没有内容的节点可以留空：\n"
+            + "\n".join(f"<{section}>...</{section}>" for section in _LLM_SUMMARY_SECTION_ORDER)
+            + "\n不要输出当前块之外的推断。"
         )
         messages = [
-            {"role": "system", "content": COMPACT_PART_LLM_SYSTEM_PROMPT},
+            {"role": "system", "content": COMPACT_CHUNK_LLM_SYSTEM_PROMPT},
             *[{"role": "user", "content": part} for part in prompt_parts],
         ]
 
@@ -714,7 +748,7 @@ class CompactionService:
             api_base=llm_cfg.api_base,
             reasoning_effort=llm_cfg.reasoning_effort,
             temperature=0.0,
-            max_tokens=_summary_worker_max_tokens(llm_cfg),
+            max_tokens=_summary_chunk_max_tokens(llm_cfg),
         )
 
         collected: list[str] = []
@@ -724,14 +758,14 @@ class CompactionService:
                     collected.append(chunk.text)
         except LLMError as exc:
             logger.warning(
-                "[compact] worker=%s LLM failed code=%s message=%s",
-                spec.name,
+                "[compact] chunk=%s LLM failed code=%s message=%s",
+                index,
                 exc.code,
                 exc.message,
             )
             return None
 
-        return _parse_worker_sections("".join(collected), spec)
+        return _parse_chunk_sections("".join(collected))
     # ─── 工具方法 ──────────────────────────────────────────────────
 
     async def _emit_failed(self, session_id: str, channel_id: str, reason: str) -> None:
@@ -774,38 +808,16 @@ class CompactionService:
 # ─── 模块级纯函数（可单测） ───────────────────────────────────────────
 
 
-def _summary_worker_max_tokens(llm_config) -> int:
-    """为单个 Worker 设置有限输出预算，防止三路摘要合并后膨胀。"""
+def _summary_chunk_max_tokens(llm_config) -> int:
+    """为每个 chunk 设置独立输出预算，避免单块摘要无限膨胀。"""
     configured = getattr(llm_config, "max_output", None)
     if isinstance(configured, int) and configured > 0:
-        return max(512, min(8192, configured // len(_SUMMARY_WORKERS)))
+        return max(512, min(8192, configured))
     return 4096
 
 
-def _extract_summary_sections(
-    summary: str | None,
-    sections: tuple[str, ...],
-) -> str:
-    """从滚动摘要中提取当前 Worker 所属节点，避免三路重复携带旧摘要。"""
-    if not summary:
-        return ""
-    extracted: list[str] = []
-    for section in sections:
-        match = re.search(
-            rf"<{re.escape(section)}>(.*?)</{re.escape(section)}>",
-            summary,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-        if match:
-            extracted.append(f"<{section}>\n{match.group(1).strip()}\n</{section}>")
-    return "\n\n".join(extracted)
-
-
-def _parse_worker_sections(
-    raw: str,
-    spec: _SummaryWorkerSpec,
-) -> dict[str, str] | None:
-    """解析 Worker 输出；缺少分配节点时拒绝，避免合并半成品。"""
+def _parse_chunk_sections(raw: str) -> dict[str, str] | None:
+    """解析一个 chunk 的局部 state_snapshot；缺失节点按空正文处理。"""
     clean = re.sub(r"```(?:xml)?|```", "", raw or "", flags=re.IGNORECASE).strip()
     clean = re.sub(
         r"<analysis>.*?</analysis>",
@@ -814,51 +826,119 @@ def _parse_worker_sections(
         flags=re.DOTALL | re.IGNORECASE,
     ).strip()
     sections: dict[str, str] = {}
-    for section in spec.sections:
+    for section in _LLM_SUMMARY_SECTION_ORDER:
         match = re.search(
             rf"<{re.escape(section)}>(.*?)</{re.escape(section)}>",
             clean,
             flags=re.DOTALL | re.IGNORECASE,
         )
-        if match is None:
-            # 单节点 Worker 可以接受纯正文，便于接入不严格遵循 XML 的模型；
-            # 多节点 Worker 必须有明确标签，否则无法安全归属内容。
-            if len(spec.sections) == 1 and clean:
-                sections[section] = clean
-                break
-            return None
-        sections[section] = match.group(1).strip()
+        sections[section] = match.group(1).strip() if match else ""
     if not any(value for value in sections.values()):
         return None
     return sections
 
 
-def _merge_summary_parts(parts: dict[str, dict[str, str]]) -> str | None:
-    """按固定顺序合并三个 Worker 的节点，不调用第四个 LLM。"""
-    if any(worker.name not in parts for worker in _SUMMARY_WORKERS):
-        return None
-    if any(
-        section not in parts[worker.name]
-        for worker in _SUMMARY_WORKERS
-        for section in worker.sections
+def _merge_chunk_summaries(
+    summaries: list[dict[str, str]],
+    *,
+    user_messages: str = "",
+) -> str | None:
+    """按 chunk 顺序合并节点，并确定性补齐真实用户消息清单。"""
+    if not summaries or not any(
+        part.get(section, "").strip()
+        for part in summaries
+        for section in _SUMMARY_SECTION_ORDER
     ):
-        return None
-    by_section = {
-        section: parts[worker.name].get(section, "")
-        for worker in _SUMMARY_WORKERS
-        for section in worker.sections
-    }
-    if not any(value.strip() for value in by_section.values()):
         return None
     lines = ["<state_snapshot>"]
     for section in _SUMMARY_SECTION_ORDER:
+        if section == "all_user_messages":
+            values = [user_messages.strip()] if user_messages.strip() else []
+        else:
+            values = [part.get(section, "").strip() for part in summaries]
+        values = [value for value in values if value]
         lines.extend([
             f"  <{section}>",
-            by_section[section],
+            "\n\n".join(values),
             f"  </{section}>",
         ])
     lines.append("</state_snapshot>")
     return "\n".join(lines)
+
+
+def _extract_user_message_texts(messages: list[dict]) -> list[str]:
+    """提取当前快照中的真实用户消息，跳过压缩摘要和展示气泡。"""
+    texts: list[str] = []
+    for record in messages:
+        if record.get("role") != "user":
+            continue
+        name = record.get("name", MsgName.DEFAULT.value)
+        if str(name) != MsgName.DEFAULT.value:
+            continue
+        metadata = record.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("hide"):
+            continue
+        text = Msg.model_validate(record).get_text_content() or ""
+        if text.strip():
+            texts.append(text.strip())
+    return texts
+
+
+def _build_user_messages_section(
+    messages: list[dict],
+    *,
+    previous_summary: str | None = None,
+) -> str:
+    """代码生成 `all_user_messages`，避免让 LLM 机械复述用户输入。
+
+    增量压缩时，历史快照已经被上一条 compact 摘要替代，因此先读取上一份摘要中的
+    同名节点，再追加本次 tail 的真实 UserMsg；这样不会因为分块压缩丢掉早期用户消息。
+    """
+    values: list[str] = []
+    if previous_summary:
+        match = re.search(
+            r"<all_user_messages>(.*?)</all_user_messages>",
+            previous_summary,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if match and match.group(1).strip():
+            values.append(match.group(1).strip())
+    values.extend(
+        f"用户消息 {index}: {text}"
+        for index, text in enumerate(_extract_user_message_texts(messages), start=1)
+    )
+    return "\n\n".join(values)
+
+
+def _chunk_messages_by_tokens(
+    messages: list[dict],
+    chunk_tokens: int,
+) -> list[list[dict]]:
+    """按稳定的 Msg 边界切分上下文，单条超限 Msg 独立成为 oversized chunk。"""
+    from ftre.services.session.message import estimate_messages_tokens
+
+    limit = max(1, int(chunk_tokens))
+    chunks: list[list[dict]] = []
+    current: list[dict] = []
+    current_tokens = 0
+    for record in messages:
+        record_tokens = estimate_messages_tokens([record])
+        if current and current_tokens + record_tokens > limit:
+            chunks.append(current)
+            current = []
+            current_tokens = 0
+        current.append(record)
+        current_tokens += record_tokens
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _estimate_chunk_tokens(records: list[dict]) -> int:
+    """估算单个 chunk 的 token 数，供诊断日志复用同一估算器。"""
+    from ftre.services.session.message import estimate_messages_tokens
+
+    return estimate_messages_tokens(records)
 
 
 def _serialize_messages(
