@@ -6,10 +6,18 @@ AgentLoop implementation.
 """
 # 中文说明：Session 维护事件命名和 emit sink：可选 Feature 通过它通知 Projection，不持有 AgentLoop 引用。
 
+import hashlib
 from enum import StrEnum
 from typing import Any
 
+from ftre_agent_core.event import UserMessageEvent
+from ftre_agent_core.message import from_openai_message
+
 from ftre.services.messaging.bus import BusMessage, EventBus, InboundMetadata
+from ftre.services.session.message.multimodal import (
+    build_user_content,
+    normalize_stored_user_content,
+)
 
 
 class SessionMaintenanceEvent(StrEnum):
@@ -51,6 +59,65 @@ class SessionEventService:
             )
         )
         return result
+
+    async def emit_user_message_if_absent(
+        self,
+        session_id: str,
+        channel_id: str,
+        *,
+        request_id: str,
+        content: Any,
+        attachments: tuple[dict[str, Any], ...] = (),
+        source: str = "user",
+        agent_id: str = "",
+    ) -> Any:
+        """幂等持久化并广播一条已经被 Inbox 接纳的用户输入。
+
+        Steering 不能先从 Inbox claim 再等待 Agent/Core 写历史，否则进程在两步之间
+        崩溃会同时丢掉 pending 和 UserMessage。这里用 ``session_id + request_id``
+        生成稳定 Event/Msg id，Projection 的幂等 upsert 保证重试不重复；
+        ``emit`` 仍然遵循“先落 Session、再广播 USER_MESSAGE”的统一顺序。
+        """
+        if not session_id or not request_id:
+            raise ValueError("session_id 和 request_id 不能为空")
+        digest = hashlib.sha256(
+            f"{session_id}\0{request_id}".encode()
+        ).hexdigest()[:24]
+        event_id = f"user_{digest}"
+        stored_content = normalize_stored_user_content(content)
+        persisted_content = build_user_content(
+            stored_content,
+            [dict(item) for item in attachments],
+            include_images=True,
+        )
+        message_metadata = {
+            "hide": False,
+            "request_id": request_id,
+            "source": source,
+        }
+        if agent_id:
+            message_metadata["agent_id"] = agent_id
+        event = UserMessageEvent(
+            id=event_id,
+            reply_id=f"input_{digest[:16]}",
+            content=from_openai_message(
+                {"role": "user", "content": persisted_content}
+            ),
+            message_metadata=message_metadata,
+            data={
+                "session_id": session_id,
+                "request_id": request_id,
+                "content": content,
+                "attachments": [dict(item) for item in attachments],
+                "source": source,
+            },
+        )
+        return await self.emit(
+            session_id,
+            channel_id,
+            event,
+            metadata=InboundMetadata(request_id=request_id, agent_id=agent_id),
+        )
 
 
 __all__ = ["SessionEventService", "SessionMaintenanceEvent"]

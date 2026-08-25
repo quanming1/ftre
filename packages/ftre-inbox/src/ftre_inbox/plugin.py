@@ -19,7 +19,7 @@ from .service import InboxService
 # send_message/task/team are deliberately not dependencies here. They are three
 # independent business Packages which consume ``inbox``; using Inbox does not
 # make them Inbox-owned.
-inject = ("sessions", "agents", "hook_runtime")
+inject = ("sessions", "agents", "hook_runtime", "session_events")
 provide = ("inbox",)
 
 
@@ -74,6 +74,9 @@ async def apply(ctx: Context, config=None):
         repository,
         ctx.agents,
         hook_runtime=ctx.hook_runtime,
+        # session_events 已在 inject 中声明；直接读取注入属性，避免必选依赖
+        # 又退回动态 Service Locator，保证 Owner 图可静态追踪。
+        session_events=ctx.session_events,
     )
     ctx.provide("inbox", service)
 
@@ -107,13 +110,24 @@ async def apply(ctx: Context, config=None):
         async def on_before_reasoning(payload, next_):
             """把 active Turn 的 next-step 原子 claim 成 Core 普通消息。"""
             result = await next_()
-            claimed = await service.claim_next_step_for_reasoning(payload.session_id)
+            claimed = await service.deliver_next_step_for_reasoning(payload.session_id)
             if not claimed:
                 return result
             injected = tuple(
                 {
-                    "role": "user",
+                    # 只有浏览器正式 UserMessage 才建立新的 Assistant message_id；
+                    # Plugin inject 是临时上下文，使用 system 语义避免伪造用户气泡。
+                    "role": "user" if item.source == "user" else "system",
                     "content": item.content,
+                    "metadata": {
+                        "request_id": item.request_id,
+                        "source": item.source,
+                    },
+                    **(
+                        {"id": item.history_message_id}
+                        if item.history_message_id
+                        else {}
+                    ),
                 }
                 for item in claimed
             )

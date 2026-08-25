@@ -149,6 +149,7 @@ class InboxRepository:
                     content=queued.content,
                     attachments=queued.attachments,
                     source=queued.source,
+                    history_message_id=queued.history_message_id,
                 )
             state.next_sequence = max(state.next_sequence, queued.sequence + 1)
             (state.next_turn if target == "next-turn" else state.next_step).append(queued)
@@ -207,6 +208,7 @@ class InboxRepository:
                 content=content,
                 attachments=tuple(dict(item) for item in (attachments or ())),
                 source=old.source,
+                history_message_id=old.history_message_id,
             )
             state.revision += 1
             await self._commit(state)

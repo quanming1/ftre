@@ -449,7 +449,8 @@ class TurnExecutor:
             async for event in agent.run(
                 run_input, runtime_context=turn.runtime_context
             ):
-                # Event 只用于实时传输；在内存中聚合，REPLY_END 时才落一条 Msg。
+                # Event 逐条交给 SessionProjection；Projection 按 message_id 聚合并在
+                # 语义屏障 checkpoint，REPLY_END 只负责当前 Assistant 的最终收尾。
                 completed_message = await self.publish_agent_event(turn, event)
                 if completed_message is not None:
                     turn.final_content = completed_message.get_text_content() or ""

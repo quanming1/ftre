@@ -37,6 +37,10 @@ MessageType = Literal[
     "turn_cancel",
 ]
 
+# ``session.prompt`` 的队列意图是线协议的一部分。默认 queue 保持旧客户端兼容，
+# steer 只表示“下一次 Reasoning 前注入”，并不表示立即打断当前 LLM/Tool。
+PromptMode = Literal["queue", "steer"]
+
 
 class AgentRef(BaseModel):
     """团队成员 profile 定位标记（服务端 team 工具投递时携带）。"""
@@ -60,6 +64,9 @@ class InboundMetadata(BaseModel):
     request_id: str = ""
     agent_id: str = ""
     agent_ref: AgentRef | None = None
+    # 服务端内部用于幂等复用已由 Inbox 持久化的 UserMessage；客户端构造 metadata
+    # 时不会接收此字段。
+    history_message_id: str = ""
 
     @classmethod
     def from_client(cls, raw: Any) -> "InboundMetadata":
@@ -76,12 +83,14 @@ class InboundMetadata(BaseModel):
 class InboundData(BaseModel):
     """user_message 载荷契约（inbound data 字段）。
 
-    content 可以是纯字符串或 ``[{"type": "text", "text": ...}]``；
+    mode 表示 queue/steer 意图，缺省 queue；content 可以是纯字符串或
+    ``[{"type": "text", "text": ...}]``；
     接入边界会把结构化文本归一为 AgentService 的字符串输入。
 
     Command 结果不直接修改 Prompt；Agent Prompt 由 Agent 数据面和 Hook 管线组装。
     """
 
+    mode: PromptMode = "queue"
     content: str | list[dict[str, Any]] = ""
     session_id: str = ""
     attachments: list[dict[str, Any]] = Field(default_factory=list)

@@ -70,6 +70,7 @@ class ReplyState:
     """
     session_id: str
     reply_id: str
+    message_id: str
     message: Msg                  # Event 聚合出的完整 Msg 快照
     revision: int = 0             # 每接收一个 Event 增加，用于识别快照新旧
     dirty: bool = False           # 内存 Msg 是否比磁盘中的 checkpoint 更新
@@ -81,16 +82,17 @@ class SessionProjection:
     def __init__(self, session_manager: SessionService) -> None:
         # SessionManager 是唯一的落盘入口；Projection 不直接读写 state.json。
         self._session_manager = session_manager
-        # 仅保存尚未 REPLY_END 的运行中 Reply：
-        # session_id → reply_id → ReplyState。完成后会立即从这里移除。
+        # 仅保存尚未 REPLY_END 的 AssistantMsg：
+        # session_id → message_id → ReplyState。reply_id 仍用于关联整次 run。
         self._replies: dict[str, dict[str, ReplyState]] = {}
         # 不落盘的 session 级运行状态。它们不是 Msg，也没有 reply_id，但客户端
         # attach 时必须知道（例如正在进行的 context compact）。终态到达即清除。
         self._active_session_events: dict[
             str, dict[SessionMaintenanceEvent, CustomEvent]
         ] = {}
-        # 保护上述内存投影，避免 Event 流、attach snapshot 与取消路径并发修改同一 Reply。
-        # 锁内只改内存；SessionManager 的磁盘 I/O 一律在锁外执行。
+        # 保护上述内存投影，避免 Event 流、attach snapshot 与取消路径并发修改同一 Msg。
+        # 普通 Event 的磁盘 I/O 在锁外执行；UserMessage 已由 Inbox 在安全边界提交，
+        # Projection 只按 message_id 更新对应 AssistantMsg。
         self._lock = asyncio.Lock()
 
     async def close(self) -> None:
@@ -147,6 +149,7 @@ class SessionProjection:
             return ProjectionResult()
 
         event_type = getattr(event, "type", "")
+        message_id = getattr(event, "message_id", None) or reply_id
         is_start = isinstance(event, ReplyStartEvent)
         is_end = isinstance(event, ReplyEndEvent)
         save_new = False
@@ -158,7 +161,7 @@ class SessionProjection:
         # 恢复事件不能新建同 id 的空 Msg（save_message 会冲突），应先复用持久化快照。
         if not is_start:
             async with self._lock:
-                has_active = reply_id in self._replies.get(session_id, {})
+                has_active = message_id in self._replies.get(session_id, {})
             if not has_active:
                 from ftre.services.session.message.converter import _as_msg
 
@@ -169,16 +172,28 @@ class SessionProjection:
                     record_id = (
                         record.id if isinstance(record, Msg) else record.get("id")
                     )
-                    if record_id == reply_id:
+                    if record_id == message_id:
                         restored_message = _as_msg(record)
                         break
 
+        boundary_updates: list[Msg] = []
         async with self._lock:
             # 同一 session 的 Event 可能来自异步流与取消路径；锁只保护内存投影，
             # 文件 I/O 在锁外进行，避免一个慢磁盘阻塞所有 session。
             replies = self._replies.setdefault(session_id, {})
-            state = replies.get(reply_id)
+            state = replies.get(message_id)
             if state is None:
+                # Core 在同一次 reply 中开启新的 message_id 时，上一条 Assistant
+                # 已经完成安全边界；先封口，稍后在锁外 checkpoint。
+                for previous_id, previous in tuple(replies.items()):
+                    if previous.reply_id != reply_id or previous_id == message_id:
+                        continue
+                    if previous.message.finished_at is None:
+                        previous.message.finished_at = getattr(event, "created_at", None)
+                        previous.revision += 1
+                        previous.dirty = False
+                        boundary_updates.append(previous.message.model_copy(deep=True))
+                    replies.pop(previous_id, None)
                 if restored_message is not None:
                     message = restored_message
                 else:
@@ -188,12 +203,12 @@ class SessionProjection:
                         metadata["model"] = event.name
                     message = AssistantMsg(
                         name=MsgName.DEFAULT,
-                        content=[], id=reply_id,
+                        content=[], id=message_id,
                         created_at=getattr(event, "created_at", None),
                         metadata=metadata,
                     )
-                state = ReplyState(session_id, reply_id, message)
-                replies[reply_id] = state
+                state = ReplyState(session_id, reply_id, message_id, message)
+                replies[message_id] = state
                 # 即便流异常地缺少 REPLY_START，也必须能生成可持久化 Msg。
                 save_new = restored_message is None
 
@@ -221,6 +236,8 @@ class SessionProjection:
                     update_snapshot = self._mark_checkpointed(state)
 
         # 这里开始不再持有内存锁。每次写的都是完整 Msg，而不是 Event 列表。
+        for boundary in boundary_updates:
+            await self._session_manager.update_message(boundary)
         if save_new:
             await self._session_manager.save_message(session_id, state.message)
         if update_snapshot is not None:
@@ -231,8 +248,8 @@ class SessionProjection:
             async with self._lock:
                 await self._session_manager.update_message(completed)
                 replies = self._replies.get(session_id)
-                if replies is not None and replies.get(reply_id) is state:
-                    replies.pop(reply_id, None)
+                if replies is not None and replies.get(message_id) is state:
+                    replies.pop(message_id, None)
                     if not replies:
                         self._replies.pop(session_id, None)
         return ProjectionResult(completed_message=completed)
@@ -319,11 +336,15 @@ class SessionProjection:
         return completed
 
     async def snapshot(self, session_id: str) -> list[dict]:
-        """返回一个 session 内每条运行中 Reply 的最新完整 Msg 快照。"""
+        """返回一个 session 内每条运行中 AssistantMsg 的最新完整快照。"""
         async with self._lock:
             return [
-                {"reply_id": state.reply_id, "revision": state.revision,
-                 "message": state.message.model_dump(mode="json")}
+                {
+                    "reply_id": state.reply_id,
+                    "message_id": state.message_id,
+                    "revision": state.revision,
+                    "message": state.message.model_dump(mode="json"),
+                }
                 for state in self._replies.get(session_id, {}).values()
             ]
 

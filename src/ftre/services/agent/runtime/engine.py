@@ -417,6 +417,11 @@ class AgentLoop:
         content = inbound.data.get("content", "")
         if not session_id or not content:
             return ""
+        # Steering 在 before-reasoning 边界已由 Inbox 先写入 Session；idle fallback
+        # 会重新进入独立 Turn，此处复用同一 UserMsg id，不能再广播第二条历史消息。
+        existing_message_id = getattr(inbound.metadata, "history_message_id", "")
+        if existing_message_id:
+            return existing_message_id
         attachments = inbound.data.get("attachments") or []
         user_metadata = {
             "hide": False,
