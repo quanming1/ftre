@@ -1224,3 +1224,36 @@ stages:
           - id: F24.4
             title: 后端协议、生命周期和 Gateway 回归
             status: done
+      - id: F25
+        title: Compaction 三路并行摘要与确定性合并
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F25-parallel-compaction.md
+        prd_status: 已验收
+        completion_date: 2026-08-25
+        depends_on:
+          - F20
+          - F21
+        implementation_boundary: 只修改 E:\\ftre 的 ftre-compaction Package、测试、配置文档和执行记录；不修改 Agent Core、客户端、Inbox、WebSocket 协议和 Session 持久化协议
+        acceptance: CompactionService 对同一快照并行运行三个语义分工的摘要 LLM，确定性合并为一个 state_snapshot；分片失败可独立重试，全部失败不写半成品并回退现有 compress_fast；压缩共享 Task、取消、Hook 维护状态、全量测试和 Package 构建通过
+        tasks:
+          - id: F25.1
+            title: 并行摘要 PRD、配置与输出契约
+            status: done
+            date: 2026-08-25
+          - id: F25.2
+            title: 三路 LLM 并行调用与分片提示词
+            status: done
+            date: 2026-08-25
+          - id: F25.3
+            title: 确定性合并、校验与失败回退
+            status: done
+            date: 2026-08-25
+          - id: F25.4
+            title: 并发取消、性能日志与回归测试
+            status: done
+            date: 2026-08-25
+          - id: F25.5
+            title: 全量验收、Package 构建与执行报告
+            status: done
+            date: 2026-08-25

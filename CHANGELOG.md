@@ -1,5 +1,12 @@
 # Changelog
 
+### F25 Compaction 三路并行摘要（已完成，未发布）
+
+- `ftre-compaction` 对同一 Session 快照并行运行 intent/technical/continuity 三个摘要 Worker，
+  本地确定性合并为一个 `state_snapshot`，不改变 Hook、Session 或 WebSocket 协议。
+- Worker 支持独立重试、超时和统一失败回退；只有三路全部成功才发出唯一
+  `context_compact_done`，避免半成品摘要污染历史。
+
 ### F24 Queue Operation Response（已完成，未发布）
 
 - `session.prompt` 与 `session.updateQueue` 成功后统一返回 `type=session/queue`，将
