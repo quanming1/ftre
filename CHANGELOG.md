@@ -6,6 +6,7 @@
   `request_id`、操作结果和 Inbox `revision/items` 放进同一个响应；取消指令仍保留独立控制 ACK。
 - 删除 WebSocket admission ACK 的 `value.accepted` 成功路径；原始 `inbox.json`、`next_turn`、
   `next_step` 不进入 wire payload，重复 request_id 继续由 Inbox 幂等处理。
+- 配套 Core C4 已发布为 `ftre-agent-core==0.2.1`，CI 与跨仓安装锁定该消息边界版本。
 
 ### F23 Steering 消息边界（已完成，未发布）
 
