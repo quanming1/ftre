@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from dataclasses import dataclass
 from typing import Literal
 
 from ftre_agent_core.event import CustomEvent
@@ -38,53 +40,6 @@ DEFAULT_COMPACT_THRESHOLD = 0.8
 DEFAULT_FAST_KEEP_TURNS = 0
 
 
-# LLM 摘要的 system prompt
-COMPACT_LLM_SYSTEM_PROMPT = """\
-你是对话上下文压缩组件。当对话的上下文窗口即将溢出时，由你负责生成摘要。你产出的摘要将成为 Agent 在此之前所有记忆的唯一来源。Agent 将仅依据此摘要（以及少量恢复的文件/图片附件）恢复工作。
-
-首先，将你的推理过程包裹在 <analysis> 块中。在其中按时间线梳理整段对话，逐节识别：用户的明确请求与意图、你处理这些请求的方式、关键决策/技术概念/代码模式、具体细节（文件名、代码片段、函数签名、文件编辑）、遇到的错误及其修复方式、以及用户的任何特定反馈——尤其是用户要求你换种方式做事时。<analysis> 块在摘要传递给下一个 Agent 之前会被剥离；它纯粹是用于提升后续摘要质量的草稿区。
-
-然后，按照下方 EXACT XML 结构输出最终摘要。内容要密集。省略对话性填充。
-
-<state_snapshot>
-    <primary_request_and_intent>
-        <!-- 详细记录用户的所有明确请求和意图。在意图存在歧义时引用用户的原话。 -->
-    </primary_request_and_intent>
-
-    <key_technical_concepts>
-        <!-- 列出所有涉及的重要技术概念、技术和框架。 -->
-    </key_technical_concepts>
-
-    <files_and_code_sections>
-        <!-- 逐一列出检查、修改或创建的文件和代码段。特别关注最近的消息。在适用处包含完整代码片段，并说明该文件读取或编辑为何重要。 -->
-    </files_and_code_sections>
-
-    <errors_and_fixes>
-        <!-- 列出每个遇到的错误及其修复方式。包含被引用给 Agent 的原始错误消息。特别关注用户对错误的反馈，尤其是用户要求你换种方式处理时。 -->
-    </errors_and_fixes>
-
-    <problem_solving>
-        <!-- 记录已解决的问题和任何正在进行的排障工作。 -->
-    </problem_solving>
-
-    <all_user_messages>
-        <!-- 按时间顺序列出所有非工具结果的用户消息。这些对理解用户反馈和意图变化至关重要。包含 "ok"、"continue" 等短消息——它们是信号。 -->
-    </all_user_messages>
-
-    <pending_tasks>
-        <!-- 列出用户已明确要求但尚未完成的待办任务。 -->
-    </pending_tasks>
-
-    <current_work>
-        <!-- 详细描述在请求摘要之前 Agent 正在做什么，特别关注用户和助手的最近消息。在适用处包含文件名和代码片段。 -->
-    </current_work>
-
-    <next_step>
-        <!-- 列出与最近工作相关的唯一下一步。该步骤必须与用户最近的明确请求和请求摘要前 Agent 正在做的任务直接对齐。如果上一个任务已结束，仅在直接符合用户请求时才列出下一步——不要在未与用户确认前开始旁支或旧的工作。如果有下一步，包含最近对话中的直接引用，准确展示你当时在做什么、停在哪里。 -->
-    </next_step>
-</state_snapshot>"""
-
-
 def _select_compact_llm(config, compaction_config: CompactionConfig):
     """返回摘要实际使用的模型。
 
@@ -93,6 +48,62 @@ def _select_compact_llm(config, compaction_config: CompactionConfig):
     压缩预算和摘要模型仍与当前 Turn 对齐。
     """
     return compaction_config.llm or config.llm
+
+
+@dataclass(frozen=True, slots=True)
+class _SummaryWorkerSpec:
+    """一个摘要 Worker 的固定节点 Owner 和提示词约束。"""
+
+    name: str
+    sections: tuple[str, ...]
+    instruction: str
+    min_ratio: float
+
+
+_SUMMARY_WORKERS = (
+    _SummaryWorkerSpec(
+        name="intent",
+        sections=("primary_request_and_intent", "all_user_messages"),
+        instruction=(
+            "只负责用户意图和用户消息时间线。保留用户明确要求、反馈、"
+            "意图变化和未完成目标；不要总结文件实现或工具细节。"
+        ),
+        min_ratio=0.20,
+    ),
+    _SummaryWorkerSpec(
+        name="technical",
+        sections=(
+            "key_technical_concepts",
+            "files_and_code_sections",
+            "errors_and_fixes",
+        ),
+        instruction=(
+            "只负责技术事实、文件/代码位置、工具结果、错误和修复。"
+            "保留可让下一 Agent 继续工作的具体细节，不重复用户意图。"
+        ),
+        min_ratio=0.45,
+    ),
+    _SummaryWorkerSpec(
+        name="continuity",
+        sections=("problem_solving", "pending_tasks", "current_work", "next_step"),
+        instruction=(
+            "只负责问题解决进展、未完成任务、当前工作和唯一下一步。"
+            "以最近消息为准，删除已经完成或过时的行动。"
+        ),
+        min_ratio=0.35,
+    ),
+)
+
+_SUMMARY_SECTION_ORDER = tuple(
+    section for worker in _SUMMARY_WORKERS for section in worker.sections
+)
+
+COMPACT_PART_LLM_SYSTEM_PROMPT = """\
+你是对话上下文压缩流水线中的一个专职摘要 Worker。你的输出会被宿主程序直接合并到
+下一个 Agent 使用的锚定摘要中。只输出分配给你的 XML 节点，节点之外不要输出解释、Markdown
+围栏、analysis、state_snapshot 或其他 Worker 的内容。内容要密集、准确、可执行；不要回答
+对话中的问题，不要编造不存在的文件、错误或任务。\
+"""
 
 
 class CompactionService:
@@ -483,6 +494,8 @@ class CompactionService:
                 "messages": len(head_messages),
                 "tokens": tokens_before,
                 "model": compact_llm.model,
+                "mode": "parallel",
+                "workers": compaction_config.parallel_workers,
             },
         ))
 
@@ -569,15 +582,11 @@ class CompactionService:
         focus_hint: str = "",
         compaction_config: CompactionConfig | None = None,
     ) -> str | None:
-        """调用 LLM 生成摘要（异步）。
+        """调用三个语义 Worker 并行生成摘要，再做本地确定性合并。
 
-        采用 OpenCode 的 serialize → select → buildPrompt 模式：
-        1. 序列化 Msg 为纯文本（截断 tool 输出至 2000 字符）
-        2. buildPrompt() 返回多条 user message：对话记录 + 指令/模板
-        3. 多条 user message 依次发给 LLM
-
-        这里是包内唯一的 LLM 摘要调用点。Hook 只决定“要不要调用”，不应
-        自己拼接 Prompt 或创建第二个摘要客户端。
+        这里仍是 Package 内唯一的摘要调用入口。三路 Worker 共享同一份序列化快照，
+        只负责各自的 XML 节点；Service 在所有 Worker 成功后才返回完整摘要，Hook
+        和 SessionProjection 因此仍只看到一次压缩结果。
         """
         try:
             context = _serialize_messages(head_messages)
@@ -585,49 +594,144 @@ class CompactionService:
                 logger.debug("[compact] 消息文本为空，跳过 LLM 调用")
                 return None
 
-            prompt_parts = _build_prompt(
-                previous_summary=previous_summary,
-                context=[context],
-                min_chars=max(200, int(_estimate_body_chars(context) * 0.6)),
-                focus_hint=focus_hint,
-            )
+            snapshot = compaction_config or self.config_for(config)
+            concurrency = max(1, min(3, snapshot.parallel_workers))
+            retry_attempts = max(0, min(2, snapshot.parallel_retry_attempts))
+            timeout_seconds = max(5.0, min(300.0, snapshot.parallel_timeout_seconds))
+            semaphore = asyncio.Semaphore(concurrency)
 
-            messages = [
-                {"role": "system", "content": COMPACT_LLM_SYSTEM_PROMPT},
-                *[{"role": "user", "content": p} for p in prompt_parts],
-            ]
+            async def run_worker(spec: _SummaryWorkerSpec) -> tuple[str, dict[str, str] | None]:
+                async with semaphore:
+                    for attempt in range(retry_attempts + 1):
+                        started = asyncio.get_running_loop().time()
+                        try:
+                            result = await asyncio.wait_for(
+                                self._run_summary_worker(
+                                    spec,
+                                    context=context,
+                                    previous_summary=previous_summary,
+                                    config=config,
+                                    focus_hint=focus_hint,
+                                    compaction_config=snapshot,
+                                ),
+                                timeout=timeout_seconds,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:  # noqa: BLE001 - one part must not cancel siblings
+                            logger.warning(
+                                "[compact] worker=%s failed attempt=%s/%s: %s",
+                                spec.name,
+                                attempt + 1,
+                                retry_attempts + 1,
+                                exc,
+                            )
+                            result = None
+                        elapsed = asyncio.get_running_loop().time() - started
+                        if result:
+                            logger.info(
+                                "[compact] worker=%s completed attempt=%s elapsed=%.2fs",
+                                spec.name,
+                                attempt + 1,
+                                elapsed,
+                            )
+                            return spec.name, result
+                        logger.warning(
+                            "[compact] worker=%s empty/failed attempt=%s/%s elapsed=%.2fs",
+                            spec.name,
+                            attempt + 1,
+                            retry_attempts + 1,
+                            elapsed,
+                        )
+                return spec.name, None
 
-            # 优先使用压缩包解析出的专用模型，未配置则回退到主 llm。
-            # 与 START 事件使用同一选择函数，确保展示模型与真实调用一致。
-            llm_cfg = _select_compact_llm(
-                config,
-                compaction_config or self.config_for(config),
+            results = await asyncio.gather(
+                *(run_worker(spec) for spec in _SUMMARY_WORKERS),
+                return_exceptions=True,
             )
-            adapter = create_llm_handler(
-                llm_cfg.api_type,
-                model=llm_cfg.model,
-                api_key=llm_cfg.api_key,
-                api_base=llm_cfg.api_base,
-                reasoning_effort=llm_cfg.reasoning_effort,
-                temperature=0.0,
-            )
+            parts: dict[str, dict[str, str]] = {}
+            for result in results:
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                if isinstance(result, BaseException):
+                    logger.warning("[compact] parallel worker task failed: %s", result)
+                    return None
+                name, sections = result
+                if sections is None:
+                    logger.warning("[compact] parallel worker=%s produced no sections", name)
+                    return None
+                parts[name] = sections
 
-            collected: list[str] = []
+            summary = _merge_summary_parts(parts)
+            if not summary:
+                logger.warning("[compact] parallel summary merge produced no content")
+                return None
+            return summary
+        except asyncio.CancelledError:
+            raise
+        except LLMError as exc:
+            logger.warning(
+                "[compact] 并行摘要失败 code=%s message=%s", exc.code, exc.message
+            )
+            return None
+        except Exception:
+            logger.exception("[compact] 并行摘要异常")
+            return None
+
+    async def _run_summary_worker(
+        self,
+        spec: _SummaryWorkerSpec,
+        *,
+        context: str,
+        previous_summary: str | None,
+        config,
+        focus_hint: str,
+        compaction_config: CompactionConfig,
+    ) -> dict[str, str] | None:
+        """运行一个分片 Worker；不写 Session、不发事件。"""
+        previous_fragment = _extract_summary_sections(previous_summary, spec.sections)
+        prompt_parts = _build_prompt(
+            previous_summary=previous_fragment or None,
+            context=[context],
+            min_chars=max(120, int(_estimate_body_chars(context) * spec.min_ratio)),
+            focus_hint=focus_hint,
+        )
+        prompt_parts[-1] += (
+            "\n\n本次只负责以下 XML 节点，必须逐一输出完整节点，禁止输出其他节点：\n"
+            + "\n".join(f"<{section}>...</{section}>" for section in spec.sections)
+            + f"\n分工：{spec.instruction}"
+        )
+        messages = [
+            {"role": "system", "content": COMPACT_PART_LLM_SYSTEM_PROMPT},
+            *[{"role": "user", "content": part} for part in prompt_parts],
+        ]
+
+        llm_cfg = _select_compact_llm(config, compaction_config)
+        adapter = create_llm_handler(
+            llm_cfg.api_type,
+            model=llm_cfg.model,
+            api_key=llm_cfg.api_key,
+            api_base=llm_cfg.api_base,
+            reasoning_effort=llm_cfg.reasoning_effort,
+            temperature=0.0,
+            max_tokens=_summary_worker_max_tokens(llm_cfg),
+        )
+
+        collected: list[str] = []
+        try:
             async for chunk in adapter.stream(messages):
                 if isinstance(chunk, TextDeltaChunk):
                     collected.append(chunk.text)
-
-            summary = "".join(collected).strip()
-            if not summary:
-                logger.warning("[compact] LLM 摘要为空")
-                return None
-            return summary
         except LLMError as exc:
-            logger.warning("[compact] LLM 直调摘要失败 code=%s message=%s", exc.code, exc.message)
+            logger.warning(
+                "[compact] worker=%s LLM failed code=%s message=%s",
+                spec.name,
+                exc.code,
+                exc.message,
+            )
             return None
-        except Exception:
-            logger.exception("[compact] LLM 直调摘要异常")
-            return None
+
+        return _parse_worker_sections("".join(collected), spec)
     # ─── 工具方法 ──────────────────────────────────────────────────
 
     async def _emit_failed(self, session_id: str, channel_id: str, reason: str) -> None:
@@ -668,6 +772,93 @@ class CompactionService:
 
 
 # ─── 模块级纯函数（可单测） ───────────────────────────────────────────
+
+
+def _summary_worker_max_tokens(llm_config) -> int:
+    """为单个 Worker 设置有限输出预算，防止三路摘要合并后膨胀。"""
+    configured = getattr(llm_config, "max_output", None)
+    if isinstance(configured, int) and configured > 0:
+        return max(512, min(8192, configured // len(_SUMMARY_WORKERS)))
+    return 4096
+
+
+def _extract_summary_sections(
+    summary: str | None,
+    sections: tuple[str, ...],
+) -> str:
+    """从滚动摘要中提取当前 Worker 所属节点，避免三路重复携带旧摘要。"""
+    if not summary:
+        return ""
+    extracted: list[str] = []
+    for section in sections:
+        match = re.search(
+            rf"<{re.escape(section)}>(.*?)</{re.escape(section)}>",
+            summary,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if match:
+            extracted.append(f"<{section}>\n{match.group(1).strip()}\n</{section}>")
+    return "\n\n".join(extracted)
+
+
+def _parse_worker_sections(
+    raw: str,
+    spec: _SummaryWorkerSpec,
+) -> dict[str, str] | None:
+    """解析 Worker 输出；缺少分配节点时拒绝，避免合并半成品。"""
+    clean = re.sub(r"```(?:xml)?|```", "", raw or "", flags=re.IGNORECASE).strip()
+    clean = re.sub(
+        r"<analysis>.*?</analysis>",
+        "",
+        clean,
+        flags=re.DOTALL | re.IGNORECASE,
+    ).strip()
+    sections: dict[str, str] = {}
+    for section in spec.sections:
+        match = re.search(
+            rf"<{re.escape(section)}>(.*?)</{re.escape(section)}>",
+            clean,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if match is None:
+            # 单节点 Worker 可以接受纯正文，便于接入不严格遵循 XML 的模型；
+            # 多节点 Worker 必须有明确标签，否则无法安全归属内容。
+            if len(spec.sections) == 1 and clean:
+                sections[section] = clean
+                break
+            return None
+        sections[section] = match.group(1).strip()
+    if not any(value for value in sections.values()):
+        return None
+    return sections
+
+
+def _merge_summary_parts(parts: dict[str, dict[str, str]]) -> str | None:
+    """按固定顺序合并三个 Worker 的节点，不调用第四个 LLM。"""
+    if any(worker.name not in parts for worker in _SUMMARY_WORKERS):
+        return None
+    if any(
+        section not in parts[worker.name]
+        for worker in _SUMMARY_WORKERS
+        for section in worker.sections
+    ):
+        return None
+    by_section = {
+        section: parts[worker.name].get(section, "")
+        for worker in _SUMMARY_WORKERS
+        for section in worker.sections
+    }
+    if not any(value.strip() for value in by_section.values()):
+        return None
+    lines = ["<state_snapshot>"]
+    for section in _SUMMARY_SECTION_ORDER:
+        lines.extend([
+            f"  <{section}>",
+            by_section[section],
+            f"  </{section}>",
+        ])
+    lines.append("</state_snapshot>")
+    return "\n".join(lines)
 
 
 def _serialize_messages(

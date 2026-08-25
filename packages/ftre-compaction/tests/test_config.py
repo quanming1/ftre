@@ -71,3 +71,35 @@ def test_parse_compaction_config_does_not_mutate_input():
     parse_compaction_config(raw)
 
     assert raw == {"agents": {"context": {"compact_threshold": 0.8}}}
+
+
+def test_parse_compaction_config_reads_parallel_limits():
+    result = parse_compaction_config({
+        "agents": {
+            "context": {
+                "parallelWorkers": 2,
+                "parallelTimeoutSeconds": 30,
+                "parallelRetryAttempts": 0,
+            }
+        }
+    })
+
+    assert result.parallel_workers == 2
+    assert result.parallel_timeout_seconds == 30
+    assert result.parallel_retry_attempts == 0
+
+
+def test_parse_compaction_config_clamps_parallel_limits():
+    result = parse_compaction_config({
+        "agents": {
+            "context": {
+                "parallel_workers": 99,
+                "parallel_timeout_seconds": 9999,
+                "parallel_retry_attempts": -1,
+            }
+        }
+    })
+
+    assert result.parallel_workers == 3
+    assert result.parallel_timeout_seconds == 300
+    assert result.parallel_retry_attempts == 0

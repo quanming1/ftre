@@ -242,7 +242,7 @@ async def test_user_confirmation_result_checkpoints_tool_call_state():
         reply_id=reply_id,
         tool_call_id=call_id,
         tool_call_name="bash",
-        arguments={"command": "pwd"},
+        arguments='{"command":"pwd"}',
     ))
     await projection.apply(session_id, RequireUserConfirmEvent(
         reply_id=reply_id,

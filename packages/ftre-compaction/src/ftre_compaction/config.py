@@ -26,6 +26,9 @@ from ftre.services.agent.config import LLMConfig, build_llm_config
 DEFAULT_PRECOMPACT_THRESHOLD = 0.7
 DEFAULT_COMPACT_THRESHOLD = 0.8
 DEFAULT_SAFETY_BUFFER = 1024
+DEFAULT_PARALLEL_WORKERS = 3
+DEFAULT_PARALLEL_TIMEOUT_SECONDS = 120.0
+DEFAULT_PARALLEL_RETRY_ATTEMPTS = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +44,11 @@ class CompactionConfig:
     compact_threshold: float = DEFAULT_COMPACT_THRESHOLD
     safety_buffer: int = DEFAULT_SAFETY_BUFFER
     llm: LLMConfig | None = None
+    # 摘要分片的并行配置属于 Package；Worker 只是在同一个 Service Task
+    # 内部运行，不会变成额外的 Plugin/Service。
+    parallel_workers: int = DEFAULT_PARALLEL_WORKERS
+    parallel_timeout_seconds: float = DEFAULT_PARALLEL_TIMEOUT_SECONDS
+    parallel_retry_attempts: int = DEFAULT_PARALLEL_RETRY_ATTEMPTS
 
 
 def parse_compaction_config(
@@ -95,6 +103,42 @@ def parse_compaction_config(
         # 没有专用摘要模型时保留默认快照中的覆盖值；若默认值也为空，
         # Service 才会回退到本轮 AgentConfig.llm。
         llm=compact_llm or base.llm,
+        parallel_workers=min(
+            3,
+            max(
+                1,
+                _integer(
+                    context,
+                    "parallelWorkers",
+                    "parallel_workers",
+                    base.parallel_workers,
+                ),
+            ),
+        ),
+        parallel_timeout_seconds=min(
+            300.0,
+            max(
+                5.0,
+                _number(
+                    context,
+                    "parallelTimeoutSeconds",
+                    "parallel_timeout_seconds",
+                    base.parallel_timeout_seconds,
+                ),
+            ),
+        ),
+        parallel_retry_attempts=min(
+            2,
+            max(
+                0,
+                _integer(
+                    context,
+                    "parallelRetryAttempts",
+                    "parallel_retry_attempts",
+                    base.parallel_retry_attempts,
+                ),
+            ),
+        ),
     )
 
 
@@ -140,6 +184,9 @@ def _integer(
 
 __all__ = [
     "DEFAULT_COMPACT_THRESHOLD",
+    "DEFAULT_PARALLEL_RETRY_ATTEMPTS",
+    "DEFAULT_PARALLEL_TIMEOUT_SECONDS",
+    "DEFAULT_PARALLEL_WORKERS",
     "DEFAULT_PRECOMPACT_THRESHOLD",
     "DEFAULT_SAFETY_BUFFER",
     "CompactionConfig",
