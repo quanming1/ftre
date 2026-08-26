@@ -126,7 +126,7 @@ def _make_executor(agent) -> TurnExecutor:
     loop.sessions.get_context_messages = AsyncMock(return_value=[])
     loop.sessions.finish_open_replies = AsyncMock(return_value=[])
     loop.message_bus = MessageBusService(bus=AsyncMock(spec=EventBus))
-    loop.message_bus.bus.publish_outbound = AsyncMock()
+    loop.message_bus.publish_outbound = AsyncMock()
     loop.agent_service = None
     loop.tools = SimpleNamespace(prepare_view=AsyncMock(return_value=Mock()))
     loop.profiles = SimpleNamespace(
@@ -272,7 +272,7 @@ def _saved_messages(executor):
 def _outbound_frames(executor):
     return [
         call.args[0].data
-        for call in executor._loop.message_bus.bus.publish_outbound.call_args_list
+        for call in executor._loop.message_bus.publish_outbound.call_args_list
         if call.args and getattr(call.args[0], "type", "") == "agent_event"
     ]
 

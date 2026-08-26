@@ -148,6 +148,9 @@ def test_f32_runtime_dependency_baseline_has_only_public_services() -> None:
     assert "self._sessions = sessions" in turn
     assert "self._tools = tools" in turn
     assert "self._profiles = profiles" in turn
+    assert "from ftre.services.agent.registry import AgentRegistry" not in (
+        (RUNTIME / "engine.py").read_text(encoding="utf-8")
+    )
 
 
 def test_f31_runtime_does_not_use_context_as_service_locator() -> None:
@@ -194,6 +197,7 @@ def test_f32_turn_input_and_core_creation_have_single_owner() -> None:
     assert "self._core_factory(" in turn
     assert "return ReActAgent(" in factory
     assert "ReActAgent(" not in turn.replace("ReActAgent | None", "")
+    assert "or AgentRegistry()" not in engine
 
 
 def test_f32_llm_hook_callback_does_not_use_context_as_locator() -> None:

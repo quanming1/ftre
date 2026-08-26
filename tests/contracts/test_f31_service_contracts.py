@@ -12,6 +12,7 @@ import inspect
 from ftre.services.agent import AgentService, InboundMessage
 from ftre.services.agent.profile.models import EffectiveProfile
 from ftre.services.agent.profile.service import AgentProfileService
+from ftre.services.config.service import ConfigService
 from ftre.services.messaging.bus.service import MessageBusService
 from ftre.services.session.service import SessionService
 from ftre.services.system_prompt.service import SystemPromptService
@@ -130,3 +131,47 @@ def test_profile_service_returns_existing_effective_profile_snapshot() -> None:
     assert result.agent_id == "agent-a"
     assert result.value["llm"]["model"] == "fake"
     assert not inspect.iscoroutinefunction(AgentProfileService.resolve)
+
+
+def test_config_service_resolves_agent_config_from_its_snapshot(tmp_path, monkeypatch) -> None:
+    """自定义 ConfigService 的快照必须是 Agent Runtime 的配置事实源。"""
+    config = ConfigService(
+        tmp_path / "config.json",
+        {
+            "default_workspace": "C:/snapshot-workspace",
+            "agents": {
+                "defaults": {
+                    "provider": "demo",
+                    "model": "demo-model",
+                    "reasoning_effort": "high",
+                }
+            },
+            "providers": {
+                "demo": {
+                    "api_key": "test-key",
+                    "api_base": "https://example.invalid/v1",
+                    "api_type": "completions",
+                    "models": [
+                        {
+                            "id": "demo-model",
+                            "context_window": 1000,
+                            "max_output": 100,
+                            "reasoning_effort_values": ["high"],
+                        }
+                    ],
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "ftre.services.agent.config.load_config",
+        lambda: (_ for _ in ()).throw(AssertionError("must not read global loader")),
+    )
+
+    resolved = config.resolve_agent_config()
+
+    assert resolved.llm.provider == "demo"
+    assert resolved.llm.model == "demo-model"
+    assert resolved.llm.context_window == 1000
+    assert resolved.llm.reasoning_effort == "high"
+    assert resolved.workspace == "C:/snapshot-workspace"

@@ -24,7 +24,6 @@ from ftre.services.agent.hooks import (
     BeforeRunPayload,
     RejectRun,
 )
-from ftre.services.agent.registry import AgentRegistry
 from ftre.services.messaging.bus import (
     BusMessage,
     InboundMetadata,
@@ -76,9 +75,13 @@ class AgentLoop:
         self.tools = tools
         self.workspaces = workspaces
         self.profiles = profiles
+        if agent_service is None or not hasattr(agent_service, "registry"):
+            raise TypeError("Agent Runtime requires the public AgentService")
         self.agent_service = agent_service
         self.attachments = attachments
-        self.agent_registry = getattr(agent_service, "registry", None) or AgentRegistry()
+        # AgentService owns identity/scope registry；Runtime 只持有公开 Service
+        # 提供的同一实例，不在缺失时偷偷创建第二个 Registry Owner。
+        self.agent_registry = agent_service.registry
         self.system_prompt = system_prompt
         self.session_events = session_events
         # LLM Service 由 Host Provider 注入；Agent Runtime 通过 ServiceAdapter 消费它。

@@ -9,14 +9,20 @@ from __future__ import annotations
 
 import copy
 import inspect
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from ftre.services.config.paths import AGENTS_DIR
 
 from .paths import CONFIG_PATH
 from .store import JsonConfigStore
+
+if TYPE_CHECKING:
+    from ftre.services.agent.config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -116,16 +122,95 @@ class ConfigService:
             )
         return result
 
-    def resolve_agent_config(self):
+    def resolve_agent_config(self) -> AgentConfig:
         """Return the current AgentConfig snapshot for the Agent Runtime.
 
-        AgentConfig 仍由 Agent 配置模块负责解析 profile、模型能力和默认 prompt；
-        这里是 Config Service 对 Runtime 暴露的唯一入口。Runtime 不再直接调用
-        ``load_config()`` 或读取配置文件，避免绕过配置 Owner 的生命周期边界。
+        AgentConfig 的模型能力从本 Service 当前快照解析；默认 Agent 文件只作为
+        profile 选择的持久化输入，不再重新读取全局 ``config.json``。这样测试注入
+        或自定义 ConfigService 路径时，Runtime 不会悄悄读到另一份配置。
         """
-        from ftre.services.agent.config import load_config
+        # 延迟导入：AgentConfig 模块本身使用 ConfigService 的 loader 包，
+        # 顶层互相导入会让最小配置/Hook 入口在收集阶段形成循环依赖。
+        from ftre.services.agent.config import (
+            AgentConfig,
+            build_llm_config,
+            sanitize_agent_effort,
+        )
 
-        return load_config()
+        values = self.snapshot().value
+        agents = values.get("agents", {})
+        if not isinstance(agents, dict):
+            agents = {}
+        defaults = agents.get("defaults", {})
+        if not isinstance(defaults, dict):
+            defaults = {}
+        provider, model, workspace, effort = self._default_agent_values(defaults)
+        llm = build_llm_config(values, provider, model)
+        llm.reasoning_effort = sanitize_agent_effort(effort, llm)
+
+        title_llm = None
+        title_cfg = agents.get("title_generation", {})
+        if isinstance(title_cfg, dict):
+            title_provider = str(title_cfg.get("provider") or "")
+            title_model = str(title_cfg.get("model") or "")
+            if title_provider and title_model:
+                candidate = build_llm_config(values, title_provider, title_model)
+                if candidate.model:
+                    title_llm = candidate
+
+        system_prompt = str(values.get("system_prompt") or "")
+        if not system_prompt:
+            prompt_path = self._store.path.parent / "system_prompt.md"
+            if not prompt_path.exists():
+                from ftre.services.agent.config import SYSTEM_PROMPT_PATH
+
+                prompt_path = SYSTEM_PROMPT_PATH
+            try:
+                system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                system_prompt = ""
+
+        max_iterations = values.get("max_iterations")
+        if not isinstance(max_iterations, int) or max_iterations <= 0:
+            max_iterations = None
+        return AgentConfig(
+            llm=llm,
+            system_prompt=system_prompt,
+            max_iterations=max_iterations,
+            workspace=str(values.get("default_workspace") or workspace or ""),
+            title_llm=title_llm,
+        )
+
+    def _default_agent_values(self, defaults: dict[str, Any]) -> tuple[str, str, str, str]:
+        """读取快照内默认值；没有时从同一配置目录的 agent 文件取选择项。"""
+        provider = str(defaults.get("provider") or "")
+        model = str(defaults.get("model") or "")
+        workspace = str(defaults.get("workspace") or "")
+        effort = str(defaults.get("reasoning_effort") or "")
+        if provider and model:
+            return provider, model, workspace, effort
+
+        paths = [
+            self._store.path.parent / "agents" / "default" / "agent.config.json",
+            AGENTS_DIR / "default" / "agent.config.json",
+        ]
+        for path in dict.fromkeys(paths):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(raw, dict):
+                continue
+            llm = raw.get("llm", {})
+            if not isinstance(llm, dict):
+                llm = {}
+            return (
+                str(llm.get("provider") or provider),
+                str(llm.get("model") or model),
+                str(raw.get("workspace") or workspace),
+                str(llm.get("reasoning_effort") or effort),
+            )
+        return provider, model, workspace, effort
 
     def watch(self, callback: Callable[[ConfigSnapshot], Any]) -> Callable[[], bool]:
         """Subscribe to committed snapshots and return an idempotent disposer."""

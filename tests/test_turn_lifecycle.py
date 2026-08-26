@@ -84,7 +84,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
         return_value={"channel_id": "ws", "workspace": "/tmp"}
     )
     loop.message_bus = MessageBusService(bus=AsyncMock(spec=EventBus))
-    loop.message_bus.bus.publish_outbound = AsyncMock()
+    loop.message_bus.publish_outbound = AsyncMock()
     loop.agent_service = None
     loop.tools = SimpleNamespace(prepare_view=AsyncMock(return_value=Mock()))
     loop.profiles = SimpleNamespace(
@@ -212,7 +212,7 @@ async def test_user_message_is_projected_before_frontend_echo():
             order.append("broadcast")
 
     executor._loop.sessions.upsert_message.side_effect = record_upsert
-    executor._loop.message_bus.bus.publish_outbound.side_effect = record_publish
+    executor._loop.message_bus.publish_outbound.side_effect = record_publish
 
     await _execute_admitted(executor)
 
@@ -322,7 +322,7 @@ async def test_delta_is_live_only_and_reply_persists_as_one_msg():
 
     outbound = [
         call.args[0].data
-        for call in executor._loop.message_bus.bus.publish_outbound.call_args_list
+        for call in executor._loop.message_bus.publish_outbound.call_args_list
         if call.args and getattr(call.args[0], "type", "") == "agent_event"
     ]
     assert any(frame.get("type") == "TEXT_BLOCK_DELTA" for frame in outbound)
