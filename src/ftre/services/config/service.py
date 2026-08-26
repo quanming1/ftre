@@ -99,10 +99,21 @@ class ConfigService:
             "api_base": provider.get("api_base", ""),
             "api_type": raw_api_type if isinstance(raw_api_type, str) else "completions",
             "reasoning_effort": model_entry.get("reasoning_effort", ""),
+            # 模型能力也属于解析快照；Compaction、Vision 和 Retry/Fallback
+            # 不能再各自读取 config.json 造成能力判断不一致。
+            "vision": bool(model_entry.get("vision", False)),
         }
+        context_window = model_entry.get("context_window")
+        if isinstance(context_window, int) and context_window > 0:
+            result["context_window"] = context_window
         max_output = model_entry.get("max_output")
         if isinstance(max_output, int) and max_output > 0:
             result["max_output"] = max_output
+        raw_effort_values = model_entry.get("reasoning_effort_values")
+        if isinstance(raw_effort_values, (list, tuple)):
+            result["reasoning_effort_values"] = tuple(
+                item for item in raw_effort_values if isinstance(item, str)
+            )
         return result
 
     def watch(self, callback: Callable[[ConfigSnapshot], Any]) -> Callable[[], bool]:

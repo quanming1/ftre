@@ -144,3 +144,34 @@ async def test_llm_fallback_can_be_disabled_without_affecting_agent(tmp_path) ->
         ]
     finally:
         await composition.close()
+
+
+@pytest.mark.asyncio
+async def test_llm_provider_plugin_restart_and_unload_are_reversible(tmp_path) -> None:
+    """具体协议路由由 Provider Plugin 独立重启/卸载，不影响 Service Owner。"""
+    composition = await build_composition(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "plugins": [
+                {"id": "compaction", "disabled": True},
+                {"id": "session-title", "disabled": True},
+            ],
+        }
+    )
+    try:
+        service = composition.context.get("llm")
+        assert {item.api_type for item in service.list_providers()} == {
+            "completions",
+            "responses",
+        }
+        assert await composition.plugins.restart("llm-providers") is True
+        restarted = composition.context.get("llm")
+        assert {item.api_type for item in restarted.list_providers()} == {
+            "completions",
+            "responses",
+        }
+        assert await composition.plugins.unload("llm-providers") is True
+        assert composition.context.get("llm") is not None
+        assert composition.context.get("llm").list_providers() == ()
+    finally:
+        await composition.close()

@@ -117,7 +117,6 @@ class PluginLoader:
         self._manifests: dict[str, PluginManifest] = {}
         self._errors: dict[str, BaseException] = {}
         self._started_at: dict[str, float] = {}
-        self.restart_required = False
 
     async def load(self, manifests: list[PluginManifest]) -> tuple[PluginStatus, ...]:
         """解析、注册、等待 Fiber，并执行 required Plugin 启动门禁。
@@ -180,12 +179,11 @@ class PluginLoader:
                 self._errors.setdefault(plugin_id, exc)
 
     async def unload(self, plugin_id: str) -> bool:
-        """卸载一个官方 Fiber，并标记需要重启才能收回的 Host 表面。
+        """卸载一个官方 Fiber。
 
         先从 Loader 的追踪表移除句柄，再等待 Fiber dispose；Fiber 自己负责撤销
-        该 Plugin 注册的 Effect、Service 和监听器。HTTP/WebSocket 这类不可热替换
-        的 Host 表面会设置 ``restart_required``，提醒调用方不要把“卸载成功”误解
-        成“进程路由已经完全重建”。
+        该 Plugin 注册的 Effect、Service 和监听器。具体 Host 是否允许热替换，
+        由拥有该 Host 表面的 Service 自己诊断，Kernel 不识别业务 Plugin id。
         """
         fiber = self._fibers.pop(plugin_id, None)
         self._entries.pop(plugin_id, None)
@@ -195,7 +193,6 @@ class PluginLoader:
         if fiber is None:
             return False
         await _await_maybe(fiber.dispose())
-        self.restart_required = self.restart_required or plugin_id.startswith(("http", "websocket"))
         return True
 
     async def restart(self, plugin_id: str) -> bool:
@@ -265,7 +262,6 @@ class PluginLoader:
                     error=str(error) if error else None,
                     error_code=error_code,
                     missing=self._missing(fiber),
-                    restart_required=self.restart_required,
                     duration_ms=(time.perf_counter() - self._started_at[plugin_id]) * 1000,
                 )
             )

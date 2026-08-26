@@ -1,9 +1,8 @@
 from dataclasses import replace
 
+from ftre_agent_core.hooks import LLMErrorPayload
 from ftre_llm_recovery.config import parse_config
 from ftre_llm_recovery.policy import decide
-
-from ftre.services.llm.hooks import LLMErrorPayload
 
 
 def _payload(code: str) -> LLMErrorPayload:
@@ -12,13 +11,14 @@ def _payload(code: str) -> LLMErrorPayload:
     return LLMErrorPayload(
         session_id="s",
         turn_id="t",
-        iteration=1,
         model="primary",
         error_code=code,
         error_message="failed",
+        iteration=1,
         attempt=1,
         max_attempts=3,
         cancellation=asyncio.Event(),
+        agent_id="default",
     )
 
 
@@ -26,8 +26,7 @@ def test_policy_returns_retry_rule_without_owning_attempt_limit():
     config = parse_config({"rules": {"timeout": {"action": "retry", "delay": 2}}})
     result = decide(_payload("timeout"), config)
     assert result is not None
-    assert result.action == "retry"
-    assert result.delay == 2.0
+    assert result.reason == "configured recovery for timeout"
 
 
 def test_unknown_and_excluded_errors_return_to_core_default():

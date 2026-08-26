@@ -347,6 +347,10 @@ class TurnExecutor:
         state = loop.agent_manager._default_agent_state()
         state.context = context_msgs
         turn.config = copy.deepcopy(hook_config)
+        if agent_profile is not None:
+            # 与普通 Turn 保持一致：运行时配置快照必须和 AgentManager
+            # 最终应用的 profile.llm 相同，供后续压缩/诊断读取。
+            turn.config.llm = copy.deepcopy(agent_profile.llm)
         await self._create_agent(
             turn,
             hook_config,
@@ -375,6 +379,35 @@ class TurnExecutor:
             inbound.metadata.agent_id or "default"
         )
         core_hooks, core_hook_context = self._core_hook_binding(turn)
+        # AgentManager 会用 profile.llm 覆盖本轮配置；先计算同一份有效 LLM
+        # 配置，再在 Agent 构造阶段注入 Service seam。这样 Core Runner 不会
+        # 先创建一个依赖空凭据的内置 OpenAI 客户端，随后才被私下替换。
+        service_adapter = None
+        effective_llm_config = (
+            agent_profile.llm if agent_profile is not None else config.llm
+        )
+        provider = getattr(effective_llm_config, "provider", "")
+        if getattr(loop, "llm_service", None) is not None and provider:
+            from ftre_llm import LlmCallConfig, LlmCredentials, LlmServiceAdapter
+
+            service_adapter = LlmServiceAdapter(
+                loop.llm_service,
+                LlmCallConfig(
+                    provider=provider,
+                    model=effective_llm_config.model,
+                    api_type=effective_llm_config.api_type,
+                    max_tokens=effective_llm_config.max_output,
+                    reasoning_effort=effective_llm_config.reasoning_effort,
+                ),
+                LlmCredentials(
+                    api_key=effective_llm_config.api_key,
+                    api_base=effective_llm_config.api_base,
+                ),
+                agent_id=inbound.metadata.agent_id or "default",
+                session_id=turn.session_id,
+                turn_id=turn.turn_id,
+                cancellation=turn.cancellation,
+            )
         create_args = {
             "profile": agent_profile,
             "config": config,
@@ -386,10 +419,13 @@ class TurnExecutor:
             "hooks": core_hooks,
             "hook_context": core_hook_context,
         }
+        if service_adapter is not None:
+            create_args["llm"] = service_adapter
         if state is not None:
             create_args["state"] = state
-        turn.agent = loop.agent_manager.create_agent(**create_args)
         runtime_agent_id = inbound.metadata.agent_id or "default"
+        effective_config = turn.config if turn.config is not None else config
+        turn.agent = loop.agent_manager.create_agent(**create_args)
         turn.runtime_context = {
             "session_id": turn.session_id,
             "request_id": inbound.metadata.request_id,
@@ -401,7 +437,7 @@ class TurnExecutor:
             "bus": loop.bus,
             "agent": self._agents,
             "attachments": self._attachments,
-            "llm_config": config.llm,
+            "llm_config": effective_config.llm,
             "agent_profile": agent_profile,
             "workspace": WorkspaceAccessor(
                 session_id=turn.session_id,

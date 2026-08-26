@@ -44,6 +44,7 @@ def test_host_default_distribution_contains_all_workspace_packages() -> None:
     assert extras["llm-recovery"] == ["ftre-llm-recovery>=0.1.0,<0.2.0"]
     assert extras["llm-fallback"] == ["ftre-llm-fallback>=0.1.0,<0.2.0"]
     assert extras["full"] == [
+        "ftre-llm>=0.1.0,<0.2.0",
         "ftre-inbox>=0.2.0,<0.3.0",
         "ftre-messaging>=0.1.0,<0.2.0",
         "ftre-task>=0.1.0,<0.2.0",

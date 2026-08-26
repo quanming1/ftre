@@ -3,7 +3,8 @@
 import pytest
 from ftre_agent_core.agent import ReActAgent
 from ftre_agent_core.event import UserMessageEvent
-from ftre_agent_core.llm.events import (
+from ftre_agent_core.tool import Tool
+from ftre_llm.events import (
     BlockEnd,
     BlockStart,
     FinishChunk,
@@ -11,7 +12,6 @@ from ftre_agent_core.llm.events import (
     TextDeltaChunk,
     ToolCallDeltaChunk,
 )
-from ftre_agent_core.tool import Tool
 
 from ftre.services.session import SessionService
 
@@ -51,6 +51,9 @@ class TwoStepProvider:
         yield BlockEnd(index=0, block={"type": "text", "text": "完成"})
         yield FinishChunk(reason=FinishReason(kind="stop"))
 
+    def cancel(self) -> None:
+        return None
+
 
 class SteeringHook:
     async def dispatch(self, spec, payload, *, context=None):
@@ -76,7 +79,7 @@ async def test_core_events_and_session_projection_share_message_id_boundary(tmp_
         max_iterations=3,
     )
     agent.tool_registry.register(Tool(name="echo", func=lambda value: value))
-    agent.runner._llm = TwoStepProvider()
+    agent.runner.set_llm(TwoStepProvider())
     events = [event async for event in agent.run("开始")]
 
     model_message_ids = [

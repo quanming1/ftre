@@ -259,7 +259,7 @@ F14.5 已完成；F14.6/F14.7 继续审计 Host Service 依赖和独立 Package 
 | `tools` | `services.tools.plugin` | `ToolService` + `ToolRegistry` | 无必选依赖；贡献由各 Plugin effect 清理 |
 | `agent_profiles` | `services.agent.profile.plugin` | `AgentProfileService` + `AgentManager` | `http`；profile 路由 disposer 随 Fiber 清理 |
 | `sessions` | `services.session.plugin` | `SessionService` + 私有 Repository/Projection | `hook_runtime,http,message_bus`；Session 自己发布 lifecycle/flush Hook |
-| `agents` | `services.agent.plugin` | `AgentService` + `services/agent/runtime` 私有实现 | `agent_profiles,sessions,message_bus,channels,tools,system_prompt,hook_runtime,plugin_manager`；Runtime 与 Service 同 Fiber 关闭 |
+| `agents` | `services.agent.plugin` | `AgentService` + `services/agent/runtime` 私有实现 | `agent_profiles,sessions,message_bus,channels,tools,system_prompt,hook_runtime`；Runtime 与 Service 同 Fiber 关闭 |
 | `channels` | `services.messaging.channel.plugin` | `ChannelService` + `ChannelManager` | `message_bus`；Manager stop effect 归 registry Owner |
 | `workspaces` | `services.workspace.plugin` | `WorkspaceService` | `sessions`；不复制 Session 状态 |
 | `attachments` | `services.attachment.plugin` | `AttachmentService` | `http`；附件路由 disposer 随 Fiber 清理 |

@@ -17,7 +17,7 @@ from .stream import stream_with_fallback
 # config 是 Host 的 ConfigService：只用来把 provider/model 名称解析成一次性 Adapter 参数。
 # hook_runtime 管理 listener 的 Agent Scope、in-flight 调用和 Fiber 卸载清理。
 # 本 Plugin 不 provide Service，因为“换备用模型”只是一个可选时机行为，不是共享状态能力。
-inject = ("config", "hook_runtime")
+inject = ("config", "hook_runtime", "llm")
 provide = ()
 
 
@@ -35,7 +35,7 @@ def apply(ctx: Context, config=None):
         primary = await next_()
         if not snapshot.enabled:
             return primary
-        return stream_with_fallback(payload, primary, ctx.config, snapshot)
+        return stream_with_fallback(payload, primary, ctx.config, snapshot, ctx.llm)
 
     # context=ctx 把 Receipt 绑定到当前 Fiber。unload/restart 后旧 listener 自动失效，
     # all_agent_scopes=True 表示所有 Agent Scope 都应用同一套 Host fallback 策略。

@@ -38,6 +38,9 @@ class SequenceLLM:
         for chunk in self.sequences[min(len(self.calls) - 1, len(self.sequences) - 1)]:
             yield chunk
 
+    def cancel(self) -> None:
+        return None
+
 
 def _provide_plugin_dependencies(context: Context) -> None:
     """为 Inbox Plugin 提供它真正声明的公开 Service 依赖。
@@ -136,7 +139,7 @@ async def test_running_core_turn_consumes_steer_before_next_reasoning(tmp_path):
     )
     agent.tool_registry.register(Tool(name="pause", func=pause_tool))
     llm = SequenceLLM([_tool_sequence(), _text_sequence("steer 已消费")])
-    agent.runner._llm = llm
+    agent.runner.set_llm(llm)
 
     stream = agent.run(
         "开始",

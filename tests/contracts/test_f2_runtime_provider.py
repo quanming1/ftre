@@ -23,6 +23,7 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         system_prompt = "prompt"
         hook_runtime = "hooks"
         session_events = None
+        llm = object()
 
         def get(self, key, strict=False):
             return {
@@ -33,7 +34,7 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
 
     context = FakeContext()
     agent_service = SimpleNamespace(registry="registry")
-    build_runtime(context, "plugins", agent_service)
+    build_runtime(context, agent_service)
 
     assert captured == {
         "bus": "bus",
@@ -43,7 +44,6 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         "tool_registry": "tools",
         "tool_service": context.tools,
         "mcp_service": None,
-        "plugin_manager": "plugins",
         "agent_manager": "profiles",
         "agent_registry": "registry",
         "agent_service": agent_service,
@@ -52,4 +52,5 @@ def test_runtime_provider_maps_public_services_to_loop(monkeypatch) -> None:
         "system_prompt": "prompt",
         "hook_runtime": "hooks",
         "session_events": None,
+        "llm_service": context.llm,
     }

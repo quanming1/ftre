@@ -32,6 +32,22 @@ def test_agent_runtime_provider_has_no_unbounded_service_any() -> None:
     assert "ctx.sessions" in source
 
 
+def test_agent_runtime_has_no_dead_plugin_manager_bridge() -> None:
+    """Agent Runtime 不应保留从未消费的 PluginManager 透传参数。
+
+    PluginManager 仍由 Composition 持有并用于插件生命周期；它不是 Agent
+    Turn 的运行时依赖。这个门禁防止旧的“先注入、再静默保存”的死字段回归。
+    """
+    paths = (
+        "services/agent/plugin.py",
+        "services/agent/runtime/provider.py",
+        "services/agent/runtime/engine.py",
+        "plugins/builtin/channels/websocket/channel.py",
+    )
+    for relative in paths:
+        assert "plugin_manager" not in _source(relative), relative
+
+
 def test_turn_executor_receives_data_plane_services_explicitly() -> None:
     source = _source("services/agent/runtime/turn_executor.py")
     for forbidden in (
@@ -54,7 +70,7 @@ def test_plugins_declare_context_service_attributes() -> None:
     ignored = {"get", "provide", "effect", "events", "fiber", "parent", "scope"}
     optional_get = {
         "inbox", "mcp", "attachments", "system_prompt", "session_events",
-        "plugin_manager", "agents",
+        "agents",
     }
     plugin_paths = list((SRC / "services").rglob("plugin.py")) + list(
         (SRC / "plugins" / "builtin").rglob("plugin.py")

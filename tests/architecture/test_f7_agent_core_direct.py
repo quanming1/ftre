@@ -35,7 +35,10 @@ def test_ftre_has_no_core_hook_adapter_owner():
 
 def test_core_hook_module_has_no_backend_imports():
     source = (CORE_SRC / "hooks.py").read_text(encoding="utf-8")
-    assert "import ftre" not in source
-    assert "from ftre" not in source
+    # C7 允许 Core 依赖无状态的 ftre-llm 协议包；禁止的是反向依赖 ftre
+    # Host（Session/Cordis/Config 等），避免把宿主实现带进 Core。
+    assert "import ftre " not in source
+    assert "from ftre " not in source
+    assert "from ftre." not in source
     assert "import cordis" not in source
     assert "FtreCoreHookManager" not in source

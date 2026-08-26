@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ftre-llm"
+version = "0.1.0"
+description = "Unified LLM service and OpenAI streaming protocol adapters for ftre"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.0.0",
+    "cordis-py==0.4.0",
+]
+
+[project.entry-points."ftre.plugins"]
+llm-providers = "ftre_llm.adapters.plugin:apply"
+
+[tool.setuptools.packages.find]
+where = ["src"]

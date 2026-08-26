@@ -2,7 +2,6 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from ftre_agent_core.llm.events import TextDeltaChunk
 from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
 from ftre_compaction.config import CompactionConfig
 from ftre_compaction.service import (
@@ -12,11 +11,46 @@ from ftre_compaction.service import (
     _merge_chunk_summaries,
     _parse_chunk_sections,
 )
+from ftre_llm import TextDeltaChunk
+
+
+class _FakePrepared:
+    def __init__(self, config, adapter):
+        self.config = config
+        self._adapter = adapter
+
+    async def stream(self, request):
+        messages = [message.to_mapping() for message in request.messages]
+        async for chunk in self._adapter.stream(messages):
+            yield chunk
+
+
+class _FakeLlmService:
+    def __init__(self, factory):
+        self._factory = factory
+
+    async def prepare_call(self, config, **_kwargs):
+        return _FakePrepared(
+            config,
+            self._factory(
+                model=config.model,
+                api_type=config.api_type,
+                reasoning_effort=config.reasoning_effort,
+                max_tokens=config.max_tokens,
+                temperature=config.temperature,
+            ),
+        )
+
+    async def stream(self, request, **kwargs):
+        prepared = await self.prepare_call(request.config, **kwargs)
+        async for chunk in prepared.stream(request):
+            yield chunk
 
 
 def _config():
     return SimpleNamespace(
         llm=SimpleNamespace(
+            provider="summary-provider",
             model="summary-model",
             api_key="key",
             api_base="",
@@ -71,11 +105,10 @@ async def test_user_message_section_is_not_requested_from_llm_and_preserves_prev
             prompts.append(str(messages[-1]["content"]))
             yield TextDeltaChunk(text=_chunk_summary("摘要"))
 
-    monkeypatch.setattr(
-        "ftre_compaction.service.create_llm_handler",
-        lambda _api_type, **kwargs: FakeAdapter(**kwargs),
+    service = CompactionService(
+        session_manager=None,
+        llm=_FakeLlmService(lambda **kwargs: FakeAdapter(**kwargs)),
     )
-    service = CompactionService(session_manager=None)
     result = await service._run_compact_llm(
         [_record("新增用户消息")],
         config=_config(),
@@ -115,11 +148,10 @@ async def test_each_chunk_calls_one_llm_and_merges_in_order(monkeypatch, caplog)
             prompts.append(str(messages[-1]["content"]))
             yield TextDeltaChunk(text=_chunk_summary(f"chunk-{len(prompts)}"))
 
-    monkeypatch.setattr(
-        "ftre_compaction.service.create_llm_handler",
-        lambda _api_type, **kwargs: FakeAdapter(**kwargs),
+    service = CompactionService(
+        session_manager=None,
+        llm=_FakeLlmService(lambda **kwargs: FakeAdapter(**kwargs)),
     )
-    service = CompactionService(session_manager=None)
     caplog.set_level("INFO", logger="ftre_compaction.service")
     result = await service._run_compact_llm(
         [_record("甲" * 60), _record("乙" * 60), _record("丙" * 60)],
@@ -151,11 +183,10 @@ async def test_chunk_parallelism_limits_inflight_llm_calls(monkeypatch):
             yield TextDeltaChunk(text=_chunk_summary("done"))
             active -= 1
 
-    monkeypatch.setattr(
-        "ftre_compaction.service.create_llm_handler",
-        lambda _api_type, **kwargs: FakeAdapter(**kwargs),
+    service = CompactionService(
+        session_manager=None,
+        llm=_FakeLlmService(lambda **kwargs: FakeAdapter(**kwargs)),
     )
-    service = CompactionService(session_manager=None)
     result = await service._run_compact_llm(
         [_record("消息" * 60) for _ in range(5)],
         config=_config(),
@@ -178,11 +209,10 @@ async def test_only_first_chunk_receives_previous_summary(monkeypatch):
             prompts.append(str(messages[-2]["content"]))
             yield TextDeltaChunk(text=_chunk_summary("chunk"))
 
-    monkeypatch.setattr(
-        "ftre_compaction.service.create_llm_handler",
-        lambda _api_type, **kwargs: FakeAdapter(**kwargs),
+    service = CompactionService(
+        session_manager=None,
+        llm=_FakeLlmService(lambda **kwargs: FakeAdapter(**kwargs)),
     )
-    service = CompactionService(session_manager=None)
     await service._run_compact_llm(
         [_record("甲" * 60), _record("乙" * 60)],
         config=_config(),
@@ -209,11 +239,10 @@ async def test_failed_chunk_retries_only_that_chunk(monkeypatch):
                 return
             yield TextDeltaChunk(text=_chunk_summary("ok"))
 
-    monkeypatch.setattr(
-        "ftre_compaction.service.create_llm_handler",
-        lambda _api_type, **kwargs: FakeAdapter(**kwargs),
+    service = CompactionService(
+        session_manager=None,
+        llm=_FakeLlmService(lambda **kwargs: FakeAdapter(**kwargs)),
     )
-    service = CompactionService(session_manager=None)
     result = await service._run_compact_llm(
         [_record("甲" * 60), _record("乙" * 60)],
         config=_config(),
