@@ -6,10 +6,10 @@
 |---|---|
 | 阶段 | F31 |
 | 名称 | Agent Runtime 依赖 Service 边界与契约收敛 |
-| 状态 | approved |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-25 |
 | 定稿日期 | 2026-08-26 |
-| 验收日期 | 待开发 |
+| 验收日期 | 2026-08-26 |
 | 关联文档 | `docs/TODO.yaml` F31；`docs/prd/PRD-F30-llm-service-package.md`；`docs/prd/PRD-F14-final-plugin-first-architecture.md`；`AGENTS.md` |
 
 ---
@@ -386,29 +386,29 @@ F31 禁止 Runtime 直接 import 某个监听 Plugin 的实现。
 
 ## 8. 验收标准
 
-- [ ] **AC1**：依赖矩阵覆盖 AgentLoop、TurnExecutor、Provider 的真实 import、属性读取、Service
+- [x] **AC1**：依赖矩阵覆盖 AgentLoop、TurnExecutor、Provider 的真实 import、属性读取、Service
   key、Owner、当前债务和 F32 迁移目标。
-- [ ] **AC2**：冻结现有 `sessions` 公开方法和 F32 所需 `finish_open_replies` 缺口；Repository、
+- [x] **AC2**：冻结现有 `sessions` 公开方法和 F32 所需 `finish_open_replies` 缺口；Repository、
   Projection 直达点全部有路径证据和删除批次。
-- [ ] **AC3**：冻结 `message_bus` 的实际 inbound/outbound 边界，不虚构 `AgentEvent`；记录
+- [x] **AC3**：冻结 `message_bus` 的实际 inbound/outbound 边界，不虚构 `AgentEvent`；记录
   `MessageBusService.publish_outbound()` 的 F32 补齐项和 ChannelManager 删除点。
-- [ ] **AC4**：冻结 `tools.schemas/build_view/execute` 真实入口，明确 Core `ToolRegistry` 是已登记
+- [x] **AC4**：冻结 `tools.schemas/build_view/execute` 真实入口，明确 Core `ToolRegistry` 是已登记
   的集成依赖；MCP、Workspace、Attachment 仍由各自 Owner 管理。
-- [ ] **AC5**：冻结同步 `system_prompt.assemble_result()` 和 `PromptAssembly` 返回形状，不新增
+- [x] **AC5**：冻结同步 `system_prompt.assemble_result()` 和 `PromptAssembly` 返回形状，不新增
   `PromptAssembler` Protocol。
-- [ ] **AC6**：冻结 `agent_profiles.resolve()` 当前 `EffectiveProfile` 形状，登记 `.manager`、
+- [x] **AC6**：冻结 `agent_profiles.resolve()` 当前 `EffectiveProfile` 形状，登记 `.manager`、
   `AgentManager` 和配置目录的 F32 清理点，不新增 `EffectiveAgentProfile`。
-- [ ] **AC7**：确认 Runtime 的 LLM 请求遵循 F30 `prepare_call/stream()`，并记录当前 Adapter 注入
+- [x] **AC7**：确认 Runtime 的 LLM 请求遵循 F30 `prepare_call/stream()`，并记录当前 Adapter 注入
   和 Core Runner 边界。
-- [ ] **AC8**：Hook 发布者、监听者、模式和失败语义有契约测试，未新增重复 Hook、Port、Facade
+- [x] **AC8**：Hook 发布者、监听者、模式和失败语义有契约测试，未新增重复 Hook、Port、Facade
   或 Coordinator。
-- [ ] **AC9**：AST 门禁阻止新的 Host concrete import、Service Locator、Channel 反向依赖和跨
+- [x] **AC9**：AST 门禁阻止新的 Host concrete import、Service Locator、Channel 反向依赖和跨
   Owner private import，同时允许并精确锁定 F31 基线债务集合。
-- [ ] **AC10**：现有普通消息、Tool、Steer、Compaction、Retry、Fallback、Confirmation、取消、
+- [x] **AC10**：现有普通消息、Tool、Steer、Compaction、Retry、Fallback、Confirmation、取消、
   Session 恢复和客户端协议回归通过。
-- [ ] **AC11**：未移动 AgentLoop/TurnExecutor、未创建 Agent Package、未修改 Client/Inbox/Queue/
+- [x] **AC11**：未移动 AgentLoop/TurnExecutor、未创建 Agent Package、未修改 Client/Inbox/Queue/
   Session wire；本阶段只提交边界基线和测试门禁。
-- [ ] **AC12**：执行报告、F31 迁移矩阵、TODO 和变更记录与真实代码、测试和已知债务一致。
+- [x] **AC12**：执行报告、F31 迁移矩阵、TODO 和变更记录与真实代码、测试和已知债务一致。
 
 ---
 

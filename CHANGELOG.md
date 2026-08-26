@@ -1,5 +1,12 @@
 # Changelog
 
+### F31 Agent Runtime Service 边界与契约基线（已完成，未发布）
+
+- 依据真实 `AgentLoop`、`TurnExecutor` 和 Provider 调用链，冻结 Agent、Session、MessageBus、
+  Tools、System Prompt、Profile、LLM、Hook Runtime 与 Session Events 的 Owner 和公开入口。
+- 新增 F31 迁移矩阵、Fake Service 契约测试和 AST 不增债门禁；登记现存具体依赖并明确移交
+  F32 的删除顺序。未修改 Agent Runtime、Core、客户端、Inbox/Queue 或 Session wire。
+
 ### F30 Unified LLM Service Package（已完成，未发布）
 
 - 新增 `ftre-llm` Package：统一 `LlmService`、`LlmRequest`、`StreamChunk`、Provider Adapter

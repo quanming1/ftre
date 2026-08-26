@@ -1393,10 +1393,10 @@ stages:
             status: done
       - id: F31
         title: Agent Runtime Service Boundaries
-        status: in_progress
+        status: done
         date: 2026-08-25
         prd: docs/prd/PRD-F31-agent-service-boundaries.md
-        prd_status: approved
+        prd_status: 已验收
         depends_on:
           - F30
         implementation_boundary: 只修改 E:\\ftre Host 的 Agent 依赖 Service 公开契约、Agent Hook 契约、架构测试和迁移文档；不移动 AgentLoop/TurnExecutor，不创建 ftre-agent Package，不修改客户端、Inbox、Queue、Session wire 或 Cordis Kernel
@@ -1414,22 +1414,22 @@ stages:
         tasks:
           - id: F31.1
             title: 依赖矩阵和 Owner 基线
-            status: todo
+            status: done
           - id: F31.2
             title: Session 与 MessageBus 公开边界
-            status: todo
+            status: done
           - id: F31.3
             title: Tools、System Prompt 与 Agent Profile 公开边界
-            status: todo
+            status: done
           - id: F31.4
             title: LLM 与 Agent Hook 边界接入
-            status: todo
+            status: done
           - id: F31.5
             title: 具体依赖扫描、Fake Service 和回归测试
-            status: todo
+            status: done
           - id: F31.6
             title: 迁移矩阵和文档验收
-            status: todo
+            status: done
       - id: F32
         title: Agent Runtime Service Decoupling
         status: todo
