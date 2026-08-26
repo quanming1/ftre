@@ -96,7 +96,9 @@ Runtime 现在只保存显式注入的 `message_bus`、`sessions`、`tools`、`w
 - 删除 AgentManager 中 201 行重复 Core Agent 构造/权限/Prompt 代码，迁移到 Runtime 唯一私有工厂。
 - 清理受影响测试中的旧 `session_manager`、`loop.bus`、`build_view()`、Manager 工厂调用。
 - 新增 `WorkspaceAccessor` 不是新协议，而是既有同步工具适配器迁入 Workspace Owner。
-- 未跟踪的临时扫描文件已删除；`__pycache__` 仅为测试生成且不受 Git 跟踪，最终验收后清理。
+- 未跟踪的敏感临时脚本 `verify_model.py`、`cross_verify.py` 已删除；其中出现的两个 API Key
+  已暴露在本地历史/终端上下文，必须由密钥所属服务立即吊销并重新生成（本任务不访问外部账户）。
+- `__pycache__`、`.pytest_cache` 和 `.ruff_cache` 均为忽略的测试生成物，不进入提交；Git 工作树不包含它们。
 - 执行前已存在的 F33/F34 文档规划保存在 `stash@{0}`，未混入 F32 提交。
 
 ## 6. 测试与验收
@@ -105,7 +107,7 @@ Runtime 现在只保存显式注入的 `message_bus`、`sessions`、`tools`、`w
 |---|---|
 | `python -m pytest -q tests/architecture tests/contracts tests/startup` | `186 passed in 49.76s` |
 | `python -m pytest -q tests/lifecycle ...` | `262 passed`（专项回归） |
-| `python -m pytest -q` | `629 passed in 332.59s` |
+| `python -m pytest -q` | `630 passed in 278.34s` |
 | `python -m ruff check src tests packages` | `All checks passed` |
 | `git diff --check` | 通过 |
 | Gateway/HTTP/WebSocket smoke | `GET /api/health` → `200 {"status":"ok"}`；Composition 正常 close；F12 WebSocket smoke 在启动专项中通过 |
