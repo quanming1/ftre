@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ftre.services.agent.hooks import (
+from ftre_agent import (
     AGENT_AFTER_RUN_SPEC,
     AGENT_BEFORE_REASONING_SPEC,
     AGENT_BEFORE_RUN_SPEC,
 )
+
 from ftre.services.session.hooks import SESSION_CREATED_SPEC
 from ftre.services.system_prompt.hooks import SYSTEM_PROMPT_ASSEMBLE_SPEC
 from ftre.services.tools.hooks import TOOL_BEFORE_SPEC

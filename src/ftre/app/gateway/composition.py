@@ -55,9 +55,10 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("mcp", "ftre.plugins.builtin.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
         PluginManifest("traces", "ftre.plugins.builtin.trace.plugin:apply", "builtin", False, True, description="trace persistence"),
         PluginManifest("tool-audit", "ftre.plugins.builtin.tool_audit.plugin:apply", "builtin", False, True, description="tool call audit log"),
-        # Agent Provider 同时发布 agents 和私有执行 Runtime；Inbox 在它之后
+        # Agent Runtime Package 同时发布 agents 契约 Service 和私有执行 Runtime；
+        # Host 不再拥有 AgentLoop 实现，只加载该 entry point。Inbox 在它之后
         # 接管 pending/worker。Inbox 只提供队列，不注册依赖它的业务 Tool。
-        PluginManifest("agents", "ftre.services.agent.plugin:apply", "builtin", True, True, description="agent service and private runtime"),
+        PluginManifest("agents", "ftre_agent_runtime.plugin:apply", "builtin", True, True, description="agent service and private runtime"),
         # 当前 Gateway 的基础数据面必须有 Inbox；缺失时由 required Plugin 门禁
         # 直接失败，不允许启动一个没有队列行为的半成品 Host。
         PluginManifest("inbox", "ftre_inbox.plugin:apply", "builtin", True, True, description="durable inbox queue"),

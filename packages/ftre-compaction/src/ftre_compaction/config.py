@@ -21,7 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ftre.services.agent.config import LLMConfig, build_llm_config
+from ftre_agent import LLMConfig, build_llm_config
 
 DEFAULT_PRECOMPACT_THRESHOLD = 0.7
 DEFAULT_COMPACT_THRESHOLD = 0.8

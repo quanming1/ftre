@@ -7,8 +7,9 @@
     来自 ``ftre-agent-core``，描述一个 Hook 的名字、调用方式和作用域。
 ``HookRuntime``
     负责把监听器注册到 Cordis Context，并在触发时选择 Cordis 的事件调度模式。
-``HookScopeCarrier``
-    给 Agent 运行实例创建隔离身份，防止不同 Agent 的监听器互相收到事件。
+``context_for_scope``
+    给 Agent 运行实例创建隔离身份，防止不同 Agent 的监听器互相收到事件；
+    作用域载体值类型由 ``ftre_agent.HookScopeCarrier`` 提供。
 ``HookReceipt`` / 诊断结构
     让 Plugin 能主动取消注册，也让生命周期和运维代码能观察注册及失败情况。
 
@@ -20,7 +21,7 @@ Kernel 只提供上述“怎么注册和调度”的机制，不知道 ``agent/r
 
 from .diagnostics import HookDiagnostic, HookListenerSnapshot
 from .runtime import HookReceipt, HookRuntime
-from .scope import HookScopeCarrier, context_for_scope
+from .scope import context_for_scope
 from .spec import HookFailurePolicy, HookMode, HookScope, HookSpec
 
 __all__ = [
@@ -31,7 +32,6 @@ __all__ = [
     "HookReceipt",
     "HookRuntime",
     "HookScope",
-    "HookScopeCarrier",
     "HookSpec",
     "context_for_scope",
 ]

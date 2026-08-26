@@ -6,17 +6,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
 import pytest
-
-from ftre.services.agent.config import AgentConfig
-from ftre.services.agent.contracts import InboundMessage
-from ftre.services.agent.hooks import (
+from ftre_agent import (
     AGENT_AFTER_RUN_SPEC,
     AGENT_BEFORE_RUN_SPEC,
+    AgentConfig,
+    AgentRegistry,
+    AgentRunResult,
     AllowRun,
+    InboundMessage,
 )
-from ftre.services.agent.registry import AgentRegistry
-from ftre.services.agent.runtime.engine import AgentLoop
-from ftre.services.agent.runtime.turn_executor import TurnOutcome
+from ftre_agent_runtime import AgentLoop
 
 
 @pytest.mark.asyncio
@@ -42,7 +41,9 @@ async def test_after_run_wires_config_and_maintenance_barrier() -> None:
     executor = SimpleNamespace(
         resolve_inbound_config=AsyncMock(return_value=(config, None)),
         execute=AsyncMock(
-            return_value=TurnOutcome(turn_id="turn-1", status="completed")
+            return_value=AgentRunResult(
+                session_id="session-1", turn_id="turn-1", status="completed"
+            )
         ),
     )
     loop._executor = executor

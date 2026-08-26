@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 
-from ftre.services.agent import AgentService, InboundMessage
+from ftre_agent import AgentService, InboundMessage
+
 from ftre.services.agent.profile.models import EffectiveProfile
 from ftre.services.agent.profile.service import AgentProfileService
 from ftre.services.config.service import ConfigService
@@ -20,22 +21,19 @@ from ftre.services.system_prompt.types import PromptAssembly, PromptSection
 from ftre.services.tools.service import ToolService
 
 
-class _FakeAgentDriver:
-    """只覆盖 AgentService 现有 Driver 组合契约，不模拟 ReAct。"""
+class _FakeAgentRuntime:
+    """只覆盖 AgentService 的 runtime 绑定方法集，不模拟 ReAct。"""
 
-    def is_session_busy(self, session_id: str) -> bool:
+    def is_active_session(self, session_id: str) -> bool:
         return session_id == "busy"
 
     def get_session_status(self, session_id: str) -> str:
         return "running" if session_id == "busy" else "idle"
 
-    def is_busy(self, session_id: str) -> bool:
-        return self.is_session_busy(session_id)
-
-    async def run(self, message: InboundMessage) -> InboundMessage:
+    async def run_inbound(self, message: InboundMessage) -> InboundMessage:
         return message
 
-    async def cancel(self, *args, **kwargs) -> bool:
+    async def cancel_session(self, *args, **kwargs) -> bool:
         return True
 
     async def delete_session(self, session_id: str) -> str:
@@ -80,7 +78,7 @@ def test_agent_service_public_boundary_accepts_one_inbound_message() -> None:
     }
     assert expected <= _method_names(AgentService)
     service = AgentService()
-    service.attach_driver(_FakeAgentDriver())
+    service.attach_runtime(_FakeAgentRuntime())
     message = InboundMessage("s1", "r1", "ws", "hello")
     assert asyncio.run(service.run(message)) == message
     assert service.status("s1") == "idle"

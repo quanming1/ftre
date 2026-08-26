@@ -6,12 +6,12 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
+from ftre_agent import InboundMessage
+from ftre_agent_runtime import AgentLoop
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
 
 from ftre.app.gateway.composition import build_composition
-from ftre.services.agent.contracts import InboundMessage
-from ftre.services.agent.runtime.engine import AgentLoop
 
 
 class _Agent:
@@ -88,7 +88,7 @@ async def test_inbox_plugin_restart_replaces_closed_service_without_duplicate_li
     try:
         first = composition.context.get("inbox")
         assert first is not None and first._closed is False
-        assert composition.context.get("agents").driver is not None
+        assert composition.context.get("agents").runtime is not None
         # Inbox 是多个业务 Package 的 Provider；先撤销消费者，再重启 Provider，
         # 避免依赖图在同一事件循环中同时做 provider 替换和 consumer 重载。
         for plugin_id in ("compaction", "team", "task", "messaging"):

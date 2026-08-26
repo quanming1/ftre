@@ -1,25 +1,9 @@
-"""Agent 身份、Driver 合约、生命周期 Hook 和公开 AgentService。"""
+"""Host 侧 Agent 域：配置加载与 Agent Profile Service。
 
-from .contracts import AgentDriver, AgentRegistryProtocol, InboundMessage
-from .hooks import (
-    AGENT_AFTER_RUN_SPEC,
-    AGENT_BEFORE_REASONING_SPEC,
-    AGENT_BEFORE_RUN_SPEC,
-    AGENT_RUN_ERROR_SPEC,
-    AGENT_STOP_DECISION_SPEC,
-)
-from .registry import AgentRegistry
-from .service import AgentService
+Agent 的稳定契约（AgentService/InboundMessage/AgentRunResult/Agent Hook/
+AgentRegistry）自 F33 起由 ``ftre-agent`` 契约包提供，具体执行 Runtime 由
+``ftre-agent-runtime`` 的 Provider Plugin 装配；本包只保留磁盘配置加载
+（``config.load_config``）与 Agent Profile 能力（``profile``）。
+"""
 
-__all__ = [
-    "AGENT_AFTER_RUN_SPEC",
-    "AGENT_BEFORE_REASONING_SPEC",
-    "AGENT_BEFORE_RUN_SPEC",
-    "AGENT_RUN_ERROR_SPEC",
-    "AGENT_STOP_DECISION_SPEC",
-    "AgentDriver",
-    "AgentRegistry",
-    "AgentRegistryProtocol",
-    "AgentService",
-    "InboundMessage",
-]
+__all__ = ["config", "profile"]

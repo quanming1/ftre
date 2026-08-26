@@ -12,9 +12,10 @@ def test_core_has_no_compaction_owner_or_context_gate():
     assert not (SRC / "plugins" / "builtin" / "compaction").exists()
     assert not (SRC / "services" / "agent_loop" / "runtime" / "loop" / "context_gate.py").exists()
 
+    runtime_root = ROOT / "packages" / "ftre-agent-runtime" / "src" / "ftre_agent_runtime"
     for path in (
-        SRC / "services" / "agent" / "runtime" / "engine.py",
-        SRC / "services" / "agent" / "runtime" / "provider.py",
+        runtime_root / "engine.py",
+        runtime_root / "plugin.py",
         SRC / "plugins" / "builtin" / "command" / "builtin.py",
     ):
         source = path.read_text(encoding="utf-8")

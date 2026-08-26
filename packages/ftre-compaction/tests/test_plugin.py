@@ -6,17 +6,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 from cordis import Context
-from ftre_compaction.plugin import apply
-
-from ftre.kernel.hooks import HookRuntime
-from ftre.plugins.builtin.command import CommandService
-from ftre.services.agent.hooks import (
+from ftre_agent import (
     AGENT_RUN_ERROR_SPEC,
+    AgentRegistry,
     AgentSubject,
     RequestErrorPayload,
     RetryRequest,
 )
-from ftre.services.agent.registry import AgentRegistry
+from ftre_compaction.plugin import apply
+
+from ftre.kernel.hooks import HookRuntime
+from ftre.plugins.builtin.command import CommandService
 from ftre.services.messaging.bus import BusMessage, InboundMetadata
 
 

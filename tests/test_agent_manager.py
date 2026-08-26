@@ -615,9 +615,10 @@ def test_runtime_factory_passes_reasoning_effort_to_core(
     tmp_agents_dir, fake_global_config, monkeypatch
 ):
     """Profile Manager 只解析配置，Runtime factory 才负责构造 Core Agent。"""
-    from ftre.services.agent.config import AgentConfig
+    from ftre_agent import AgentConfig
+    from ftre_agent_runtime import factory
+
     from ftre.services.agent.profile.manager import AgentManager
-    from ftre.services.agent.runtime import factory
 
     mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("default")

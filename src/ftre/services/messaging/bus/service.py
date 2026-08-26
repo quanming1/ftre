@@ -34,6 +34,26 @@ class MessageBusService:
         """Publish an existing BusMessage without exposing the underlying EventBus."""
         await self.bus.publish_outbound(message)
 
+    async def publish_session_status(
+        self, session_id: str, channel_id: str, status: str
+    ) -> None:
+        """发布 ``session/status`` activity 事件（Runtime 的窄公开出口）。
+
+        Agent Runtime（ftre-agent-runtime）不 import Host 的 BusMessage 协议
+        类型；它通过该方法把 session 的 running/idle/compacting 状态交给总线，
+        信封构造留在本 Owner 内（PRD-F33 §5.4）。
+        """
+        await self.bus.publish_outbound(
+            BusMessage(
+                type="session/status",
+                from_channel=channel_id,
+                to_channel=channel_id,
+                from_session=session_id,
+                to_session=session_id,
+                data={"session_id": session_id, "status": status},
+            )
+        )
+
     async def request_inbound(self, message):
         """Submit an inbound request and wait for the AgentLoop admission ACK."""
         return await self.bus.request_inbound(message)

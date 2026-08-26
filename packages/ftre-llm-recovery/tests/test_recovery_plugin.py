@@ -2,11 +2,11 @@ import asyncio
 
 import pytest
 from cordis import Context
+from ftre_agent import AgentRegistry
 from ftre_agent_core.hooks import LLM_ERROR_SPEC, LLMErrorPayload
 from ftre_llm_recovery.plugin import apply
 
 from ftre.kernel.hooks import HookRuntime
-from ftre.services.agent.registry import AgentRegistry
 
 
 @pytest.mark.asyncio

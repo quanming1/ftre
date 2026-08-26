@@ -26,7 +26,7 @@ from typing import Any
 from cordis import Context
 
 from .diagnostics import HookDiagnostic, HookListenerSnapshot
-from .scope import HookScopeCarrier, context_for_scope
+from .scope import context_for_scope
 from .spec import HookFailurePolicy, HookMode, HookScope, HookSpec
 
 
@@ -111,12 +111,12 @@ class HookRuntime:
         """
         return tuple(self._diagnostics)
 
-    def context_for_scope(self, carrier: HookScopeCarrier) -> Context:
+    def context_for_scope(self, carrier) -> Context:
         """为 Agent scope 创建 Cordis Context 视图。
 
         调用方拿到的是带身份过滤的 isolate Context，不能借此创建新的 Runtime。
-        Agent Registry 通常为每个 Agent 生命周期创建一个 carrier，然后把该
-        Context 传给 ``register`` 或 ``dispatch``。
+        Agent Registry 通常为每个 Agent 生命周期创建一个 carrier（值类型由
+        ``ftre_agent`` 提供），然后把该 Context 传给 ``register`` 或 ``dispatch``。
         """
         return context_for_scope(self._ctx, carrier)
 
