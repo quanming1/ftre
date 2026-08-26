@@ -6,9 +6,9 @@
 |---|---|
 | 阶段 | F32 |
 | 名称 | Agent Runtime Service 化与具体实现解耦 |
-| 状态 | 草稿 |
+| 状态 | 开发中 |
 | 创建日期 | 2026-08-25 |
-| 定稿日期 | 待评审 |
+| 定稿日期 | 2026-08-26 |
 | 验收日期 | 待开发 |
 | 关联文档 | `docs/TODO.yaml` F32；`docs/prd/PRD-F30-llm-service-package.md`；`docs/prd/PRD-F31-agent-service-boundaries.md`；`AGENTS.md` |
 
@@ -101,18 +101,17 @@ AgentManager、Session Projection、WorkspaceAccessor 或 LLM Handler 工厂。
 ### 2.2 F32 允许修改的代码
 
 ```text
-src/ftre/services/agent/runtime/provider.py
-src/ftre/services/agent/runtime/engine.py
-src/ftre/services/agent/runtime/turn_executor.py
-src/ftre/services/agent/profile/service.py        # 仅补公开 resolve 投影
-src/ftre/services/messaging/bus/service.py        # 仅补 AgentEvent 出口
-src/ftre/services/session/service.py              # 仅补 Agent 收尾窄方法
-src/ftre/services/tools/service.py                # 仅补 Agent Tool View/准备接口
-src/ftre/services/system_prompt/service.py        # 仅稳定现有 assemble_result 边界
-tests/architecture/
-tests/contracts/
-tests/lifecycle/
-tests/integration/
+src/ftre/services/agent/runtime/{provider.py,engine.py,turn_executor.py}
+src/ftre/services/agent/runtime/factory.py
+src/ftre/services/agent/profile/{service.py,plugin.py,manager.py}
+src/ftre/services/messaging/bus/service.py
+src/ftre/services/session/{service.py,events.py,plugin.py}
+src/ftre/services/tools/{service.py,plugin.py,builtin/*.py}
+src/ftre/services/system_prompt/service.py
+src/ftre/services/config/service.py
+src/ftre/services/workspace/{service.py,accessor.py}
+src/ftre/plugins/builtin/{command/plugin.py,channels/websocket/plugin.py,mcp/plugin.py}
+tests/**/*.py（仅更新受影响的契约、生命周期和回归测试）
 ```
 
 ### 2.3 不允许修改的代码
@@ -134,8 +133,10 @@ Agent Runtime 的 Provider 只解析公开 Service：
 ```python
 inject = (
     "llm",
+    "config",
     "sessions",
     "tools",
+    "workspaces",
     "system_prompt",
     "agent_profiles",
     "message_bus",
@@ -155,16 +156,19 @@ traces = ctx.get("traces", strict=False)
 
 ```python
 runtime = AgentLoop(
+    message_bus=ctx.message_bus,
     sessions=ctx.sessions,
-    events=ctx.message_bus,
     tools=ctx.tools,
-    prompts=ctx.system_prompt,
+    workspaces=ctx.workspaces,
     profiles=ctx.agent_profiles,
-    llm=ctx.llm,
+    config_service=ctx.config,
+    system_prompt=ctx.system_prompt,
+    llm_service=ctx.llm,
     hooks=ctx.hook_runtime,
     session_events=ctx.session_events,
     attachments=attachments,
     traces=traces,
+    agent_service=agent_service,
 )
 ```
 
@@ -225,7 +229,7 @@ for message in await self._sessions.finish_open_replies(
 
 ```text
 message_bus
-└─ 进程内传输和 AgentEvent 发布
+└─ 进程内传输和 BusMessage 出站发布
 
 session_events
 └─ Session 事件先持久化、再广播权威事实
@@ -237,7 +241,7 @@ channel plugin
 F32 允许为 `MessageBusService` 补充最小出口：
 
 ```python
-async def publish_agent_event(self, event: AgentEvent) -> None: ...
+async def publish_outbound(self, message: BusMessage) -> None: ...
 ```
 
 但 Session Projection 相关事件仍必须走 `session_events.emit()`，不能重复通过两个出口广播。
@@ -245,22 +249,24 @@ async def publish_agent_event(self, event: AgentEvent) -> None: ...
 目标调用：
 
 ```python
-await self._events.publish_agent_event(
-    AgentEvent(
-        event_type="agent/run-status",
-        session_id=session_id,
-        run_id=run_id,
-        turn_id=turn_id,
-        payload={"status": "running"},
+await self._message_bus.publish_outbound(
+    BusMessage(
+        type="session/status",
+        from_channel=channel_id,
+        to_channel=channel_id,
+        from_session=session_id,
+        to_session=session_id,
+        data={"session_id": session_id, "status": "running"},
     )
 )
 ```
 
-Agent Runtime 不再持有 `ChannelManager`，不直接构造 `BusMessage` 作为出站协议。
+Agent Runtime 不再持有 `ChannelManager`；出站仍使用既有 `BusMessage`，但只能通过
+`MessageBusService.publish_outbound()` 发送，不能读取 `.bus` 或直接调用底层 EventBus。
 
 ### 4.3 Tool Service
 
-当前 ToolService 已提供 `schemas()`、`build_view()`、`execute()`，但 Agent Runtime 还直接
+当前 ToolService 已提供 `schemas()`、`execute()`，但 Agent Runtime 还直接
 拿 `ToolRegistry`，并在 AgentLoop 中调用 MCP 准备逻辑。
 
 F32 要求：
@@ -280,7 +286,7 @@ async def prepare_view(
     self,
     agent_id: str,
     session_id: str,
-    profile_config: Mapping[str, Any] | None = None,
+    profile_config: Mapping[str, Any] | AgentProfile | None = None,
 ) -> ToolView:
     ...
 ```
@@ -295,7 +301,8 @@ tool_view = await self._tools.prepare_view(
 )
 ```
 
-`ToolView` 可以是当前 Core 要求的兼容对象，但其创建和权限过滤 Owner 必须是 ToolService。
+`ToolView` 是 Core 当前要求的 `ToolRegistry` 实例；其创建、MCP 准备和权限过滤 Owner
+必须是 ToolService，Runtime 只传递返回值，不保存全局 Registry。
 
 ### 4.4 System Prompt Service
 
@@ -341,6 +348,10 @@ profile = self._profiles.resolve(
 )
 ```
 
+请求还要结合 Session 的 team-member 绑定时，Runtime 调用同一 Service 的
+`resolve_for_inbound(agent_id, session_id, metadata)`；该方法返回相同的 `EffectiveProfile`
+快照类型，差异只在 Profile Service 内部完成，不把 Manager 或目录路径泄漏给 Runtime。
+
 Profile Service 负责将 Profile 文件解析为本轮可消费的有效快照；Runtime 只能读取快照，不能
 从中反查文件路径或 Manager。
 
@@ -363,21 +374,19 @@ state
 F32 依赖 F30 的公开 `ctx.llm`：
 
 ```python
-prepared = await self._llm.prepare_call(call_config)
-
-request = LlmRequest(
-    config=prepared.config,
-    messages=messages,
-    tools=tools,
+service_adapter = LlmServiceAdapter(
+    ctx.llm,
+    call_config,
+    credentials,
     session_id=session_id,
     turn_id=turn_id,
-    purpose="conversation",
     cancellation=turn.cancellation,
 )
-
-async for chunk in prepared.stream(request):
-    ...
 ```
+
+Runtime 只在私有 `create_core_agent()` 工厂中把这个 Adapter 传给 Core；具体的
+`prepare_call()/stream()` 由 `ftre-llm` Adapter 交给 LlmService 完成，Runtime 不自行
+创建 Handler、拼装第二套 Chunk 或消费 Provider 原始响应。
 
 F32 不允许 Agent Runtime、Agent Profile、Compaction 或 Session Title 直接调用
 `create_llm_handler()`。
@@ -413,7 +422,8 @@ F32 不允许 Agent Runtime、Agent Profile、Compaction 或 Session Title 直�
 - Core Agent 创建迁移到 Runtime 私有工厂函数；
 - LLM 调用统一通过 `llm.prepare_call()/stream()`；
 - 事件通过 `message_bus.publish_agent_event()` 或 `session_events.emit()`，不直接调用 Channel；
-- `confirm_event` 的确认恢复数据改为 Agent Runtime 内部明确模型，不再使用裸 `object`。
+- `confirm_event` 继续使用 Core 的 `UserConfirmResultEvent`，只在 Runtime 的 `Turn` 中标注
+  这个既有类型；不新增 Host DTO，也不复制 Core 事件协议。
 
 ### 5.3 Core 边界
 
@@ -456,7 +466,8 @@ F32 不修改 `E:\ftre-agent-core`。如果 Core 现有构造参数需要一个 
 - `TurnExecutor` 不访问 `session_projection`、`.repository`、`.manager`；
 - Runtime 不调用 `create_llm_handler()`；
 - Runtime 不直接 `ctx.get()` 必选或可选 Service；
-- Runtime 不构造 `BusMessage` 作为 Channel 出站协议；
+- Runtime 只构造既有 `BusMessage` 作为 MessageBus Service 的传输信封，不把它当作新的
+  Channel 协议；所有发送必须经过 `publish_outbound()`，不得直接访问 EventBus；
 - 没有新增 Port、Facade、Coordinator、Service Bag 或兼容入口；
 - Core、Session、Inbox、Client 的既有协议文件未被修改。
 
@@ -520,3 +531,4 @@ F32 不修改 `E:\ftre-agent-core`。如果 Core 现有构造参数需要一个 
 | 日期 | 变更内容 | 理由 |
 |---|---|---|
 | 2026-08-25 | 初始草案：在 F31 Service 边界基础上，实际改造 AgentLoop/TurnExecutor 的依赖接线 | F31 只冻结契约；F32 负责删除具体实现依赖，为 Agent Package 化做准备 |
+| 2026-08-26 | 按真实调用链定稿：补充 Runtime 私有工厂、WorkspaceAccessor、Tools/MCP View preparer、Profile `resolve_for_inbound` 和 MessageBus 窄出站；明确 Core `LlmServiceAdapter` 委托、既有 `BusMessage` 信封和 Core 确认事件类型 | 删除与实现不一致的 `build_view`、虚构 LLM 直调和新 Confirm DTO 描述，避免把迁移层误写成第二套协议 |

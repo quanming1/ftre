@@ -1432,10 +1432,10 @@ stages:
             status: done
       - id: F32
         title: Agent Runtime Service Decoupling
-        status: todo
+        status: in_progress
         date: 2026-08-25
         prd: docs/prd/PRD-F32-agent-runtime-service-decoupling.md
-        prd_status: 草稿
+        prd_status: 开发中
         depends_on:
           - F31
         implementation_boundary: 只修改 E:\\ftre Host 的 AgentLoop/TurnExecutor 依赖接线、Session/MessageBus/Tools/Profile/Prompt 公开方法、Agent Runtime 私有 Core 创建边界、架构测试和文档；不移动 Package、不修改客户端、Inbox wire、Session wire、Cordis Kernel 或 E:\\ftre-agent-core
@@ -1452,7 +1452,7 @@ stages:
         tasks:
           - id: F32.1
             title: Provider/Runtime 构造图迁移
-            status: todo
+            status: in_progress
           - id: F32.2
             title: Session 上下文与 open reply 收尾迁移
             status: todo
