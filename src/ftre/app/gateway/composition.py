@@ -43,6 +43,7 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("system-prompt", "ftre.services.system_prompt.plugin:apply", "builtin", True, True, description="prompt section registry"),
         PluginManifest("message-bus", "ftre.services.messaging.bus.plugin:apply", "builtin", True, True, description="business message plane"),
         PluginManifest("tools", "ftre.services.tools.plugin:apply", "builtin", True, True, description="scoped tool registry"),
+        PluginManifest("core-tools", "ftre.plugins.builtin.core_tools.plugin:apply", "builtin", True, True, description="core built-in tools"),
         PluginManifest("agent-profiles", "ftre.services.agent.profile.plugin:apply", "builtin", True, True, description="agent profile merge"),
         PluginManifest("sessions", "ftre.services.session.plugin:apply", "builtin", True, True, description="session persistence service"),
         PluginManifest("commands", "ftre.plugins.builtin.command.plugin:apply", "builtin", True, True, description="command registry"),
@@ -53,6 +54,7 @@ def default_manifests() -> list[PluginManifest]:
         # MCP Service；Trace 是独立观察能力，失败不能阻断基础 Agent。
         PluginManifest("mcp", "ftre.plugins.builtin.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
         PluginManifest("traces", "ftre.plugins.builtin.trace.plugin:apply", "builtin", False, True, description="trace persistence"),
+        PluginManifest("tool-audit", "ftre.plugins.builtin.tool_audit.plugin:apply", "builtin", False, True, description="tool call audit log"),
         # Agent Provider 同时发布 agents 和私有执行 Runtime；Inbox 在它之后
         # 接管 pending/worker。Inbox 只提供队列，不注册依赖它的业务 Tool。
         PluginManifest("agents", "ftre.services.agent.plugin:apply", "builtin", True, True, description="agent service and private runtime"),

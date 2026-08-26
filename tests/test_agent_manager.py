@@ -126,7 +126,7 @@ def test_tool_filter_allow_deny():
     """filter_tools respects allow and deny lists."""
     from ftre_agent_core.tool import Tool, ToolRegistry
 
-    from ftre.services.tools.builtin import filter_tools
+    from ftre.services.tools import filter_tools
 
     def _noop(**kw):
         return ""

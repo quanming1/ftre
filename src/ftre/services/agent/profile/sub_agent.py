@@ -82,7 +82,7 @@ def validate_profile_overrides(profile: dict) -> dict:
         unknown = set(tools) - {"allow", "deny"}
         if unknown:
             raise ValueError(f"profile.tools 含未知字段: {sorted(unknown)}")
-        from ftre.services.tools.builtin import coerce_tool_name_list
+        from ftre.services.tools import coerce_tool_name_list
         for field in ("allow", "deny"):
             if field in tools:
                 tools[field] = coerce_tool_name_list(tools[field], field)

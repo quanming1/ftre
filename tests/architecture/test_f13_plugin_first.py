@@ -78,7 +78,8 @@ def test_session_plugin_owns_the_session_event_service() -> None:
 
 
 def test_builtin_tools_use_public_channel_names_not_provider_modules() -> None:
-    tools_root = SRC / "services" / "tools" / "builtin"
+    # F34：内置工具已迁至 plugins/builtin/core_tools，随 Owner Plugin 落位。
+    tools_root = SRC / "plugins" / "builtin" / "core_tools"
     for path in tools_root.glob("*.py"):
         source = path.read_text(encoding="utf-8")
         assert "channel.providers.subagent" not in source, path

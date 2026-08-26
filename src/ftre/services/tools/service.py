@@ -3,6 +3,10 @@
 全局 ``ToolRegistry`` 只保存可执行工具；Service 额外保存 owner/source/scope，
 并在每个 Agent 请求时生成隔离 view。这样一个 Agent 的 allow/deny 或 scoped shadow
 不会修改其他 Agent 的工具视图，Plugin 卸载也能通过 disposer 撤销贡献。
+
+F34 起内置工具由 core-tools Plugin 作为普通贡献注册，本模块不再硬编码构造；
+底层 registry 是 Owner 私有实现，外部只能通过 snapshot/get/schemas/execute
+和 prepare_view 消费。
 """
 
 from __future__ import annotations
@@ -13,16 +17,20 @@ from typing import Any
 
 from ftre_agent_core.tool import ToolRegistry
 
+from .filtering import filter_tools
 from .scope import ToolRestriction
 from .types import ToolContribution
 
 
 class ToolService:
     """拥有工具注册、Agent 限制和可逆贡献。"""
+
     key = "tools"
 
     def __init__(self, registry: ToolRegistry | None = None) -> None:
-        self.registry = registry or ToolRegistry()
+        # 底层可执行注册表是 Owner 私有实现：全局 scope 工具会同步登记到
+        # 这里供 execute 使用，但外部不得直接访问，避免绕过作用域与贡献生命周期。
+        self._registry = registry or ToolRegistry()
         self._items: list[ToolContribution] = []
         self._restrictions: list[ToolRestriction] = []
         # 可选工具 Provider（例如 MCP）在建视图前贡献 agent-scoped 工具；
@@ -35,7 +43,7 @@ class ToolService:
         if any(item.name == name and item.scope == scope for item in self._items):
             raise ValueError(f"tool {name!r} already registered in {scope}")
         if scope == "global":
-            self.registry.register(tool)
+            self._registry.register(tool)
         contribution = ToolContribution(name, owner, source, scope, tool)
         self._items.append(contribution)
         disposed = False
@@ -49,8 +57,13 @@ class ToolService:
                 self._items.remove(contribution)
             except ValueError:
                 return False
-            if scope == "global" and not any(item.name == name for item in self._items):
-                self.registry.unregister(name)
+            # 只看同名 global 贡献是否仍存在：scoped shadow 不持有 _registry
+            # 条目，不能因为它同名存在而跳过 global 的注销，否则卸载后残留
+            # 一个仍可被 execute() 执行的旧 global 工具（生命周期泄漏）。
+            if scope == "global" and not any(
+                item.name == name and item.scope == "global" for item in self._items
+            ):
+                self._registry.unregister(name)
             return True
 
         return dispose
@@ -101,6 +114,13 @@ class ToolService:
         """Return visible contributions for an Agent or the global view."""
         return tuple(item for item in self._visible(agent_id))
 
+    def get(self, name: str, agent_id: str | None = None) -> ToolContribution | None:
+        """作用域感知的单工具贡献查询；不可见或不存在时返回 None。"""
+        for item in self._visible(agent_id):
+            if item.name == name:
+                return item
+        return None
+
     def schemas(self, agent_id: str | None = None) -> list[dict[str, Any]]:
         """Return OpenAI-compatible schemas enriched with ownership metadata."""
         result = []
@@ -117,28 +137,18 @@ class ToolService:
         *,
         llm_config: Any | None = None,
     ) -> ToolRegistry:
-        """准备一个隔离 Core ToolRegistry，完成可选 Provider 和权限过滤。"""
-        mcp_config = _profile_value(profile_config, "mcp_config")
+        """准备一个隔离 Core ToolRegistry，完成可选 Provider 和权限过滤。
+
+        顺序：先运行可逆 view preparer（如 MCP 的 agent-scoped 准备），
+        再合并该 Agent 可见的全部贡献（内置工具也是普通贡献），
+        最后应用 profile 的 tools.allow/deny（不豁免任何来源）。
+        """
         for _owner, preparer in tuple(self._view_preparers):
-            result = preparer(agent_id, session_id, mcp_config)
+            result = preparer(agent_id, session_id, profile_config, llm_config)
             if inspect.isawaitable(result):
                 await result
 
         view = ToolRegistry()
-        from .builtin import (
-            create_bash_tool,
-            create_edit_tool,
-            create_read_tool,
-            create_set_workspace_tool,
-            create_write_tool,
-            filter_tools,
-        )
-
-        view.register(create_bash_tool())
-        view.register(create_read_tool(vision=getattr(llm_config, "vision", False)))
-        view.register(create_write_tool())
-        view.register(create_edit_tool())
-        view.register(create_set_workspace_tool())
         for item in self._visible(agent_id):
             view.register(item.tool)
         tools_config = _profile_value(profile_config, "tools_config")
@@ -146,9 +156,34 @@ class ToolService:
             filter_tools(view, tools_config)
         return view
 
-    def execute(self, name: str, execution_context: dict | None = None, arguments=None) -> Any:
-        """Execute only through the global registry's established tool contract."""
-        return self.registry.execute(name, execution_context, **(arguments or {}))
+    def execute(
+        self,
+        name: str,
+        execution_context: dict | None = None,
+        arguments=None,
+        *,
+        agent_id: str | None = None,
+    ) -> Any:
+        """Execute through the established tool contract.
+
+        ``get/schemas/execute`` 共享同一作用域投影：传入 ``agent_id`` 时执行
+        该 Agent 投影解析出的工具——scoped shadow 覆盖同名 global，仅存在于
+        agent scope 的工具也可执行；不可见抛 ``KeyError``。不传 ``agent_id``
+        保持全局 registry 语义。
+        """
+        if agent_id is None:
+            return self._registry.execute(name, execution_context, **(arguments or {}))
+        contribution = self.get(name, agent_id)
+        if contribution is None:
+            raise KeyError(f"tool {name!r} is not visible to agent {agent_id!r}")
+        if contribution.scope == "global":
+            # global 贡献与 _registry 同步登记，直接走全局执行路径。
+            return self._registry.execute(name, execution_context, **(arguments or {}))
+        # scoped 工具从不进入 _registry；经一次性单工具 registry 执行，
+        # 保证注入解析与执行契约与 global 路径完全一致。
+        scratch = ToolRegistry()
+        scratch.register(contribution.tool)
+        return scratch.execute(name, execution_context, **(arguments or {}))
 
     def _visible(self, agent_id: str | None):
         """Resolve scoped shadowing first, then apply restrictions newest-first."""

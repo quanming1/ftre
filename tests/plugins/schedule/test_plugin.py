@@ -42,14 +42,14 @@ async def test_schedule_plugin_owns_channel_tool_scheduler_and_cleanup(tmp_path)
     assert fiber.state is FiberState.ACTIVE
     assert root.get("schedule").list() == []
     assert channels.manager.get("cron") is not None
-    assert tools.registry.get("cron") is not None
+    assert tools.get("cron") is not None
     assert root.get("schedule") is not None
 
     cleanup = fiber.dispose()
     if cleanup is not None:
         await cleanup
     assert channels.manager.get("cron") is None
-    assert tools.registry.get("cron") is None
+    assert tools.get("cron") is None
     cleanup = root.dispose()
     if cleanup is not None:
         await cleanup

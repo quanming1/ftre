@@ -157,7 +157,7 @@ class AgentManager:
         if isinstance(tools_config, dict):
             # 宽容降级：手工/LLM 配置出错不应让整个 agent 起不来；
             # 真正的强校验在 filter_tools（执行期严抛，绝不静默清空工具）。
-            from ftre.services.tools.builtin import coerce_tool_name_list
+            from ftre.services.tools import coerce_tool_name_list
             try:
                 for _field in ("allow", "deny"):
                     if _field in tools_config:

@@ -1,14 +1,15 @@
 """Feature Plugin that contributes the planning tool and usage guidance."""
 # Plan Plugin：向 ToolService 注册计划工具，并向 SystemPromptService 注册
 # 使用说明；卸载时撤销这两项贡献（可逆、幂等）。
-# 计划工具本身由 services/tools/builtin/plan.py 提供，这里只做装配接线。
+# 计划工具实现在本 Plugin 目录的 plan.py，由 Plugin 唯一拥有。
 
 from __future__ import annotations
 
 from cordis import Context
 
 from ftre.services.system_prompt.types import PromptSection
-from ftre.services.tools.builtin.plan import create_plan_tool
+
+from .plan import create_plan_tool
 
 inject = ("tools", "system_prompt")
 provide = ()
