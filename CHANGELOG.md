@@ -1,5 +1,14 @@
 # Changelog
 
+### F30 Unified LLM Service Package（已完成，未发布）
+
+- 新增 `ftre-llm` Package：统一 `LlmService`、`LlmRequest`、`StreamChunk`、Provider Adapter
+  注册和 OpenAI Completions/Responses 协议。
+- Agent Runtime、Compaction、Session Title 统一通过 `ctx.llm` 调用；Core Runner 接收宿主注入的
+  LLM Adapter，删除重复 Chunk 协议和 Host `core_bridge`。
+- `llm/stream`、`agent/request`、`llm/error`、`llm/adapters-updated` 契约及 Retry/Fallback 协作、
+  生命周期和跨仓 CI 验收完成。
+
 ### F29 LLM Stream Fallback Plugin（已完成，未发布）
 
 - 新增 `ftre-llm-fallback` Package：仅在最后一次 Core attempt、主模型尚无任何流式输出且
