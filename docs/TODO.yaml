@@ -1352,10 +1352,10 @@ stages:
             status: done
       - id: F30
         title: Unified LLM Service Package and Call Pipeline
-        status: todo
+        status: done
         date: 2026-08-25
         prd: docs/prd/PRD-F30-llm-service-package.md
-        prd_status: 草稿
+        prd_status: 已验收
         depends_on:
           - F29
         implementation_boundary: 只修改 E:\\ftre 的 ftre-llm Package、LLM Service Provider、Agent/Compaction/Session Title 的 LLM 调用接线、LLM Hook 契约、Retry/Fallback Package 协作、测试和文档；不修改客户端，不把 Session/Inbox/AgentLoop/TurnExecutor 放入 LLM Package，不改变 Cordis Kernel
@@ -1372,25 +1372,25 @@ stages:
         tasks:
           - id: F30.1
             title: 冻结 LLM Contract、Request、Failure、StreamChunk 和 Adapter 契约
-            status: todo
+            status: done
           - id: F30.2
             title: 实现 ftre-llm Service、Provider Registry、模型解析和原子替换
-            status: todo
+            status: done
           - id: F30.3
             title: 接入 Provider 并迁移 Agent、Compaction、Session Title 消费者
-            status: todo
+            status: done
           - id: F30.4
             title: 收敛 llm/stream、agent/request、llm/error Hook
-            status: todo
+            status: done
           - id: F30.5
             title: Retry durable-before-wait 与完整请求重建
-            status: todo
+            status: done
           - id: F30.6
             title: Fallback 完整请求路由切换与零输出辅助调用保护
-            status: todo
+            status: done
           - id: F30.7
             title: 生命周期、错误、取消、洁净安装和全量验收
-            status: todo
+            status: done
       - id: F31
         title: Agent Runtime Service Boundaries
         status: todo

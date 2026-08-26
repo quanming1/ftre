@@ -3,11 +3,11 @@
 ## 范围与结论
 
 - 仓库：`E:\ftre`
-- 分支：`feature/F30-llm-service-package`
+- 分支：`develop`（PR #59 合入后）
 - 联动修改：`E:\ftre-agent-core`（仅将 LLM 事件入口收敛为 `ftre_llm.events`）
 - 未修改：`E:\binn\ftre-desktop`
 - 审计技能：`refactor-cleanup-audit`
-- 结论：代码 Owner 与生命周期问题已修复，质量门禁通过；阶段文档和 Git 交付尚未收尾，不能宣称 F30 已验收。
+- 结论：F30 代码、文档和 Git 交付均已收尾；质量门禁通过，阶段已验收，可进入依赖 F30 的 F31。
 
 ## Owner 与迁移证据
 
@@ -18,7 +18,7 @@
 | Completions/Responses 注册 | `ftre_llm.adapters.plugin` | `inject=("llm",)`，通过 `ctx.llm.register_adapter()` 注册并绑定 Effect |
 | LLM Service | `ftre.services.llm.plugin` + `ftre_llm.service.LlmService` | Host 只创建/provide `llm`，不 import concrete adapter |
 | Agent LLM 调用 | Agent Runtime 注入 `llm`，使用 `ftre_llm.LlmServiceAdapter` | `turn_executor.py` 不再创建 Core LLM handler，也不做输出转换 |
-| StreamChunk 协议 | `ftre_llm.events`（从 Core 迁入） | Core `llm.events` 仅重导出同一类型，运行时只有一个协议 Owner |
+| StreamChunk 协议 | `ftre_llm.events`（从 Core 迁入） | Core 旧 `llm.events` 已删除，运行时只有一个协议 Owner |
 | Compaction/Title | 各自 Plugin 消费 `ctx.llm.stream()` | 两处均从稳定 `LLMConfig.provider` 构造请求 |
 
 静态扫描结果：生产代码没有 `OpenAICompletionsAdapter`/`OpenAIResponsesAdapter` 的 Host import，没有第二个 `LlmAdapter`，没有 `configured` 伪 Provider fallback。
@@ -57,11 +57,13 @@ registration.dispose → operation=dispose
 
 未删除：`.ftre-inbox` 下的空 Session 目录，它们属于运行时数据；`.git/refs/heads/feat` 属于 Git 内部目录，均不属于源码生成物。
 
-## 未完成项与交付阻塞
+## 历史阻塞（已解决）
 
-1. `docs/prd/PRD-F30-llm-service-package.md` 仍是草稿，`docs/TODO.yaml` F30 仍是 `todo`；不能在没有评审/验收证据时改成已完成。
-2. 工作树包含本次 F30 以及此前 F31/F32/F14 审计等大量修改和未跟踪文件；当前没有提交分片，因此工作树不干净。
-3. 按仓库规则，未收到明确 `commit/提交` 授权前不能擅自提交、push 或 merge；因此本报告结论是“代码门禁通过，Git/PRD 收尾阻塞”，不是“可交付已完成”。
+以下记录保留当时的审计现场；随后已通过 PRD/TODO/CHANGELOG 更新和 GitHub PR 合并解决。
+
+1. PRD/TODO 尚未切换为已验收/done。
+2. feature 分支尚未提交、推送和合入 `develop`。
+3. 当时未获得提交授权，故未执行 Git 交付动作。
 
 ## 2026-08-26 再审
 
@@ -93,15 +95,45 @@ registration.dispose → operation=dispose
 - `ConfigService.resolve_llm()` 补齐 `context_window`、`vision`、
   `reasoning_effort_values` 模型能力快照。
 - Core 全量测试：`265 passed`；ftre 全量测试：`615 passed`；两仓 ruff 与 diff check 通过。
-- 当前仍未提交；F30 PRD/TODO 和 Git 分片收尾仍需按仓库流程执行。
+- 当时仍未提交；该状态已由后续 PR #59 的分批提交和合并解决。
 
-### 收尾审计结论
+### 收尾审计结论（提交前现场）
 
 - ftre 生产源码未命中 `runner._llm`、`core_bridge` 或旧 Core events 模块导入。
 - `ftre-llm` 高置信度 vulture 扫描无死代码结果；Core 仅保留既有测试替身的
   unreachable-yield/参数告警，不影响生产路径。
-- 代码门禁已通过；忽略的测试/构建生成物不属于 Git 交付内容，当前工作树仍保留
+- 代码门禁已通过；忽略的测试/构建生成物不属于 Git 交付内容，当时工作树仍保留
   执行前已有的大量未提交修改。
 - 当前生成物盘点：ftre 源码/测试共 49 个 `__pycache__`，`packages/ftre-llm` 4 个，
   另有该包的 `build/` 与 `src/ftre_llm.egg-info/`；删除命令受当前执行环境策略阻止，
   未对工作区做宽泛递归删除。
+
+## 2026-08-26 最终验收
+
+### Git 交付
+
+- Core：`feature/C7-ftre-llm-protocol-owner` → PR #17 → merge commit
+  `97a99970ad739d96a46a230680b1b0678cf8488d`。
+- ftre：`feature/F30-llm-service-package` → PR #59 → merge commit
+  `6c6478e81fae87cb3096e9dfbf8aeafa6dd3f721`。
+- ftre CI 首次暴露两个真实问题：未安装仓内 `ftre-llm`，以及 Core checkout 固定在旧提交；
+  已分别通过 `8e79636`、`0abf76c`、`64aa867` 修复，最终 CI 通过。
+- 两仓已同步本地 `develop`，未忽略文件工作树干净；客户端未修改。
+
+### 最终门禁
+
+| 门禁 | 结果 |
+|---|---|
+| Core 全量 pytest | `265 passed` |
+| ftre 全量 pytest | `615 passed` |
+| ftre CI（Python 3.12） | 通过 |
+| Core/ftre ruff | 通过 |
+| `git diff --check` | 通过 |
+| `ftre-llm` wheel 与 entry point | `ftre_llm-0.1.0-py3-none-any.whl`，SHA256 `C82276B22849F8AE06E7AF95C1D02D492F4C9217E4E02D6891A45A9D62F046D9`；含 `ftre.plugins` Provider 入口 |
+| `ftre-llm` 洁净 venv | 安装 `ftre-llm` + `cordis-py` wheel 后 `ftre_llm`/`cordis` import 成功，entry point 为 `ftre_llm.adapters.plugin:apply` |
+| Gateway smoke | `GET http://127.0.0.1:48799/api/health` 返回 `200 {"status":"ok"}`，测试进程已停止 |
+| 跨仓协议/安装基线 | Core `97a9997` 与 ftre `6c6478e` 已锁定并通过 CI |
+
+最终状态：F30 PRD 状态为 `已验收`，TODO F30 及 F30.1–F30.7 均为 `done`，CHANGELOG、
+执行报告与代码证据一致。测试产生的 `build/`、`egg-info/`、`__pycache__` 属于被忽略的本地
+生成物，不进入 Git 交付。

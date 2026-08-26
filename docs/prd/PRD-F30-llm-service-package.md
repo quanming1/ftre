@@ -6,11 +6,14 @@
 |---|---|
 | 阶段 | F30 |
 | 名称 | 统一 LLM Service Package 与调用管线 |
-| 状态 | 草稿 |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-25 |
-| 定稿日期 | 待评审 |
-| 验收日期 | 待开发 |
+| 定稿日期 | 2026-08-26 |
+| 验收日期 | 2026-08-26 |
 | 关联文档 | `docs/TODO.yaml` F30；`docs/prd/PRD-F28-llm-recovery-plugin.md`；`docs/prd/PRD-F29-llm-stream-fallback-plugin.md`；`E:\deepseek-channel-octo\docs\dsh-llm-analysis.md`；`AGENTS.md` |
+
+> 验收结论：F30 的代码已通过 Core/ftre 全量测试、CI、ruff、wheel 和跨仓协议复核，
+> 并已通过 GitHub PR #59 合入 `develop`。本 PRD 的 FR1–FR11 与 AC1–AC12 均按执行报告完成验收。
 
 ---
 
@@ -80,7 +83,6 @@ E:/ftre/
 │  └─ ftre-llm/
 │     ├─ pyproject.toml
 │     ├─ README.md
-│     ├─ README.zh.md
 │     ├─ src/ftre_llm/
 │     │  ├─ __init__.py
 │     │  ├─ service.py          # LlmService：注册、解析、stream
@@ -94,18 +96,16 @@ E:/ftre/
 │     │  │  └─ openai_responses.py
 │     │  └─ errors.py           # LlmFailure 与稳定错误码
 │     └─ tests/
-│        ├─ test_service.py
-│        ├─ test_registration.py
-│        ├─ test_prepare_call.py
-│        └─ test_stream_protocol.py
+│        ├─ test_llm_service.py
+│        ├─ test_adapters_chunk.py
+│        ├─ test_stream_chunk_contract.py
+│        ├─ test_service_adapter.py
+│        └─ test_core_protocol_identity.py
 │
 ├─ src/ftre/
-│  ├─ services/llm/
-│  │  ├─ plugin.py              # Host Provider Plugin，发布 llm Service
-│  │  └─ hooks.py               # Host 对 Core Hook 的稳定重导出
-│  └─ plugins/builtin/
-│     ├─ llm-providers/         # 现有 Provider 的装配适配
-│     └─ ...
+│  └─ services/llm/
+│     ├─ plugin.py              # Host Provider Plugin，发布 llm Service
+│     └─ hooks.py               # Host 对 Core Hook 的稳定重导出
 ```
 
 ### 2.2 依赖方向
@@ -594,7 +594,7 @@ LlmService 不再发布返回值无人消费的平行错误 Hook，避免两套 
 
 ### 5.1 Owner
 
-Retry 独立为 `ftre-llm-retry` Package，LlmService 不拥有 Retry 状态。
+Retry 独立为 `ftre-llm-recovery` Package，LlmService 不拥有 Retry 状态。
 
 ```text
 LlmService 只执行一次请求
@@ -957,24 +957,24 @@ llm/stream Plugin 自身异常     → 继续抛出
 
 ## 11. 验收标准
 
-- [ ] **AC1**：存在独立 `packages/ftre-llm`，提供唯一 `llm` Service 和 entry point。
-- [ ] **AC2**：Provider Plugin 只能通过 `register_adapter()` 注册 Adapter；Agent、Compaction、
+- [x] **AC1**：存在独立 `packages/ftre-llm`，提供唯一 `llm` Service 和 entry point。
+- [x] **AC2**：Provider Plugin 只能通过 `register_adapter()` 注册 Adapter；Agent、Compaction、
   Session Title 不再直接调用 `create_llm_handler()`。
-- [ ] **AC3**：`stream()` 返回统一 `StreamChunk`，所有 Provider 请求失败都以唯一终止
+- [x] **AC3**：`stream()` 返回统一 `StreamChunk`，所有 Provider 请求失败都以唯一终止
   `FinishChunk(error/aborted)` 表示。
-- [ ] **AC4**：`prepare_call()` 能解析并冻结最终配置、模型元数据和 Adapter 注册；调用句柄
+- [x] **AC4**：`prepare_call()` 能解析并冻结最终配置、模型元数据和 Adapter 注册；调用句柄
   不可复用。
-- [ ] **AC5**：`llm/stream`、`agent/request`、`llm/error` 和
+- [x] **AC5**：`llm/stream`、`agent/request`、`llm/error` 和
   `llm/adapters-updated` 的入参、出参、Waterfall/Emit 语义有契约测试。
-- [ ] **AC6**：LlmService 本体不依赖 Session、Inbox、Agent、Compaction、Client 或凭据存储。
-- [ ] **AC7**：Retry 只由独立 Package 在 `llm/error` 提供决策；计数持久化、退避可取消、
+- [x] **AC6**：LlmService 本体不依赖 Session、Inbox、Agent、Compaction、Client 或凭据存储。
+- [x] **AC7**：Retry 只由独立 Package 在 `llm/error` 提供决策；计数持久化、退避可取消、
   重试重新构建完整请求。
-- [ ] **AC8**：Fallback 只在 Retry 耗尽后切换完整请求；低级流 Fallback 只允许零输出场景，
+- [x] **AC8**：Fallback 只在 Retry 耗尽后切换完整请求；低级流 Fallback 只允许零输出场景，
   不递归、不拼接半截流。
-- [ ] **AC9**：未安装/禁用 Retry、Fallback、Compaction 时，基础 LLM 调用仍能启动和运行。
-- [ ] **AC10**：Provider unload/restart、in-flight 流、取消、原子替换和 API Key 脱敏通过。
-- [ ] **AC11**：Core、Host、Package 全量 pytest、ruff、wheel、洁净安装和 Gateway smoke 通过。
-- [ ] **AC12**：更新 TODO、CHANGELOG、执行报告；无死代码、兼容壳、重复 Owner、缓存或空
+- [x] **AC9**：未安装/禁用 Retry、Fallback、Compaction 时，基础 LLM 调用仍能启动和运行。
+- [x] **AC10**：Provider unload/restart、in-flight 流、取消、原子替换和 API Key 脱敏通过。
+- [x] **AC11**：Core、Host、Package 全量 pytest、ruff、wheel、洁净安装和 Gateway smoke 通过。
+- [x] **AC12**：更新 TODO、CHANGELOG、执行报告；无死代码、兼容壳、重复 Owner、缓存或空
   Package 遗留。
 
 ---
@@ -1001,3 +1001,4 @@ llm/stream Plugin 自身异常     → 继续抛出
 | 2026-08-26 | 收敛 Adapter Owner：`contracts.py` 唯一声明 `LlmAdapter`，`base.py` 仅保留 OpenAI 共享骨架；新增 `ftre_llm.adapters.plugin`，通过 `LlmService.register_adapter()` 注册 Completions/Responses，Host `llm-service` 不再 import concrete adapter | 消除两个 Adapter 契约和 Host 越权注册，确保 Provider 可独立卸载 |
 | 2026-08-26 | `LLMConfig` 增加稳定 `provider` 字段；Compaction、Session Title、Agent Runtime 禁止使用 `configured` 伪 Provider；`LlmService` 在 register/replace/dispose 时异步发布 `llm/adapters-updated` | 保证路由、Hook、日志和诊断使用真实 Provider，并闭合适配器生命周期通知 |
 | 2026-08-26 | `ftre-llm.events` 成为迁入后的 StreamChunk 唯一 Owner；Core `llm.events` 改为重导出该协议，删除 Host `core_bridge.py` 和输出转换；Retry 统一接入 Core `llm/error`，移除 LlmService 中返回值无人消费的 `agent/request-error` | 消除运行时两套 Chunk 类型和无效 Retry 决策链 |
+| 2026-08-26 | 完成 F30 最终验收：Core 265 passed、ftre 615 passed，CI/ruff/diff check/wheel/跨仓安装门禁通过；PRD、TODO、CHANGELOG 与执行报告同步，PR #59 已合入 `develop` | 代码与文档证据闭环，允许进入依赖 F30 的 F31 |
