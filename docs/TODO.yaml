@@ -1393,10 +1393,10 @@ stages:
             status: done
       - id: F31
         title: Agent Runtime Service Boundaries
-        status: todo
+        status: in_progress
         date: 2026-08-25
         prd: docs/prd/PRD-F31-agent-service-boundaries.md
-        prd_status: 草稿
+        prd_status: approved
         depends_on:
           - F30
         implementation_boundary: 只修改 E:\\ftre Host 的 Agent 依赖 Service 公开契约、Agent Hook 契约、架构测试和迁移文档；不移动 AgentLoop/TurnExecutor，不创建 ftre-agent Package，不修改客户端、Inbox、Queue、Session wire 或 Cordis Kernel
