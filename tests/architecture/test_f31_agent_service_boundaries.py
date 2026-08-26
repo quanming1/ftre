@@ -162,19 +162,23 @@ def test_f31_runtime_does_not_use_context_as_service_locator() -> None:
 
 def test_f31_private_owner_imports_are_registered_baseline() -> None:
     """当前两个跨 Owner 私有导入有明确 F32 删除批次，不能再增加新的种类。"""
-    turn_imports = _imports(RUNTIME / "turn_executor.py")
-    assert turn_imports.count("ftre.services.tools.builtin._workspace") == 1
-    assert turn_imports.count("ftre.services.agent.profile.manager") == 1
+    all_runtime_imports = tuple(
+        module
+        for path in RUNTIME.rglob("*.py")
+        for module in _imports(path)
+    )
     private_modules = {
         module
-        for module in turn_imports
+        for module in all_runtime_imports
         if module.startswith("ftre.services.")
-        and (".builtin." in module or module.endswith(".manager"))
+        and (".builtin." in module or module.endswith(".manager") or ".persistence" in module)
     }
     assert private_modules == {
         "ftre.services.tools.builtin._workspace",
         "ftre.services.agent.profile.manager",
     }
+    assert all_runtime_imports.count("ftre.services.tools.builtin._workspace") == 1
+    assert all_runtime_imports.count("ftre.services.agent.profile.manager") == 1
 
 
 def test_f31_hook_specs_have_unique_names_and_real_owner_contracts() -> None:
