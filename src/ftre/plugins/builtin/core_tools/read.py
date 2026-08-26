@@ -159,12 +159,15 @@ def _image_to_event(path: str, cwd: str, attachments) -> HintBlockEvent | str:
     )
 
 
-def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> Tool:
+def create_read_tool(max_bytes: int = 256 * 1024) -> Tool:
     """创建 read 工具
 
     Args:
         max_bytes: 单文件最大读取字节数（默认 256KB）。超出必须显式 start_line/end_line
-        vision: 当前模型是否支持识图。决定 description 中是否声明可读取图片
+
+    说明：图片能力是中性的——是否真的能读图由运行时注入的 llm_config.vision
+    决定（read 函数体内检查），不支持视觉的模型会收到明确报错；description
+    不再按模型动态改写，使工具可以静态注册为普通贡献（F34）。
     """
 
     def read(
@@ -242,27 +245,21 @@ def create_read_tool(max_bytes: int = 256 * 1024, *, vision: bool = False) -> To
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] {type(e).__name__}: {e}"
 
-    # 根据当前模型是否支持识图，动态拼接图片相关说明，避免对纯文本模型误导其可以读图。
-    vision_lines = (
-        (
-            "- 当前模型支持识图，可读取图片：支持 png / jpg / jpeg / gif / webp / bmp / svg，"
-            "本地绝对路径、相对工作区路径和 HTTP(S) URL；大图自动压缩至 5MB/4096px 以内\n"
-            "- 读取图片可用于理解截图、UI 修改、浏览器操控结果、视觉回归和设计还原\n"
-        )
-        if vision
-        else "- 当前模型不支持识图，无法读取图片，仅能读取文本文件\n"
-    )
-
+    # 描述采用中性文案（F34）：工具静态注册，不随模型 vision 能力改写；
+    # 纯文本模型误读图时会得到一行明确报错，引导切换模型而不是误导。
     return Tool(
         name="read",
         description=(
-            "读取文件内容；文本返回带行号内容，图片返回 LLM 可识别的视觉输入。"
+            "读取文件内容；文本返回带行号内容，图片返回 LLM 可识别的视觉输入"
+            "（需当前模型支持识图，不支持时会返回明确报错）。"
             "相对路径基于当前会话的工作区目录。\n"
             "- 自动识别编码（utf-8 / utf-8-sig / gbk 等），非 utf-8 文件首行会显示 [encoding]\n"
             "- 可选 start_line / end_line 限定行范围（1-indexed，闭区间）\n"
             "- 超过 256KB 的文件必须传入行范围\n"
-            + vision_lines
-            + "- 路径是目录时返回该目录下的文件与子目录列表（目录在前，文件附带大小）\n"
+            "- 支持读取的图片格式：png / jpg / jpeg / gif / webp / bmp / svg，"
+            "本地绝对路径、相对工作区路径和 HTTP(S) URL；大图自动压缩至 5MB/4096px 以内\n"
+            "- 读取图片可用于理解截图、UI 修改、浏览器操控结果、视觉回归和设计还原\n"
+            "- 路径是目录时返回该目录下的文件与子目录列表（目录在前，文件附带大小）\n"
             "- 宁愿一次性读完整个文件也不要对同一文件分多次小段反复读取\n"
             "- 已经读取过的文件，内容已在上下文中，不要重复读取"
         ),

@@ -1,5 +1,20 @@
 # Changelog
 
+### F34 ToolService 最终运行时边界（已完成，未发布）
+
+- 新增 core-tools Plugin：bash/read/write/edit/set_workspace 从 `services/tools/builtin/` 迁至
+  `plugins/builtin/core_tools/`，作为普通 ToolContribution（owner=core-tools）注册，卸载可逆；
+  `ToolService.prepare_view()` 删除硬编码构造，`build_default_tools()` 死代码删除；plan 工具实现
+  随 Owner 迁至 `plugins/builtin/plan/`。
+- `ToolService.registry` 私有化为 `_registry`；新增作用域感知 `get()`；`execute()` 的
+  `agent_id` 路径执行作用域投影（scoped shadow 覆盖同名 global、scoped-only 工具可执行，
+  `get/schemas/execute` 共享投影），global 贡献卸载不再因同名 scoped shadow 在
+  `_registry` 残留；view preparer 契约泛化为 `(agent_id, session_id, profile_config, llm_config)`，
+  MCP 自行读取 mcp_config 字段；filter_tools 语义冻结（allow/deny 不豁免内置工具）。
+- read 工具描述中性化（不再随模型 vision 能力改写，运行时仍由 llm_config.vision 拦截）；
+  新增 tool-audit 可选 Plugin：消费 `tool/after` 输出结构化审计日志（logger=ftre.tool_audit），
+  guard 门禁另立后续阶段。
+
 ### F32 Agent Runtime Service 解耦（已完成，未发布）
 
 - AgentLoop/TurnExecutor 改为只消费公开 `sessions`、`message_bus`、`tools`、`workspaces`、

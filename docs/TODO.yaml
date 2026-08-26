@@ -1473,3 +1473,79 @@ stages:
           - id: F32.7
             title: 回归、生命周期和架构验收
             status: done
+      - id: F33
+        title: Agent Package Final Architecture
+        status: todo
+        date: 2026-08-26
+        prd: docs/prd/PRD-F33-agent-package-final-architecture.md
+        prd_status: 草稿
+        depends_on:
+          - F32
+          - F34
+        implementation_boundary: 只在 F31/F32 验收后抽取 E:\\ftre Agent 契约与 Runtime Package；不修改客户端、Inbox wire、Session wire、Cordis Kernel 或 E:\\ftre-agent-core
+        modules:
+          - packages/ftre-agent/
+          - packages/ftre-agent-runtime/
+          - src/ftre/app/gateway/composition.py
+          - src/ftre/services/（仅保留稳定 Host Service）
+          - src/ftre/plugins/builtin/（仅调整 Runtime Plugin 装载）
+          - tests/architecture/、tests/contracts/、tests/lifecycle/、tests/integration/
+        acceptance: Agent 契约与 Runtime 实现分别独立发行；Host 只通过 Composition 加载 Runtime Plugin；旧 Agent Runtime、Facade、桥接和兼容入口删除；普通消息、Tool、LLM、Steer、Compaction、Retry、Fallback、取消和生命周期回归通过
+        tasks:
+          - id: F33.1
+            title: 冻结终局目录、Owner 和依赖方向
+            status: todo
+          - id: F33.2
+            title: 抽取 ftre-agent 稳定契约 Package
+            status: todo
+          - id: F33.3
+            title: 抽取 ftre-agent-runtime Provider Package
+            status: todo
+          - id: F33.4
+            title: Host Composition 改为加载 Runtime Plugin
+            status: todo
+          - id: F33.5
+            title: 删除旧 Agent Owner、桥接和兼容入口
+            status: todo
+          - id: F33.6
+            title: Package 发行、生命周期和最终验收
+            status: todo
+      - id: F34
+        title: ToolService Final Runtime
+        status: done
+        date: 2026-08-26
+        completion_date: 2026-08-26
+        prd: docs/prd/PRD-F34-tool-service-runtime.md
+        prd_status: 已验收
+        depends_on:
+          - F32
+        implementation_boundary: 只修改 E:\\ftre Host 的 ToolService、Tool Hook、Tool Plugin 接入、Runtime 内部 Tool 边界和相关测试；不修改客户端、Inbox wire、Session wire、Cordis Kernel 或 E:\\ftre-agent-core
+        modules:
+          - src/ftre/services/tools/
+          - src/ftre/plugins/builtin/{mcp,skill,schedule,plan}/
+          - packages/ftre-{messaging,task,team}/
+          - src/ftre/services/agent/runtime/（仅内部适配边界）
+          - tests/architecture/、tests/contracts/、tests/lifecycle/、tests/integration/
+        acceptance: ToolService 是唯一 tools Owner；Tool Plugin 只能通过 register 贡献；registry 隐藏；get/schemas/execute 共享作用域投影；Tool Hook、取消、超时、错误、并发和生命周期语义统一；Agent Runtime 不访问具体 Registry 或 Tool 私有实现
+        tasks:
+          - id: F34.1
+            title: 冻结 ToolDefinition 和执行结果契约
+            status: done
+          - id: F34.2
+            title: 收紧 ToolService 和作用域可见性
+            status: done
+          - id: F34.3
+            title: get/schemas/execute 共享作用域投影（guard/execution_mode 为 PRD 非目标，移出本阶段）
+            status: done
+          - id: F34.4
+            title: 统一 Tool Hook 执行管线
+            status: done
+          - id: F34.5
+            title: 迁移内置与外部 Tool Plugin
+            status: done
+          - id: F34.6
+            title: 收口 Agent Runtime 的 Core Tool 边界
+            status: done
+          - id: F34.7
+            title: 取消并发生命周期和发行验收
+            status: done

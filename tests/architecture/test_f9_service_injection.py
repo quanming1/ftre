@@ -128,7 +128,8 @@ def test_builtin_command_owner_dependencies_are_explicit() -> None:
 
 
 def test_builtin_tools_use_public_agent_service_key() -> None:
-    root = SRC / "services" / "tools" / "builtin"
+    # F34：内置工具已迁至 plugins/builtin/core_tools，随 Owner Plugin 落位。
+    root = SRC / "plugins" / "builtin" / "core_tools"
     for path in root.glob("*.py"):
         source = path.read_text(encoding="utf-8")
         assert 'Injected("agent_loop")' not in source, path

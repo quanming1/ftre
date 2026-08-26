@@ -111,8 +111,10 @@ def test_tool_service_view_and_prompt_assembly_contracts() -> None:
         ToolService
     )
     assert tools.schemas("agent-a") == []
+    # F34：底层 registry 已私有化；view 是独立实例且不再硬编码内置工具。
     view = asyncio.run(tools.prepare_view("agent-a", session_id="session-a"))
-    assert view is not tools.registry
+    assert view is not None
+    assert len(view) == 0
 
     prompts = SystemPromptService()
     prompts.register_section(PromptSection(name="base", content="hello", owner="test"))

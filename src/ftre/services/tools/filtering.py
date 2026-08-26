@@ -1,18 +1,14 @@
-"""
-ftre 内置工具集
+"""Agent profile 的 tools.allow / tools.deny 过滤逻辑。
 
-工具是无状态的工厂产物。当前工作区是 sessions 表的一等字段，Agent 每次运行
-通过 WorkspaceService 创建的 accessor 放入 runtime_context['workspace']，
-同步外观，工具用 Injected("workspace") 拿到它后调 ws.get() / ws.set(...)
-读写持久化的 cwd。
+由 ToolService Owner 在构建 view 时使用；形状校验宁可显式失败，
+也不能让畸形配置静默清空成员的全部工具。
 """
+
+from __future__ import annotations
+
+from typing import Any
+
 from ftre_agent_core.tool import ToolRegistry
-
-from .bash import create_bash_tool
-from .edit import create_edit_tool
-from .read import create_read_tool
-from .set_workspace import create_set_workspace_tool
-from .write import create_write_tool
 
 
 def coerce_tool_name_list(value, field: str) -> list[str]:
@@ -36,7 +32,7 @@ def coerce_tool_name_list(value, field: str) -> list[str]:
     return value
 
 
-def filter_tools(registry: ToolRegistry, tools_config: dict | None) -> ToolRegistry:
+def filter_tools(registry: ToolRegistry, tools_config: dict[str, Any] | None) -> ToolRegistry:
     """按 agent 的 tools.allow / tools.deny 在 registry 上原地过滤。
 
     Args:
@@ -50,6 +46,9 @@ def filter_tools(registry: ToolRegistry, tools_config: dict | None) -> ToolRegis
 
     Raises:
         ValueError: allow/deny 形状非法（防止静默清空工具）。
+
+    语义（F34 冻结）：allow/deny 不豁免任何来源的工具——内置工具
+    （core-tools 贡献）与 Plugin/MCP 工具同一待遇，因为它们都是普通贡献。
     """
     if not tools_config:
         return registry
@@ -60,36 +59,5 @@ def filter_tools(registry: ToolRegistry, tools_config: dict | None) -> ToolRegis
     for name in list(registry.names):
         if name in deny or allow and name not in allow:
             registry.unregister(name)
-
-    return registry
-
-
-def build_default_tools(
-    tool_registry: ToolRegistry | None = None,
-    llm_config=None,
-) -> ToolRegistry:
-    """构建不依赖 Inbox 的基础工具集和插件贡献。
-
-    Cron、send_message、task 和 team 均由自己的 Plugin 通过 ``ToolService`` 贡献；
-    基础工厂不再偷偷拥有队列相关行为。
-
-    Args:
-        tool_registry: 全局插件 ToolRegistry，其工具会被合并进来
-        llm_config: 当前 Agent 的 llm 配置
-
-    Returns:
-        一个新的 ToolRegistry，包含内置工具 + 全局插件工具。
-    """
-    registry = ToolRegistry()
-
-    registry.register(create_bash_tool())
-    registry.register(create_read_tool(vision=getattr(llm_config, "vision", False)))
-    registry.register(create_write_tool())
-    registry.register(create_edit_tool())
-    registry.register(create_set_workspace_tool())
-
-    if tool_registry is not None:
-        for tool in tool_registry.snapshot():
-            registry.register(tool)
 
     return registry

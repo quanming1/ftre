@@ -40,7 +40,8 @@ def test_agent_runtime_does_not_relay_inbox() -> None:
     turn_executor = (SRC / "services" / "agent" / "runtime" / "turn_executor.py").read_text(
         encoding="utf-8"
     )
-    default_tools = (SRC / "services" / "tools" / "builtin" / "__init__.py").read_text(
+    # F34：内置工具默认集已随 core-tools Plugin 落位，仍不得包含业务 Tool。
+    default_tools = (SRC / "plugins" / "builtin" / "core_tools" / "__init__.py").read_text(
         encoding="utf-8"
     )
     assert "self._inbox" not in turn_executor
