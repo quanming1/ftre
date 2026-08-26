@@ -20,9 +20,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: quanming1/ftre-agent-core
-          # B2 Responses 重放修复已合入 Core develop；用合入提交固定跨仓合同，
-          # 避免 CI 使用旧 tag 漏测 status-free Item 重放。
-          ref: 4a214f3e538023a0aa13dcc9b102281adc66609d
+          # C7 LLM 协议收敛已合入 Core develop；用合入提交固定跨仓合同，
+          # 确保 Host 测试使用 Runner 注入和统一 ftre-llm Chunk 协议。
+          ref: 97a99970ad739d96a46a230680b1b0678cf8488d
           path: ftre-agent-core
 
       - name: Checkout cordis-py
