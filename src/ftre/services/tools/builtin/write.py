@@ -3,9 +3,10 @@ write 工具 - 写入/覆盖文件
 """
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
+from ftre.services.workspace.accessor import WorkspaceAccessor
+
 from ._diff import build_diff_metadata
 from ._io import _NEWLINE_LABEL, read_text, write_text_new, write_text_preserving
-from ._workspace import WorkspaceAccessor
 from .read import _resolve
 
 

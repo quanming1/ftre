@@ -158,3 +158,26 @@ async def test_steering_history_failure_keeps_pending(tmp_path) -> None:
     snapshot = await service.snapshot("s1")
     assert [item.request_id for item in snapshot.next_step] == ["r1"]
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_promoted_plugin_message_becomes_persisted_user_input(tmp_path) -> None:
+    order: list[str] = []
+    service = InboxService(
+        InboxRepository(tmp_path),
+        session_events=RecordingSessionEvents(order),
+    )
+    await service.followup(
+        InboundMessage("s1", "cron-1", "cron", "来自定时任务", source="plugin")
+    )
+
+    assert await service.promote("s1", "cron-1") is True
+    promoted = await service.snapshot("s1")
+    assert promoted.next_step[0].source == "user"
+
+    claimed = await service.deliver_next_step_for_reasoning("s1")
+
+    assert [item.request_id for item in claimed] == ["cron-1"]
+    assert order == ["persist"]
+    assert not (await service.snapshot("s1")).has_pending
+    await service.close()

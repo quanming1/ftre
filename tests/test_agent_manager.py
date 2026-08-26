@@ -3,6 +3,7 @@ Tests for AgentManager: config merging, tool filtering, prompt loading.
 """
 
 import json
+from unittest.mock import Mock
 
 import pytest
 
@@ -610,18 +611,30 @@ def test_ensure_default_picks_first_provider(tmp_path, monkeypatch):
 # ─── Task 7: Create and Delete agents ────────────────────────────────
 
 
-def test_create_agent_passes_reasoning_effort_to_core(
-    tmp_agents_dir, fake_global_config
+def test_runtime_factory_passes_reasoning_effort_to_core(
+    tmp_agents_dir, fake_global_config, monkeypatch
 ):
-    """The merged effort reaches ReActAgent instead of its empty-string default."""
+    """Profile Manager 只解析配置，Runtime factory 才负责构造 Core Agent。"""
     from ftre.services.agent.config import AgentConfig
     from ftre.services.agent.profile.manager import AgentManager
+    from ftre.services.agent.runtime import factory
 
     mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("default")
-    agent = mgr.create_agent(profile, AgentConfig())
+    created = Mock()
+    monkeypatch.setattr(factory, "ReActAgent", created)
+    factory.create_core_agent(
+        config=AgentConfig(),
+        profile_snapshot=profile,
+        tool_view=Mock(),
+        system_prompt="prompt",
+        tracer=Mock(),
+        hooks=None,
+        hook_context=None,
+        state=factory.default_agent_state(),
+    )
 
-    assert agent.reasoning_effort == "high"
+    assert created.call_args.kwargs["reasoning_effort"] == "high"
 
 
 def test_create_agent_profile(tmp_path):

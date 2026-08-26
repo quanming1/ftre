@@ -6,6 +6,7 @@ Feature 可消费的窄接口，调用方不需要知道 profile 在磁盘上的
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from .manager import AgentManager
@@ -16,8 +17,9 @@ class AgentProfileService:
     """提供 profile CRUD/解析，但不向 Feature 暴露 Manager 的存储细节。"""
     key = "agent_profiles"
 
-    def __init__(self, manager: AgentManager) -> None:
+    def __init__(self, manager: AgentManager, sessions=None) -> None:
         self.manager = manager
+        self._sessions = sessions
 
     def list(self) -> list[dict[str, Any]]:
         """列出可用 Agent profile 的摘要。"""
@@ -42,6 +44,47 @@ class AgentProfileService:
     def resolve(self, agent_id: str, session_id: str | None = None) -> EffectiveProfile:
         """解析当前 Agent 的有效配置投影，供一次请求使用。"""
         return EffectiveProfile(agent_id, self.manager.load(agent_id))
+
+    async def resolve_for_inbound(
+        self,
+        agent_id: str,
+        session_id: str,
+        *,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> EffectiveProfile:
+        """按 inbound 的 Team 绑定解析本轮 Profile，并返回只读快照。"""
+        if self._sessions is None:
+            return self.resolve(agent_id, session_id)
+
+        from . import sub_agent
+
+        values = metadata or {}
+        agent_ref = values.get("agent_ref")
+        leader_session = _metadata_value(agent_ref, "leader_session")
+        sub_session = _metadata_value(agent_ref, "sub_agent")
+        profile = None
+        if leader_session and sub_session == session_id:
+            profile = sub_agent.load_member_profile(
+                self._sessions,
+                str(leader_session),
+                session_id,
+            )
+
+        if profile is None:
+            session_metadata = await self._sessions.get_session_metadata(session_id)
+            binding = sub_agent.binding_of(
+                session_metadata if isinstance(session_metadata, dict) else {}
+            )
+            if binding is not None:
+                profile = sub_agent.load_member_profile(
+                    self._sessions,
+                    binding["leader_session"],
+                    session_id,
+                )
+
+        if profile is not None:
+            return EffectiveProfile(profile.agent_id, profile)
+        return self.resolve(agent_id, session_id)
 
     def list_prompts(self, agent_id: str) -> dict[str, str]:
         """Read prompt files through the profile owner."""
@@ -90,3 +133,10 @@ class AgentProfileService:
         from . import sub_agent
 
         return sub_agent.build_team_member_binding(leader_session_id, team_id, name)
+
+
+def _metadata_value(value: Any, key: str) -> Any:
+    """读取 Pydantic AgentRef 或普通 mapping，保持 inbound 快照无具体类型依赖。"""
+    if isinstance(value, Mapping):
+        return value.get(key)
+    return getattr(value, key, None)

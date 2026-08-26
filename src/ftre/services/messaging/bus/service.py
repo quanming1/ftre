@@ -14,6 +14,7 @@ from ftre.kernel.hooks import HookRuntime
 
 from .bus import EventBus
 from .ingress import MESSAGING_ROUTE_SPEC, IngressResult
+from .message import BusMessage
 
 
 class MessageBusService:
@@ -28,6 +29,10 @@ class MessageBusService:
     async def publish_inbound(self, message) -> None:
         """Publish a fire-and-forget inbound message through the owned Bus."""
         await self.bus.publish_inbound(message)
+
+    async def publish_outbound(self, message: BusMessage) -> None:
+        """Publish an existing BusMessage without exposing the underlying EventBus."""
+        await self.bus.publish_outbound(message)
 
     async def request_inbound(self, message):
         """Submit an inbound request and wait for the AgentLoop admission ACK."""

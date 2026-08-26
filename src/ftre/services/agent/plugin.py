@@ -13,11 +13,12 @@ from .runtime.provider import build_runtime
 from .service import AgentService
 
 inject = (
+    "config",
     "agent_profiles",
     "sessions",
     "message_bus",
-    "channels",
     "tools",
+    "workspaces",
     "system_prompt",
     "hook_runtime",
     "session_events",

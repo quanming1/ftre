@@ -40,7 +40,7 @@ def apply(ctx: Context, config=None):
             return
         session = await ctx.sessions.get_session(session_id)
         channel_id = session["channel_id"] if session is not None else "ws"
-        await ctx.message_bus.bus.publish_outbound(
+        await ctx.message_bus.publish_outbound(
             _session_frame(
                 "session/queue",
                 session_id,
@@ -52,7 +52,7 @@ def apply(ctx: Context, config=None):
     async def publish_status(session_id: str, status: str) -> None:
         session = await ctx.sessions.get_session(session_id)
         channel_id = session["channel_id"] if session is not None else "ws"
-        await ctx.message_bus.bus.publish_outbound(
+        await ctx.message_bus.publish_outbound(
             _session_frame(
                 "session/status",
                 session_id,

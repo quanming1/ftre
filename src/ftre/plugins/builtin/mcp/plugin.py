@@ -25,6 +25,15 @@ async def apply(ctx: Context, config=None):
     )
     service = McpService(manager, tool_service=ctx.tools)
     ctx.provide("mcp", service)
+    async def prepare_view(agent_id, _session_id, profile_mcp_config):
+        """让 Tools Owner 在建 scoped view 前准备 MCP 工具。"""
+        await service.prepare_agent(agent_id, profile_mcp_config)
+
+    view_disposer = ctx.tools.register_view_preparer(
+        prepare_view,
+        owner="mcp",
+    )
+    ctx.effect(lambda: view_disposer, label="mcp:tool-view-preparer")
     # 全局配置：只从 config.json 的 mcp 段加载（Agent 私有配置走 prepare_agent）
     raw = ctx.config.snapshot().value.get("mcp", {})
     if isinstance(raw, dict) and raw:

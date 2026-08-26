@@ -31,7 +31,7 @@ async def apply(ctx: Context, config=None):
     if ctx.get("session_events", strict=False) is None:
         ctx.provide(
             "session_events",
-            SessionEventService(service, ctx.message_bus.bus),
+            SessionEventService(service, ctx.message_bus),
         )
 
     # Composition tests and embedders may provide a narrow Session contract

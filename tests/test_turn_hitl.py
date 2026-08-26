@@ -31,10 +31,11 @@ from ftre.kernel.hooks import HookRuntime
 from ftre.plugins.builtin.command import CommandService
 from ftre.plugins.builtin.command.builtin import register_builtin_commands
 from ftre.services.agent.config import AgentConfig, LLMConfig
+from ftre.services.agent.contracts import InboundMessage
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.agent.runtime.engine import AgentLoop
 from ftre.services.agent.runtime.turn_executor import TurnExecutor
-from ftre.services.messaging.bus import BusMessage
+from ftre.services.messaging.bus import BusMessage, EventBus, MessageBusService
 from ftre.services.session.events import SessionEventService
 from ftre.services.session.projection import SessionProjection
 from ftre.services.system_prompt.hooks import (
@@ -117,36 +118,37 @@ def _make_executor(agent) -> TurnExecutor:
     loop._event_loop = asyncio.get_running_loop()
     loop.hooks = None
     loop.agent_registry = AgentRegistry()
-    loop.session_manager = AsyncMock()
-    loop.session_manager.get_session = AsyncMock(
+    loop.sessions = AsyncMock()
+    loop.sessions.get_session = AsyncMock(
         return_value={"channel_id": "ws", "workspace": "/tmp"}
     )
-    loop.session_manager.get_messages_by_session = AsyncMock(return_value=[])
-    loop.session_manager.get_context_messages = AsyncMock(return_value=[])
-    loop.bus = AsyncMock()
-    loop.agent_manager = Mock()
+    loop.sessions.get_messages_by_session = AsyncMock(return_value=[])
+    loop.sessions.get_context_messages = AsyncMock(return_value=[])
+    loop.sessions.finish_open_replies = AsyncMock(return_value=[])
+    loop.message_bus = MessageBusService(bus=AsyncMock(spec=EventBus))
+    loop.message_bus.publish_outbound = AsyncMock()
     loop.agent_service = None
-    loop.mcp_service = None
-    loop.tool_service = None
-    loop.inbox = None
-    loop._agent_created_emitted = set()
-    loop.agent_manager.load = Mock(return_value=None)
-    loop.agent_manager.create_agent = Mock(return_value=agent)
-    loop.agent_manager._default_agent_state = Mock(return_value=_FakeState())
-    loop.channel_manager = None
-    loop.tool_registry = None
-    loop.command_manager = Mock()
-    loop.command_manager.try_dispatch_system = AsyncMock(return_value=False)
-    loop.command_manager.match = Mock(return_value=None)
-    loop.command_manager.match_any = Mock(return_value=None)
-    loop.command_manager.try_dispatch = AsyncMock(return_value=None)
+    loop.tools = SimpleNamespace(prepare_view=AsyncMock(return_value=Mock()))
+    loop.profiles = SimpleNamespace(
+        resolve_for_inbound=AsyncMock(return_value=SimpleNamespace(value=None))
+    )
+    loop.workspaces = SimpleNamespace(
+        create_accessor=Mock(return_value=SimpleNamespace(get=lambda: "/tmp", set=lambda value: value)),
+        ensure_extension_layout=AsyncMock(),
+    )
+    loop.config_service = None
     loop.tracer = Mock()
 
-    loop.session_projection = SessionProjection(loop.session_manager)
+    loop.session_projection = SessionProjection(loop.sessions)
     loop.session_events = SessionEventService(
         SimpleNamespace(projection=loop.session_projection),
-        loop.bus,
+        loop.message_bus,
     )
+
+    async def finish_open_replies(session_id, reason, *, error=None):
+        return await loop.session_projection.finish_open(session_id, reason, error=error)
+
+    loop.sessions.finish_open_replies.side_effect = finish_open_replies
 
     async def emit_session_event(session_id, channel_id, event, *, metadata=None):
         return await AgentLoop.emit_session_event(
@@ -158,7 +160,17 @@ def _make_executor(agent) -> TurnExecutor:
         )
 
     loop.emit_session_event = emit_session_event
-    executor = TurnExecutor(loop, sessions=loop.session_manager)
+    executor = TurnExecutor(
+        loop,
+        sessions=loop.sessions,
+        agents=None,
+        tools=loop.tools,
+        profiles=loop.profiles,
+        workspaces=loop.workspaces,
+        config_service=None,
+        llm_service=None,
+    )
+    executor._core_factory = Mock(return_value=agent)
     executor._build_messages = AsyncMock(
         return_value=([{"role": "user", "content": "hi"}], config)
     )
@@ -175,31 +187,29 @@ class _FakeState:
 
 
 def _user_inbound():
-    return BusMessage(
-        type="user_message",
-        from_channel="ws",
-        to_channel="ws",
-        from_session="test-session",
-        to_session="test-session",
-        data={"content": "run ls", "session_id": "test-session"},
+    return InboundMessage(
+        session_id="test-session",
+        request_id="request-test",
+        channel_id="ws",
+        content="run ls",
         metadata={},
     )
 
 
 def _confirm_inbound(*, approved=True, tool_call_id="call-1"):
+    # Command Plane 仍从 BusMessage 解析 slash command；handler 再把确认恢复
+    # 转为 Agent Runtime 的 InboundMessage。这不是第二套 Agent 输入协议，
+    # 而是接入信封到公开运行输入的单向归一化边界。
     return BusMessage(
         type="user_message",
         from_channel="ws",
-        to_channel="ws",
         from_session="test-session",
         to_session="test-session",
         data={
             "session_id": "test-session",
-            "content": (
-                f"/allow {tool_call_id}" if approved else f"/deny {tool_call_id}"
-            ),
+            "content": f"/allow {tool_call_id}" if approved else f"/deny {tool_call_id}",
         },
-        metadata={},
+        metadata={"request_id": "request-confirm"},
     )
 
 
@@ -211,14 +221,26 @@ def _enable_builtin_commands(executor):
             await executor._loop.emit_session_event(
                 session_id, channel_id, event, metadata=metadata
             )
-        inbound = _confirm_inbound()
+        metadata_values = (
+            metadata.model_dump(mode="json")
+            if hasattr(metadata, "model_dump")
+            else dict(metadata or {})
+        )
+        inbound = InboundMessage(
+            session_id=session_id,
+            request_id=str(metadata_values.get("request_id") or "request-confirm"),
+            channel_id=channel_id,
+            content="",
+            source="confirmation",
+            metadata=metadata_values,
+        )
         return await executor.execute(
             inbound,
             confirm_event=events[-1],
         )
 
     agents = SimpleNamespace(resume_confirmation=resume_confirmation)
-    sessions = executor._loop.session_manager
+    sessions = executor._loop.sessions
     register_builtin_commands(
         service.runtime,
         agents=agents,
@@ -238,11 +260,11 @@ async def _execute_command(executor, inbound):
 def _saved_messages(executor):
     projected = [
         call.args[1]
-        for call in executor._loop.session_manager.upsert_message.call_args_list
+        for call in executor._loop.sessions.upsert_message.call_args_list
     ]
     appended = [
         call.args[1]
-        for call in executor._loop.session_manager.save_message.call_args_list
+        for call in executor._loop.sessions.save_message.call_args_list
     ]
     return projected + appended
 
@@ -250,7 +272,7 @@ def _saved_messages(executor):
 def _outbound_frames(executor):
     return [
         call.args[0].data
-        for call in executor._loop.bus.publish_outbound.call_args_list
+        for call in executor._loop.message_bus.publish_outbound.call_args_list
         if call.args and getattr(call.args[0], "type", "") == "agent_event"
     ]
 
@@ -303,7 +325,7 @@ async def test_confirm_command_is_not_persisted_as_user_msg():
     agent = ResumingAgent()
     executor = _make_executor(agent)
     _enable_builtin_commands(executor)
-    executor._loop.session_manager.get_messages_by_session = AsyncMock(
+    executor._loop.sessions.get_messages_by_session = AsyncMock(
         return_value=[
             AssistantMsg(
                 id="turn_paused",
@@ -318,8 +340,8 @@ async def test_confirm_command_is_not_persisted_as_user_msg():
             )
         ]
     )
-    executor._loop.session_manager.get_context_messages = AsyncMock(
-        return_value=executor._loop.session_manager.get_messages_by_session.return_value
+    executor._loop.sessions.get_context_messages = AsyncMock(
+        return_value=executor._loop.sessions.get_messages_by_session.return_value
     )
 
     await _execute_command(executor, _confirm_inbound(approved=True))
@@ -350,25 +372,25 @@ async def test_confirm_result_injects_history_and_drives_resume():
     agent = ResumingAgent()
     executor = _make_executor(agent)
     _enable_builtin_commands(executor)
-    executor._loop.session_manager.get_messages_by_session = AsyncMock(
+    executor._loop.sessions.get_messages_by_session = AsyncMock(
         return_value=history
     )
-    executor._loop.session_manager.get_context_messages = AsyncMock(
+    executor._loop.sessions.get_context_messages = AsyncMock(
         return_value=history
     )
 
     await _execute_command(executor, _confirm_inbound(approved=True, tool_call_id="call-1"))
 
     # create_agent 收到注入了历史 context 的 state
-    create_kwargs = executor._loop.agent_manager.create_agent.call_args.kwargs
+    create_kwargs = executor._core_factory.call_args.kwargs
     injected_state = create_kwargs["state"]
     assert injected_state is not None
     assert injected_state.context == history
-    executor._loop.session_manager.get_context_messages.assert_awaited_once_with(
+    executor._loop.sessions.get_context_messages.assert_awaited_once_with(
         "test-session"
     )
-    assert executor._loop.session_manager.get_messages_by_session.await_count == 2
-    checkpoint = executor._loop.session_manager.update_message.await_args.args[0]
+    assert executor._loop.sessions.get_messages_by_session.await_count == 2
+    checkpoint = executor._loop.sessions.update_message.await_args.args[0]
     assert checkpoint.content[0].state == ToolCallState.ALLOWED
 
     # run() 的输入是 UserConfirmResultEvent，不是消息列表
@@ -401,10 +423,10 @@ async def test_confirm_result_denied_still_resumes():
             ],
         )
     ]
-    executor._loop.session_manager.get_messages_by_session = AsyncMock(
+    executor._loop.sessions.get_messages_by_session = AsyncMock(
         return_value=history
     )
-    executor._loop.session_manager.get_context_messages = AsyncMock(
+    executor._loop.sessions.get_context_messages = AsyncMock(
         return_value=history
     )
 
@@ -434,10 +456,10 @@ async def test_confirm_resume_uses_structured_prompt_hook():
             ],
         )
     ]
-    executor._loop.session_manager.get_messages_by_session = AsyncMock(
+    executor._loop.sessions.get_messages_by_session = AsyncMock(
         return_value=history
     )
-    executor._loop.session_manager.get_context_messages = AsyncMock(
+    executor._loop.sessions.get_context_messages = AsyncMock(
         return_value=history
     )
     executor._loop.hooks = HookRuntime(Context())
@@ -464,7 +486,7 @@ async def test_confirm_resume_uses_structured_prompt_hook():
 
     await _execute_command(executor, _confirm_inbound(approved=True))
 
-    create_kwargs = executor._loop.agent_manager.create_agent.call_args.kwargs
+    create_kwargs = executor._core_factory.call_args.kwargs
     assert create_kwargs["config"].system_prompt.endswith("private tools ready")
 
 
@@ -493,10 +515,10 @@ async def test_batch_confirm_checkpoints_all_before_resuming():
     agent = ResumingAgent()
     executor = _make_executor(agent)
     _enable_builtin_commands(executor)
-    executor._loop.session_manager.get_messages_by_session = AsyncMock(
+    executor._loop.sessions.get_messages_by_session = AsyncMock(
         return_value=history
     )
-    executor._loop.session_manager.get_context_messages = AsyncMock(
+    executor._loop.sessions.get_context_messages = AsyncMock(
         return_value=history
     )
 
@@ -504,7 +526,7 @@ async def test_batch_confirm_checkpoints_all_before_resuming():
     await _execute_command(executor, inbound)
 
     assert agent._captured_run_input.tool_call_id == "call-2"
-    checkpoint = executor._loop.session_manager.update_message.await_args.args[0]
+    checkpoint = executor._loop.sessions.update_message.await_args.args[0]
     assert [
         block.state for block in checkpoint.content if isinstance(block, ToolCallBlock)
     ] == [ToolCallState.ALLOWED, ToolCallState.ALLOWED]

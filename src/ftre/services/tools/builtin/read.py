@@ -10,9 +10,10 @@ from pathlib import Path
 from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
+from ftre.services.workspace.accessor import WorkspaceAccessor
+
 from ._io import file_meta_header, read_text
 from ._truncate import truncate_output
-from ._workspace import WorkspaceAccessor
 
 logger = logging.getLogger(__name__)
 

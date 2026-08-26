@@ -20,8 +20,8 @@ from ftre.services.system_prompt.service import SystemPromptService
 from ftre.services.system_prompt.types import PromptSection
 from ftre.services.tools import ToolService
 from ftre.services.tools.builtin import build_default_tools
-from ftre.services.tools.builtin._workspace import WorkspaceAccessor
 from ftre.services.tools.builtin.read import create_read_tool
+from ftre.services.workspace.accessor import WorkspaceAccessor
 
 
 def _dummy_tool(name: str = "dummy") -> Tool:

@@ -5,9 +5,10 @@ import threading
 
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
+from ftre.services.workspace.accessor import WorkspaceAccessor
+
 from ._diff import build_diff_metadata
 from ._io import _NEWLINE_LABEL, read_text, write_text_preserving
-from ._workspace import WorkspaceAccessor
 from .read import _resolve
 
 # per-file 锁：确保同一文件的多个 edit 串行执行（读-改-写原子），

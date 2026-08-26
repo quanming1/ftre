@@ -13,7 +13,7 @@ from typing import Any
 from ftre_agent_core.event import UserMessageEvent
 from ftre_agent_core.message import from_openai_message
 
-from ftre.services.messaging.bus import BusMessage, EventBus, InboundMetadata
+from ftre.services.messaging.bus import BusMessage, InboundMetadata, MessageBusService
 from ftre.services.session.message.multimodal import (
     build_user_content,
     normalize_stored_user_content,
@@ -36,9 +36,9 @@ class SessionEventService:
     持久化投影，再广播权威事实。
     """
 
-    def __init__(self, sessions, message_bus: EventBus) -> None:
+    def __init__(self, sessions, message_bus: MessageBusService) -> None:
         self._sessions = sessions
-        self._bus = message_bus
+        self._message_bus = message_bus
 
     async def emit(self, *args, **kwargs) -> Any:
         """先持久化 Session 事件，再广播权威事实。"""
@@ -46,8 +46,10 @@ class SessionEventService:
             raise TypeError("session event requires session_id, channel_id and event")
         session_id, channel_id, event = args[:3]
         metadata = kwargs.get("metadata") or InboundMetadata()
+        if isinstance(metadata, dict):
+            metadata = InboundMetadata.model_validate(metadata)
         result = await self._sessions.projection.apply(session_id, event)
-        await self._bus.publish_outbound(
+        await self._message_bus.publish_outbound(
             BusMessage(
                 type="agent_event",
                 from_channel=channel_id,
