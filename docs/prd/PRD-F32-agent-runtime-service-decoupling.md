@@ -6,10 +6,10 @@
 |---|---|
 | 阶段 | F32 |
 | 名称 | Agent Runtime Service 化与具体实现解耦 |
-| 状态 | 开发中 |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-25 |
 | 定稿日期 | 2026-08-26 |
-| 验收日期 | 待开发 |
+| 验收日期 | 2026-08-26 |
 | 关联文档 | `docs/TODO.yaml` F32；`docs/prd/PRD-F30-llm-service-package.md`；`docs/prd/PRD-F31-agent-service-boundaries.md`；`AGENTS.md` |
 
 ---
@@ -487,27 +487,27 @@ F32 不修改 `E:\ftre-agent-core`。如果 Core 现有构造参数需要一个 
 
 ## 8. 验收标准
 
-- [ ] **AC1**：AgentLoop/TurnExecutor 的构造参数已改为公开 Service 依赖，具体依赖矩阵与实现一致。
-- [ ] **AC2**：Runtime 不再持有或访问 `channel_manager`、`mcp_service`、`tool_registry`、
+- [x] **AC1**：AgentLoop/TurnExecutor 的构造参数已改为公开 Service 依赖，具体依赖矩阵与实现一致。
+- [x] **AC2**：Runtime 不再持有或访问 `channel_manager`、`mcp_service`、`tool_registry`、
   `agent_manager`、`session_projection`。
-- [ ] **AC3**：Session 消息读取、持久化和 open reply 收尾全部通过 `sessions` Service；Session
+- [x] **AC3**：Session 消息读取、持久化和 open reply 收尾全部通过 `sessions` Service；Session
   Repository/Projection 私有实现没有 Runtime import。
-- [ ] **AC4**：AgentEvent 通过 `message_bus` 公开出口发布，Session 事实通过 `session_events`
+- [x] **AC4**：AgentEvent 通过 `message_bus` 公开出口发布，Session 事实通过 `session_events`
   发布，Channel 不再由 Agent Runtime 直接调用，且无重复广播。
-- [ ] **AC5**：Tool View 和 MCP 准备由 `tools` Service Owner 完成；Runtime 不直接依赖 MCP、
+- [x] **AC5**：Tool View 和 MCP 准备由 `tools` Service Owner 完成；Runtime 不直接依赖 MCP、
   Workspace 或全局 ToolRegistry。
-- [ ] **AC6**：Profile 由 `agent_profiles.resolve()` 提供有效快照；Runtime 不调用 AgentManager
+- [x] **AC6**：Profile 由 `agent_profiles.resolve_for_inbound()` 提供有效快照；Runtime 不调用 AgentManager
   或读取配置目录。
-- [ ] **AC7**：System Prompt 使用现有 `system_prompt.assemble_result()`；LLM 使用 F30 的
+- [x] **AC7**：System Prompt 使用现有 `system_prompt.assemble_result()`；LLM 使用 F30 的
   `prepare_call()/stream()`；没有直接 `create_llm_handler()`。
-- [ ] **AC8**：Core Agent 创建只存在一个 Runtime 私有工厂；没有新增公共 Factory Service、
+- [x] **AC8**：Core Agent 创建只存在一个 Runtime 私有工厂；没有新增公共 Factory Service、
   Port 或第二个 Owner。
-- [ ] **AC9**：普通消息、Steer、Tool、Compaction、Retry、Fallback、Confirmation、取消和
+- [x] **AC9**：普通消息、Steer、Tool、Compaction、Retry、Fallback、Confirmation、取消和
   Session 删除回归通过。
-- [ ] **AC10**：unload/restart/in-flight Hook 后没有残留 Task、Hook、Tool View 或监听器。
-- [ ] **AC11**：Core、Client、Inbox wire 和 Session 持久化格式未改变；若 Core API 确实阻塞，
+- [x] **AC10**：unload/restart/in-flight Hook 后没有残留 Task、Hook、Tool View 或监听器。
+- [x] **AC11**：Core、Client、Inbox wire 和 Session 持久化格式未改变；若 Core API 确实阻塞，
   已登记配对阶段而不是偷偷修改。
-- [ ] **AC12**：pytest、ruff、架构扫描、契约测试、生命周期测试和 `git diff --check` 通过。
+- [x] **AC12**：pytest、ruff、架构扫描、契约测试、生命周期测试和 `git diff --check` 通过。
 
 ---
 

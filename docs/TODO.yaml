@@ -1432,10 +1432,11 @@ stages:
             status: done
       - id: F32
         title: Agent Runtime Service Decoupling
-        status: in_progress
+        status: done
         date: 2026-08-25
         prd: docs/prd/PRD-F32-agent-runtime-service-decoupling.md
-        prd_status: 开发中
+        prd_status: 已验收
+        acceptance_date: 2026-08-26
         depends_on:
           - F31
         implementation_boundary: 只修改 E:\\ftre Host 的 AgentLoop/TurnExecutor 依赖接线、Session/MessageBus/Tools/Profile/Prompt 公开方法、Agent Runtime 私有 Core 创建边界、架构测试和文档；不移动 Package、不修改客户端、Inbox wire、Session wire、Cordis Kernel 或 E:\\ftre-agent-core
@@ -1446,28 +1447,29 @@ stages:
           - src/ftre/services/tools/service.py
           - src/ftre/services/system_prompt/service.py
           - src/ftre/services/agent/profile/service.py
-          - src/ftre/services/llm/
+          - src/ftre/services/workspace/
+          - src/ftre/plugins/builtin/mcp/plugin.py
           - tests/architecture/、tests/contracts/、tests/lifecycle/、tests/integration/
-        acceptance: AgentLoop/TurnExecutor 只通过公开 Service 接线；移除 ChannelManager、MCP、AgentManager、Session Projection、直接 ToolRegistry 和 create_llm_handler 依赖；AgentEvent/SessionEvent 出口无重复；普通消息、Steer、Tool、Compaction、Retry、Fallback、Confirmation、取消和生命周期回归通过
+        acceptance: AgentLoop/TurnExecutor 只通过公开 Service 接线；移除 ChannelManager、MCP、AgentManager、Session Projection、直接 ToolRegistry 和 create_llm_handler 依赖；MessageBus.publish_outbound、SessionService.finish_open_replies、ToolService.prepare_view 和 Runtime 私有 Core 工厂落地；AgentEvent/SessionEvent 出口无重复；普通消息、Steer、Tool、Compaction、Retry、Fallback、Confirmation、取消和生命周期回归通过
         tasks:
           - id: F32.1
             title: Provider/Runtime 构造图迁移
-            status: in_progress
+            status: done
           - id: F32.2
             title: Session 上下文与 open reply 收尾迁移
-            status: todo
+            status: done
           - id: F32.3
             title: MessageBus 与 SessionEvent 出口收敛
-            status: todo
+            status: done
           - id: F32.4
             title: Tools、Profile、Prompt 具体依赖移除
-            status: todo
+            status: done
           - id: F32.5
             title: Core Agent 私有创建边界
-            status: todo
+            status: done
           - id: F32.6
             title: LLM 统一调用和 Hook 对齐
-            status: todo
+            status: done
           - id: F32.7
             title: 回归、生命周期和架构验收
-            status: todo
+            status: done

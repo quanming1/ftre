@@ -1,5 +1,16 @@
 # Changelog
 
+### F32 Agent Runtime Service 解耦（已完成，未发布）
+
+- AgentLoop/TurnExecutor 改为只消费公开 `sessions`、`message_bus`、`tools`、`workspaces`、
+  `agent_profiles`、`system_prompt`、`config`、`llm`、Hook 和 Session Events Service，删除
+  ChannelManager、MCP、AgentManager、Session Projection、底层 EventBus 和全局配置加载直连。
+- 新增 `MessageBusService.publish_outbound()`、`SessionService.finish_open_replies()`、
+  `ToolService.prepare_view()` 与 Workspace Owner 的同步 accessor；MCP 通过可逆 view preparer
+  注册，Core Agent 由 Runtime 唯一私有 factory 创建。
+- 删除 AgentManager 重复 Core 构造逻辑和 tools builtin 的 Workspace 私有模块；普通消息、Steer、
+  Tool、Compaction、Retry、Fallback、Confirmation、取消、删除和生命周期行为保持既有协议。
+
 ### F31 Agent Runtime Service 边界与契约基线（已完成，未发布）
 
 - 依据真实 `AgentLoop`、`TurnExecutor` 和 Provider 调用链，冻结 Agent、Session、MessageBus、
