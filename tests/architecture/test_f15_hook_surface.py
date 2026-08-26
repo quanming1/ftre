@@ -15,7 +15,7 @@ import pytest
 
 CORE_MODULE = "ftre_agent_core.hooks"
 HOST_MODULES = (
-    "ftre.services.agent.hooks",
+    "ftre_agent.hooks",
     "ftre.services.session.hooks",
     "ftre.services.messaging.bus.ingress",
     "ftre.services.system_prompt.hooks",

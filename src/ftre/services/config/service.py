@@ -22,7 +22,7 @@ from .paths import CONFIG_PATH
 from .store import JsonConfigStore
 
 if TYPE_CHECKING:
-    from ftre.services.agent.config import AgentConfig
+    from ftre_agent import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -129,9 +129,10 @@ class ConfigService:
         profile 选择的持久化输入，不再重新读取全局 ``config.json``。这样测试注入
         或自定义 ConfigService 路径时，Runtime 不会悄悄读到另一份配置。
         """
-        # 延迟导入：AgentConfig 模块本身使用 ConfigService 的 loader 包，
-        # 顶层互相导入会让最小配置/Hook 入口在收集阶段形成循环依赖。
-        from ftre.services.agent.config import (
+        # 延迟导入：Agent 配置数据契约由 ftre_agent 提供；Host 的 config 模块
+        # 又使用 ConfigService 的 loader 包，顶层互相导入会让最小配置/Hook
+        # 入口在收集阶段形成循环依赖。
+        from ftre_agent import (
             AgentConfig,
             build_llm_config,
             sanitize_agent_effort,

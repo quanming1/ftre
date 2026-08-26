@@ -1,8 +1,11 @@
 """Agent 运行时 Hook 契约。
 
 这里仅描述 Agent active Run 的语义：Run 准入、运行错误和 Run 收尾
-生命周期。pending、队列目标以及 claim 观察都属于 ``ftre-inbox`` Package，绝不在
+生命周期。pending、队列目标以及 claim 观察都属于 ``ftre-inbox`` Package，
 本模块不定义 Inbox 的 pending 类型。
+
+Core 拥有的 ``agent/before-reasoning`` 与 ``agent/stop-decision`` 只从
+``ftre_agent_core.hooks`` 引用并 re-export，不在 ftre 侧再定义一份。
 """
 
 from __future__ import annotations
@@ -18,12 +21,15 @@ from ftre_agent_core.hooks import (
     BeforeReasoningPayload,
     BeforeReasoningResult,
     ContinueTurn,
+    HookFailurePolicy,
+    HookMode,
+    HookScope,
+    HookSpec,
     StopDecisionPayload,
     StopTurn,
 )
 
-from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
-from ftre.services.agent.config import AgentConfig
+from ftre_agent.config import AgentConfig
 
 # Agent Service owns lifecycle and active-turn names; Kernel only dispatches them.
 AGENT_BEFORE_RUN = "agent/before-run"
@@ -124,6 +130,7 @@ async def _stop_on_error(payload: RequestErrorPayload) -> None:
 async def _continue_after_run(payload: AfterRunPayload) -> None:
     return None
 
+
 AGENT_BEFORE_RUN_SPEC = HookSpec(
     AGENT_BEFORE_RUN,
     "agent",
@@ -158,10 +165,15 @@ AGENT_RUN_ERROR_SPEC = HookSpec(
 )
 
 __all__ = [
+    "AGENT_AFTER_RUN",
     "AGENT_AFTER_RUN_SPEC",
+    "AGENT_BEFORE_REASONING",
     "AGENT_BEFORE_REASONING_SPEC",
+    "AGENT_BEFORE_RUN",
     "AGENT_BEFORE_RUN_SPEC",
+    "AGENT_RUN_ERROR",
     "AGENT_RUN_ERROR_SPEC",
+    "AGENT_STOP_DECISION",
     "AGENT_STOP_DECISION_SPEC",
     "AfterRunPayload",
     "AgentSubject",

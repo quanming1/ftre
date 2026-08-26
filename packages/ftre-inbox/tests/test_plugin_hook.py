@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from cordis import Context
+from ftre_agent import AgentRegistry
 from ftre_agent_core.agent import ReActAgent
 from ftre_agent_core.hooks import AGENT_BEFORE_REASONING_SPEC, BeforeReasoningPayload
 from ftre_agent_core.llm import (
@@ -18,7 +19,6 @@ from ftre_inbox.plugin import apply
 from ftre_inbox.protocol import InboundMessage
 
 from ftre.kernel.hooks import HookRuntime
-from ftre.services.agent.registry import AgentRegistry
 
 
 class BusyAgent:

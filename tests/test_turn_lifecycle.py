@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from ftre_agent import AgentConfig, AgentRegistry, InboundMessage, LLMConfig
 from ftre_agent_core.agent.runner import RunState, RunStatus
 from ftre_agent_core.event import (
     ReplyEndEvent,
@@ -13,12 +14,8 @@ from ftre_agent_core.event import (
     TextBlockStartEvent,
 )
 from ftre_agent_core.message import Msg
+from ftre_agent_runtime import AgentLoop, TurnExecutor
 
-from ftre.services.agent.config import AgentConfig, LLMConfig
-from ftre.services.agent.contracts import InboundMessage
-from ftre.services.agent.registry import AgentRegistry
-from ftre.services.agent.runtime.engine import AgentLoop
-from ftre.services.agent.runtime.turn_executor import TurnExecutor
 from ftre.services.messaging.bus import EventBus, MessageBusService
 from ftre.services.session.events import SessionEventService
 from ftre.services.session.projection import SessionProjection
@@ -82,6 +79,19 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop.sessions = AsyncMock()
     loop.sessions.get_session = AsyncMock(
         return_value={"channel_id": "ws", "workspace": "/tmp"}
+    )
+    # F33：消息格式转换改为 SessionService 窄方法；fake 用真实实现保持 wire 保真。
+    from ftre.services.session.message.converter import _as_msg, to_openai
+    from ftre.services.session.message.multimodal import (
+        build_user_content,
+        normalize_stored_user_content,
+    )
+
+    loop.sessions.build_user_content = build_user_content
+    loop.sessions.normalize_stored_user_content = normalize_stored_user_content
+    loop.sessions.record_to_msg = _as_msg
+    loop.sessions.to_openai_messages = (
+        lambda records, *, vision: to_openai(list(records), config={"llm": {"vision": vision}})
     )
     loop.message_bus = MessageBusService(bus=AsyncMock(spec=EventBus))
     loop.message_bus.publish_outbound = AsyncMock()
@@ -239,7 +249,7 @@ async def test_claimed_request_identity_is_persisted_on_user_message():
 
 @pytest.mark.asyncio
 async def test_channel_mismatch_is_failed_instead_of_false_completed():
-    """防串台拒绝必须成为失败 TurnOutcome，不能伪装成 completed。"""
+    """防串台拒绝必须成为失败的 Turn 结果，不能伪装成 completed。"""
     executor = _make_executor(FakeAgent())
     inbound = _inbound()
     inbound = InboundMessage(

@@ -4,13 +4,12 @@ from types import SimpleNamespace
 import pytest
 from cordis import Context, FiberState
 from fastapi import APIRouter
+from ftre_agent import AgentRegistry, AgentSubject
 from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Tool, ToolRegistry
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.plugins.builtin.core_tools import create_read_tool
-from ftre.services.agent.hooks import AgentSubject
-from ftre.services.agent.registry import AgentRegistry
 from ftre.services.attachment import AttachmentService
 from ftre.services.http.service import HttpService
 from ftre.services.system_prompt.hooks import (

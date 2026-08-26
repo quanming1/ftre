@@ -244,7 +244,7 @@ class InboxService:
         """等待本进程内 ``followup`` 交付的 Turn 结果。
 
         ``steer``/``inject`` 可能在 active Turn 的 Core Hook 中直接变成上下文，
-        它们没有独立的 TurnOutcome；因此不创建永不完成的 receipt，调用方应使用
+        它们没有独立的 Turn 结果；因此不创建永不完成的 receipt，调用方应使用
         Session/Turn 状态或 ``wait_session_quiescent`` 观察整体完成。
         """
         key = (session_id, request_id)

@@ -12,11 +12,11 @@
 """
 import pytest
 import pytest_asyncio
+from ftre_agent import InboundMessage
 from ftre_agent_core.message import AssistantMsg, UserMsg
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
 
-from ftre.services.agent.contracts import InboundMessage
 from ftre.services.session.service import SessionService as SessionManager
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[2]
 SRC = ROOT / "src" / "ftre"
 PACKAGE = ROOT / "packages" / "ftre-inbox"
+AGENT_PACKAGE = ROOT / "packages" / "ftre-agent" / "src" / "ftre_agent"
 
 
 def test_inbox_package_is_complete_and_core_does_not_reverse_import_it() -> None:
@@ -29,13 +30,15 @@ def test_inbox_package_is_complete_and_core_does_not_reverse_import_it() -> None
 def test_retired_mailbox_runtime_tree_and_session_owner_are_gone() -> None:
     mailbox = SRC / "services" / "agent_loop" / "runtime" / "mailbox"
     assert not any(mailbox.glob("*.py"))
-    for relative in (
-        "services/agent/service.py",
-        "services/agent/contracts.py",
-        "services/session/service.py",
-        "services/session/persistence/repository.py",
-    ):
-        source = (SRC / relative).read_text(encoding="utf-8")
+    sources = [
+        (AGENT_PACKAGE / "service.py").read_text(encoding="utf-8"),
+        (AGENT_PACKAGE / "contracts.py").read_text(encoding="utf-8"),
+        (SRC / "services" / "session" / "service.py").read_text(encoding="utf-8"),
+        (SRC / "services" / "session" / "persistence" / "repository.py").read_text(
+            encoding="utf-8"
+        ),
+    ]
+    for source in sources:
         for symbol in (
             "MailboxState",
             "MailboxStore",
@@ -45,13 +48,13 @@ def test_retired_mailbox_runtime_tree_and_session_owner_are_gone() -> None:
             "admit_inbound",
             "queue_position",
         ):
-            assert symbol not in source, (relative, symbol)
+            assert symbol not in source, symbol
 
 
 def test_agent_service_contract_is_single_message_execution_boundary() -> None:
-    source = (SRC / "services" / "agent" / "service.py").read_text(encoding="utf-8")
+    source = (AGENT_PACKAGE / "service.py").read_text(encoding="utf-8")
     assert "async def run(self, message: InboundMessage)" in source
-    assert "self.driver.run(message)" in source
+    assert "self.runtime.run_inbound(message)" in source
     assert "submit(" not in source
     assert "pending" not in source
 

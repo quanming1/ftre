@@ -5,17 +5,16 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 from cordis import Context
+from ftre_agent import AGENT_BEFORE_RUN, HookScopeCarrier
 
 from ftre.kernel.hooks import (
     HookFailurePolicy,
     HookMode,
     HookRuntime,
     HookScope,
-    HookScopeCarrier,
     HookSpec,
     context_for_scope,
 )
-from ftre.services.agent.hooks import AGENT_BEFORE_RUN
 
 
 def _spec(mode: HookMode, *, failure=HookFailurePolicy.PROPAGATE) -> HookSpec:

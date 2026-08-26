@@ -41,6 +41,7 @@ def _plugin_files() -> list[Path]:
     return [
         *sorted((SRC / "services").rglob("plugin.py")),
         *sorted((SRC / "plugins" / "builtin").rglob("plugin.py")),
+        *sorted(PACKAGES.glob("*/src/*/plugin.py")),
     ]
 
 
@@ -116,9 +117,14 @@ def test_optional_runtime_capabilities_are_ready_before_agent_provider() -> None
 
 def test_agent_runtime_delegates_session_events_to_the_session_owner() -> None:
     """Agent Runtime 不能保留 Projection/Hook/Bus 的第二事件出口。"""
-    source = (SRC / "services" / "agent" / "runtime" / "engine.py").read_text(
-        encoding="utf-8"
-    )
+    source = (
+        ROOT
+        / "packages"
+        / "ftre-agent-runtime"
+        / "src"
+        / "ftre_agent_runtime"
+        / "engine.py"
+    ).read_text(encoding="utf-8")
     assert "self.session_events.emit(" in source
     assert "self.session_projection.apply(" not in source
     assert "_emit_session_event_hook" not in source

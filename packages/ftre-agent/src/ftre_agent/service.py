@@ -1,8 +1,15 @@
-"""Agent 公共 Service：身份注册 + 显式数据面 Driver。
+"""Agent 公共 Service：身份注册 + 显式数据面 Runtime。
 
-这里是 HTTP、WebSocket 和 Feature 看到的 Agent 边界。它只保存 Agent 的公开
-身份/状态，并把执行请求交给 ``AgentDriver``；真正的 AgentLoop 由独立 Provider
-在 Composition 阶段组装，避免业务调用方反向依赖 Loop 的私有实现。
+这里是 HTTP、WebSocket、Inbox 和 Feature 看到的 Agent 边界。它只保存 Agent
+的公开身份/状态，并把执行请求交给已绑定的 Runtime；真正的 AgentLoop 由
+``ftre-agent-runtime`` 的 Provider Plugin 在 Composition 阶段组装，业务调用方
+反向依赖不到 Loop 的私有实现。
+
+Runtime 绑定约定（唯一调用契约，无独立 Port 类型）：被绑定对象实现
+``run_inbound`` / ``cancel_session`` / ``get_session_status`` /
+``is_active_session`` / ``delete_session`` / ``resume_confirmation``。
+PRD-F33 删除了旧的 Driver 适配层过渡接线；没有第二个
+Runtime 实现之前不引入 Protocol 层。
 """
 
 from __future__ import annotations
@@ -11,24 +18,23 @@ import inspect
 from collections.abc import Callable
 from typing import Any
 
-from ftre.kernel.hooks import HookScopeCarrier
-
-from .contracts import AgentDriver, AgentListener, InboundMessage
-from .registry import AgentRegistry
+from .contracts import AgentListener, AgentRunResult, InboundMessage
+from .registry import AgentRegistry, HookScopeCarrier
 
 
 class AgentService:
     """对外稳定的 Agent 合约。
 
-    ``registry`` 管理可见的 Agent 身份，``_driver`` 只在启动组合完成后注入。
-    因此 Service 可以先被路由注册，再由 AgentLoop Provider 完成数据面绑定；
-    未绑定时查询方法仍可安全返回 idle，但执行方法会明确报“未就绪”。
+    ``registry`` 管理可见的 Agent 身份，``_runtime`` 只在 Runtime Provider
+    完成组装后绑定。因此 Service 可以先被路由注册，再由 Runtime Plugin 完成
+    数据面绑定；未绑定时查询方法仍可安全返回 idle，但执行方法会明确报
+    "未就绪"。
     """
 
     key = "agents"
 
     def __init__(self) -> None:
-        self._driver: AgentDriver | None = None
+        self._runtime: Any = None
         self.registry = AgentRegistry()
         self._listeners: dict[str, list[AgentListener]] = {
             "created": [],
@@ -36,62 +42,60 @@ class AgentService:
         }
 
     @property
-    def driver(self) -> AgentDriver:
-        """Return the attached runtime port, never the concrete AgentLoop."""
-        if self._driver is None:
+    def runtime(self) -> Any:
+        """Return the attached runtime instance, never a wrapper port."""
+        if self._runtime is None:
             raise RuntimeError("AgentService runtime is not ready")
-        return self._driver
+        return self._runtime
 
-    def attach_driver(self, driver: AgentDriver) -> None:
-        """Attach an explicit data-plane port after Provider composition."""
-        if not isinstance(driver, AgentDriver):
-            raise TypeError("driver must implement AgentDriver")
-        if self._driver is not None and self._driver is not driver:
-            raise RuntimeError("AgentService already has an attached driver")
-        self._driver = driver
+    def attach_runtime(self, runtime) -> None:
+        """Bind the concrete runtime after Provider composition."""
+        if self._runtime is not None and self._runtime is not runtime:
+            raise RuntimeError("AgentService already has an attached runtime")
+        self._runtime = runtime
         if self.registry.get("default") is None:
             self.registry.register("default", state="ready")
 
-    def detach_driver(self) -> None:
-        """Detach the provider during Gateway shutdown; safe to repeat."""
-        self._driver = None
+    def detach_runtime(self) -> None:
+        """Detach the runtime during Gateway shutdown; safe to repeat."""
+        self._runtime = None
         for record in tuple(self.registry.list()):
             self.registry.dispose(record["id"])
 
-    async def run(self, message: InboundMessage) -> Any:
+    async def run(self, message: InboundMessage) -> AgentRunResult:
         """执行一条已经由上游交付的 InboundMessage。
 
         Inbox Package 负责 admission 和 worker；AgentService 只接收这一条
-        已交付输入。直接调用时若同一 Session 正在运行，由 Driver 返回 busy 错误，
-        而不是在这里隐式创建第二个队列。
+        已交付输入。直接调用时若同一 Session 正在运行，由 Runtime 返回 busy
+        错误，而不是在这里隐式创建第二个队列。
         """
-        return await self._await(self.driver.run(message))
+        return await self._await(self.runtime.run_inbound(message))
 
     async def cancel(self, *args: Any, **kwargs: Any) -> Any:
-        """请求 Driver 取消会话中的 active Turn；未交付输入由 InboxService 负责。"""
-        return await self._await(self.driver.cancel(*args, **kwargs))
+        """请求 Runtime 取消会话中的 active Turn；未交付输入由 InboxService 负责。"""
+        return await self._await(self.runtime.cancel_session(*args, **kwargs))
 
     def status(self, session_id: str) -> str:
-        """查询 Session 当前状态；Driver 未绑定时返回 idle。"""
-        if self._driver is None:
+        """查询 Session 当前状态；Runtime 未绑定时返回 idle。"""
+        if self._runtime is None:
             return "idle"
-        return self._driver.get_session_status(session_id)
+        return self._runtime.get_session_status(session_id)
 
     def is_busy(self, session_id: str) -> bool:
         """判断 Session 是否仍有活动 Turn 或维护任务。"""
         return self.status(session_id) in {"running", "processing", "compacting"}
 
     def get_session_status(self, session_id: str) -> str:
-        """兼容公开 AgentDriver 的状态查询命名。"""
+        """公开状态查询命名，与 Runtime 的 ``get_session_status`` 对齐。"""
         return self.status(session_id)
 
     def is_session_busy(self, session_id: str) -> bool:
-        """兼容公开 AgentDriver 的忙碌查询命名。"""
+        """公开忙碌查询命名；语义与 ``is_busy`` 一致。"""
         return self.is_busy(session_id)
 
     async def delete_session(self, session_id: str) -> Any:
-        """请求 Driver 关闭并删除一个 Session。"""
-        return await self._await(self.driver.delete_session(session_id))
+        """请求 Runtime 关闭并删除一个 Session。"""
+        return await self._await(self.runtime.delete_session(session_id))
 
     async def resume_confirmation(
         self,
@@ -102,7 +106,7 @@ class AgentService:
     ) -> Any:
         """Apply existing confirmation events and resume the paused Agent turn."""
         return await self._await(
-            self.driver.resume_confirmation(
+            self.runtime.resume_confirmation(
                 session_id,
                 channel_id,
                 events,

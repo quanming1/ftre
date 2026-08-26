@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
-from ftre.services.agent.config import AgentConfig
-from ftre.services.agent.hooks import (
+from ftre_agent import (
     AGENT_AFTER_RUN_SPEC,
     AGENT_BEFORE_RUN_SPEC,
+    AgentConfig,
     AgentSubject,
     AllowRun,
     BeforeRunPayload,

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from cordis import Context
+from ftre_agent import AGENT_STOP_DECISION_SPEC, AgentRegistry, AgentSubject
 from ftre_agent_core.agent import ReActAgent
 from ftre_agent_core.agent.runner._execute_acting import ExitExecutor
 from ftre_agent_core.agent.runner._state import Exit, RunState
@@ -28,8 +29,6 @@ from ftre_agent_core.tool import Tool, ToolRegistry
 from ftre_agent_core.types import ReplyFinishedReason
 
 from ftre.kernel.hooks import HookRuntime
-from ftre.services.agent.hooks import AGENT_STOP_DECISION_SPEC, AgentSubject
-from ftre.services.agent.registry import AgentRegistry
 from ftre.services.llm import LLM_STREAM_SPEC
 from ftre.services.session.hooks import SESSION_DISPOSED_SPEC, SessionLifecyclePayload
 from ftre.services.system_prompt import SystemPromptService
@@ -46,7 +45,8 @@ from ftre.services.tools import (
 
 @pytest.mark.asyncio
 async def test_ftre_reexports_core_hook_contracts_without_duplicate_owner():
-    from ftre.services.agent.hooks import StopDecisionPayload as FtreStopPayload
+    from ftre_agent import StopDecisionPayload as FtreStopPayload
+
     from ftre.services.llm.hooks import LlmStreamPayload as FtreLlmPayload
     from ftre.services.tools.hooks import ToolBeforePayload as FtreToolPayload
 

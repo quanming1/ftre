@@ -8,8 +8,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ftre_agent import AgentSubject
+
 from ftre.kernel.hooks import HookFailurePolicy, HookMode, HookScope, HookSpec
-from ftre.services.agent.hooks import AgentSubject
 
 from .types import PromptAssembly
 

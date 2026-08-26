@@ -1,28 +1,26 @@
 from __future__ import annotations
 
 import pytest
+from ftre_agent import AgentRegistry, AgentService, InboundMessage
 
-from ftre.services.agent import AgentRegistry, AgentService, InboundMessage
 
+class FakeRuntime:
+    """实现 AgentService 约定的 runtime 方法集（run_inbound/cancel_session/…）。"""
 
-class FakeDriver:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
 
-    def is_session_busy(self, session_id: str) -> bool:
+    def is_active_session(self, session_id: str) -> bool:
         return session_id == "busy"
 
     def get_session_status(self, session_id: str) -> str:
         return "running" if session_id == "busy" else "idle"
 
-    def is_busy(self, session_id: str) -> bool:
-        return session_id == "busy"
-
-    async def run(self, message):
+    async def run_inbound(self, message):
         self.calls.append(("run", (message,), {}))
         return "executed"
 
-    async def cancel(self, *args, **kwargs):
+    async def cancel_session(self, *args, **kwargs):
         self.calls.append(("cancel", args, kwargs))
         return True
 
@@ -35,10 +33,10 @@ class FakeDriver:
 
 
 @pytest.mark.asyncio
-async def test_agent_service_uses_explicit_driver_port_and_detaches_cleanly():
+async def test_agent_service_uses_runtime_binding_and_detaches_cleanly():
     service = AgentService()
-    driver = FakeDriver()
-    service.attach_driver(driver)
+    runtime = FakeRuntime()
+    service.attach_runtime(runtime)
 
     assert not hasattr(service, "loop")
     assert service.list() == [{"id": "default", "state": "ready"}]
@@ -46,10 +44,10 @@ async def test_agent_service_uses_explicit_driver_port_and_detaches_cleanly():
     assert service.is_session_busy("busy") is True
     assert await service.run(InboundMessage("session", "request", "ws", "message")) == "executed"
     assert await service.cancel("session") is True
-    assert [call[0] for call in driver.calls] == ["run", "cancel"]
+    assert [call[0] for call in runtime.calls] == ["run", "cancel"]
 
-    service.detach_driver()
-    service.detach_driver()
+    service.detach_runtime()
+    service.detach_runtime()
     assert service.list() == []
     assert service.status("busy") == "idle"
 

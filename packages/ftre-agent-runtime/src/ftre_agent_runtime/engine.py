@@ -1,7 +1,11 @@
-"""Agent 的私有 active-Turn Runtime。
+"""Agent 的私有 active-Turn Runtime（ftre-agent-runtime 包内实现）。
 
 MessageBus、Command 和 Inbox 在接入平面完成裁决；这里收到的只有已经交付的
 ``InboundMessage``。Loop 只负责 active Turn、Hook、Projection 和取消。
+
+依赖边界（PRD-F33 §5.4）：本模块只 import ``ftre_agent`` 契约、
+``ftre_agent_core`` 与独立 Package（``ftre_llm``）；Host Service 一律以构造
+参数注入并按公开窄方法调用，不 import ``ftre.services.*`` 实现模块。
 """
 
 import asyncio
@@ -9,33 +13,24 @@ import inspect
 import logging
 import uuid
 
-from ftre_agent_core import Tracer
-from ftre_agent_core.event import UserMessageEvent
-from ftre_agent_core.message import from_openai_message
-
-from ftre.kernel.hooks import HookRuntime, HookSpec
-from ftre.services.agent.config import AgentConfig
-from ftre.services.agent.contracts import InboundMessage
-from ftre.services.agent.hooks import (
+from ftre_agent import (
     AGENT_AFTER_RUN_SPEC,
     AGENT_BEFORE_RUN_SPEC,
     AfterRunPayload,
+    AgentConfig,
+    AgentRunResult,
     AgentSubject,
     BeforeRunPayload,
+    InboundMessage,
     RejectRun,
 )
-from ftre.services.messaging.bus import (
-    BusMessage,
-    InboundMetadata,
-)
-from ftre.services.session import SessionService
-from ftre.services.session.message.multimodal import (
-    build_user_content,
-    normalize_stored_user_content,
-)
+from ftre_agent_core import Tracer
+from ftre_agent_core.event import UserMessageEvent
+from ftre_agent_core.hooks import HookSpec
+from ftre_agent_core.message import from_openai_message
 
 from .completion import CompletionRegistry
-from .turn_executor import TurnExecutor, TurnOutcome
+from .turn_executor import TurnExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +51,7 @@ class AgentLoop:
     def __init__(
         self,
         message_bus,
-        sessions: SessionService,
+        sessions,
         tools,
         workspaces,
         profiles,
@@ -64,7 +59,7 @@ class AgentLoop:
         agent_service=None,
         attachments=None,
         system_prompt=None,
-        hook_runtime: HookRuntime | None = None,
+        hook_runtime=None,
         traces=None,
         session_events=None,
         llm_service=None,
@@ -223,16 +218,17 @@ class AgentLoop:
             await completion.wait()
         return True
 
-    async def run_inbound(self, message: InboundMessage) -> TurnOutcome:
+    async def run_inbound(self, message: InboundMessage) -> AgentRunResult:
         """执行一个已由 Inbox Package 交付的输入。
 
         这个入口只执行已交付的 ``InboundMessage``；Inbox Package 决定消息何时到达这里。
         """
         session_id = message.session_id
         if self.is_active_session(session_id):
-            return TurnOutcome(
+            return AgentRunResult(
+                session_id=session_id,
                 turn_id="",
-                status="error",
+                status="failed",
                 error={
                     "code": "agent-busy",
                     "message": "Session 当前已有 active Turn",
@@ -262,9 +258,10 @@ class AgentLoop:
         try:
             validation_error = await self._validate_inbound(message)
             if validation_error is not None:
-                return TurnOutcome(
+                return AgentRunResult(
+                    session_id=session_id,
                     turn_id=turn_id,
-                    status="error",
+                    status="failed",
                     error=validation_error,
                 )
             config, profile = await self._executor.resolve_inbound_config(inbound, turn_id=turn_id)
@@ -284,9 +281,10 @@ class AgentLoop:
                 agent_id=agent_id,
             )
             if isinstance(step_decision, RejectRun):
-                return TurnOutcome(
+                return AgentRunResult(
+                    session_id=session_id,
                     turn_id=turn_id,
-                    status="error",
+                    status="failed",
                     error={
                         "code": "agent-step-rejected",
                         "message": step_decision.reason,
@@ -321,7 +319,7 @@ class AgentLoop:
                 await self.completions.complete(session_id, message.request_id, outcome)
             return outcome
         except asyncio.CancelledError:
-            outcome = TurnOutcome(turn_id=turn_id, status="cancelled")
+            outcome = AgentRunResult(session_id=session_id, turn_id=turn_id, status="cancelled")
             if message.request_id:
                 await self.completions.complete(session_id, message.request_id, outcome)
             return outcome
@@ -331,9 +329,10 @@ class AgentLoop:
                 session_id,
                 message.request_id,
             )
-            outcome = TurnOutcome(
+            outcome = AgentRunResult(
+                session_id=session_id,
                 turn_id=turn_id,
-                status="error",
+                status="failed",
                 error={
                     "code": "user-message-persist-failed",
                     "message": str(exc),
@@ -410,8 +409,10 @@ class AgentLoop:
         }
         if inbound.request_id:
             user_metadata["request_id"] = inbound.request_id
-        persisted_content = build_user_content(
-            normalize_stored_user_content(content),
+        # 多模态 content 组装/归一由 SessionService 窄方法完成：转换规则是
+        # Session wire 的一部分，Runtime 不 import Host 的转换模块。
+        persisted_content = self.sessions.build_user_content(
+            self.sessions.normalize_stored_user_content(content),
             attachments,
             include_images=True,
         )
@@ -499,7 +500,7 @@ class AgentLoop:
         channel_id: str,
         event,
         *,
-        metadata: InboundMetadata | None = None,
+        metadata=None,
     ):
         """Delegate Session event persistence and broadcast to its sole Owner."""
         if self.session_events is None:
@@ -516,14 +517,17 @@ class AgentLoop:
         session_id: str,
         channel_id: str,
         events: list,
-        metadata: InboundMetadata,
+        metadata,
     ):
         """Resume a paused Agent through the existing Session Event path."""
-        metadata_values = (
-            metadata.model_dump(mode="json")
-            if isinstance(metadata, InboundMetadata)
-            else dict(metadata or {})
-        )
+        # metadata 由 Command 接入层传入，可能是 pydantic 的 InboundMetadata
+        # 或普通 mapping；Runtime 不 import Host 协议类型，按能力 duck-typing。
+        if hasattr(metadata, "model_dump"):
+            metadata_values = dict(metadata.model_dump(mode="json"))
+        elif metadata:
+            metadata_values = dict(metadata)
+        else:
+            metadata_values = {}
         inbound = InboundMessage(
             session_id=session_id,
             request_id=str(metadata_values.get("request_id") or ""),
@@ -532,15 +536,17 @@ class AgentLoop:
             metadata=metadata_values,
         )
         if not events:
-            return TurnOutcome(
+            return AgentRunResult(
+                session_id=session_id,
                 turn_id="",
-                status="error",
+                status="failed",
                 error={"code": "confirmation_events_required", "message": "缺少确认事件"},
             )
         if self.is_active_session(session_id):
-            return TurnOutcome(
+            return AgentRunResult(
+                session_id=session_id,
                 turn_id="",
-                status="error",
+                status="failed",
                 error={"code": "agent-busy", "message": "Session 当前仍在执行", "retryable": True},
             )
         turn_id = f"confirm_{uuid.uuid4().hex[:12]}"
@@ -562,7 +568,7 @@ class AgentLoop:
         try:
             return await task
         except asyncio.CancelledError:
-            return TurnOutcome(turn_id=turn_id, status="cancelled")
+            return AgentRunResult(session_id=session_id, turn_id=turn_id, status="cancelled")
         finally:
             self._direct_tasks.pop(session_id, None)
             self._direct_signals.pop(session_id, None)
@@ -572,7 +578,11 @@ class AgentLoop:
                 logger.debug("[agent-loop] confirmation idle status publish failed", exc_info=True)
 
     async def _publish_session_status_async(self, session_id: str, status: str) -> None:
-        """发布独立于 pending 的 Session activity 状态。"""
+        """发布独立于 pending 的 Session activity 状态。
+
+        总线信封由 MessageBusService 的窄公开方法构造；Runtime 不 import
+        Host 的消息协议类型（PRD-F33 §5.4）。
+        """
         session = await self.sessions.get_session(session_id)
         if not session:
             # 删除 Session 后，active Turn 的 finally 仍可能运行到这里；历史已
@@ -591,23 +601,14 @@ class AgentLoop:
                 status,
             )
             return
-        await self.message_bus.publish_outbound(
-            BusMessage(
-                type="session/status",
-                from_channel=channel_id,
-                to_channel=channel_id,
-                from_session=session_id,
-                to_session=session_id,
-                data={"session_id": session_id, "status": status},
-            )
-        )
+        await self.message_bus.publish_session_status(session_id, channel_id, status)
 
     def _set_maintenance_status(self, session_id: str):
         """Return the callback used by after-run maintenance Hooks.
 
         ``AgentLoop`` 先结束 active Turn，再等待 ``agent/after-run``。如果不把
         这段等待显式标记为 busy，Inbox 会误以为 Session 已空闲并尝试领取下一条
-        next-turn。压缩 Package 仍拥有实际压缩任务；这里仅维护公开状态和并发
+        排队的输入。压缩 Package 仍拥有实际压缩任务；这里仅维护公开状态和并发
         屏障，不把压缩实现带回 Agent Runtime。
         """
 
@@ -624,3 +625,5 @@ class AgentLoop:
             self._maintenance.pop(session_id, None)
 
         return set_maintenance
+
+__all__ = ["AgentLoop"]

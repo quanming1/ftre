@@ -53,7 +53,13 @@ def test_agent_runtime_does_not_construct_tool_registry_or_import_builtin() -> N
     注意：``AgentService.registry``（AgentRegistry）是 F32 登记的另一项独立债务，
     不在 F34 范围；这里只约束 Tool 领域的边界。
     """
-    runtime_root = SRC / "services" / "agent" / "runtime"
+    runtime_root = (
+        Path(__file__).parents[2]
+        / "packages"
+        / "ftre-agent-runtime"
+        / "src"
+        / "ftre_agent_runtime"
+    )
     for path in _python_files(runtime_root):
         source = path.read_text(encoding="utf-8")
         assert "ToolRegistry(" not in source, path

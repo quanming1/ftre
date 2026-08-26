@@ -1,8 +1,8 @@
-"""F31 Agent Runtime 边界门禁。
+"""F31/F32 Agent Runtime 边界门禁（F33 终局版）。
 
-F31 不提前修改 AgentLoop，而是把当前真实债务锁成可审计的基线：后续 F32 删除
-某一项时只需同步调整这里的断言。这样“暂时保留”不会悄悄变成新的依赖，且测试
-本身不会引入生产 Protocol、Port 或 Service Locator。
+F31/F32 把当时的真实债务锁成可审计基线；F33 完成 Package 抽取后，这些门禁
+升级为终局断言：Runtime 位于 ``packages/ftre-agent-runtime``，唯一 Owner 由
+entry point 装载，且 Runtime 源码不得 import 任何 ``ftre.services.*`` 实现。
 """
 
 from __future__ import annotations
@@ -11,13 +11,14 @@ import ast
 import importlib
 from pathlib import Path
 
-from ftre.app.gateway.composition import default_manifests
-from ftre.services.agent.hooks import (
+from ftre_agent import (
     AGENT_AFTER_RUN_SPEC,
     AGENT_BEFORE_RUN_SPEC,
     AGENT_RUN_ERROR_SPEC,
     AGENT_STOP_DECISION_SPEC,
 )
+
+from ftre.app.gateway.composition import default_manifests
 from ftre.services.llm.hooks import (
     ADAPTERS_UPDATED_SPEC,
     AGENT_REQUEST_SPEC,
@@ -27,7 +28,7 @@ from ftre.services.system_prompt.hooks import SYSTEM_PROMPT_ASSEMBLE_SPEC
 
 ROOT = Path(__file__).parents[2]
 SRC = ROOT / "src" / "ftre"
-RUNTIME = SRC / "services" / "agent" / "runtime"
+RUNTIME = ROOT / "packages" / "ftre-agent-runtime" / "src" / "ftre_agent_runtime"
 
 
 def _literal_names(path: Path, name: str) -> tuple[str, ...]:
@@ -61,7 +62,7 @@ def _imports(path: Path) -> tuple[str, ...]:
 
 
 def _ctx_get_calls(path: Path) -> list[ast.Call]:
-    """提取 ``ctx.get(...)``，只检查 Runtime，不误伤 Provider 的可选依赖解析。"""
+    """提取 ``ctx.get(...)``，只检查 Runtime 执行层，不误伤 Provider 的可选依赖解析。"""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     return [
         node
@@ -74,10 +75,17 @@ def _ctx_get_calls(path: Path) -> list[ast.Call]:
     ]
 
 
+def _provider_files() -> list[Path]:
+    """Host services 与 packages 的全部 Provider Plugin 文件。"""
+    files = list((SRC / "services").rglob("plugin.py"))
+    files.extend((ROOT / "packages").glob("*/src/*/plugin.py"))
+    return files
+
+
 def test_f31_service_provider_entries_have_one_owner() -> None:
     """F31 依赖图必须仍由 Composition + Provider Plugin 唯一声明。"""
     expected = {
-        "agents": "agent",
+        "agents": "ftre-agent-runtime",
         "sessions": "session",
         "session_events": "session",
         "message_bus": "bus",
@@ -86,7 +94,7 @@ def test_f31_service_provider_entries_have_one_owner() -> None:
         "agent_profiles": "agent/profile",
     }
     owners: dict[str, list[Path]] = {}
-    for path in (SRC / "services").rglob("plugin.py"):
+    for path in _provider_files():
         for key in _literal_names(path, "provide"):
             owners.setdefault(key, []).append(path)
 
@@ -118,15 +126,15 @@ def test_f31_manifest_entries_resolve_to_unique_plugin_callables() -> None:
 
 
 def test_f32_runtime_dependency_baseline_has_only_public_services() -> None:
-    """F32 后 Runtime 只接收公开 Service，旧直连依赖不得回归。"""
-    provider = (RUNTIME / "provider.py").read_text(encoding="utf-8")
-    assert "message_bus=ctx.message_bus" in provider
-    assert "sessions=ctx.sessions" in provider
-    assert "tools=ctx.tools" in provider
-    assert "profiles=ctx.agent_profiles" in provider
-    assert "ctx.channels" not in provider
-    assert "ctx.get(\"mcp\"" not in provider
-    assert "ctx.agent_profiles.manager" not in provider
+    """F33 后 Runtime Plugin 只接收公开 Service，旧直连依赖不得回归。"""
+    plugin = (RUNTIME / "plugin.py").read_text(encoding="utf-8")
+    assert "message_bus=ctx.message_bus" in plugin
+    assert "sessions=ctx.sessions" in plugin
+    assert "tools=ctx.tools" in plugin
+    assert "profiles=ctx.agent_profiles" in plugin
+    assert "ctx.channels" not in plugin
+    assert 'ctx.get("mcp"' not in plugin
+    assert "ctx.agent_profiles.manager" not in plugin
 
     engine = (RUNTIME / "engine.py").read_text(encoding="utf-8")
     for marker in ("channel_manager=None,", "tool_registry: ToolRegistry | None = None,",
@@ -148,31 +156,28 @@ def test_f32_runtime_dependency_baseline_has_only_public_services() -> None:
     assert "self._sessions = sessions" in turn
     assert "self._tools = tools" in turn
     assert "self._profiles = profiles" in turn
-    assert "from ftre.services.agent.registry import AgentRegistry" not in (
-        (RUNTIME / "engine.py").read_text(encoding="utf-8")
-    )
+    assert "from ftre_agent import AgentRegistry" not in engine
 
 
 def test_f31_runtime_does_not_use_context_as_service_locator() -> None:
-    """Runtime 只能消费已组装字段；Provider 的 optional ctx.get 不属于运行时。"""
+    """Runtime 执行层只能消费已组装字段；Provider 的 optional ctx.get 不属于运行时。"""
     for path in (RUNTIME / "engine.py", RUNTIME / "turn_executor.py"):
         assert _ctx_get_calls(path) == [], path
 
 
 def test_f32_runtime_has_no_private_owner_imports() -> None:
-    """Runtime 不得导入其他 Owner 的 Manager、Repository 或 builtin 私有实现。"""
+    """F33 升级：Runtime 不得 import 任何 ``ftre.services.*`` 实现模块（AC21）。"""
     all_runtime_imports = tuple(
         module
         for path in RUNTIME.rglob("*.py")
         for module in _imports(path)
     )
-    private_modules = {
+    host_imports = {
         module
         for module in all_runtime_imports
-        if module.startswith("ftre.services.")
-        and (".builtin." in module or module.endswith(".manager") or ".persistence" in module)
+        if module == "ftre" or module.startswith("ftre.")
     }
-    assert private_modules == set()
+    assert host_imports == set(), sorted(host_imports)
 
 
 def test_f32_runtime_uses_public_bus_and_session_exits() -> None:
@@ -183,7 +188,7 @@ def test_f32_runtime_uses_public_bus_and_session_exits() -> None:
     )
     assert "EventBus" not in runtime_sources
     assert "message_bus.bus" not in runtime_sources
-    assert "publish_outbound(" in runtime_sources
+    assert "publish_session_status(" in runtime_sources
     assert "finish_open_replies(" in runtime_sources
 
 
@@ -236,6 +241,10 @@ def test_f31_hook_specs_have_unique_names_and_real_owner_contracts() -> None:
     assert LLM_STREAM_SPEC.name == "llm/stream"
     assert AGENT_STOP_DECISION_SPEC.payload_type.__module__.startswith("ftre_agent_core")
     assert ADAPTERS_UPDATED_SPEC.mode.value == "emit"
+    # F33：Ftre Agent Hook 的唯一 Owner 是契约包 ftre_agent。
+    assert AGENT_BEFORE_RUN_SPEC.payload_type.__module__ == "ftre_agent.hooks"
+    assert AGENT_AFTER_RUN_SPEC.payload_type.__module__ == "ftre_agent.hooks"
+    assert AGENT_RUN_ERROR_SPEC.payload_type.__module__ == "ftre_agent.hooks"
 
 
 def test_f31_llm_request_publisher_and_channel_boundary_are_real() -> None:
@@ -250,4 +259,6 @@ def test_f31_llm_request_publisher_and_channel_boundary_are_real() -> None:
     assert '"agent/request"' in llm_source
     assert '"agent/request"' not in runtime_sources
     assert "InboundMessage" in (RUNTIME / "engine.py").read_text(encoding="utf-8")
-    assert "BusMessage" in (RUNTIME / "engine.py").read_text(encoding="utf-8")
+    # F33：Runtime 经 MessageBusService 窄出口发布状态，不 import BusMessage。
+    assert "BusMessage" not in runtime_sources
+    assert "publish_session_status(" in (RUNTIME / "engine.py").read_text(encoding="utf-8")

@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from ftre_agent import InboundMessage
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
-
-from ftre.services.agent.contracts import InboundMessage
 
 
 class _Agent:

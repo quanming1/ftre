@@ -375,6 +375,51 @@ class SessionService:
     # 上下文裁剪（给 LLM 的上下文窗口与按轮分页）
     # ============================================================
 
+    def build_user_content(
+        self,
+        content: Any,
+        attachments: list[dict[str, Any]] | None,
+        *,
+        include_images: bool = True,
+    ) -> str | list[dict[str, Any]]:
+        """把用户输入与附件组装成 OpenAI 安全的 content。
+
+        消息格式转换是 Session wire 的一部分（多模态 parts、附件 data URL）；
+        Agent Runtime（ftre-agent-runtime）不 import 本模块，只调用该窄方法。
+        """
+        from ftre.services.session.message.multimodal import build_user_content
+
+        return build_user_content(content, attachments, include_images=include_images)
+
+    def normalize_stored_user_content(self, content: Any) -> list[dict[str, Any]]:
+        """归一持久化存储的用户 content parts（纯函数窄出口）。"""
+        from ftre.services.session.message.multimodal import (
+            normalize_stored_user_content,
+        )
+
+        return normalize_stored_user_content(content)
+
+    def to_openai_messages(
+        self,
+        records: list[MessageModel] | tuple[MessageModel, ...],
+        *,
+        vision: bool,
+    ) -> list[dict[str, Any]]:
+        """把持久化 Msg 记录转换为 provider 消息列表。
+
+        与 Runtime 的约定：``vision`` 决定图片 parts 是否进入请求。转换规则
+        由 session.message 模块唯一持有，防止 Runtime 内出现第二份 wire 逻辑。
+        """
+        from ftre.services.session.message.converter import to_openai
+
+        return to_openai(list(records), config={"llm": {"vision": vision}})
+
+    def record_to_msg(self, record: MessageModel | Msg | dict[str, Any]) -> Msg:
+        """把一条持久化记录还原为 typed Msg（确认恢复路径使用）。"""
+        from ftre.services.session.message.converter import _as_msg
+
+        return _as_msg(record)
+
     async def get_context_messages(self, session_id: str) -> list[MessageModel]:
         """返回给 LLM 使用的上下文消息：最后一条 compact Msg 及其后的全部消息。
 

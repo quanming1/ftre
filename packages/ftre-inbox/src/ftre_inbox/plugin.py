@@ -101,10 +101,11 @@ async def apply(ctx: Context, config=None):
     # fact and never replaces SessionService's lifecycle dispatcher.
     hook_runtime = ctx.hook_runtime
     if hook_runtime is not None:
-        from ftre.services.agent.hooks import (
+        from ftre_agent import (
             AGENT_BEFORE_REASONING_SPEC,
             BeforeReasoningResult,
         )
+
         from ftre.services.session.hooks import SESSION_DISPOSED_SPEC
 
         async def on_before_reasoning(payload, next_):

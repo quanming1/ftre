@@ -11,6 +11,9 @@ Command 在接入层完成并不会进入本执行器。
   普通消息：  持久化用户消息 → BUILDING → RUNNING → FINALIZING → COMPLETED
   turn_cancel：由控制面取消当前 task，不进入本执行器
   确认恢复：已有 Session Event → BUILDING → RUNNING → FINALIZING → COMPLETED
+
+本模块属于 ftre-agent-runtime：只消费 ``ftre_agent`` 公开契约和注入的 Host
+Service 实例，不 import ``ftre.services.*`` 实现模块（PRD-F33 §5.4）。
 """
 
 import asyncio
@@ -18,11 +21,17 @@ import copy
 import logging
 import os
 import uuid
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from ftre_agent_core.agent import ReActAgent, RunStatus
+from ftre_agent import (
+    AGENT_RUN_ERROR_SPEC,
+    AgentConfig,
+    AgentRunResult,
+    InboundMessage,
+    RequestErrorPayload,
+    RetryRequest,
+)
+from ftre_agent_core.agent import RunStatus
 from ftre_agent_core.event import (
     CustomEvent,
     ReplyFinishedReason,
@@ -30,99 +39,13 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import Msg
 
-from ftre.services.agent.config import AgentConfig
-from ftre.services.agent.contracts import InboundMessage
-from ftre.services.agent.hooks import (
-    AGENT_RUN_ERROR_SPEC,
-    RequestErrorPayload,
-    RetryRequest,
-)
-from ftre.services.session.message.multimodal import build_user_content
-from ftre.services.system_prompt.hooks import (
-    SYSTEM_PROMPT_ASSEMBLE_SPEC,
-    PromptAssemblyPayload,
-)
-from ftre.services.system_prompt.types import PromptAssembly
-
 from .factory import compose_system_prompt, create_core_agent, default_agent_state
+from .state import PUBLIC_RUN_STATUS, Turn, TurnStatus
 
 if TYPE_CHECKING:
-    from ftre.services.session import SessionService
-
     from .engine import AgentLoop
 
 logger = logging.getLogger(__name__)
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Turn 数据模型
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TurnStatus(str, Enum):
-    """Turn 生命周期的阶段。
-
-    状态流转（正常路径）：
-        BUILDING → RUNNING → FINALIZING → COMPLETED
-    终态：COMPLETED（正常）/ CANCELLED（被取消）/ ERROR（异常）
-    """
-
-    BUILDING = "building"  # 鉴权 + 构建消息 + 创建 Agent
-    RUNNING = "running"  # 驱动 Agent 执行，逐条投递事件
-    FINALIZING = "finalizing"  # Turn 已运行完成，等待统一收尾
-    COMPLETED = "completed"  # 正常完成（终态）
-    CANCELLED = "cancelled"  # 被用户取消（终态）
-    ERROR = "error"  # 执行异常（终态）
-
-
-@dataclass
-class Turn:
-    """一个完整的用户交互周期（从收到消息到响应完成）。
-
-    Turn 是贯穿整个处理流程的状态容器：
-    - execute() 入口设置 turn_id 和可选的确认事件
-    - 各状态函数读取上游写入的字段、写入自己的产出给下游
-    - 事件从状态转移中产生，reply_id 关联到 turn.turn_id
-    """
-
-    # ── 身份（execute 入口创建时设置，不可变）──
-    turn_id: str  # 本 Turn 唯一标识，作为 reply_id 关联事件
-    inbound: InboundMessage  # 触发本 Turn 的用户消息
-    session_id: str  # 所属会话
-
-    # ── 当前状态（状态机读写）──
-    status: TurnStatus = TurnStatus.BUILDING
-
-    user_message_id: str = ""  # AgentLoop 进入 Turn 前已持久化的 UserMsg id
-
-    # ── Agent 执行上下文（_build 写入，_run 读取）──
-    agent_profile: Any | None = None  # 本轮选定的 Agent Profile 快照值
-    config: "AgentConfig | None" = None  # 本轮实际使用的有效配置快照
-    agent: "ReActAgent | None" = None  # 创建的 Agent 实例，None 表示未进入执行
-    messages: list = field(default_factory=list)  # 发给 LLM 的消息列表
-    runtime_context: dict = field(default_factory=dict)  # 工具共享的运行时上下文
-    final_content: str = ""  # 最后一条完整 assistant 回复（task 工具用）
-    retry_count: int = 0
-    retry_tokens: set[str] = field(default_factory=set)
-    continuation_count: int = 0
-    max_continuations: int = 3
-    # 每个 Turn 独占一个取消信号；控制型 Agent Hook 只能观察这一个实例。
-    cancellation: asyncio.Event = field(default_factory=asyncio.Event)
-
-    # ── 权限确认恢复（/allow、/deny 指令触发时非 None）──
-    # 非 None 表示本 Turn 是恢复请求：跳过普通消息构建，
-    # 注入历史 context 到新 agent，run() 时传入此事件而非 messages。
-    confirm_event: UserConfirmResultEvent | None = None
-
-@dataclass(frozen=True)
-class TurnOutcome:
-    """AgentService 用于完成 request 的结构化 Turn 结果。"""
-
-    turn_id: str
-    status: str
-    user_message_id: str = ""
-    final_content: str = ""
-    error: dict | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -141,7 +64,7 @@ class TurnExecutor:
         self,
         loop: "AgentLoop",
         *,
-        sessions: "SessionService",
+        sessions=None,
         agents=None,
         attachments=None,
         system_prompt=None,
@@ -182,7 +105,7 @@ class TurnExecutor:
         cancellation: asyncio.Event | None = None,
         confirm_event: UserConfirmResultEvent | None = None,
         user_message_id: str = "",
-    ) -> TurnOutcome:
+    ) -> AgentRunResult:
         """执行一条已经完成历史交接、由 Inbox 交付的 Agent 输入。"""
         session_id = self._session_id_of(inbound)
 
@@ -199,7 +122,7 @@ class TurnExecutor:
         await self._emit_step(turn, "PIPELINE_START")
         return await self._drive(turn)
 
-    async def _drive(self, turn: Turn) -> TurnOutcome:
+    async def _drive(self, turn: Turn) -> AgentRunResult:
         """推进一个已准备好的 Turn，并统一负责 stopping/finalize 边界。"""
         try:
             while turn.status not in (
@@ -236,9 +159,10 @@ class TurnExecutor:
                     else ""
                 ),
             )
-        return TurnOutcome(
+        return AgentRunResult(
+            session_id=turn.session_id,
             turn_id=turn.turn_id,
-            status=turn.status.value,
+            status=PUBLIC_RUN_STATUS[turn.status],
             user_message_id=turn.user_message_id,
             final_content=turn.final_content,
             error=(
@@ -267,7 +191,7 @@ class TurnExecutor:
 
         这一步做完 Agent 就准备好了，下一步 _run 直接驱动它。
         校验失败会返回 ERROR（turn.agent 保持 None，不会进 _finalize 清理），
-        由 AgentService 回传失败 TurnOutcome，避免入口误以为消息已经成功执行。
+        由 AgentService 回传失败结果，避免入口误以为消息已经成功执行。
         """
         inbound = turn.inbound
         session_id = turn.session_id
@@ -297,7 +221,7 @@ class TurnExecutor:
             attachments,
             config,
         )
-        hook_config, _ = await self._assemble_prompt(
+        hook_config = await self._assemble_prompt(
             turn,
             hook_config,
             messages,
@@ -337,8 +261,6 @@ class TurnExecutor:
         - runtime_context.reply_id 用确认事件携带的原 reply_id，保证恢复产出的
           工具结果/后续事件聚合回原 assistant Msg。
         """
-        from ftre.services.session.message.converter import _as_msg
-
         session_id = turn.session_id
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
 
@@ -346,13 +268,13 @@ class TurnExecutor:
         # 覆盖的完整 transcript 重新注入。保留 typed Msg 以维持 ToolCallState。
         records = await self._sessions.get_context_messages(session_id)
         hook_config = copy.deepcopy(config)
-        hook_config, _ = await self._assemble_prompt(
+        hook_config = await self._assemble_prompt(
             turn,
             hook_config,
             tuple(records),
             workspace=workspace,
         )
-        context_msgs = [_as_msg(r) for r in records]
+        context_msgs = [self._sessions.record_to_msg(r) for r in records]
         # 复用默认权限规则，注入历史 context
         state = default_agent_state()
         state.context = context_msgs
@@ -646,33 +568,33 @@ class TurnExecutor:
         messages,
         *,
         workspace: str,
-    ) -> tuple[AgentConfig, PromptAssembly]:
-        """Render structured sections, then run the typed assembly waterfall."""
+    ) -> AgentConfig:
+        """Render structured sections, then run the typed assembly waterfall.
+
+        组装与 ``system-prompt/assemble`` Hook 都由注入的 SystemPromptService
+        完成；Runtime 只传入本轮上下文。该 Hook 的 Owner 是 system_prompt
+        域，Runtime 不 import 它的 Spec/Payload 类型（PRD-F33 §5.4）。
+        """
         loop = self._loop
         metadata = dict(turn.inbound.metadata or {})
         agent_id = str(metadata.get("agent_id") or "default")
-        if self._system_prompt is not None:
-            assembly = self._system_prompt.assemble_result(
-                agent_id,
-                turn.session_id,
-                workspace=workspace,
-                messages=messages,
-                base_prompt=config.system_prompt,
-            )
-        else:
-            assembly = PromptAssembly(
-                agent_id=agent_id,
-                session_id=turn.session_id,
-                workspace=workspace,
-                contributions=(),
-                text=config.system_prompt,
-            )
-        payload = PromptAssemblyPayload(
-            agent=loop.agent_subject(agent_id),
+        updated = copy.deepcopy(config)
+        if self._system_prompt is None:
+            # 无 Prompt Service 的独立测试环境：与 default waterfall 等价，
+            # 保持 config.system_prompt 原样返回。
+            return updated
+        hooks = loop.hooks
+        scope_context = None
+        if hooks is not None:
+            registry = loop.agent_registry
+            registry.ensure(agent_id)
+            scope_context = hooks.context_for_scope(registry.scope_carrier(agent_id))
+        assembly = await self._system_prompt.assemble_agent_prompt(
+            agent_subject=loop.agent_subject(agent_id),
             session_id=turn.session_id,
             workspace=workspace,
-            assembly=assembly,
-            messages=tuple(messages),
+            messages=messages,
+            base_prompt=config.system_prompt,
             inbound_data={
                 "session_id": turn.inbound.session_id,
                 "request_id": turn.inbound.request_id,
@@ -681,20 +603,14 @@ class TurnExecutor:
                 "source": turn.inbound.source,
                 "metadata": metadata,
             },
-            config=copy.deepcopy(config),
+            config=config,
+            hook_runtime=hooks,
+            scope_context=scope_context,
             event_loop=loop._event_loop,
             cancellation=turn.cancellation,
         )
-        result = await loop.dispatch_agent_hook(
-            SYSTEM_PROMPT_ASSEMBLE_SPEC,
-            payload,
-            agent_id=agent_id,
-        )
-        if not isinstance(result, PromptAssembly):
-            raise TypeError("system-prompt/assemble must return PromptAssembly")
-        updated = copy.deepcopy(config)
-        updated.system_prompt = result.text
-        return updated, result
+        updated.system_prompt = assembly.text
+        return updated
 
     def _core_hook_binding(self, turn: Turn):
         """Return the host Dispatcher and Cordis scope for this Agent/Turn."""
@@ -703,6 +619,8 @@ class TurnExecutor:
         agent_id = str(dict(turn.inbound.metadata or {}).get("agent_id") or "default")
         if hooks is None or registry is None:
             return None, None
+        # scope_carrier 要求 identity 已登记；ensure 幂等，重复调用安全。
+        registry.ensure(agent_id)
         return hooks, hooks.context_for_scope(registry.scope_carrier(agent_id))
 
     async def _request_error_recovery(
@@ -833,6 +751,8 @@ class TurnExecutor:
         所以【不能再 append】当前用户输入，否则 LLM 会收到两份重复消息。
         完整 transcript 只服务 Desktop 历史展示，不进入 LLM 上下文。
 
+        消息格式转换（content parts、OpenAI dict、typed Msg）由注入的
+        SessionService 窄方法完成；Runtime 不 import Host 的转换模块。
         """
         # 读模型上下文（summary + tail，已含本轮用户消息）。
         messages = await self._sessions.get_context_messages(session_id)
@@ -840,19 +760,17 @@ class TurnExecutor:
         hook_config = copy.deepcopy(config)
 
         # 当前用户输入转成 OpenAI content 格式（文字 + 图片）
-        user_content = build_user_content(
+        user_content = self._sessions.build_user_content(
             content,
             attachments,
             include_images=hook_config.llm.vision,
         )
 
         if messages:
-            from ftre.services.session.message.converter import to_openai
-
             # 持久化 Msg 转 OpenAI messages（已含本轮 user Msg）
-            history = to_openai(
+            history = self._sessions.to_openai_messages(
                 messages,
-                config={"llm": {"vision": hook_config.llm.vision}},
+                vision=hook_config.llm.vision,
             )
             return history, hook_config
 

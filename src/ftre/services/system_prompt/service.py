@@ -7,10 +7,14 @@ Prompt section 的生产者是 Plugin，AgentLoop 只在一次请求中调用 as
 
 from __future__ import annotations
 
+import copy
 import inspect
 from collections.abc import Iterable
 from typing import Any
 
+from ftre_agent import AgentSubject
+
+from .hooks import SYSTEM_PROMPT_ASSEMBLE_SPEC, PromptAssemblyPayload
 from .receipt import PromptAssemblyReceipt
 from .types import PromptAssembly, PromptContribution, PromptSection
 
@@ -142,6 +146,60 @@ class SystemPromptService:
             len(assembly.text.encode()),
             max(1, len(assembly.text) // 4) if assembly.text else 0,
         )
+
+    async def assemble_agent_prompt(
+        self,
+        *,
+        agent_subject: AgentSubject,
+        session_id: str,
+        workspace: str,
+        messages,
+        base_prompt: str,
+        inbound_data: dict[str, Any],
+        config,
+        hook_runtime,
+        scope_context=None,
+        event_loop=None,
+        cancellation=None,
+    ) -> PromptAssembly:
+        """组装结构化 Prompt 并在本域内 dispatch ``system-prompt/assemble``。
+
+        该 Hook 的 Spec、Payload 与结果校验都由 system_prompt 域唯一拥有；
+        Agent Runtime（ftre-agent-runtime）不 import 这些类型，只传入本轮
+        上下文并消费最终 assembly（PRD-F33 §5.4 能力参数化）。
+
+        ``hook_runtime`` 缺失时直接返回首次组装结果（与 waterfall default
+        监听器等价）；``scope_context`` 由调用方用 HookRuntime 的
+        ``context_for_scope`` 构造后传入。
+        """
+        assembly = self.assemble_result(
+            agent_subject.agent_id,
+            session_id,
+            workspace=workspace,
+            messages=messages,
+            base_prompt=base_prompt,
+        )
+        if hook_runtime is None:
+            return assembly
+        payload = PromptAssemblyPayload(
+            agent=agent_subject,
+            session_id=session_id,
+            workspace=workspace,
+            assembly=assembly,
+            messages=tuple(messages),
+            inbound_data=inbound_data,
+            config=copy.deepcopy(config),
+            event_loop=event_loop,
+            cancellation=cancellation,
+        )
+        result = await hook_runtime.dispatch(
+            SYSTEM_PROMPT_ASSEMBLE_SPEC,
+            payload,
+            context=scope_context,
+        )
+        if not isinstance(result, PromptAssembly):
+            raise TypeError("system-prompt/assemble must return PromptAssembly")
+        return result
 
     def snapshot(self) -> tuple[PromptSection, ...]:
         """Return registered sections for diagnostics without exposing the mutable list."""

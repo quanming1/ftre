@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from cordis import Context
+from ftre_agent import AgentConfig, AgentRegistry, InboundMessage, LLMConfig
 from ftre_agent_core.agent.runner import RunState, RunStatus
 from ftre_agent_core.event import (
     ReplyFinishedReason,
@@ -26,15 +27,11 @@ from ftre_agent_core.message import (
     ToolCallBlock,
     ToolCallState,
 )
+from ftre_agent_runtime import AgentLoop, TurnExecutor
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.plugins.builtin.command import CommandService
 from ftre.plugins.builtin.command.builtin import register_builtin_commands
-from ftre.services.agent.config import AgentConfig, LLMConfig
-from ftre.services.agent.contracts import InboundMessage
-from ftre.services.agent.registry import AgentRegistry
-from ftre.services.agent.runtime.engine import AgentLoop
-from ftre.services.agent.runtime.turn_executor import TurnExecutor
 from ftre.services.messaging.bus import BusMessage, EventBus, MessageBusService
 from ftre.services.session.events import SessionEventService
 from ftre.services.session.projection import SessionProjection
@@ -42,6 +39,7 @@ from ftre.services.system_prompt.hooks import (
     SYSTEM_PROMPT_ASSEMBLE_SPEC,
     PromptAssemblyPayload,
 )
+from ftre.services.system_prompt.service import SystemPromptService
 
 
 class PausingAgent:
@@ -122,6 +120,16 @@ def _make_executor(agent) -> TurnExecutor:
     loop.sessions.get_session = AsyncMock(
         return_value={"channel_id": "ws", "workspace": "/tmp"}
     )
+    # F33：消息格式转换改为 SessionService 窄方法；fake 用真实实现保持 wire 保真。
+    from ftre.services.session.message.converter import _as_msg
+    from ftre.services.session.message.multimodal import (
+        build_user_content,
+        normalize_stored_user_content,
+    )
+
+    loop.sessions.build_user_content = build_user_content
+    loop.sessions.normalize_stored_user_content = normalize_stored_user_content
+    loop.sessions.record_to_msg = _as_msg
     loop.sessions.get_messages_by_session = AsyncMock(return_value=[])
     loop.sessions.get_context_messages = AsyncMock(return_value=[])
     loop.sessions.finish_open_replies = AsyncMock(return_value=[])
@@ -466,6 +474,9 @@ async def test_confirm_resume_uses_structured_prompt_hook():
     executor._loop.agent_registry = AgentRegistry()
     executor._hooks = executor._loop.hooks
     executor._agent_registry = executor._loop.agent_registry
+    # F33：system-prompt/assemble 的 dispatch 移入 SystemPromptService；
+    # 无 Service 时 Runtime 会跳过组装（与 default waterfall 等价）。
+    executor._system_prompt = SystemPromptService()
 
     async def inject(payload: PromptAssemblyPayload, next_):
         result = await next_()

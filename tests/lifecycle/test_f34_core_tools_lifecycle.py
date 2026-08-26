@@ -11,6 +11,7 @@ import logging
 
 import pytest
 from cordis import Context, FiberState
+from ftre_agent import AgentRegistry
 from ftre_agent_core.hooks import (
     ToolAfterPayload,
     ToolCallIdentity,
@@ -21,7 +22,6 @@ from ftre_agent_core.tool import ToolRegistry
 from ftre.kernel.hooks import HookRuntime
 from ftre.plugins.builtin.core_tools.plugin import apply as core_tools_apply
 from ftre.plugins.builtin.tool_audit.plugin import apply as tool_audit_apply
-from ftre.services.agent.registry import AgentRegistry
 from ftre.services.tools import ToolService
 from ftre.services.tools.hooks import TOOL_AFTER_SPEC
 

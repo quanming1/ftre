@@ -1,5 +1,25 @@
 # Changelog
 
+### F33 Agent Package 终局架构（已完成，未发布）
+
+- 新增 `ftre-agent` 契约包（`packages/ftre-agent`）：AgentService、InboundMessage、
+  AgentRunResult、AgentRegistry/HookScopeCarrier、Agent Hook（before-run/after-run/run-error）
+  和 AgentConfig/LLMConfig 数据契约；不依赖 Host、不注册业务 Plugin entry point。
+- 新增 `ftre-agent-runtime` Provider 包（`packages/ftre-agent-runtime`）：AgentLoop、
+  TurnExecutor、Core factory、CompletionRegistry 和唯一 Provider Plugin（entry point
+  `agent-runtime = ftre_agent_runtime.plugin:apply`）；Runtime 通过能力参数化消费 Host Service
+  窄方法，源码不 import `ftre.services.*`（AST 与 wheel 双重验证）。
+- Host 侧改造：SessionService 新增 build_user_content/to_openai_messages 等 4 个窄方法，
+  MessageBusService 新增 publish_session_status，SystemPromptService 新增 assemble_agent_prompt
+  （内含 Hook dispatch）；HookScopeCarrier 值类型从 kernel 迁至契约包，kernel 仅保留
+  context_for_scope 机制函数；config.py 收缩为磁盘加载。
+- 删除旧 Owner：`src/ftre/services/agent/{service,contracts,hooks,registry,plugin}.py` 与整个
+  `runtime/` 目录（含 AgentLoopDriver/Driver 适配层）；TurnOutcome 替换为 AgentRunResult，
+  无兼容 alias；composition.py 改为加载 Runtime entry point，不再手工组装 AgentLoop。
+- 行为不变：Session/Inbox/Client wire、Core Hook 语义、Steering、Compaction、Retry、Fallback、
+  取消与生命周期协议全部保持；全量 pytest 667 passed、ruff、diff check、Gateway smoke 与
+  wheel 洁净安装（三种场景）验收通过。
+
 ### F34 ToolService 最终运行时边界（已完成，未发布）
 
 - 新增 core-tools Plugin：bash/read/write/edit/set_workspace 从 `services/tools/builtin/` 迁至

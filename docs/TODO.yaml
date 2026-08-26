@@ -1475,10 +1475,11 @@ stages:
             status: done
       - id: F33
         title: Agent Package Final Architecture
-        status: todo
+        status: done
         date: 2026-08-26
+        completion_date: 2026-08-26
         prd: docs/prd/PRD-F33-agent-package-final-architecture.md
-        prd_status: 草稿
+        prd_status: 已验收
         depends_on:
           - F32
           - F34
@@ -1494,22 +1495,22 @@ stages:
         tasks:
           - id: F33.1
             title: 冻结终局目录、Owner 和依赖方向
-            status: todo
+            status: done
           - id: F33.2
             title: 抽取 ftre-agent 稳定契约 Package
-            status: todo
+            status: done
           - id: F33.3
             title: 抽取 ftre-agent-runtime Provider Package
-            status: todo
+            status: done
           - id: F33.4
             title: Host Composition 改为加载 Runtime Plugin
-            status: todo
+            status: done
           - id: F33.5
             title: 删除旧 Agent Owner、桥接和兼容入口
-            status: todo
+            status: done
           - id: F33.6
             title: Package 发行、生命周期和最终验收
-            status: todo
+            status: done
       - id: F34
         title: ToolService Final Runtime
         status: done

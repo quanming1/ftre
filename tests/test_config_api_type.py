@@ -4,7 +4,7 @@ model 条目 api_type > provider 级 api_type > 默认 "completions"。
 """
 
 
-from ftre.services.agent.config import build_llm_config
+from ftre_agent import build_llm_config
 
 
 def _provider_data(model_api_type=None, provider_api_type=None):

@@ -24,12 +24,13 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ftre.services.agent.config import (
+from ftre_agent import (
     LLMConfig,
     build_llm_config,
-    load_config_file,
     sanitize_agent_effort,
 )
+
+from ftre.services.config.loader import load_config_file
 
 logger = logging.getLogger(__name__)
 

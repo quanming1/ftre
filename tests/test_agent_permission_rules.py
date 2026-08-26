@@ -1,6 +1,5 @@
 from ftre_agent_core.permission import PermissionBehavior
-
-from ftre.services.agent.runtime.factory import default_agent_state
+from ftre_agent_runtime.factory import default_agent_state
 
 
 def test_default_bash_rules_are_temporarily_disabled():

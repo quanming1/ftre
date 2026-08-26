@@ -10,7 +10,7 @@ async def test_agent_service_owns_private_runtime_and_detaches_on_close(tmp_path
     composition = await build_composition({"sessions_dir": str(tmp_path / "sessions")})
     agents = composition.context.get("agents")
     assert agents is not None
-    assert agents.driver is not None
+    assert agents.runtime is not None
     assert composition.context.get("agent_runtime", strict=False) is None
     assert composition.plugins.loader._manifests.get("agent-runtime") is None
     # Channel providers are composed by their own Plugins; the Gateway does
@@ -22,7 +22,7 @@ async def test_agent_service_owns_private_runtime_and_detaches_on_close(tmp_path
     await composition.close()
 
     with pytest.raises(RuntimeError, match="runtime is not ready"):
-        _ = agents.driver
+        _ = agents.runtime
 
 
 @pytest.mark.asyncio
