@@ -196,6 +196,14 @@ def test_f32_turn_input_and_core_creation_have_single_owner() -> None:
     assert "ReActAgent(" not in turn.replace("ReActAgent | None", "")
 
 
+def test_f32_llm_hook_callback_does_not_use_context_as_locator() -> None:
+    """异步 adapters-updated 回调必须使用 apply 阶段已解析的 HookRuntime。"""
+    source = (SRC / "services" / "llm" / "plugin.py").read_text(encoding="utf-8")
+    assert "hook_runtime = ctx.hook_runtime" in source
+    assert "return await hook_runtime.dispatch" in source
+    assert "ctx.hook_runtime.dispatch" not in source
+
+
 def test_f31_hook_specs_have_unique_names_and_real_owner_contracts() -> None:
     """Hook 名称、发布域和 payload/result 类型必须来自现有唯一 Spec。"""
     specs = (

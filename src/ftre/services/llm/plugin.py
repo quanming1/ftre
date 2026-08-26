@@ -21,8 +21,14 @@ async def apply(ctx: Context, config=None):
     service = ctx.get("llm", strict=False)
     if service is not None:
         return
+    # Cordis 注入属性只保证在当前 apply Fiber 的依赖解析阶段可读；把已经解析的
+    # HookRuntime 捕获为闭包值，避免后续异步 adapters-updated 回调再次把 Plugin
+    # Context 当作 Service Locator 使用。
+    hook_runtime = ctx.hook_runtime
+    plugin_context = ctx
+
     async def dispatch(name, payload):
-        return await ctx.hook_runtime.dispatch(spec_for(name), payload, context=ctx)
+        return await hook_runtime.dispatch(spec_for(name), payload, context=plugin_context)
 
     service = LlmService(
         resolve_credentials=ctx.config.resolve_llm,

@@ -111,6 +111,7 @@ src/ftre/services/system_prompt/service.py
 src/ftre/services/config/service.py
 src/ftre/services/workspace/{service.py,accessor.py}
 src/ftre/plugins/builtin/{command/plugin.py,channels/websocket/plugin.py,mcp/plugin.py}
+src/ftre/services/llm/plugin.py
 tests/**/*.py（仅更新受影响的契约、生命周期和回归测试）
 ```
 
