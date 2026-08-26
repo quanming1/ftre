@@ -108,7 +108,7 @@ F32 不应扩大为 Agent Package 抽取或客户端/队列协议改造。
 |---|---|
 | `71b1f60` | 定稿 F31 PRD、Owner/依赖矩阵，启动 F31 TODO |
 | `c3c643c` | Fake Service 契约测试、Owner/Hook/AST 架构门禁 |
-| 待提交 | F31 验收报告、CHANGELOG、PRD/TODO 收尾 |
+| `576ce96` | F31 验收报告、CHANGELOG、PRD/TODO 收尾 |
 
 提交前后均执行 `Get-Content docs/COMMIT.md` 复核规范；未 push、未 merge、未修改 develop。
 
