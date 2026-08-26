@@ -11,8 +11,7 @@
 from __future__ import annotations
 
 from cordis import Context
-
-from ftre.services.llm.hooks import LLM_ERROR_SPEC
+from ftre_agent_core.hooks import LLM_ERROR_SPEC
 
 from .config import parse_config
 from .policy import decide
@@ -27,7 +26,7 @@ provide = ()
 
 
 def apply(ctx: Context, config=None):
-    """解析一次配置，并把 ``llm/error`` listener 绑定到当前 Plugin Fiber。"""
+    """解析一次配置，并把 Core 的 ``llm/error`` listener 绑定到当前 Fiber。"""
 
     # snapshot 被闭包只读持有；运行中修改原始 config 不会造成半轮请求使用新旧两套规则。
     snapshot = parse_config(config)

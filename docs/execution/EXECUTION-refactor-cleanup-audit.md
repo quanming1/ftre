@@ -624,3 +624,58 @@ both:     git diff --check                                     → passed
   Session/Inbox 数据。源码范围目标目录复核为 0。
 - 两个工作树仍有 F22/F23、B3/B4 及本次 F24/B5 的未提交修改；这是既有现场和本次审计变更，未擅自 reset、
   commit 或伪造 clean 状态。
+
+## 本次复审：2026-08-25 `refactor-cleanup-audit`
+
+### 范围与基线
+
+- 仓库：`E:\ftre-agent-core` 与 `E:\ftre`；分支均为本地/远程 `develop`。
+- Core 工作树在审计前干净，ftre 工作树在审计前干净；未修改客户端、`E:\cordis-py`、用户 Session
+  数据或正在运行的 Gateway；未执行 commit、push、merge、release。
+- 已读取两仓库 `AGENTS.md`、`docs/COMMIT.md`、`docs/PROCESS.md`、`docs/TODO.yaml`、当前 PRD、
+  既有执行报告以及本 Skill 的完整清单。
+
+### Owner / 旧引用 / 生命周期结论
+
+| 检查项 | 证据与结论 |
+|---|---|
+| Composition / Plugin | ftre `composition.py` 的 30 个 Manifest id 唯一；AST 检查未发现重复 `provide` key；Core 与 ftre Kernel 无业务 import |
+| 旧数据面 | ftre 生产 Python 无 `ftre.agent/session/bus/channel/command/tools/api/config/mcp` 退役 import；历史 PRD、superpowers 文档和负向架构断言不作为运行入口 |
+| Package 边界 | 7 个仓内 Package 各有唯一 `plugin:apply`；未发现反向 import Host Runtime/Repository/Composition 私有实现；`ftre.plugins.builtin.command` 是现有公开 CommandService 入口，未判定为私有 Owner 侵入 |
+| 生命周期 | Plugin/Fiber、Hook Receipt、后台 Task、WS/HTTP 路由均由 Composition/Provider/Plugin Effect 管理；专项 lifecycle、startup 和 unload/restart 测试通过 |
+| 死透传 | 删除 AgentLoop/runtime provider 与 WebSocket Channel 中从未读取的 `plugin_manager` 参数、字段和 Context 注入；Composition 仍保留并拥有 PluginManager 生命周期 |
+| Kernel 业务判断 | 删除 Loader 根据 `http`/`websocket` Plugin id 推断 `restart_required` 的分支；Host 表面变化继续由 `HttpService` 自己拥有和报告 |
+| 保留项 | Core 测试 fake 的 legacy event shim、Session/Inbox 一次性数据迁移、异常/PATH fallback 仍有实际消费者，不删除 |
+
+### 本次改动
+
+- `plugin_manager` 不属于 Agent Turn 或 WebSocket Channel 的运行时依赖，移除 7 个源码/测试位置的
+  16 行死透传，并新增架构门禁防止回归。
+- `PluginStatus.restart_required` 是旧 Loader 对 Host 路由的业务猜测，实际没有生产消费者；删除该字段和
+  `http`/`websocket` id 判断，避免 Kernel 识别产品 Plugin。`HttpService.restart_required` 保持不变。
+- F14 执行表同步移除已不存在的 Agent `plugin_manager` inject 依赖；历史设计稿未改写。
+
+### 验证与静态门禁
+
+```text
+Core: python -B -m pytest -q -p no:cacheprovider                 -> 261 passed
+ftre: python -B -m pytest -x -vv -p no:cacheprovider              -> 568 passed
+两仓库 ruff check --no-cache                                    -> All checks passed
+ftre git diff --check                                             -> passed
+vulture (Core / ftre + 7 Package src, confidence >= 90)          -> 无输出
+Manifest / provide / retired import AST 扫描                     -> id 唯一、provide 无重复、退役 import=0
+wheel (Core、Host、7 Package；无 tests/pyc/cache)                 -> 全部构建成功
+```
+
+第一次安静全量运行出现一次不可复现的早期失败且进程未正常收尾；未以该结果宣称通过，随后用 `-x -vv`
+  完整重跑，568 项全部通过。该过程没有修改或重启后端服务。
+
+### 生成物与最终状态
+
+- wheel 构建在 `C:\Users\蒋全明\AppData\Local\Temp\ftre-refactor-cleanup-*` 的临时目录完成；
+  未将 wheel、build、egg-info、缓存写入交付内容。
+- 最终清理仅针对两个仓库内本次测试/构建产生的 `__pycache__`、`.pyc`、`.pytest_cache`、`.ruff_cache`、
+  `build`、`dist`、`*.egg-info` 和空的 `build/bdist.win-amd64` 目录；不触碰 `.git`、`node_modules`、
+  `data`、`.ftre` 或用户 Session 数据。
+- 按仓库规则本次不擅自 commit；因此 ftre 工作树保留本次 7 个文件的代码、测试和报告修改，Core 工作树
+  保持干净。下一步如需交付，应在新的 refactor 提交/PR 中提交这些改动。

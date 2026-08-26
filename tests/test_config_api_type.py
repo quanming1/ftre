@@ -40,6 +40,7 @@ class TestApiTypeFallback:
             "p1", "test-model",
         )
         assert cfg.api_type == "responses"
+        assert cfg.provider == "p1"
 
     def test_non_string_api_type_falls_back_to_default(self):
         cfg = build_llm_config(_provider_data(model_api_type=123), "p1", "test-model")

@@ -30,31 +30,40 @@ def test_title_generation_passes_reasoning_effort_to_handler(monkeypatch):
 
     captured = {}
 
-    class FakeHandler:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
+    class FakePrepared:
+        def __init__(self, config):
+            self.config = config
 
-        async def stream(self, *args, **kwargs):
-            if False:
-                yield None
+        async def stream(self, request):
+            captured["reasoning_effort"] = request.config.reasoning_effort
+            yield SimpleNamespace(type="text-delta", text="Title")
 
-    monkeypatch.setattr("ftre_agent_core.llm.create_llm_handler", lambda api_type, **kw: FakeHandler(**{"api_type": api_type, **kw}))
+    class FakeLlm:
+        async def prepare_call(self, config, **_kwargs):
+            captured["api_type"] = config.api_type
+            captured["reasoning_effort"] = config.reasoning_effort
+            return FakePrepared(config)
 
-    class FakeFuture:
-        def result(self, timeout):
-            return "Title"
+        async def stream(self, request, **_kwargs):
+            captured["api_type"] = request.config.api_type
+            captured["reasoning_effort"] = request.config.reasoning_effort
+            yield SimpleNamespace(type="text-delta", text="Title")
 
     def schedule(coroutine, loop):
-        coroutine.close()
-        return FakeFuture()
+        class Future:
+            def result(self, timeout):
+                return title_gen.asyncio.run(coroutine)
+
+        return Future()
 
     monkeypatch.setattr(title_gen.asyncio, "run_coroutine_threadsafe", schedule)
-    plugin = TitleGenPlugin()
+    plugin = TitleGenPlugin(llm=FakeLlm())
     plugin._system_prompt = "title"
     plugin._max_chars = 40
     plugin._event_loop = object()
     config = SimpleNamespace(
         llm=SimpleNamespace(
+            provider="title-provider",
             model="main",
             api_key="key",
             api_base="",

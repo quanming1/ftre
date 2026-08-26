@@ -4,70 +4,70 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from cordis import Context
-from ftre_agent_core.agent import ReActAgent
-from ftre_agent_core.llm import (
-    BlockEnd,
-    BlockStart,
+from ftre_llm import (
     FinishChunk,
     FinishReason,
+    LlmCallConfig,
     LlmFailure,
+    LlmStreamPayload,
     TextDeltaChunk,
 )
-from ftre_llm_fallback.plugin import apply
+from ftre_llm_fallback.config import parse_config
+from ftre_llm_fallback.stream import stream_with_fallback
 
-from ftre.kernel.hooks import HookRuntime
-from ftre.services.agent.registry import AgentRegistry
+
+class _Prepared:
+    config = LlmCallConfig(provider="backup", model="backup", api_type="completions")
+
+    async def stream(self, _request):
+        yield TextDeltaChunk(index=0, text="backup answer")
+        yield FinishChunk(reason=FinishReason(kind="stop"))
+
+
+class _Service:
+    async def prepare_call(self, *_args, **_kwargs):
+        return _Prepared()
+
+
+async def _primary():
+    yield FinishChunk(
+        reason=FinishReason(
+            kind="error",
+            failure=LlmFailure(code="timeout", message="primary failed"),
+        )
+    )
 
 
 @pytest.mark.asyncio
-async def test_last_attempt_fallback_reaches_real_core(monkeypatch):
-    class Backup:
-        async def stream(self, messages, tools=None):
-            del messages, tools
-            yield BlockStart(index=0, block_type="text")
-            yield TextDeltaChunk(index=0, text="backup answer")
-            yield BlockEnd(index=0, block={"type": "text", "text": "backup answer"})
-            yield FinishChunk(reason=FinishReason(kind="stop"))
-
-        def cancel(self):
-            return None
-
-    monkeypatch.setattr("ftre_llm_fallback.stream._create_backup_adapter", lambda _: Backup())
-    context = Context()
-    runtime = HookRuntime(context)
-    context.provide("hook_runtime", runtime)
-    context.provide("config", SimpleNamespace(resolve_llm=lambda *_: {"model": "backup"}))
-    apply(context, {"provider": "p", "model": "m", "errors": ["timeout"]})
-
-    registry = AgentRegistry()
-    registry.ensure("default")
-    agent = ReActAgent(
+async def test_last_attempt_fallback_returns_backup_stream():
+    payload = LlmStreamPayload(
+        agent_id="default",
+        session_id="s",
+        turn_id="t",
+        provider="primary",
         model="primary",
-        api_key="fake",
-        max_retries=0,
-        hooks=runtime,
-        hook_context=runtime.context_for_scope(registry.scope_carrier("default")),
+        purpose="conversation",
+        messages=({"role": "user", "content": "hello"},),
+        tools=(),
+        cancellation=asyncio.Event(),
+        invoke=lambda: _primary(),
+        attempt=1,
+        max_attempts=1,
     )
-
-    async def primary(messages, tools=None):
-        del messages, tools
-        yield FinishChunk(
-            reason=FinishReason(
-                kind="error",
-                failure=LlmFailure(code="timeout", message="primary failed"),
-            )
-        )
-
-    agent.runner._llm.stream = primary
-    events = [
-        event
-        async for event in agent.run(
-            "hello",
-            runtime_context={"session_id": "s", "cancellation": asyncio.Event()},
+    chunks = [
+        chunk
+        async for chunk in stream_with_fallback(
+            payload,
+            _primary(),
+            SimpleNamespace(
+                resolve_llm=lambda *_: {
+                    "model": "backup",
+                    "api_type": "completions",
+                    "api_key": "k",
+                }
+            ),
+            parse_config({"provider": "backup", "model": "backup", "errors": ["timeout"]}),
+            _Service(),
         )
     ]
-
-    assert agent.run_state.error_code is None
-    assert any(getattr(event, "delta", "") == "backup answer" for event in events)
-    context.dispose()
+    assert any(isinstance(chunk, TextDeltaChunk) and chunk.text == "backup answer" for chunk in chunks)

@@ -152,7 +152,6 @@ class WebSocketChannel(Channel):
         bus: EventBus,
         host: str = "0.0.0.0",
         port: int = 48650,
-        plugin_manager=None,
         app: FastAPI | None = None,
         attachment_service: AttachmentService | None = None,
         http_service=None,

@@ -614,6 +614,7 @@ class AgentManager:
         hooks=None,
         hook_context=None,
         state=None,
+        llm=None,
     ):
         """根据 AgentProfile + 全局 config 构建 ReActAgent。
 
@@ -664,6 +665,7 @@ class AgentManager:
             hooks=hooks,
             hook_context=hook_context,
             state=state,
+            llm=llm,
         )
 
     @staticmethod

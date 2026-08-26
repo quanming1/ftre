@@ -20,6 +20,7 @@ import asyncio
 import logging
 import threading
 
+from ftre_llm import LlmCallConfig, LlmCredentials, LlmRequest
 from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger(__name__)
@@ -47,9 +48,10 @@ class TitleGenPlugin:
     version = "1.0.0"
     inject = ("sessions",)
 
-    def __init__(self, sessions=None, event_loop=None) -> None:
+    def __init__(self, sessions=None, event_loop=None, llm=None) -> None:
         self._sessions = sessions
         self._event_loop = event_loop
+        self._llm = llm
         self._stopping = threading.Event()
         self._threads: set[threading.Thread] = set()
         self._threads_lock = threading.Lock()
@@ -226,15 +228,24 @@ class TitleGenPlugin:
             )
             return ""
 
-        from ftre_agent_core.llm import TextDeltaChunk, create_llm_handler
-
         logger.info(f"[title_gen] 调用 LLM 生成标题 (model={llm_cfg.model})")
-        adapter = create_llm_handler(
-            llm_cfg.api_type,
+        if self._llm is None:
+            logger.warning("[title_gen] llm Service 未注入，跳过标题生成")
+            return ""
+        provider = getattr(llm_cfg, "provider", "")
+        if not isinstance(provider, str) or not provider.strip():
+            logger.warning("[title_gen] LLM 配置缺少 provider，跳过标题生成")
+            return ""
+        call_config = LlmCallConfig(
+            provider=provider,
             model=llm_cfg.model,
+            api_type=llm_cfg.api_type,
+            max_tokens=128,
+            reasoning_effort=llm_cfg.reasoning_effort,
+        )
+        credentials = LlmCredentials(
             api_key=llm_cfg.api_key,
             api_base=llm_cfg.api_base,
-            reasoning_effort=llm_cfg.reasoning_effort,
         )
         messages = [
             {"role": "system", "content": self._system_prompt},
@@ -244,9 +255,14 @@ class TitleGenPlugin:
         # adapter.stream 是 async generator，必须在事件循环里消费。
         # worker 跑在独立线程，这里把"消费整个流"作为一个协程投递到主循环执行。
         async def _collect() -> str:
+            request = LlmRequest.from_parts(
+                call_config,
+                messages,
+                purpose="session-title",
+            )
             parts: list[str] = []
-            async for chunk in adapter.stream(messages, tools=None):
-                if isinstance(chunk, TextDeltaChunk) and chunk.text:
+            async for chunk in self._llm.stream(request, credentials=credentials):
+                if getattr(chunk, "type", "") == "text-delta" and getattr(chunk, "text", ""):
                     parts.append(chunk.text)
             return "".join(parts)
 

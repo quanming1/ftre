@@ -21,7 +21,7 @@ inject = (
     "system_prompt",
     "hook_runtime",
     "session_events",
-    "plugin_manager",
+    "llm",
 )
 provide = ("agents",)
 
@@ -35,7 +35,7 @@ def apply(ctx: Context, config=None):
     # 先 provide 公开 Service，再把同一实例显式传给私有 Runtime；不通过
     # Context 反查自己，也不向外发布第二个 Runtime Service 句柄。
     ctx.provide("agents", service)
-    loop = build_runtime(ctx, ctx.plugin_manager, service)
+    loop = build_runtime(ctx, service)
     driver = AgentLoopDriver(loop)
     service.attach_driver(driver)
     loop.start()

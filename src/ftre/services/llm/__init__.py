@@ -1,22 +1,54 @@
-"""LLM provider Hook contracts."""
-# 中文说明：LLM Hook 合约导出：只定义调用流和失败决策协议，不创建 Provider、Client 或模型连接。
+"""Ftre LLM Service 与其稳定 Hook 合约。"""
+
+from ftre_llm import (
+    AdaptersUpdatedPayload,
+    BlockAssembler,
+    BlockEnd,
+    BlockStart,
+    FinishChunk,
+    FinishReason,
+    LlmAdapter,
+    LlmCallConfig,
+    LlmCredentials,
+    LLMError,
+    LlmRequest,
+    LlmService,
+    ReasoningDeltaChunk,
+    StreamChunk,
+    TextDeltaChunk,
+    ToolCallDeltaChunk,
+    UsageChunk,
+)
 
 from .hooks import (
-    LLM_ERROR,
-    LLM_ERROR_SPEC,
-    LLM_STREAM,
+    ADAPTERS_UPDATED_SPEC,
+    AGENT_REQUEST_SPEC,
     LLM_STREAM_SPEC,
-    LLMErrorDecision,
-    LLMErrorPayload,
-    LLMStreamPayload,
+    AgentRequestPayload,
+    LlmStreamPayload,
 )
 
 __all__ = [
-    "LLM_ERROR",
-    "LLM_ERROR_SPEC",
-    "LLM_STREAM",
+    "ADAPTERS_UPDATED_SPEC",
+    "AGENT_REQUEST_SPEC",
     "LLM_STREAM_SPEC",
-    "LLMErrorDecision",
-    "LLMErrorPayload",
-    "LLMStreamPayload",
+    "AdaptersUpdatedPayload",
+    "AgentRequestPayload",
+    "BlockAssembler",
+    "BlockEnd",
+    "BlockStart",
+    "FinishChunk",
+    "FinishReason",
+    "LLMError",
+    "LlmAdapter",
+    "LlmCallConfig",
+    "LlmCredentials",
+    "LlmRequest",
+    "LlmService",
+    "LlmStreamPayload",
+    "ReasoningDeltaChunk",
+    "StreamChunk",
+    "TextDeltaChunk",
+    "ToolCallDeltaChunk",
+    "UsageChunk",
 ]

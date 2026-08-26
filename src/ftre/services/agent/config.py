@@ -83,7 +83,8 @@ class LLMConfig:
     `model` 是派生字段，当前由 `_build_model_name()` 直接返回 `model_id`（不做前缀拼接），
     供 ReActAgent 直接使用。原始 id 保留在 `id` 里，避免上层重复解析。
     """
-    # provider 层
+    # provider 层：必须保留逻辑 Provider 名称，供 LLM 路由、Hook 和日志关联。
+    provider: str = ""
     api_key: str = ""
     api_base: str = ""
     api_type: str = "completions"
@@ -166,6 +167,7 @@ def build_llm_config(data: dict, provider_name: str, model_id: str) -> LLMConfig
     # 其余走 chat/completions）。
     raw_api_type = model_entry.get("api_type") or provider.get("api_type") or "completions"
     return LLMConfig(
+        provider=provider_name,
         api_key=provider.get("api_key", ""),
         api_base=provider.get("api_base", ""),
         api_type=raw_api_type if isinstance(raw_api_type, str) else "completions",

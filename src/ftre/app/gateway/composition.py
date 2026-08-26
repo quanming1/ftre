@@ -36,6 +36,8 @@ def default_manifests() -> list[PluginManifest]:
         # 按依赖顺序排列：config 是配置事实源，filesystem 是 IO 策略，
         # http 提供路由注册表，其余服务依次建立在它们之上。
         PluginManifest("config", "ftre.services.config.plugin:apply", "builtin", True, True, description="root configuration"),
+        PluginManifest("llm-service", "ftre.services.llm.plugin:apply", "builtin", True, True, description="unified LLM service"),
+        PluginManifest("llm-providers", "ftre_llm.adapters.plugin:apply", "builtin", True, True, description="OpenAI LLM protocol adapters"),
         PluginManifest("filesystem", "ftre.services.filesystem.plugin:apply", "builtin", True, True, description="path policy and atomic IO"),
         PluginManifest("http-service", "ftre.services.http.plugin:apply", "builtin", True, True, description="route contribution registry"),
         PluginManifest("system-prompt", "ftre.services.system_prompt.plugin:apply", "builtin", True, True, description="prompt section registry"),
@@ -142,9 +144,6 @@ async def build_composition(
             context.provide(name, value)
     # 装载全部内置 Plugin + 扫描外部插件目录；config 作为装载参数传给每个 apply()
     manager = PluginManager(context, plugins_dir=plugins_dir)
-    # PluginManager is itself a kernel capability.  The runtime Provider Plugin
-    # receives this same manager through Context instead of bootstrap wiring it.
-    context.provide("plugin_manager", manager)
     await manager.load(default_manifests(), config)
     # 组装完成：封装句柄；路由已由各自 Provider/Feature Plugin 贡献。
     composition = Composition(context=context, plugins=manager, config=config)

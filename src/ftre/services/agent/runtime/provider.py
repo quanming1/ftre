@@ -13,14 +13,11 @@ from __future__ import annotations
 
 from cordis import Context
 
-from ftre.kernel.plugins.manager import PluginManager
-
 from .engine import AgentLoop
 
 
 def build_runtime(
     ctx: Context,
-    plugin_manager: PluginManager,
     agent_service,
 ) -> AgentLoop:
     """Construct one private Loop from the Provider's injected Service graph."""
@@ -41,8 +38,6 @@ def build_runtime(
         "tool_service": tools,
         # 可选能力：MCP 工具视图（未安装时为 None）
         "mcp_service": ctx.get("mcp", strict=False),
-        # Plugin 生命周期：AgentLoop 内部如需查询/协作 Plugin 状态
-        "plugin_manager": plugin_manager,
         # Agent 配置加载（~/.ftre/agents/<id>/）
         "agent_manager": ctx.agent_profiles.manager,
         # 唯一公开 Agent Service：Loop 把执行结果交回给它
@@ -59,6 +54,7 @@ def build_runtime(
         "hook_runtime": ctx.hook_runtime,
         # Session 事件统一出口（由 SessionEventService 广播，无第二 Owner）
         "session_events": ctx.session_events,
+        "llm_service": ctx.llm,
     }
     return AgentLoop(**kwargs)
 

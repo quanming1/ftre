@@ -3,10 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 from cordis import Context
+from ftre_llm import LlmStreamPayload
 from ftre_llm_fallback.plugin import apply
 
 from ftre.kernel.hooks import HookRuntime
-from ftre.services.llm.hooks import LLM_STREAM_SPEC, LLMStreamPayload
+from ftre.services.llm.hooks import LLM_STREAM_SPEC
 
 
 @pytest.mark.asyncio
@@ -24,11 +25,13 @@ async def test_plugin_registers_only_when_configured():
 
 
 def test_payload_fixture_has_last_attempt_coordinates():
-    payload = LLMStreamPayload(
+    payload = LlmStreamPayload(
         agent_id="a",
         session_id="s",
         turn_id="t",
         model="primary",
+        provider="primary",
+        purpose="conversation",
         messages=(),
         tools=(),
         cancellation=asyncio.Event(),

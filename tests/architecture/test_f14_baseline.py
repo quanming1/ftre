@@ -135,6 +135,8 @@ def test_kernel_mechanism_layer_is_business_free_at_baseline() -> None:
         "CompactionService",
         "CommandService",
         "QueueItem",
+        "restart_required",
+        "websocket",
     )
     for root in roots:
         for path in root.rglob("*.py"):

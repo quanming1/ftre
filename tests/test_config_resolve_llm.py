@@ -16,8 +16,11 @@ def test_resolve_llm_returns_adapter_snapshot_without_exposing_internal_config(t
                         {
                             "id": "backup-model",
                             "api_type": "responses",
+                            "context_window": 128000,
                             "max_output": 2048,
+                            "vision": True,
                             "reasoning_effort": "low",
+                            "reasoning_effort_values": ["low", "high"],
                         }
                     ],
                 }
@@ -33,7 +36,10 @@ def test_resolve_llm_returns_adapter_snapshot_without_exposing_internal_config(t
         "api_key": "secret",
         "api_base": "https://example.test/v1",
         "api_type": "responses",
+        "context_window": 128000,
+        "vision": True,
         "reasoning_effort": "low",
+        "reasoning_effort_values": ("low", "high"),
         "max_output": 2048,
     }
     resolved["model"] = "changed"

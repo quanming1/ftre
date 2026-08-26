@@ -165,8 +165,6 @@ def test_retired_host_hook_names_are_absent_from_production_sources():
     retired = (
         "agent/" + "before-turn",
         "agent/" + "after-turn",
-        "agent/" + "request",
-        "agent/" + "request-error",
         "agent/" + "turn-stopped",
         "agent/" + "created",
         "agent/" + "disposed",

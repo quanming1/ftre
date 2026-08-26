@@ -1350,3 +1350,124 @@ stages:
           - id: F29.4
             title: 生命周期、独立发行与 Gateway 验收
             status: done
+      - id: F30
+        title: Unified LLM Service Package and Call Pipeline
+        status: todo
+        date: 2026-08-25
+        prd: docs/prd/PRD-F30-llm-service-package.md
+        prd_status: 草稿
+        depends_on:
+          - F29
+        implementation_boundary: 只修改 E:\\ftre 的 ftre-llm Package、LLM Service Provider、Agent/Compaction/Session Title 的 LLM 调用接线、LLM Hook 契约、Retry/Fallback Package 协作、测试和文档；不修改客户端，不把 Session/Inbox/AgentLoop/TurnExecutor 放入 LLM Package，不改变 Cordis Kernel
+        modules:
+          - packages/ftre-llm/
+          - src/ftre/services/llm/
+          - src/ftre/services/agent/runtime/
+          - packages/ftre-compaction/
+          - src/ftre/plugins/builtin/session_title/
+          - packages/ftre-llm-recovery/
+          - packages/ftre-llm-fallback/
+          - tests/architecture/、tests/contracts/、tests/lifecycle/
+        acceptance: Agent、Compaction、Session Title 统一通过 ctx.llm；Provider 通过 register_adapter 注册；StreamChunk、Failure、prepare_call、llm/stream、agent/request、llm/error 契约稳定；Retry 持久化且重新构建请求；Fallback 不拼接半截流；可选 Package 缺失/禁用不阻断基础 LLM；生命周期、洁净安装、全量质量门禁通过
+        tasks:
+          - id: F30.1
+            title: 冻结 LLM Contract、Request、Failure、StreamChunk 和 Adapter 契约
+            status: todo
+          - id: F30.2
+            title: 实现 ftre-llm Service、Provider Registry、模型解析和原子替换
+            status: todo
+          - id: F30.3
+            title: 接入 Provider 并迁移 Agent、Compaction、Session Title 消费者
+            status: todo
+          - id: F30.4
+            title: 收敛 llm/stream、agent/request、llm/error Hook
+            status: todo
+          - id: F30.5
+            title: Retry durable-before-wait 与完整请求重建
+            status: todo
+          - id: F30.6
+            title: Fallback 完整请求路由切换与零输出辅助调用保护
+            status: todo
+          - id: F30.7
+            title: 生命周期、错误、取消、洁净安装和全量验收
+            status: todo
+      - id: F31
+        title: Agent Runtime Service Boundaries
+        status: todo
+        date: 2026-08-25
+        prd: docs/prd/PRD-F31-agent-service-boundaries.md
+        prd_status: 草稿
+        depends_on:
+          - F30
+        implementation_boundary: 只修改 E:\\ftre Host 的 Agent 依赖 Service 公开契约、Agent Hook 契约、架构测试和迁移文档；不移动 AgentLoop/TurnExecutor，不创建 ftre-agent Package，不修改客户端、Inbox、Queue、Session wire 或 Cordis Kernel
+        modules:
+          - src/ftre/services/session/
+          - src/ftre/services/messaging/
+          - src/ftre/services/tools/
+          - src/ftre/services/system_prompt/
+          - src/ftre/services/agent/profile/
+          - src/ftre/services/agent/hooks.py
+          - src/ftre/services/llm/
+          - src/ftre/services/agent/runtime/（只建立迁移门禁，不移动实现）
+          - tests/architecture/、tests/contracts/、tests/lifecycle/
+        acceptance: Agent Runtime 依赖矩阵完整；sessions/message_bus/tools/system_prompt/agent_profiles/llm/hook_runtime 公开契约稳定；Agent Runtime 不直接依赖 ChannelManager、MCP、Workspace、ToolRegistry、AgentManager、SessionRepository 或 create_llm_handler；架构扫描、契约测试和现有功能回归通过
+        tasks:
+          - id: F31.1
+            title: 依赖矩阵和 Owner 基线
+            status: todo
+          - id: F31.2
+            title: Session 与 MessageBus 公开边界
+            status: todo
+          - id: F31.3
+            title: Tools、System Prompt 与 Agent Profile 公开边界
+            status: todo
+          - id: F31.4
+            title: LLM 与 Agent Hook 边界接入
+            status: todo
+          - id: F31.5
+            title: 具体依赖扫描、Fake Service 和回归测试
+            status: todo
+          - id: F31.6
+            title: 迁移矩阵和文档验收
+            status: todo
+      - id: F32
+        title: Agent Runtime Service Decoupling
+        status: todo
+        date: 2026-08-25
+        prd: docs/prd/PRD-F32-agent-runtime-service-decoupling.md
+        prd_status: 草稿
+        depends_on:
+          - F31
+        implementation_boundary: 只修改 E:\\ftre Host 的 AgentLoop/TurnExecutor 依赖接线、Session/MessageBus/Tools/Profile/Prompt 公开方法、Agent Runtime 私有 Core 创建边界、架构测试和文档；不移动 Package、不修改客户端、Inbox wire、Session wire、Cordis Kernel 或 E:\\ftre-agent-core
+        modules:
+          - src/ftre/services/agent/runtime/
+          - src/ftre/services/session/service.py
+          - src/ftre/services/messaging/bus/service.py
+          - src/ftre/services/tools/service.py
+          - src/ftre/services/system_prompt/service.py
+          - src/ftre/services/agent/profile/service.py
+          - src/ftre/services/llm/
+          - tests/architecture/、tests/contracts/、tests/lifecycle/、tests/integration/
+        acceptance: AgentLoop/TurnExecutor 只通过公开 Service 接线；移除 ChannelManager、MCP、AgentManager、Session Projection、直接 ToolRegistry 和 create_llm_handler 依赖；AgentEvent/SessionEvent 出口无重复；普通消息、Steer、Tool、Compaction、Retry、Fallback、Confirmation、取消和生命周期回归通过
+        tasks:
+          - id: F32.1
+            title: Provider/Runtime 构造图迁移
+            status: todo
+          - id: F32.2
+            title: Session 上下文与 open reply 收尾迁移
+            status: todo
+          - id: F32.3
+            title: MessageBus 与 SessionEvent 出口收敛
+            status: todo
+          - id: F32.4
+            title: Tools、Profile、Prompt 具体依赖移除
+            status: todo
+          - id: F32.5
+            title: Core Agent 私有创建边界
+            status: todo
+          - id: F32.6
+            title: LLM 统一调用和 Hook 对齐
+            status: todo
+          - id: F32.7
+            title: 回归、生命周期和架构验收
+            status: todo

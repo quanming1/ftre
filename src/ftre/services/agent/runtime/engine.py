@@ -67,7 +67,6 @@ class AgentLoop:
         tool_registry: ToolRegistry | None = None,
         tool_service=None,
         mcp_service=None,
-        plugin_manager=None,
         agent_manager=None,
         agent_registry: AgentRegistry | None = None,
         agent_service=None,
@@ -76,6 +75,7 @@ class AgentLoop:
         hook_runtime: HookRuntime | None = None,
         traces=None,
         session_events=None,
+        llm_service=None,
     ):
         self.bus = bus
         self.session_manager = session_manager
@@ -84,13 +84,14 @@ class AgentLoop:
         self.tool_registry = tool_registry
         self.tool_service = tool_service
         self.mcp_service = mcp_service
-        self.plugin_manager = plugin_manager
         self.agent_manager = agent_manager
         self.agent_service = agent_service
         self.attachments = attachments
         self.agent_registry = agent_registry or AgentRegistry()
         self.system_prompt = system_prompt
         self.session_events = session_events
+        # LLM Service 由 Host Provider 注入；Agent Runtime 通过 ServiceAdapter 消费它。
+        self.llm_service = llm_service
         self.hooks = hook_runtime or (
             HookRuntime(event_hub) if isinstance(event_hub, Context) else None
         )

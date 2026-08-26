@@ -26,8 +26,8 @@ import re
 from typing import Literal
 
 from ftre_agent_core.event import CustomEvent
-from ftre_agent_core.llm import LLMError, TextDeltaChunk, create_llm_handler
 from ftre_agent_core.message import Msg, MsgName, TextBlock, ToolResultBlock
+from ftre_llm import LlmCallConfig, LlmCredentials, LLMError, LlmRequest
 
 from .config import CompactionConfig, parse_compaction_config
 from .events import CompactEventName
@@ -87,12 +87,14 @@ class CompactionService:
         self,
         *,
         session_manager,
+        llm=None,
         emit_event=None,
         threshold: float = DEFAULT_COMPACT_THRESHOLD,
         config_service=None,
         default_config: CompactionConfig | None = None,
     ):
         self.session_manager = session_manager
+        self._llm = llm
         self._emit_event = emit_event or self._noop_event
         self._config_service = config_service
         self._default_config = default_config or CompactionConfig(
@@ -741,20 +743,35 @@ class CompactionService:
         ]
 
         llm_cfg = _select_compact_llm(config, compaction_config)
-        adapter = create_llm_handler(
-            llm_cfg.api_type,
+        if self._llm is None:
+            logger.warning("[compact] llm Service 未注入，跳过摘要 chunk=%s", index)
+            return None
+        provider = getattr(llm_cfg, "provider", "")
+        if not isinstance(provider, str) or not provider.strip():
+            logger.warning("[compact] LLM 配置缺少 provider，跳过摘要 chunk=%s", index)
+            return None
+        call_config = LlmCallConfig(
+            provider=provider,
             model=llm_cfg.model,
+            api_type=llm_cfg.api_type,
+            max_tokens=_summary_chunk_max_tokens(llm_cfg),
+            temperature=0.0,
+            reasoning_effort=llm_cfg.reasoning_effort,
+        )
+        credentials = LlmCredentials(
             api_key=llm_cfg.api_key,
             api_base=llm_cfg.api_base,
-            reasoning_effort=llm_cfg.reasoning_effort,
-            temperature=0.0,
-            max_tokens=_summary_chunk_max_tokens(llm_cfg),
+        )
+        request = LlmRequest.from_parts(
+            call_config,
+            messages,
+            purpose="compaction",
         )
 
         collected: list[str] = []
         try:
-            async for chunk in adapter.stream(messages):
-                if isinstance(chunk, TextDeltaChunk):
+            async for chunk in self._llm.stream(request, credentials=credentials):
+                if getattr(chunk, "type", "") == "text-delta":
                     collected.append(chunk.text)
         except LLMError as exc:
             logger.warning(

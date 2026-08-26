@@ -15,21 +15,22 @@ import logging
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
-from ftre_agent_core.llm import (
+from ftre_llm import (
     BlockEnd,
     BlockStart,
     FinishChunk,
     FinishReason,
+    LlmCallConfig,
+    LlmCredentials,
     LLMError,
     LlmFailure,
+    LlmRequest,
+    LlmStreamPayload,
     ReasoningDeltaChunk,
     TextDeltaChunk,
     ToolCallDeltaChunk,
     UsageChunk,
-    create_llm_handler,
 )
-
-from ftre.services.llm.hooks import LLMStreamPayload
 
 from .config import FallbackConfig
 
@@ -41,10 +42,11 @@ _OVERFLOW_MARKERS = ("overflow", "context_length", "context length", "too_long",
 
 
 async def stream_with_fallback(
-    payload: LLMStreamPayload,
+    payload: LlmStreamPayload,
     primary: AsyncIterator[Any],
     config_service: Any,
     config: FallbackConfig,
+    llm_service,
 ) -> AsyncIterator[Any]:
     """先消费主模型流；满足严格条件时改为产出一次备用模型流。
 
@@ -111,7 +113,7 @@ async def stream_with_fallback(
         if not isinstance(resolved, Mapping):
             yield primary_error
             return
-        adapter = _create_backup_adapter(resolved)
+        prepared = await _prepare_backup_call(llm_service, payload, resolved)
     except Exception as exc:  # noqa: BLE001 - optional fallback must not break Core
         logger.warning(
             "[llm-fallback] backup adapter unavailable provider=%s model=%s error=%s",
@@ -127,9 +129,19 @@ async def stream_with_fallback(
     backup_failed = False
     try:
         # 防御性复制消息和工具定义，避免 Adapter 对嵌套顶层字典的修改污染 Hook Payload。
-        messages = [dict(item) for item in payload.messages]
-        tools = [dict(item) for item in payload.tools] or None
-        async for chunk in adapter.stream(messages, tools):
+        request = LlmRequest.from_parts(
+            prepared.config,
+            payload.messages,
+            payload.tools,
+            purpose=payload.purpose,
+            agent_id=payload.agent_id,
+            session_id=payload.session_id,
+            turn_id=payload.turn_id,
+            cancellation=payload.cancellation,
+            attempt=payload.attempt,
+            max_attempts=payload.max_attempts,
+        )
+        async for chunk in prepared.stream(request):
             if isinstance(chunk, FinishChunk) and chunk.reason.kind in {"error", "aborted"}:
                 backup_failed = True
                 continue
@@ -139,7 +151,7 @@ async def stream_with_fallback(
         backup_failed = True
     except asyncio.CancelledError:
         # Core 取消备用请求时，同时通知 Adapter 中止底层 HTTP 流，再把取消继续向上抛。
-        adapter.cancel()
+        prepared.cancel()
         raise
     except Exception:  # noqa: BLE001 - backup failure returns the primary error
         backup_failed = True
@@ -149,7 +161,7 @@ async def stream_with_fallback(
 
 
 def _can_fallback(
-    payload: LLMStreamPayload,
+    payload: LlmStreamPayload,
     config: FallbackConfig,
     code: str,
     message: str,
@@ -206,24 +218,21 @@ def _error_finish(error: LLMError) -> FinishChunk:
     )
 
 
-def _create_backup_adapter(resolved: Mapping[str, Any]):
-    """根据 ConfigService 快照创建一次性备用 Adapter。
+async def _prepare_backup_call(llm_service, payload: LlmStreamPayload, resolved: Mapping[str, Any]):
+    """通过唯一 LlmService 准备一次备用调用，避免递归进入 fallback Hook。"""
 
-    ``max_retries=0`` 是关键边界：重试已经由主 Core Loop 完成，备用模型不得在 Package
-    内形成第二套不可观测的 Retry Loop。这个 Adapter 也不会再次 dispatch ``llm/stream``，
-    因而不会递归进入本 Plugin。
-    """
-
-    kwargs: dict[str, Any] = {
-        "model": resolved["model"],
-        "api_key": resolved.get("api_key", ""),
-        "api_base": resolved.get("api_base") or None,
-        "max_retries": 0,
-        "reasoning_effort": resolved.get("reasoning_effort", ""),
-    }
-    if isinstance(resolved.get("max_output"), int):
-        kwargs["max_tokens"] = resolved["max_output"]
-    return create_llm_handler(resolved.get("api_type", "completions"), **kwargs)
+    config = LlmCallConfig(
+        provider=str(resolved.get("provider") or "backup"),
+        model=str(resolved["model"]),
+        api_type=str(resolved.get("api_type") or "completions"),
+        max_tokens=resolved.get("max_output") if isinstance(resolved.get("max_output"), int) else None,
+        reasoning_effort=str(resolved.get("reasoning_effort") or "") or None,
+    )
+    credentials = LlmCredentials(
+        api_key=str(resolved.get("api_key") or ""),
+        api_base=str(resolved.get("api_base") or ""),
+    )
+    return await llm_service.prepare_call(config, credentials=credentials)
 
 
 async def _close_stream(stream: AsyncIterator[Any]) -> None:
