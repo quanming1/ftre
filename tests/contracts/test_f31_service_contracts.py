@@ -99,18 +99,18 @@ def test_session_and_message_bus_public_methods_are_stable() -> None:
     assert {"publish_inbound", "request_inbound", "stop_inbound", "start", "close"} <= _method_names(
         MessageBusService
     )
-    # 出站窄方法是 F32 输入，不在 F31 伪造实现，也不把底层 EventBus 当作契约。
-    assert "publish_outbound" not in _method_names(MessageBusService)
+    # Runtime/Session 只通过这一处发布出站事件，不把底层 EventBus 当作契约。
+    assert "publish_outbound" in _method_names(MessageBusService)
 
 
 def test_tool_service_view_and_prompt_assembly_contracts() -> None:
     """Tool View 和同步 PromptAssembly 均通过现有 Service 入口验证。"""
     tools = ToolService()
-    assert {"register", "restrict", "snapshot", "schemas", "build_view", "execute"} <= _method_names(
+    assert {"register", "restrict", "snapshot", "schemas", "prepare_view", "execute"} <= _method_names(
         ToolService
     )
     assert tools.schemas("agent-a") == []
-    view = tools.build_view("agent-a", session_id="session-a")
+    view = asyncio.run(tools.prepare_view("agent-a", session_id="session-a"))
     assert view is not tools.registry
 
     prompts = SystemPromptService()

@@ -128,14 +128,14 @@ async def test_inbox_plugin_unload_releases_worker_state_and_listener():
 async def test_delete_session_waits_for_active_turn_before_removing_history():
     """删除执行中 Session 时，必须先等 Turn 的取消收尾完成。"""
     loop = object.__new__(AgentLoop)
-    loop.session_manager = AsyncMock()
-    loop.session_manager.get_session_metadata.return_value = {}
+    loop.sessions = AsyncMock()
+    loop.sessions.get_session_metadata.return_value = {}
     order: list[str] = []
 
     async def delete_history(_session_id: str) -> None:
         order.append("delete-history")
 
-    loop.session_manager.delete_session.side_effect = delete_history
+    loop.sessions.delete_session.side_effect = delete_history
     started = asyncio.Event()
     child_finished = asyncio.Event()
     parent_finished = asyncio.Event()
@@ -178,10 +178,10 @@ async def test_delete_session_waits_for_active_turn_before_removing_history():
 async def test_deleted_session_does_not_publish_status_to_empty_channel():
     """Turn finally 晚于 Session 删除时，不向空通道发送伪状态。"""
     loop = object.__new__(AgentLoop)
-    loop.session_manager = AsyncMock()
-    loop.session_manager.get_session.return_value = None
-    loop.bus = AsyncMock()
+    loop.sessions = AsyncMock()
+    loop.sessions.get_session.return_value = None
+    loop.message_bus = AsyncMock()
 
     await loop._publish_session_status_async("deleted", "idle")
 
-    loop.bus.publish_outbound.assert_not_awaited()
+    loop.message_bus.publish_outbound.assert_not_awaited()

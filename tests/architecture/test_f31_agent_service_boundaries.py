@@ -117,41 +117,37 @@ def test_f31_manifest_entries_resolve_to_unique_plugin_callables() -> None:
         assert callable(target), manifest.entry_text
 
 
-def test_f31_runtime_dependency_baseline_is_explicit_and_cannot_grow() -> None:
-    """锁定 F32 要删除的具体依赖；重复出现或新增同类入口会直接失败。"""
+def test_f32_runtime_dependency_baseline_has_only_public_services() -> None:
+    """F32 后 Runtime 只接收公开 Service，旧直连依赖不得回归。"""
     provider = (RUNTIME / "provider.py").read_text(encoding="utf-8")
-    provider_markers = (
-        '"bus": ctx.message_bus.bus',
-        '"channel_manager": ctx.channels.manager',
-        '"tool_registry": tools.registry',
-        '"mcp_service": ctx.get("mcp", strict=False)',
-        '"agent_manager": ctx.agent_profiles.manager',
-    )
-    for marker in provider_markers:
-        assert provider.count(marker) == 1, marker
+    assert "message_bus=ctx.message_bus" in provider
+    assert "sessions=ctx.sessions" in provider
+    assert "tools=ctx.tools" in provider
+    assert "profiles=ctx.agent_profiles" in provider
+    assert "ctx.channels" not in provider
+    assert "ctx.get(\"mcp\"" not in provider
+    assert "ctx.agent_profiles.manager" not in provider
 
     engine = (RUNTIME / "engine.py").read_text(encoding="utf-8")
-    engine_markers = (
-        "channel_manager=None,",
-        "tool_registry: ToolRegistry | None = None,",
-        "mcp_service=None,",
-        "agent_manager=None,",
-        "self.session_projection = session_manager.projection",
-    )
-    for marker in engine_markers:
-        assert engine.count(marker) == 1, marker
+    for marker in ("channel_manager=None,", "tool_registry: ToolRegistry | None = None,",
+                   "mcp_service=None,", "agent_manager=None,", "self.session_projection ="):
+        assert marker not in engine, marker
+    assert "self.message_bus = message_bus" in engine
+    assert "self.sessions = sessions" in engine
 
     turn = (RUNTIME / "turn_executor.py").read_text(encoding="utf-8")
-    turn_markers = (
-        "from ftre.services.tools.builtin._workspace import (",
+    for marker in (
+        "from ftre.services.tools.builtin._workspace import",
         "loop.agent_manager._default_agent_state()",
         "loop.agent_manager.create_agent(",
         "WorkspaceAccessor(",
         "self._loop.session_projection.finish_open(",
         "load_config()",
-    )
-    for marker in turn_markers:
-        assert turn.count(marker) == 1, marker
+    ):
+        assert marker not in turn, marker
+    assert "self._sessions = sessions" in turn
+    assert "self._tools = tools" in turn
+    assert "self._profiles = profiles" in turn
 
 
 def test_f31_runtime_does_not_use_context_as_service_locator() -> None:
@@ -160,8 +156,8 @@ def test_f31_runtime_does_not_use_context_as_service_locator() -> None:
         assert _ctx_get_calls(path) == [], path
 
 
-def test_f31_private_owner_imports_are_registered_baseline() -> None:
-    """当前两个跨 Owner 私有导入有明确 F32 删除批次，不能再增加新的种类。"""
+def test_f32_runtime_has_no_private_owner_imports() -> None:
+    """Runtime 不得导入其他 Owner 的 Manager、Repository 或 builtin 私有实现。"""
     all_runtime_imports = tuple(
         module
         for path in RUNTIME.rglob("*.py")
@@ -173,12 +169,31 @@ def test_f31_private_owner_imports_are_registered_baseline() -> None:
         if module.startswith("ftre.services.")
         and (".builtin." in module or module.endswith(".manager") or ".persistence" in module)
     }
-    assert private_modules == {
-        "ftre.services.tools.builtin._workspace",
-        "ftre.services.agent.profile.manager",
-    }
-    assert all_runtime_imports.count("ftre.services.tools.builtin._workspace") == 1
-    assert all_runtime_imports.count("ftre.services.agent.profile.manager") == 1
+    assert private_modules == set()
+
+
+def test_f32_runtime_uses_public_bus_and_session_exits() -> None:
+    """Runtime 只能调用 Service 窄出口，不能把底层 EventBus 当作依赖。"""
+    runtime_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (RUNTIME / "engine.py", RUNTIME / "turn_executor.py")
+    )
+    assert "EventBus" not in runtime_sources
+    assert "message_bus.bus" not in runtime_sources
+    assert "publish_outbound(" in runtime_sources
+    assert "finish_open_replies(" in runtime_sources
+
+
+def test_f32_turn_input_and_core_creation_have_single_owner() -> None:
+    """InboundMessage 和 Core 工厂边界必须保持单向，避免 Runtime 再造协议。"""
+    engine = (RUNTIME / "engine.py").read_text(encoding="utf-8")
+    turn = (RUNTIME / "turn_executor.py").read_text(encoding="utf-8")
+    factory = (RUNTIME / "factory.py").read_text(encoding="utf-8")
+    assert "InboundMessage(" in engine
+    assert "inbound: InboundMessage" in turn
+    assert "self._core_factory(" in turn
+    assert "return ReActAgent(" in factory
+    assert "ReActAgent(" not in turn.replace("ReActAgent | None", "")
 
 
 def test_f31_hook_specs_have_unique_names_and_real_owner_contracts() -> None:

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ftre.services.messaging.bus import EventBus
+from ftre.services.messaging.bus import EventBus, MessageBusService
 from ftre.services.session.events import SessionEventService
 from ftre.services.session.projection import SessionProjection
 
@@ -19,7 +19,7 @@ async def test_steering_user_message_is_persisted_before_outbound_echo():
     bus.publish_outbound.side_effect = lambda *_args: order.append("bus")
     service = SessionEventService(
         SimpleNamespace(projection=projection),
-        bus,
+        MessageBusService(bus=bus),
     )
 
     await service.emit_user_message_if_absent(
@@ -47,7 +47,10 @@ async def test_steering_retry_reuses_stable_message_id():
     sessions = AsyncMock()
     projection = SessionProjection(sessions)
     bus = AsyncMock(spec=EventBus)
-    service = SessionEventService(SimpleNamespace(projection=projection), bus)
+    service = SessionEventService(
+        SimpleNamespace(projection=projection),
+        MessageBusService(bus=bus),
+    )
 
     for _ in range(2):
         await service.emit_user_message_if_absent(

@@ -19,7 +19,7 @@ from ftre.services.agent.contracts import InboundMessage
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.agent.runtime.engine import AgentLoop
 from ftre.services.agent.runtime.turn_executor import TurnExecutor
-from ftre.services.messaging.bus import BusMessage, InboundMetadata
+from ftre.services.messaging.bus import EventBus, MessageBusService
 from ftre.services.session.events import SessionEventService
 from ftre.services.session.projection import SessionProjection
 
@@ -79,35 +79,46 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
     loop._event_loop = asyncio.get_running_loop()
     loop.hooks = None
     loop.agent_registry = AgentRegistry()
-    loop.session_manager = AsyncMock()
-    loop.session_manager.get_session = AsyncMock(
+    loop.sessions = AsyncMock()
+    loop.sessions.get_session = AsyncMock(
         return_value={"channel_id": "ws", "workspace": "/tmp"}
     )
-    loop.bus = AsyncMock()
-    loop.agent_manager = Mock()
+    loop.message_bus = MessageBusService(bus=AsyncMock(spec=EventBus))
+    loop.message_bus.bus.publish_outbound = AsyncMock()
     loop.agent_service = None
-    loop.mcp_service = None
-    loop.tool_service = None
-    loop.inbox = None
-    loop._agent_created_emitted = set()
-    loop.agent_manager.load = Mock(return_value=None)
-    loop.agent_manager.create_agent = Mock(return_value=agent)
-    loop.channel_manager = None
-    loop.tool_registry = None
-    loop.command_manager = Mock()
-    loop.command_manager.try_dispatch_system = AsyncMock(return_value=False)
-    loop.command_manager.match = Mock(return_value=None)
-    loop.command_manager.match_any = Mock(return_value=None)
-    loop.command_manager.try_dispatch = AsyncMock(return_value=None)
+    loop.tools = SimpleNamespace(prepare_view=AsyncMock(return_value=Mock()))
+    loop.profiles = SimpleNamespace(
+        resolve_for_inbound=AsyncMock(return_value=SimpleNamespace(value=None))
+    )
+    loop.workspaces = SimpleNamespace(
+        create_accessor=Mock(return_value=SimpleNamespace(get=lambda: "/tmp", set=lambda value: value)),
+        ensure_extension_layout=AsyncMock(),
+    )
+    loop.config_service = None
     loop.tracer = Mock()
 
-    loop.session_projection = SessionProjection(loop.session_manager)
+    loop.session_projection = SessionProjection(loop.sessions)
     loop.session_events = SessionEventService(
         SimpleNamespace(projection=loop.session_projection),
-        loop.bus,
+        loop.message_bus,
     )
 
-    executor = TurnExecutor(loop, sessions=loop.session_manager)
+    async def finish_open_replies(session_id, reason, *, error=None):
+        return await loop.session_projection.finish_open(session_id, reason, error=error)
+
+    loop.sessions.finish_open_replies.side_effect = finish_open_replies
+
+    executor = TurnExecutor(
+        loop,
+        sessions=loop.sessions,
+        agents=None,
+        tools=loop.tools,
+        profiles=loop.profiles,
+        workspaces=loop.workspaces,
+        config_service=None,
+        llm_service=None,
+    )
+    executor._core_factory = Mock(return_value=agent)
     executor._build_messages = AsyncMock(
         return_value=([{"role": "user", "content": "hi"}], config)
     )
@@ -117,13 +128,11 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
 
 
 def _inbound():
-    return BusMessage(
-        type="user_message",
-        from_channel="ws",
-        to_channel="ws",
-        from_session="test-session",
-        to_session="test-session",
-        data={"content": "hello", "session_id": "test-session"},
+    return InboundMessage(
+        session_id="test-session",
+        request_id="request-test",
+        channel_id="ws",
+        content="hello",
         metadata={},
     )
 
@@ -147,11 +156,11 @@ def _saved_messages(executor):
     """所有通过 SessionProjection 持久化的消息。"""
     projected = [
         call.args[1]
-        for call in executor._loop.session_manager.upsert_message.call_args_list
+        for call in executor._loop.sessions.upsert_message.call_args_list
     ]
     appended = [
         call.args[1]
-        for call in executor._loop.session_manager.save_message.call_args_list
+        for call in executor._loop.sessions.save_message.call_args_list
     ]
     return projected + appended
 
@@ -159,7 +168,7 @@ def _updated_messages(executor):
     """所有通过 update_message 更新的消息。"""
     return [
         call.args[0]
-        for call in executor._loop.session_manager.update_message.call_args_list
+        for call in executor._loop.sessions.update_message.call_args_list
     ]
 
 
@@ -202,8 +211,8 @@ async def test_user_message_is_projected_before_frontend_echo():
         if message.data.get("type") == "USER_MESSAGE":
             order.append("broadcast")
 
-    executor._loop.session_manager.upsert_message.side_effect = record_upsert
-    executor._loop.bus.publish_outbound.side_effect = record_publish
+    executor._loop.sessions.upsert_message.side_effect = record_upsert
+    executor._loop.message_bus.bus.publish_outbound.side_effect = record_publish
 
     await _execute_admitted(executor)
 
@@ -214,8 +223,12 @@ async def test_user_message_is_projected_before_frontend_echo():
 async def test_claimed_request_identity_is_persisted_on_user_message():
     executor = _make_executor(FakeAgent())
     inbound = _inbound()
-    inbound.metadata = InboundMetadata(
+    inbound = InboundMessage(
+        session_id="test-session",
         request_id="request-a",
+        channel_id="ws",
+        content="hello",
+        metadata={"request_id": "request-a"},
     )
 
     await _execute_admitted(executor, inbound)
@@ -229,20 +242,25 @@ async def test_channel_mismatch_is_failed_instead_of_false_completed():
     """防串台拒绝必须成为失败 TurnOutcome，不能伪装成 completed。"""
     executor = _make_executor(FakeAgent())
     inbound = _inbound()
-    inbound.from_channel = "cron"
+    inbound = InboundMessage(
+        session_id="test-session",
+        request_id="request-channel",
+        channel_id="cron",
+        content="hello",
+    )
 
     error = await executor._loop._validate_inbound(
         InboundMessage(
             session_id="test-session",
             request_id="request-channel",
-            channel_id=inbound.from_channel,
+            channel_id=inbound.channel_id,
             content="hello",
         )
     )
 
     assert error is not None
     assert error["code"] == "channel_mismatch"
-    executor._loop.agent_manager.create_agent.assert_not_called()
+    executor._core_factory.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -261,12 +279,22 @@ async def test_compact_decisions_use_selected_agent_context_window():
         model="kiro/gpt-5.6-sol",
         context_window=1_050_000,
     )
-    executor._loop.agent_manager.load.return_value = SimpleNamespace(
+    executor._loop.profiles.resolve_for_inbound.return_value = SimpleNamespace(value=SimpleNamespace(
+        agent_id="coder",
         llm=coder_llm,
         agent_dir="",
+        mcp_config={},
+        tools_config=None,
+        soul_prompt="",
+        user_prompt_md="",
+    ))
+    inbound = InboundMessage(
+        session_id="test-session",
+        request_id="request-coder",
+        channel_id="ws",
+        content="hello",
+        metadata={"agent_id": "coder"},
     )
-    inbound = _inbound()
-    inbound.metadata = InboundMetadata(agent_id="coder")
 
     await _execute_admitted(executor, inbound)
 
@@ -294,7 +322,7 @@ async def test_delta_is_live_only_and_reply_persists_as_one_msg():
 
     outbound = [
         call.args[0].data
-        for call in executor._loop.bus.publish_outbound.call_args_list
+        for call in executor._loop.message_bus.bus.publish_outbound.call_args_list
         if call.args and getattr(call.args[0], "type", "") == "agent_event"
     ]
     assert any(frame.get("type") == "TEXT_BLOCK_DELTA" for frame in outbound)

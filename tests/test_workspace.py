@@ -1,4 +1,4 @@
-from ftre.services.tools.builtin._workspace import ensure_workspace_ext_dir
+from ftre.services.workspace.service import ensure_workspace_ext_dir
 
 
 def test_non_utf8_gitignore_is_preserved_and_updated(tmp_path):
