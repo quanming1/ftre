@@ -117,6 +117,20 @@ class SessionService:
         """Return the Session-owned live projection used by adapters and Agent Runtime."""
         return self._projection
 
+    async def finish_open_replies(
+        self,
+        session_id: str,
+        reason: ReplyFinishedReason,
+        *,
+        error: dict[str, Any] | None = None,
+    ) -> list[Msg]:
+        """结束并持久化当前 Session 的 open replies。
+
+        Projection 仍是 Session 内部实现；Runtime 只调用这个窄入口，确保异常、
+        取消和 Gateway 关闭时的最终消息更新走同一把锁与同一套持久化规则。
+        """
+        return await self._projection.finish_open(session_id, reason, error=error)
+
     # ============================================================
     # Session CRUD（委托 storage）
     # ============================================================

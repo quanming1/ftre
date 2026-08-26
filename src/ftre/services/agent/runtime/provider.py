@@ -20,43 +20,22 @@ def build_runtime(
     ctx: Context,
     agent_service,
 ) -> AgentLoop:
-    """Construct one private Loop from the Provider's injected Service graph."""
-    # 从 Composition 注入的 ctx 中取出 AgentLoop 所需的全部公开 Service 句柄，
-    # 一次性构造私有 Loop。所有依赖都来自 ctx（Inject），不做 Service Locator。
-    tools = ctx.tools
-    kwargs = {
-        # 消息总线：AgentLoop 从这里收 inbound / 发 outbound
-        "bus": ctx.message_bus.bus,
-        # Session 持久化与身份（写入正式消息历史）
-        "session_manager": ctx.sessions,
-        # 通道管理器：出站消息路由到具体 Channel
-        "channel_manager": ctx.channels.manager,
-        # 事件总线：HookRuntime / 事件广播共用同一个 Cordis Context
-        "event_hub": ctx,
-        # 工具执行视图（ToolRegistry 底层注册表 + ToolService 门面）
-        "tool_registry": tools.registry,
-        "tool_service": tools,
-        # 可选能力：MCP 工具视图（未安装时为 None）
-        "mcp_service": ctx.get("mcp", strict=False),
-        # Agent 配置加载（~/.ftre/agents/<id>/）
-        "agent_manager": ctx.agent_profiles.manager,
-        # 唯一公开 Agent Service：Loop 把执行结果交回给它
-        "agent_service": agent_service,
-        # 附件服务（工具产生图片等附件时落盘）
-        "attachments": ctx.get("attachments", strict=False),
-        # Agent 注册表（active Turn 追踪）
-        "agent_registry": agent_service.registry,
-        # 可选能力：Trace 导出（未安装时为 None）
-        "traces": ctx.get("traces", strict=False),
-        # System Prompt 组装（结构化 section 合并）
-        "system_prompt": ctx.system_prompt,
-        # 语义 Hook 运行时（Agent/Tool/LLM 时机分发）
-        "hook_runtime": ctx.hook_runtime,
-        # Session 事件统一出口（由 SessionEventService 广播，无第二 Owner）
-        "session_events": ctx.session_events,
-        "llm_service": ctx.llm,
-    }
-    return AgentLoop(**kwargs)
+    """从已注入的公开 Service 组装一个私有 AgentLoop。"""
+    return AgentLoop(
+        message_bus=ctx.message_bus,
+        sessions=ctx.sessions,
+        tools=ctx.tools,
+        workspaces=ctx.workspaces,
+        profiles=ctx.agent_profiles,
+        config_service=ctx.config,
+        agent_service=agent_service,
+        attachments=ctx.get("attachments", strict=False),
+        system_prompt=ctx.system_prompt,
+        hook_runtime=ctx.hook_runtime,
+        traces=ctx.get("traces", strict=False),
+        session_events=ctx.session_events,
+        llm_service=ctx.llm,
+    )
 
 
 __all__ = ["build_runtime"]

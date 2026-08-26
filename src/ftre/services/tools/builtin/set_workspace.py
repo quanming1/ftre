@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
-from ._workspace import WorkspaceAccessor
+from ftre.services.workspace.accessor import WorkspaceAccessor
 
 
 def create_set_workspace_tool() -> Tool:

@@ -11,8 +11,9 @@ from pathlib import Path
 
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
+from ftre.services.workspace.accessor import WorkspaceAccessor
+
 from ._truncate import truncate_output
-from ._workspace import WorkspaceAccessor
 
 # ============== 用户级 PATH 补全 ==============
 

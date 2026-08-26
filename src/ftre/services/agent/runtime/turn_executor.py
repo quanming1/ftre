@@ -20,35 +20,33 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ftre_agent_core.agent import ReActAgent, RunStatus
 from ftre_agent_core.event import (
     CustomEvent,
     ReplyFinishedReason,
+    UserConfirmResultEvent,
 )
 from ftre_agent_core.message import Msg
 
-from ftre.services.agent.config import AgentConfig, load_config
+from ftre.services.agent.config import AgentConfig
+from ftre.services.agent.contracts import InboundMessage
 from ftre.services.agent.hooks import (
     AGENT_RUN_ERROR_SPEC,
     RequestErrorPayload,
     RetryRequest,
 )
-from ftre.services.messaging.bus import BusMessage
 from ftre.services.session.message.multimodal import build_user_content
 from ftre.services.system_prompt.hooks import (
     SYSTEM_PROMPT_ASSEMBLE_SPEC,
     PromptAssemblyPayload,
 )
 from ftre.services.system_prompt.types import PromptAssembly
-from ftre.services.tools.builtin._workspace import (
-    WorkspaceAccessor,
-    ensure_workspace_ext_dir,
-)
+
+from .factory import compose_system_prompt, create_core_agent, default_agent_state
 
 if TYPE_CHECKING:
-    from ftre.services.agent.profile.manager import AgentProfile
     from ftre.services.session import SessionService
 
     from .engine import AgentLoop
@@ -89,7 +87,7 @@ class Turn:
 
     # ── 身份（execute 入口创建时设置，不可变）──
     turn_id: str  # 本 Turn 唯一标识，作为 reply_id 关联事件
-    inbound: BusMessage  # 触发本 Turn 的用户消息
+    inbound: InboundMessage  # 触发本 Turn 的用户消息
     session_id: str  # 所属会话
 
     # ── 当前状态（状态机读写）──
@@ -98,7 +96,7 @@ class Turn:
     user_message_id: str = ""  # AgentLoop 进入 Turn 前已持久化的 UserMsg id
 
     # ── Agent 执行上下文（_build 写入，_run 读取）──
-    agent_profile: "AgentProfile | None" = None  # 本轮选定的 Agent 私有配置
+    agent_profile: Any | None = None  # 本轮选定的 Agent Profile 快照值
     config: "AgentConfig | None" = None  # 本轮实际使用的有效配置快照
     agent: "ReActAgent | None" = None  # 创建的 Agent 实例，None 表示未进入执行
     messages: list = field(default_factory=list)  # 发给 LLM 的消息列表
@@ -114,7 +112,7 @@ class Turn:
     # ── 权限确认恢复（/allow、/deny 指令触发时非 None）──
     # 非 None 表示本 Turn 是恢复请求：跳过普通消息构建，
     # 注入历史 context 到新 agent，run() 时传入此事件而非 messages。
-    confirm_event: object | None = None
+    confirm_event: UserConfirmResultEvent | None = None
 
 @dataclass(frozen=True)
 class TurnOutcome:
@@ -149,6 +147,11 @@ class TurnExecutor:
         system_prompt=None,
         hooks=None,
         agent_registry=None,
+        tools=None,
+        profiles=None,
+        workspaces=None,
+        config_service=None,
+        llm_service=None,
     ) -> None:
         self._loop = loop
         self._sessions = sessions
@@ -159,18 +162,25 @@ class TurnExecutor:
         self._system_prompt = system_prompt
         self._hooks = hooks
         self._agent_registry = agent_registry
+        self._tools = tools
+        self._profiles = profiles
+        self._workspaces = workspaces
+        self._config_service = config_service
+        self._llm_service = llm_service
+        # 测试可替换这一处纯构造函数；生产路径始终使用 Runtime 唯一工厂。
+        self._core_factory = create_core_agent
 
     # ─── 驱动入口 ────────────────────────────────────────────
 
     async def execute(
         self,
-        inbound: BusMessage,
+        inbound: InboundMessage,
         *,
         turn_id: str | None = None,
         config: AgentConfig | None = None,
-        agent_profile: "AgentProfile | None" = None,
+        agent_profile: Any | None = None,
         cancellation: asyncio.Event | None = None,
-        confirm_event: object | None = None,
+        confirm_event: UserConfirmResultEvent | None = None,
         user_message_id: str = "",
     ) -> TurnOutcome:
         """执行一条已经完成历史交接、由 Inbox 交付的 Agent 输入。"""
@@ -261,8 +271,8 @@ class TurnExecutor:
         """
         inbound = turn.inbound
         session_id = turn.session_id
-        content = inbound.data.get("content", "")
-        attachments = inbound.data.get("attachments") or []
+        content = inbound.content
+        attachments = list(inbound.attachments)
 
         # AgentLoop 已在历史交接前完成 Session/channel 校验。
         session = await self._sessions.get_session(session_id)
@@ -279,7 +289,8 @@ class TurnExecutor:
         # ── 构建发给 LLM 的消息 ──
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
         # 发送消息时确保当前工作区有 .ftre 扩展目录骨架（工作区级 skill / mcp.json 的落点）
-        ensure_workspace_ext_dir(workspace)
+        if self._workspaces is not None:
+            await self._workspaces.ensure_extension_layout(session_id)
         messages, hook_config = await self._build_messages(
             session_id,
             content,
@@ -328,7 +339,6 @@ class TurnExecutor:
         """
         from ftre.services.session.message.converter import _as_msg
 
-        loop = self._loop
         session_id = turn.session_id
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
 
@@ -344,7 +354,7 @@ class TurnExecutor:
         )
         context_msgs = [_as_msg(r) for r in records]
         # 复用默认权限规则，注入历史 context
-        state = loop.agent_manager._default_agent_state()
+        state = default_agent_state()
         state.context = context_msgs
         turn.config = copy.deepcopy(hook_config)
         if agent_profile is not None:
@@ -374,24 +384,27 @@ class TurnExecutor:
         """Create the Core Agent and its shared tool context for both Turn paths."""
         loop = self._loop
         inbound = turn.inbound
-        assert loop.agent_manager is not None, "agent_manager must be provided"
-        agent_id = agent_profile.agent_id if agent_profile is not None else (
-            inbound.metadata.agent_id or "default"
+        metadata = dict(inbound.metadata or {})
+        agent_id = agent_profile.agent_id if agent_profile is not None else str(
+            metadata.get("agent_id") or "default"
         )
         core_hooks, core_hook_context = self._core_hook_binding(turn)
-        # AgentManager 会用 profile.llm 覆盖本轮配置；先计算同一份有效 LLM
-        # 配置，再在 Agent 构造阶段注入 Service seam。这样 Core Runner 不会
-        # 先创建一个依赖空凭据的内置 OpenAI 客户端，随后才被私下替换。
-        service_adapter = None
         effective_llm_config = (
             agent_profile.llm if agent_profile is not None else config.llm
         )
+        tool_view = await self._tools.prepare_view(
+            agent_id,
+            turn.session_id,
+            agent_profile,
+            llm_config=effective_llm_config,
+        )
+        service_adapter = None
         provider = getattr(effective_llm_config, "provider", "")
-        if getattr(loop, "llm_service", None) is not None and provider:
+        if self._llm_service is not None and provider:
             from ftre_llm import LlmCallConfig, LlmCredentials, LlmServiceAdapter
 
             service_adapter = LlmServiceAdapter(
-                loop.llm_service,
+                self._llm_service,
                 LlmCallConfig(
                     provider=provider,
                     model=effective_llm_config.model,
@@ -403,53 +416,53 @@ class TurnExecutor:
                     api_key=effective_llm_config.api_key,
                     api_base=effective_llm_config.api_base,
                 ),
-                agent_id=inbound.metadata.agent_id or "default",
+                agent_id=str(metadata.get("agent_id") or "default"),
                 session_id=turn.session_id,
                 turn_id=turn.turn_id,
                 cancellation=turn.cancellation,
             )
-        create_args = {
-            "profile": agent_profile,
-            "config": config,
-            "channel_manager": loop.channel_manager,
-            "tool_registry": await loop.tool_registry_for_agent(agent_id, agent_profile),
-            "tracer": loop.tracer,
-            "channel_id": inbound.from_channel,
-            "session_id": turn.session_id,
-            "hooks": core_hooks,
-            "hook_context": core_hook_context,
-        }
-        if service_adapter is not None:
-            create_args["llm"] = service_adapter
-        if state is not None:
-            create_args["state"] = state
-        runtime_agent_id = inbound.metadata.agent_id or "default"
+        system_prompt = compose_system_prompt(
+            config,
+            agent_profile,
+            channel_id=inbound.channel_id,
+            session_id=turn.session_id,
+        )
+        runtime_agent_id = str(metadata.get("agent_id") or "default")
         effective_config = turn.config if turn.config is not None else config
-        turn.agent = loop.agent_manager.create_agent(**create_args)
+        turn.agent = self._core_factory(
+            config=config,
+            profile_snapshot=agent_profile,
+            tool_view=tool_view,
+            system_prompt=system_prompt,
+            tracer=loop.tracer,
+            hooks=core_hooks,
+            hook_context=core_hook_context,
+            state=state or default_agent_state(),
+            llm=service_adapter,
+        )
         turn.runtime_context = {
             "session_id": turn.session_id,
-            "request_id": inbound.metadata.request_id,
+            "request_id": inbound.request_id,
             "agent_id": runtime_agent_id,
             "agent_subject": loop.agent_subject(runtime_agent_id),
-            "channel_id": inbound.from_channel,
+            "channel_id": inbound.channel_id,
             "event_loop": loop._event_loop,
             "sessions": self._sessions,
-            "bus": loop.bus,
+            "bus": loop.message_bus,
             "agent": self._agents,
             "attachments": self._attachments,
             "llm_config": effective_config.llm,
             "agent_profile": agent_profile,
-            "workspace": WorkspaceAccessor(
-                session_id=turn.session_id,
-                session_manager=self._sessions,
-                event_loop=loop._event_loop,  # type: ignore[arg-type]
+            "workspace": self._workspaces.create_accessor(
+                turn.session_id,
+                loop._event_loop,
                 fallback_cwd=workspace,
             ),
             "trace_name": f"session:{turn.session_id}",
-            "trace_tags": [inbound.from_channel or "unknown"],
+            "trace_tags": [inbound.channel_id or "unknown"],
             "trace_metadata": {
                 "session_id": turn.session_id,
-                "channel_id": inbound.from_channel,
+                "channel_id": inbound.channel_id,
                 "workspace": workspace,
             },
             "reply_id": reply_id or turn.turn_id,
@@ -607,9 +620,9 @@ class TurnExecutor:
         """
         result = await self._loop.emit_session_event(
             turn.session_id,
-            turn.inbound.from_channel,
+            turn.inbound.channel_id,
             event,
-            metadata=turn.inbound.metadata,
+            metadata=dict(turn.inbound.metadata or {}),
         )
         return result.completed_message
 
@@ -621,7 +634,7 @@ class TurnExecutor:
         error: dict | None = None,
     ) -> None:
         """异常中断时更新已持久化的 open Msg，写入终态。"""
-        for message in await self._loop.session_projection.finish_open(
+        for message in await self._sessions.finish_open_replies(
             turn.session_id, reason, error=error
         ):
             turn.final_content = message.get_text_content() or turn.final_content
@@ -636,7 +649,8 @@ class TurnExecutor:
     ) -> tuple[AgentConfig, PromptAssembly]:
         """Render structured sections, then run the typed assembly waterfall."""
         loop = self._loop
-        agent_id = turn.inbound.metadata.agent_id or "default"
+        metadata = dict(turn.inbound.metadata or {})
+        agent_id = str(metadata.get("agent_id") or "default")
         if self._system_prompt is not None:
             assembly = self._system_prompt.assemble_result(
                 agent_id,
@@ -659,7 +673,14 @@ class TurnExecutor:
             workspace=workspace,
             assembly=assembly,
             messages=tuple(messages),
-            inbound_data=dict(turn.inbound.data),
+            inbound_data={
+                "session_id": turn.inbound.session_id,
+                "request_id": turn.inbound.request_id,
+                "content": turn.inbound.content,
+                "attachments": [dict(item) for item in turn.inbound.attachments],
+                "source": turn.inbound.source,
+                "metadata": metadata,
+            },
             config=copy.deepcopy(config),
             event_loop=loop._event_loop,
             cancellation=turn.cancellation,
@@ -679,7 +700,7 @@ class TurnExecutor:
         """Return the host Dispatcher and Cordis scope for this Agent/Turn."""
         hooks = self._hooks
         registry = self._agent_registry
-        agent_id = turn.inbound.metadata.agent_id or "default"
+        agent_id = str(dict(turn.inbound.metadata or {}).get("agent_id") or "default")
         if hooks is None or registry is None:
             return None, None
         return hooks, hooks.context_for_scope(registry.scope_carrier(agent_id))
@@ -689,7 +710,8 @@ class TurnExecutor:
     ) -> bool:
         """Run request-error waterfall and accept only bounded progress tokens."""
         loop = self._loop
-        agent_id = turn.inbound.metadata.agent_id or "default"
+        metadata = dict(turn.inbound.metadata or {})
+        agent_id = str(metadata.get("agent_id") or "default")
         payload = RequestErrorPayload(
             agent=loop.agent_subject(agent_id),
             session_id=turn.session_id,
@@ -698,7 +720,7 @@ class TurnExecutor:
             message=message,
             attempt=turn.retry_count,
             cancellation=turn.cancellation,
-            channel_id=turn.inbound.from_channel,
+            channel_id=turn.inbound.channel_id,
             config=copy.deepcopy(turn.config),
         )
         try:
@@ -730,20 +752,22 @@ class TurnExecutor:
     # ─── 工具方法 ──────────────────────────────────────────
 
     @staticmethod
-    def _session_id_of(inbound: BusMessage) -> str:
-        """从 BusMessage 提取 session_id（data 优先，回退到 from_session）。"""
-        return inbound.data.get("session_id", "") or inbound.from_session
+    def _session_id_of(inbound: InboundMessage) -> str:
+        """读取已归一化 InboundMessage 的 Session 身份。"""
+        return inbound.session_id
 
     def _load_current_config(self) -> AgentConfig:
         """读取当前生效的配置（测试注入优先，否则从磁盘加载）。"""
         loop = self._loop
         if loop._injected_config is not None:
             return loop._injected_config
-        return load_config()
+        if self._config_service is None:
+            return AgentConfig()
+        return self._config_service.resolve_agent_config()
 
     async def resolve_inbound_config(
-        self, inbound: BusMessage, *, turn_id: str
-    ) -> tuple[AgentConfig, "AgentProfile | None"]:
+        self, inbound: InboundMessage, *, turn_id: str
+    ) -> tuple[AgentConfig, Any | None]:
         """解析 Hook 门控和实际执行共同使用的精确配置快照。"""
         turn = Turn(
             turn_id=turn_id,
@@ -754,7 +778,7 @@ class TurnExecutor:
 
     async def _resolve_turn_config(
         self, turn: Turn
-    ) -> tuple[AgentConfig, "AgentProfile | None"]:
+    ) -> tuple[AgentConfig, Any | None]:
         """取得并缓存本 Turn 真正使用的 Agent 配置。
 
         context_window、模型调用和回复结束后的轮后 Hook 屏障必须来自同一份快照。
@@ -771,49 +795,21 @@ class TurnExecutor:
 
         config = copy.deepcopy(self._load_current_config())
         profile = None
-        if self._loop.agent_manager is not None:
-            from ftre.services.agent.profile import sub_agent
-
-            inbound_metadata = turn.inbound.metadata
-
-            # 路径 1：team 工具携带的 agent_ref。一致性校验：sub_agent 必须是
-            # 本 session——metadata 外部可构造，不允许借它加载他人的 profile。
-            agent_ref = inbound_metadata.agent_ref
-            if agent_ref is not None and agent_ref.sub_agent == turn.session_id:
-                profile = sub_agent.load_member_profile(
-                    self._sessions,
-                    agent_ref.leader_session,
-                    turn.session_id,
-                )
-
-            # 路径 2：session 级结构性绑定。WS/HTTP/send_message 等旁路入口
-            # 不带 agent_ref，靠成员 session 自己的 team_member 绑定兜底。
-            if profile is None:
-                session_metadata = (
-                    await self._sessions.get_session_metadata(
-                        turn.session_id
-                    )
-                )
-                if not isinstance(session_metadata, dict):
-                    session_metadata = {}
-                binding = sub_agent.binding_of(session_metadata)
-                if binding is not None:
-                    profile = sub_agent.load_member_profile(
-                        self._sessions,
-                        binding["leader_session"],
-                        turn.session_id,
-                    )
-
-            # 路径 3：全局 agent
-            if profile is None:
-                session_model = await self._sessions.get_session(turn.session_id)
-                session_agent_id = (
-                    str(session_model.get("agent_id") or "default")
-                    if session_model is not None
-                    else "default"
-                )
-                agent_id = inbound_metadata.agent_id or session_agent_id
-                profile = self._loop.agent_manager.load(agent_id)
+        session_model = await self._sessions.get_session(turn.session_id)
+        session_agent_id = (
+            str(session_model.get("agent_id") or "default")
+            if session_model is not None
+            else "default"
+        )
+        metadata = dict(turn.inbound.metadata or {})
+        agent_id = str(metadata.get("agent_id") or session_agent_id)
+        if self._profiles is not None:
+            snapshot = await self._profiles.resolve_for_inbound(
+                agent_id,
+                turn.session_id,
+                metadata=metadata,
+            )
+            profile = getattr(snapshot, "value", snapshot)
 
         if profile is not None:
             # Agent 私有 llm 是实际模型配置；workspace 仍按现有规则由 session 决定。

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from ftre_agent_core.tool import ToolRegistry
@@ -23,6 +25,9 @@ class ToolService:
         self.registry = registry or ToolRegistry()
         self._items: list[ToolContribution] = []
         self._restrictions: list[ToolRestriction] = []
+        # 可选工具 Provider（例如 MCP）在建视图前贡献 agent-scoped 工具；
+        # disposer 由注册它的 Plugin 持有，卸载后不会继续影响后续 Turn。
+        self._view_preparers: list[tuple[str, Callable[..., Any]]] = []
 
     def register(self, tool: Any, owner: str, scope: str = "global", source: str = "builtin"):
         """Register a tool in a scope and return the Fiber cleanup callback."""
@@ -69,6 +74,29 @@ class ToolService:
 
         return dispose
 
+    def register_view_preparer(
+        self, preparer: Callable[..., Any], *, owner: str
+    ) -> Callable[[], bool]:
+        """注册一个在 Agent Tool View 创建前运行的可逆准备器。"""
+        if not callable(preparer):
+            raise TypeError("preparer must be callable")
+        entry = (owner, preparer)
+        self._view_preparers.append(entry)
+        disposed = False
+
+        def dispose() -> bool:
+            nonlocal disposed
+            if disposed:
+                return False
+            disposed = True
+            try:
+                self._view_preparers.remove(entry)
+            except ValueError:
+                return False
+            return True
+
+        return dispose
+
     def snapshot(self, agent_id: str | None = None) -> tuple[ToolContribution, ...]:
         """Return visible contributions for an Agent or the global view."""
         return tuple(item for item in self._visible(agent_id))
@@ -81,11 +109,41 @@ class ToolService:
             result.append({**schema, "owner": item.owner, "source": item.source, "scope": item.scope})
         return result
 
-    def build_view(self, agent_id: str, session_id: str | None = None) -> ToolRegistry:
-        """Build an isolated registry so one Agent cannot mutate global visibility."""
+    async def prepare_view(
+        self,
+        agent_id: str,
+        session_id: str,
+        profile_config: Any | None = None,
+        *,
+        llm_config: Any | None = None,
+    ) -> ToolRegistry:
+        """准备一个隔离 Core ToolRegistry，完成可选 Provider 和权限过滤。"""
+        mcp_config = _profile_value(profile_config, "mcp_config")
+        for _owner, preparer in tuple(self._view_preparers):
+            result = preparer(agent_id, session_id, mcp_config)
+            if inspect.isawaitable(result):
+                await result
+
         view = ToolRegistry()
+        from .builtin import (
+            create_bash_tool,
+            create_edit_tool,
+            create_read_tool,
+            create_set_workspace_tool,
+            create_write_tool,
+            filter_tools,
+        )
+
+        view.register(create_bash_tool())
+        view.register(create_read_tool(vision=getattr(llm_config, "vision", False)))
+        view.register(create_write_tool())
+        view.register(create_edit_tool())
+        view.register(create_set_workspace_tool())
         for item in self._visible(agent_id):
             view.register(item.tool)
+        tools_config = _profile_value(profile_config, "tools_config")
+        if tools_config:
+            filter_tools(view, tools_config)
         return view
 
     def execute(self, name: str, execution_context: dict | None = None, arguments=None) -> Any:
@@ -110,3 +168,12 @@ class ToolService:
                 items = [item for item in items if item.name in restriction.allow]
             items = [item for item in items if item.name not in restriction.deny]
         return items
+
+
+def _profile_value(profile_config: Any, field: str) -> Any:
+    """从 AgentProfile 或 mapping 读取配置，不依赖 Manager 私有类型。"""
+    if profile_config is None:
+        return None
+    if isinstance(profile_config, Mapping):
+        return profile_config.get(field)
+    return getattr(profile_config, field, None)

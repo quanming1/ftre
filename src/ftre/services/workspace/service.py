@@ -7,11 +7,47 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from ftre.services.filesystem.policy import PathPolicy
+
+from .accessor import WorkspaceAccessor
+
+logger = logging.getLogger(__name__)
+
+WORKSPACE_EXT_DIR = ".ftre"
+
+
+def ensure_workspace_ext_dir(cwd: str) -> None:
+    """创建工作区扩展骨架；失败只记录，不阻断 Agent Turn。"""
+    if not cwd:
+        return
+    base = Path(cwd)
+    if not base.is_dir():
+        return
+    ext_dir = base / WORKSPACE_EXT_DIR
+    try:
+        (ext_dir / "skills").mkdir(parents=True, exist_ok=True)
+        mcp_file = ext_dir / "mcp.json"
+        if not mcp_file.exists():
+            mcp_file.write_text(
+                json.dumps({"mcp": {}}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        gitignore = base / ".gitignore"
+        # .gitignore 可能由旧项目以 GBK/本地编码保存。这里仅追加固定 ASCII
+        # 规则并保留原始字节，避免创建扩展目录时破坏用户已有注释和换行风格。
+        current = gitignore.read_bytes() if gitignore.exists() else b""
+        entry = f"{WORKSPACE_EXT_DIR}/".encode("ascii")
+        if not any(line.strip() == entry for line in current.splitlines()):
+            separator = b"" if current.endswith((b"\n", b"\r")) else b"\r\n" if current else b""
+            gitignore.write_bytes(current + separator + entry + b"\r\n")
+    except OSError as exc:
+        logger.warning("[workspace] 创建 %s 扩展目录失败: %s", cwd, exc)
 
 
 class WorkspaceService:
@@ -50,6 +86,22 @@ class WorkspaceService:
     async def ensure_extension_layout(self, session_id: str) -> dict[str, str]:
         """Create workspace extension directories and return their stable paths."""
         root = Path(await self.get(session_id)).expanduser().resolve()
+        ensure_workspace_ext_dir(str(root))
         skills = root / ".ftre" / "skills"
         skills.mkdir(parents=True, exist_ok=True)
         return {"workspace": str(root), "skills": str(skills), "mcp": str(root / ".ftre" / "mcp.json")}
+
+    def create_accessor(
+        self,
+        session_id: str,
+        event_loop,
+        *,
+        fallback_cwd: str,
+    ) -> WorkspaceAccessor:
+        """为同步 Core Tool 创建工作区访问器，具体实现归 Workspace Owner。"""
+        return WorkspaceAccessor(
+            session_id=session_id,
+            session_manager=self.sessions,
+            event_loop=event_loop,
+            fallback_cwd=fallback_cwd,
+        )

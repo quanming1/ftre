@@ -1,8 +1,8 @@
 """
 ftre 内置工具集
 
-工具是无状态的工厂产物。当前工作区是 sessions 表的一等字段，agent 每次 run
-通过 runtime_context['workspace'] = WorkspaceAccessor(...) 注入一个对 DB 的
+工具是无状态的工厂产物。当前工作区是 sessions 表的一等字段，Agent 每次运行
+通过 WorkspaceService 创建的 accessor 放入 runtime_context['workspace']，
 同步外观，工具用 Injected("workspace") 拿到它后调 ws.get() / ws.set(...)
 读写持久化的 cwd。
 """

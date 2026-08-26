@@ -181,7 +181,7 @@ async def _publish_result(ctx: Context, inbound: BusMessage, result) -> None:
     if result is None or not getattr(result, "text", ""):
         return
     level = "error" if getattr(result, "kind", "success") == "error" else "info"
-    await ctx.message_bus.bus.publish_outbound(
+    await ctx.message_bus.publish_outbound(
         SessionCommandMessage(
             from_channel=inbound.from_channel,
             to_channel=inbound.from_channel,

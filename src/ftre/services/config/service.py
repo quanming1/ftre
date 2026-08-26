@@ -116,6 +116,17 @@ class ConfigService:
             )
         return result
 
+    def resolve_agent_config(self):
+        """Return the current AgentConfig snapshot for the Agent Runtime.
+
+        AgentConfig 仍由 Agent 配置模块负责解析 profile、模型能力和默认 prompt；
+        这里是 Config Service 对 Runtime 暴露的唯一入口。Runtime 不再直接调用
+        ``load_config()`` 或读取配置文件，避免绕过配置 Owner 的生命周期边界。
+        """
+        from ftre.services.agent.config import load_config
+
+        return load_config()
+
     def watch(self, callback: Callable[[ConfigSnapshot], Any]) -> Callable[[], bool]:
         """Subscribe to committed snapshots and return an idempotent disposer."""
         self._watchers.append(callback)

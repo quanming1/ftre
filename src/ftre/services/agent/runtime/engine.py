@@ -9,11 +9,9 @@ import inspect
 import logging
 import uuid
 
-from cordis import Context
 from ftre_agent_core import Tracer
 from ftre_agent_core.event import UserMessageEvent
 from ftre_agent_core.message import from_openai_message
-from ftre_agent_core.tool import ToolRegistry
 
 from ftre.kernel.hooks import HookRuntime, HookSpec
 from ftre.services.agent.config import AgentConfig
@@ -29,7 +27,6 @@ from ftre.services.agent.hooks import (
 from ftre.services.agent.registry import AgentRegistry
 from ftre.services.messaging.bus import (
     BusMessage,
-    EventBus,
     InboundMetadata,
 )
 from ftre.services.session import SessionService
@@ -59,16 +56,12 @@ class AgentLoop:
 
     def __init__(
         self,
-        bus: EventBus,
-        session_manager: SessionService,
-        channel_manager=None,
-        config: AgentConfig = None,
-        event_hub=None,
-        tool_registry: ToolRegistry | None = None,
-        tool_service=None,
-        mcp_service=None,
-        agent_manager=None,
-        agent_registry: AgentRegistry | None = None,
+        message_bus,
+        sessions: SessionService,
+        tools,
+        workspaces,
+        profiles,
+        config_service=None,
         agent_service=None,
         attachments=None,
         system_prompt=None,
@@ -76,25 +69,22 @@ class AgentLoop:
         traces=None,
         session_events=None,
         llm_service=None,
+        config: AgentConfig | None = None,
     ):
-        self.bus = bus
-        self.session_manager = session_manager
-        self.channel_manager = channel_manager
-        self.event_hub = event_hub
-        self.tool_registry = tool_registry
-        self.tool_service = tool_service
-        self.mcp_service = mcp_service
-        self.agent_manager = agent_manager
+        self.message_bus = message_bus
+        self.sessions = sessions
+        self.tools = tools
+        self.workspaces = workspaces
+        self.profiles = profiles
         self.agent_service = agent_service
         self.attachments = attachments
-        self.agent_registry = agent_registry or AgentRegistry()
+        self.agent_registry = getattr(agent_service, "registry", None) or AgentRegistry()
         self.system_prompt = system_prompt
         self.session_events = session_events
         # LLM Service 由 Host Provider 注入；Agent Runtime 通过 ServiceAdapter 消费它。
         self.llm_service = llm_service
-        self.hooks = hook_runtime or (
-            HookRuntime(event_hub) if isinstance(event_hub, Context) else None
-        )
+        self.hooks = hook_runtime
+        self.config_service = config_service
         self._injected_config = config
         self._event_loop: asyncio.AbstractEventLoop | None = None
         # 直接 AgentService.run 的 active guard。它只记录运行中的 Turn，绝不保存
@@ -116,18 +106,18 @@ class AgentLoop:
         # ─── Turn 执行器 ──────────────────────────────────────
         self._executor = TurnExecutor(
             self,
-            sessions=session_manager,
+            sessions=sessions,
             agents=agent_service,
             attachments=attachments,
             system_prompt=system_prompt,
             hooks=self.hooks,
             agent_registry=self.agent_registry,
+            tools=tools,
+            profiles=profiles,
+            workspaces=workspaces,
+            config_service=config_service,
+            llm_service=llm_service,
         )
-
-        # ─── 进行中 Reply 快照注册表 ──────────────────────────
-        # SessionService is the sole projection owner. The Agent runtime only
-        # consumes its public projection capability and never constructs a peer.
-        self.session_projection = session_manager.projection
 
         self.completions = CompletionRegistry()
 
@@ -135,16 +125,6 @@ class AgentLoop:
         """Resolve a stable Agent identity for Hook scope dispatch."""
         record = self.agent_registry.ensure(agent_id)
         return AgentSubject(agent_id=record.agent_id, identity=record.identity)
-
-    async def tool_registry_for_agent(self, agent_id: str, profile=None):
-        """Build the isolated tool registry consumed by one ReActAgent turn."""
-        mcp_service = self.mcp_service
-        tool_service = self.tool_service
-        if mcp_service is not None and profile is not None:
-            await mcp_service.prepare_agent(agent_id, profile.mcp_config)
-        if tool_service is not None:
-            return tool_service.build_view(agent_id)
-        return self.tool_registry
 
     async def dispatch_agent_hook(self, spec: HookSpec, payload, *, agent_id: str):
         """Dispatch an Agent Hook through the official Cordis scope carrier."""
@@ -261,19 +241,14 @@ class AgentLoop:
         self._direct_reservations.add(session_id)
         metadata_values = dict(message.metadata or {})
         metadata_values["request_id"] = message.request_id
-        metadata = InboundMetadata.model_validate(metadata_values)
-        inbound = BusMessage(
-            type="user_message",
-            from_channel=message.channel_id,
-            from_session=session_id,
-            to_channel="agent",
-            to_session=session_id,
-            data={
-                "session_id": session_id,
-                "content": message.content,
-                "attachments": [dict(item) for item in message.attachments],
-            },
-            metadata=metadata,
+        inbound = InboundMessage(
+            session_id=session_id,
+            request_id=message.request_id,
+            channel_id=message.channel_id,
+            content=message.content,
+            attachments=tuple(dict(item) for item in message.attachments),
+            source=message.source,
+            metadata=metadata_values,
         )
         turn_id = f"turn_{uuid.uuid4().hex[:12]}"
         cancellation = asyncio.Event()
@@ -290,7 +265,7 @@ class AgentLoop:
                     error=validation_error,
                 )
             config, profile = await self._executor.resolve_inbound_config(inbound, turn_id=turn_id)
-            agent_id = metadata.agent_id or "default"
+            agent_id = str(metadata_values.get("agent_id") or "default")
             current = self.agent_registry.ensure(agent_id)
             step_decision = await self._dispatch_agent_hook(
                 AGENT_BEFORE_RUN_SPEC,
@@ -371,11 +346,12 @@ class AgentLoop:
             self._direct_signals.pop(session_id, None)
             if executed:
                 try:
-                    record = self.agent_registry.ensure(metadata.agent_id or "default")
+                    final_agent_id = str(metadata_values.get("agent_id") or "default")
+                    record = self.agent_registry.ensure(final_agent_id)
                     await self._dispatch_agent_hook(
                         AGENT_AFTER_RUN_SPEC,
                         AfterRunPayload(
-                            agent=AgentSubject(metadata.agent_id or "default", record.identity),
+                            agent=AgentSubject(final_agent_id, record.identity),
                             session_id=session_id,
                             turn_id=turn_id,
                             request_id=message.request_id,
@@ -385,7 +361,7 @@ class AgentLoop:
                             config=config,
                             set_maintenance=self._set_maintenance_status(session_id),
                         ),
-                        agent_id=metadata.agent_id or "default",
+                        agent_id=final_agent_id,
                     )
                 except Exception:
                     logger.exception("[agent-loop] direct agent/after-run failed session=%s", session_id)
@@ -403,7 +379,7 @@ class AgentLoop:
 
     async def _persist_inbound_user_message(
         self,
-        inbound: BusMessage,
+        inbound: InboundMessage,
         *,
         turn_id: str,
     ) -> str:
@@ -414,22 +390,23 @@ class AgentLoop:
         boundary here means TurnExecutor remains a pure Turn/Reply/Tool state
         machine and cannot accidentally persist the same input twice.
         """
-        session_id = inbound.from_session or str(inbound.data.get("session_id") or "")
-        content = inbound.data.get("content", "")
+        session_id = inbound.session_id
+        content = inbound.content
         if not session_id or not content:
             return ""
         # Steering 在 before-reasoning 边界已由 Inbox 先写入 Session；idle fallback
         # 会重新进入独立 Turn，此处复用同一 UserMsg id，不能再广播第二条历史消息。
-        existing_message_id = getattr(inbound.metadata, "history_message_id", "")
+        metadata = dict(inbound.metadata or {})
+        existing_message_id = str(metadata.get("history_message_id") or "")
         if existing_message_id:
             return existing_message_id
-        attachments = inbound.data.get("attachments") or []
+        attachments = list(inbound.attachments)
         user_metadata = {
             "hide": False,
-            "agent_id": inbound.metadata.agent_id or "default",
+            "agent_id": str(metadata.get("agent_id") or "default"),
         }
-        if inbound.metadata.request_id:
-            user_metadata["request_id"] = inbound.metadata.request_id
+        if inbound.request_id:
+            user_metadata["request_id"] = inbound.request_id
         persisted_content = build_user_content(
             normalize_stored_user_content(content),
             attachments,
@@ -439,13 +416,18 @@ class AgentLoop:
             reply_id=turn_id,
             content=from_openai_message({"role": "user", "content": persisted_content}),
             message_metadata=user_metadata,
-            data={**inbound.data},
+            data={
+                "session_id": inbound.session_id,
+                "content": inbound.content,
+                "attachments": [dict(item) for item in inbound.attachments],
+                "source": inbound.source,
+            },
         )
         result = await self.emit_session_event(
             session_id,
-            inbound.from_channel,
+            inbound.channel_id,
             user_event,
-            metadata=inbound.metadata,
+            metadata=metadata,
         )
         if not result.persisted_messages:
             raise RuntimeError("Session 未返回已持久化的 UserMessage")
@@ -453,7 +435,7 @@ class AgentLoop:
 
     async def _validate_inbound(self, message: InboundMessage) -> dict | None:
         """Validate the public delivery boundary before writing history."""
-        session = await self.session_manager.get_session(message.session_id)
+        session = await self.sessions.get_session(message.session_id)
         if session is None:
             return {
                 "code": "session_not_found",
@@ -473,7 +455,7 @@ class AgentLoop:
 
     async def delete_session(self, session_id: str) -> None:
         """删除 active Turn 后交给 SessionService；Inbox 监听 disposed Hook 清理自身。"""
-        meta = await self.session_manager.get_session_metadata(session_id)
+        meta = await self.sessions.get_session_metadata(session_id)
         member_ids: list[str] = []
         teams = meta.get("teams") if isinstance(meta, dict) else None
         if isinstance(teams, dict):
@@ -485,7 +467,7 @@ class AgentLoop:
         # 再删除历史，否则 Reply 的最终 update_message 会访问已删除的索引。
         for member_id in (session_id, *member_ids):
             await self._cancel_session_and_wait(member_id)
-        await self.session_manager.delete_session(session_id)
+        await self.sessions.delete_session(session_id)
 
     async def stop(self) -> None:
         """优雅关闭：取消 active Run；Hook scope 由 Plugin Fiber 管理。"""
@@ -534,14 +516,17 @@ class AgentLoop:
         metadata: InboundMetadata,
     ):
         """Resume a paused Agent through the existing Session Event path."""
-        inbound = BusMessage(
-            type="user_message",
-            from_channel=channel_id,
-            from_session=session_id,
-            to_channel="agent",
-            to_session=session_id,
-            data={"session_id": session_id, "content": ""},
-            metadata=metadata,
+        metadata_values = (
+            metadata.model_dump(mode="json")
+            if isinstance(metadata, InboundMetadata)
+            else dict(metadata or {})
+        )
+        inbound = InboundMessage(
+            session_id=session_id,
+            request_id=str(metadata_values.get("request_id") or ""),
+            channel_id=channel_id,
+            source="confirmation",
+            metadata=metadata_values,
         )
         if not events:
             return TurnOutcome(
@@ -585,7 +570,7 @@ class AgentLoop:
 
     async def _publish_session_status_async(self, session_id: str, status: str) -> None:
         """发布独立于 pending 的 Session activity 状态。"""
-        session = await self.session_manager.get_session(session_id)
+        session = await self.sessions.get_session(session_id)
         if not session:
             # 删除 Session 后，active Turn 的 finally 仍可能运行到这里；历史已
             # 经不存在时没有合法的目标 Channel，也不应向空 to_channel 投递消息。
@@ -603,7 +588,7 @@ class AgentLoop:
                 status,
             )
             return
-        await self.bus.publish_outbound(
+        await self.message_bus.publish_outbound(
             BusMessage(
                 type="session/status",
                 from_channel=channel_id,
