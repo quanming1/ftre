@@ -40,6 +40,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ./cordis-py
+          # Core 声明依赖 ftre-llm；先注册仓内发行物，避免 pip 在安装 Core 时访问 PyPI。
+          pip install -e ./packages/ftre-llm --no-deps
           pip install -e ./ftre-agent-core
           # ftre 默认依赖仓内八个 Package；先以 no-deps 方式注册本地发行物，
           # 避免 pip 在安装 Host 时去 PyPI 查找尚未发布的 monorepo Package。
@@ -48,7 +50,6 @@ jobs:
           pip install -e ./packages/ftre-messaging --no-deps
           pip install -e ./packages/ftre-task --no-deps
           pip install -e ./packages/ftre-team --no-deps
-          pip install -e ./packages/ftre-llm --no-deps
           pip install -e ./packages/ftre-llm-recovery --no-deps
           pip install -e ./packages/ftre-llm-fallback --no-deps
           pip install -e .
