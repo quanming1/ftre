@@ -132,6 +132,6 @@ F32 完成后，F34 可以直接以以下事实为前置：
 | `01cafa9` | Agent Runtime 与公开 Service 的生产接线迁移、重复 Owner 删除 |
 | `075d672` | F32 架构门禁、契约测试和生命周期回归 |
 | `0d79d5f` | 修复 LLM adapters-updated 回调的 Context Locator 访问，并补充架构回归门禁 |
-| `b10a99a` | 最终验收报告、CHANGELOG、PRD/TODO 收尾 |
+| `456b306` | 最终验收报告、CHANGELOG、PRD/TODO 收尾 |
 
 未 push、未 merge；提交前后均按 `docs/COMMIT.md` 校验提交格式。最终交付要求工作树除执行前明确保留的外部仓库修改外保持干净。
