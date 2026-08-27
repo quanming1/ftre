@@ -11,8 +11,8 @@ import inspect
 
 from ftre_agent import AgentService, InboundMessage
 
-from ftre.services.agent.profile.models import EffectiveProfile
-from ftre.services.agent.profile.service import AgentProfileService
+from ftre.services.agent_profile.models import EffectiveProfile
+from ftre.services.agent_profile.service import AgentProfileService
 from ftre.services.config.service import ConfigService
 from ftre.services.messaging.bus.service import MessageBusService
 from ftre.services.session.service import SessionService
@@ -165,7 +165,7 @@ def test_config_service_resolves_agent_config_from_its_snapshot(tmp_path, monkey
         },
     )
     monkeypatch.setattr(
-        "ftre.services.agent.config.load_config",
+        "ftre.services.agent_profile.config.load_config",
         lambda: (_ for _ in ()).throw(AssertionError("must not read global loader")),
     )
 

@@ -1578,10 +1578,10 @@ stages:
             status: done
           - id: F35.2
             title: 冻结 Agent API、状态、事件和 Hook 契约
-            status: todo
+            status: done
           - id: F35.3
             title: Agent Profile 配置解析与旧 agent 目录清理
-            status: todo
+            status: in_progress
           - id: F35.4
             title: Inbox Msg 队列、原子 reservation 与 Hook 接入
             status: todo

@@ -29,11 +29,36 @@ class FactoryRegistrationMismatchError(AgentServiceError):
     code = "agent_factory_registration_mismatch"
 
 
+class AgentNotFoundError(AgentServiceError):
+    code = "agent_not_found"
+
+
+class AgentAlreadyExistsError(AgentServiceError):
+    code = "agent_already_exists"
+
+
+class AgentBusyError(AgentServiceError):
+    code = "agent_busy"
+
+
+class InvalidRunRequestError(AgentServiceError):
+    code = "agent_run_request_invalid"
+
+
+class RunConflictError(AgentServiceError):
+    code = "agent_run_conflict"
+
+
 __all__ = [
+    "AgentAlreadyExistsError",
+    "AgentBusyError",
+    "AgentNotFoundError",
     "AgentServiceError",
     "FactoryAlreadyRegisteredError",
     "FactoryNotRegisteredError",
     "FactoryRegistrationMismatchError",
     "InvalidFactoryError",
+    "InvalidRunRequestError",
+    "RunConflictError",
     "ServiceClosedError",
 ]

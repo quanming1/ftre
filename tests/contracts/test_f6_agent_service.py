@@ -40,7 +40,7 @@ async def test_agent_service_uses_factory_registration_and_closes_cleanly():
     registration = service.register_factory(runtime)
 
     assert not hasattr(service, "loop")
-    assert service.list() == [{"id": "default", "state": "ready"}]
+    assert service.list() == ()
     assert service.get_session_status("busy") == "running"
     assert service.is_session_busy("busy") is True
     assert await service.run(InboundMessage("session", "request", "ws", "message")) == "executed"
@@ -49,7 +49,7 @@ async def test_agent_service_uses_factory_registration_and_closes_cleanly():
 
     assert service.unregister_factory(registration) is True
     assert service.unregister_factory(registration) is False
-    assert service.list() == []
+    assert service.list() == ()
     assert service.status("busy") == "idle"
 
 

@@ -12,7 +12,7 @@
 | 验收日期 | — |
 | 关联文档 | `docs/TODO.yaml` F35；`docs/prd/PRD-F30-llm-service-package.md`；`docs/prd/PRD-F33-agent-package-final-architecture.md`；`docs/prd/PRD-F34-tool-service-runtime.md`；`AGENTS.md` |
 
-> **当前执行状态：F35.1 已完成，等待提交。** 本轮只完成 AgentService Owner 与 Runtime Factory 分离；UserMessage、Inbox reservation、Profile 迁移等后续阶段尚未开始。
+> **当前执行状态：F35.3 开发中。** F35.1、F35.2 已完成并提交；本轮只迁移 Agent Profile/配置/路由 Owner 并引入 ProfileSnapshot，不开始 Inbox reservation 或 UserMessage 投影。
 
 ## 1. 背景与目标
 
@@ -60,8 +60,8 @@ F35 按以下顺序推进，每个阶段都是独立的“实现 → 验证 → 
 | 阶段 | 只做什么 | 阶段验证 | 阶段完成后的 commit |
 |---|---|---|---|
 | **F35.1（已完成）** | `ftre-agent` 提供唯一 `agents` Service；Runtime 删除 Service 构造/provide，改为注册 Factory；固定 Composition 顺序 | Owner 架构扫描、Plugin 启动/关闭测试、现有 run/cancel/status 回归、`pytest`、`ruff`、`git diff --check` | `feat(F35): 分离 AgentService Owner 与 Runtime Factory` |
-| F35.2 | 冻结 Agent API、状态、Event、Hook 和错误契约 | Contract/clean import/fake factory 测试 | `feat(F35): 冻结 Agent 公共契约` |
-| F35.3 | Profile/Prompt 配置边界与旧 `services/agent` 清理 | 配置优先级、快照、旧引用扫描 | `feat(F35): 收敛 Agent Profile Service` |
+| **F35.2（开发中）** | 冻结 Agent API、状态、Event、Hook 和错误契约；Runtime 通过 Handle 适配现有 Loop | Contract/clean import/fake factory 测试 | `feat(F35): 冻结 Agent 公共契约` |
+| **F35.3（开发中）** | Profile/Prompt 配置边界与旧 `services/agent` 清理；引入 ProfileSnapshot | 配置优先级、快照、旧引用扫描 | `feat(F35): 收敛 Agent Profile Service` |
 | F35.4 | Inbox Msg[]、reservation、lease、claim/requeue | 并发、崩溃恢复、无丢消息测试 | `feat(F35): 建立 Inbox 原子投递` |
 | F35.5 | `ContinueTurn`、`before-reasoning`、真实 `UserMessageEvent` 和 Assistant 边界 | 事件时序、Projection、客户端实时流测试 | `feat(F35): 完成 UserMessage 消息边界` |
 | F35.6 | 取消、重启、架构收尾、clean install 和最终验收 | 全量门禁与 DoD | `feat(F35): 完成 Agent 与 Inbox 边界收敛` |
@@ -106,6 +106,66 @@ git diff --check
 - 上述命令全部退出码为 0；只允许提交 F35.1 相关文件。
 
 **F35.1 commit 门禁**：验证全部通过后才允许提交；提交前更新 TODO F35.1 为 `done`、本 PRD 对应勾选和变更记录。提交失败不得进入 F35.2。
+
+### 2.0.2 F35.2 实施卡（当前唯一工作包）
+
+**目标**：让 Agent Service 真正提供 `create/resume/get/list/run/stream/cancel/status/dispose`，并用 typed data model 约束 Runtime 调用；本阶段保留旧 `InboundMessage` 适配入口，供 F35.3/F35.4 迁移期间使用。
+
+**必须修改**：
+
+1. `ftre-agent` 新增不可变 `AgentCreateSpec`、`AgentResumeSpec`、`AgentRunRequest`、`AgentView`、`AgentEvent`、`AgentRuntimeHandle` 和 `AgentHandle` 契约。
+2. `AgentService` 维护 Agent Handle 表、active Run 状态和 `AgentView`，提供 create/resume/run/stream/cancel/status/dispose。
+3. `ftre-agent-runtime` 用 `AgentLoopFactory` 和 `AgentLoopHandle` 适配当前 Session-oriented `AgentLoop`；Service 不再直接持有 Loop 实例。
+4. 增加 Agent API、状态跃迁、Factory Handle、typed error 和 clean import 测试。
+
+**本阶段明确不修改**：
+
+- Inbox 的 `InboundMessage`、队列 claim/lease/reservation、Profile 目录和 Session Projection；这些分别留给 F35.3～F35.5。
+- Core ReAct、LLM、Tool、Retry、Fallback、Compaction 和客户端。
+
+**F35.2 验证命令**（在 `E:\ftre` 执行）：
+
+```powershell
+python -m pytest -q tests/contracts tests/architecture packages/ftre-agent-runtime/tests
+python -m ruff check src tests packages
+git diff --check
+```
+
+**F35.2 验收断言**：
+
+- `AgentService.create/resume` 返回 `AgentHandle`；`run/stream/cancel/status/dispose` 只通过 Handle/Factory 协议工作。
+- `AgentService` 的 `get/list` 返回只读 `AgentView`，不暴露 Runtime 对象；同一 Agent 并发 Run 得到 `AgentBusyError`。
+- Runtime 只注册 `AgentLoopFactory`，不把 `AgentLoop` 直接塞进 Service；Factory 缺失、重复注册、Service 关闭、Agent 不存在和非法请求都有 typed error。
+- `ftre-agent` 可在没有 ftre Host 源码的解释器中导入；Core/Runtime/Host 现有回归不被破坏。
+- 上述命令全部通过后才允许提交 F35.2；不得在本阶段顺手改 Inbox/Profile/Event Projection。
+
+### 2.0.3 F35.3 实施卡（当前唯一工作包）
+
+**目标**：让 Profile 成为独立 Host Service，按项目 > 用户 > Host 默认来源解析不可变快照；删除 `src/ftre/services/agent` 目录 Owner，不改变 Agent Runtime 的执行行为。
+
+**必须修改**：
+
+1. 将 `src/ftre/services/agent/profile/*`、`config.py`、`router.py` 迁移到 `src/ftre/services/agent_profile/`，更新 Composition、Session、Compaction、Team、Task、Messaging 和测试引用。
+2. `AgentProfileService.resolve(ProfileQuery)` 返回 `AgentProfileSnapshot`；快照包含 LLM、prompt sources、tool policy、workspace、source trace、snapshot hash，外部不能修改内部值。
+3. 保留旧 `resolve(agent_id, session_id)` 作为本阶段内部迁移调用，不能新增新的旧路径引用；F35.4 后删除该兼容入口。
+4. 增加项目 Profile 优先级、用户 Profile 回退、快照 hash/不可变和旧路径扫描测试。
+
+**本阶段明确不修改**：
+
+- AgentService 的 Run/Msg 数据面、Inbox reservation/lease/claim、UserMessageEvent、Session Projection、客户端和 `E:\ftre-agent-core`。
+
+**F35.3 验证命令**：
+
+```powershell
+python -m pytest -q tests/test_agent_manager.py tests/test_context_config.py tests/contracts/test_f35_profile_snapshot.py tests/architecture
+python -m ruff check src tests packages
+rg -n 'ftre\.services\.agent(\.| import)|services\.agent\.profile|services\.agent\.config' src packages tests
+git diff --check
+```
+
+`rg` 无匹配是成功；如需在 PowerShell 中严格返回 0，沿用 F35.1 的 `$LASTEXITCODE` 处理脚本。
+
+**F35.3 commit 门禁**：上述验证全部通过，且旧 `src/ftre/services/agent` 不再存在后，才提交 `feat(F35): 收敛 Agent Profile Service`；提交后将 F35.3 标为 done、F35.4 标为 in_progress。
 
 ### 2.1 功能需求
 

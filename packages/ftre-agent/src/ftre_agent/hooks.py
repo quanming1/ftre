@@ -30,6 +30,7 @@ from ftre_agent_core.hooks import (
 )
 
 from ftre_agent.config import AgentConfig
+from ftre_agent.contracts import AgentRunRequest
 
 # Agent Service owns lifecycle and active-turn names; Kernel only dispatches them.
 AGENT_BEFORE_RUN = "agent/before-run"
@@ -49,12 +50,13 @@ class AgentSubject:
 
 @dataclass(frozen=True, slots=True)
 class BeforeRunPayload:
-    """一条已交付 InboundMessage 进入 Agent Run 前的准入输入。"""
+    """Agent Run 建立前的准入输入。"""
 
     agent: AgentSubject
-    session_id: str
-    turn_id: str
-    cancellation: asyncio.Event
+    request: AgentRunRequest | None = None
+    session_id: str = ""
+    turn_id: str = ""
+    cancellation: asyncio.Event = field(default_factory=asyncio.Event)
     channel_id: str = ""
     config: AgentConfig | None = None
     context: Mapping[str, Any] = field(default_factory=dict)
@@ -62,16 +64,25 @@ class BeforeRunPayload:
 
 @dataclass(frozen=True, slots=True)
 class AllowRun:
-    """默认允许本次 InboundMessage 创建 active Run。"""
+    """允许本次 AgentRun 创建 active Run。"""
 
     context: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
 class RejectRun:
-    """阻止本次 InboundMessage 进入 active Run；pending 仍由 Inbox 持有。"""
+    """阻止本次 AgentRun 进入 active Run。"""
 
     reason: str
+    retryable: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DeferRun:
+    """暂缓本次 AgentRun；队列调用方可以按 retry_at 再次尝试。"""
+
+    reason: str
+    retry_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +113,7 @@ class RequestErrorPayload:
     cancellation: asyncio.Event
     channel_id: str = ""
     config: AgentConfig | None = None
+    request: AgentRunRequest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +149,7 @@ AGENT_BEFORE_RUN_SPEC = HookSpec(
     HookMode.WATERFALL,
     failure_policy=HookFailurePolicy.PROPAGATE,
     payload_type=BeforeRunPayload,
-    result_type=(AllowRun, RejectRun),
+    result_type=(AllowRun, RejectRun, DeferRun),
     default=_allow_run,
     scope=HookScope.AGENT,
 )
@@ -182,6 +194,7 @@ __all__ = [
     "BeforeReasoningResult",
     "BeforeRunPayload",
     "ContinueTurn",
+    "DeferRun",
     "RejectRun",
     "RequestErrorPayload",
     "RetryRequest",

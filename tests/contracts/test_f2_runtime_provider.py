@@ -102,4 +102,4 @@ def test_runtime_plugin_registers_private_loop_with_agent_service(monkeypatch) -
     asyncio.run(dispose())
     assert stopped == [True]
     assert not service.is_ready()
-    assert service.list() == []
+    assert service.list() == ()
