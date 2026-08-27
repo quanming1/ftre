@@ -54,7 +54,7 @@ def test_retired_mailbox_runtime_tree_and_session_owner_are_gone() -> None:
 def test_agent_service_contract_is_single_message_execution_boundary() -> None:
     source = (AGENT_PACKAGE / "service.py").read_text(encoding="utf-8")
     assert "async def run(self, message: InboundMessage)" in source
-    assert "self.runtime.run_inbound(message)" in source
+    assert "self._factory_or_raise().run_inbound(message)" in source
     assert "submit(" not in source
     assert "pending" not in source
 

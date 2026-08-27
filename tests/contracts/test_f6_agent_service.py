@@ -33,10 +33,11 @@ class FakeRuntime:
 
 
 @pytest.mark.asyncio
-async def test_agent_service_uses_runtime_binding_and_detaches_cleanly():
+async def test_agent_service_uses_factory_registration_and_closes_cleanly():
     service = AgentService()
     runtime = FakeRuntime()
-    service.attach_runtime(runtime)
+    service.start()
+    registration = service.register_factory(runtime)
 
     assert not hasattr(service, "loop")
     assert service.list() == [{"id": "default", "state": "ready"}]
@@ -46,8 +47,8 @@ async def test_agent_service_uses_runtime_binding_and_detaches_cleanly():
     assert await service.cancel("session") is True
     assert [call[0] for call in runtime.calls] == ["run", "cancel"]
 
-    service.detach_runtime()
-    service.detach_runtime()
+    assert service.unregister_factory(registration) is True
+    assert service.unregister_factory(registration) is False
     assert service.list() == []
     assert service.status("busy") == "idle"
 

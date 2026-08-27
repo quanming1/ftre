@@ -49,20 +49,23 @@ class _RecordingRuntime:
         self.calls.append("resume")
 
 
-def test_runtime_binding_is_idempotent_and_rejects_second_runtime() -> None:
+def test_factory_registration_rejects_second_factory_and_unregistration_is_idempotent() -> None:
     service = AgentService()
     runtime = _RecordingRuntime()
-    service.attach_runtime(runtime)
-    service.attach_runtime(runtime)  # 同一实例幂等
-    with pytest.raises(RuntimeError, match="already has an attached runtime"):
-        service.attach_runtime(_RecordingRuntime())
-    assert service.runtime is runtime
+    service.start()
+    registration = service.register_factory(runtime)
+    with pytest.raises(RuntimeError, match="already has a registered factory"):
+        service.register_factory(_RecordingRuntime())
+    assert service.factory_name == "_RecordingRuntime"
+    assert service.unregister_factory(registration) is True
+    assert service.unregister_factory(registration) is False
 
 
 @pytest.mark.asyncio
 async def test_service_run_returns_stable_agent_run_result() -> None:
     service = AgentService()
-    service.attach_runtime(_RecordingRuntime())
+    service.start()
+    service.register_factory(_RecordingRuntime())
     result = await service.run(InboundMessage("s1", "r1", "ws", "hello"))
     assert isinstance(result, AgentRunResult)
     assert result.status == "completed"

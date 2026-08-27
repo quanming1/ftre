@@ -78,7 +78,8 @@ def test_agent_service_public_boundary_accepts_one_inbound_message() -> None:
     }
     assert expected <= _method_names(AgentService)
     service = AgentService()
-    service.attach_runtime(_FakeAgentRuntime())
+    service.start()
+    service.register_factory(_FakeAgentRuntime())
     message = InboundMessage("s1", "r1", "ws", "hello")
     assert asyncio.run(service.run(message)) == message
     assert service.status("s1") == "idle"

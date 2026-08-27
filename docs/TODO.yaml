@@ -1550,3 +1550,44 @@ stages:
           - id: F34.7
             title: 取消并发生命周期和发行验收
             status: done
+      - id: F35
+        title: Agent Service Inbox UserMessage Boundary
+        status: todo
+        date: 2026-08-27
+        prd: docs/prd/PRD-F35-agent-service-inbox-message-boundary.md
+        prd_status: 开发中
+        depends_on:
+          - F33
+          - F34
+        implementation_boundary: 只修改 E:\\ftre 的 Agent Service、Agent Runtime Provider、Agent Profile、Inbox Hook、UserMessageEvent 投影和架构/集成测试；不修改 E:\\ftre-agent-core 的 ReAct、Hook 或 Tool 协议，不修改客户端布局
+        modules:
+          - packages/ftre-agent/
+          - packages/ftre-agent-runtime/
+          - packages/ftre-inbox/
+          - src/ftre/services/agent_profile/
+          - src/ftre/services/session/
+          - src/ftre/app/gateway/composition.py
+          - tests/architecture/
+          - tests/contracts/
+          - tests/integration/
+          - tests/lifecycle/
+        acceptance: AgentService 是唯一 agents Owner；Runtime 只注册 Factory；Agent 不依赖 InboundMessage；Profile、Inbox 和 Tool/LLM Service 边界清晰；next-step 在 before-reasoning 产生一次真实 UserMessageEvent，立即关闭旧 Assistant 并轮换 message_id；busy、取消、错误、恢复和全量测试通过
+        tasks:
+          - id: F35.1
+            title: AgentService Owner 与 Runtime Factory 分离
+            status: done
+          - id: F35.2
+            title: 冻结 Agent API、状态、事件和 Hook 契约
+            status: todo
+          - id: F35.3
+            title: Agent Profile 配置解析与旧 agent 目录清理
+            status: todo
+          - id: F35.4
+            title: Inbox Msg 队列、原子 reservation 与 Hook 接入
+            status: todo
+          - id: F35.5
+            title: UserMessageEvent 注入、Assistant 边界与投影顺序
+            status: todo
+          - id: F35.6
+            title: 生命周期、恢复、架构扫描和全量验收
+            status: todo

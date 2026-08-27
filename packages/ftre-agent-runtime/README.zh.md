@@ -4,7 +4,7 @@ ftre 平台的 Agent 具体执行实现包（PRD-F33）。
 
 内容：
 
-- `plugin.py` —— 唯一的 Runtime Provider Plugin（entry point `agent-runtime`），发布 `agents` Service 并把私有 Runtime 绑定到同一个 Cordis Fiber
+- `plugin.py` —— 唯一的 Runtime Provider Plugin（entry point `agent-runtime`），把私有 Runtime 注册为已有 `agents` Service 的 Factory
 - `engine.py` —— `AgentLoop`：active Turn 运行时、Agent Hook 分发、取消与维护屏障
 - `turn_executor.py` —— Turn 状态机（`BUILDING → RUNNING → FINALIZING → 终态`）
 - `factory.py` —— 唯一的 Core `ReActAgent` 构造点

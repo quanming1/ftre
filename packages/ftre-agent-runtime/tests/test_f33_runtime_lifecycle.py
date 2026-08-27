@@ -25,15 +25,14 @@ async def test_runtime_plugin_composes_binds_and_detaches(tmp_path) -> None:
     )
     agents = composition.context.get("agents")
     assert agents is not None
-    runtime = agents.runtime
-    assert runtime is not None
-    # Runtime 未绑定时查询安全；绑定后状态查询可用。
-    assert runtime.get_session_status("nope") == "idle"
+    assert agents.is_ready()
+    assert agents.factory_name == "AgentLoop"
+    # Runtime 通过 Service 转发状态；具体 Loop 不从 Service 公共面暴露。
+    assert agents.get_session_status("nope") == "idle"
 
     await composition.close()
 
-    with pytest.raises(RuntimeError, match="runtime is not ready"):
-        _ = agents.runtime
+    assert not agents.is_ready()
     # 关闭后未绑定状态：查询回 idle、不抛异常。
     assert agents.status("nope") == "idle"
 

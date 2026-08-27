@@ -68,7 +68,7 @@ def test_ac3_legacy_host_agent_owner_is_fully_removed() -> None:
 
 
 def test_ac15_package_metadata_and_entry_points_are_declared() -> None:
-    """AC15：两个 Package 有完整元数据；只有 Runtime 暴露 ftre.plugins entry point。"""
+    """AC15：两个 Package 有完整元数据，分别暴露 Service/Runtime entry point。"""
     agent_pyproject = (AGENT_PKG / "pyproject.toml").read_text(encoding="utf-8")
     runtime_pyproject = (RUNTIME_PKG / "pyproject.toml").read_text(encoding="utf-8")
     assert 'name = "ftre-agent"' in agent_pyproject
@@ -78,7 +78,7 @@ def test_ac15_package_metadata_and_entry_points_are_declared() -> None:
     assert (RUNTIME_PKG / "README.md").exists()
     assert (RUNTIME_PKG / "README.zh.md").exists()
 
-    assert "ftre.plugins" not in agent_pyproject
+    assert 'agent-service = "ftre_agent.plugin:apply"' in agent_pyproject
     assert 'agent-runtime = "ftre_agent_runtime.plugin:apply"' in runtime_pyproject
 
 
@@ -135,12 +135,13 @@ def test_run_result_contract_has_stable_status_values() -> None:
     assert ftre_agent.InboundMessage("r", "ws", "user").source == "user"
 
 
-def test_composition_loads_runtime_entry_point_only() -> None:
-    """AC4：Host Composition 只通过 Runtime entry point 装载，不手工构造。"""
+def test_composition_loads_agent_service_then_runtime_entry_point() -> None:
+    """AC4：Host Composition 先装载 AgentService，再装载 Runtime Provider。"""
     composition = (ROOT / "src" / "ftre" / "app" / "gateway" / "composition.py").read_text(
         encoding="utf-8"
     )
     assert "ftre_agent_runtime.plugin:apply" in composition
+    assert "ftre_agent.plugin:apply" in composition
     assert "ftre.services.agent.plugin" not in composition
     assert "AgentLoop(" not in composition
     bootstrap = (ROOT / "src" / "ftre" / "app" / "gateway" / "bootstrap.py").read_text(

@@ -16,3 +16,6 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.entry-points."ftre.plugins"]
+agent-service = "ftre_agent.plugin:apply"

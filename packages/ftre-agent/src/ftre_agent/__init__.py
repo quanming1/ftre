@@ -1,9 +1,9 @@
 """ftre-agent：Agent 稳定契约包。
 
 只包含 AgentService、输入/结果模型、身份 Registry、Agent Hook 契约和跨包
-配置快照；不包含 AgentLoop、LLM Client 或任何工具执行实现。Runtime 由
-``ftre-agent-runtime`` Package 提供，通过 Provider Plugin 装配并发布
-``agents`` Service。
+配置快照；不包含 AgentLoop、LLM Client 或任何工具执行实现。`ftre_agent.plugin`
+通过 Provider Plugin 唯一发布 ``agents`` Service；Runtime 由
+``ftre-agent-runtime`` Package 提供，并注册到该 Service。
 
 依赖边界：本包不依赖 ftre Host（``ftre.services.*``），可被测试替身和其他
 Host 独立引用。
@@ -36,7 +36,7 @@ from .hooks import (
     StopTurn,
 )
 from .registry import AgentRecord, AgentRegistry, HookScopeCarrier
-from .service import AgentService
+from .service import AgentService, FactoryRegistration
 from .status import AgentStatus
 
 __all__ = [
@@ -64,6 +64,7 @@ __all__ = [
     "BeforeReasoningResult",
     "BeforeRunPayload",
     "ContinueTurn",
+    "FactoryRegistration",
     "HookScopeCarrier",
     "InboundMessage",
     "LLMConfig",

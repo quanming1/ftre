@@ -85,7 +85,7 @@ def _provider_files() -> list[Path]:
 def test_f31_service_provider_entries_have_one_owner() -> None:
     """F31 依赖图必须仍由 Composition + Provider Plugin 唯一声明。"""
     expected = {
-        "agents": "ftre-agent-runtime",
+        "agents": "ftre-agent/src/ftre_agent/plugin.py",
         "sessions": "session",
         "session_events": "session",
         "message_bus": "bus",
@@ -112,6 +112,8 @@ def test_f31_service_provider_entries_have_one_owner() -> None:
             "agent_profiles": "agent-profiles",
         }[key]
         assert manifest_id in manifests
+
+    assert manifests["agent-runtime"].entry_text == "ftre_agent_runtime.plugin:apply"
 
 
 def test_f31_manifest_entries_resolve_to_unique_plugin_callables() -> None:

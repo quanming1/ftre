@@ -4,7 +4,7 @@ The concrete Agent runtime implementation for the ftre platform (PRD-F33).
 
 Contents:
 
-- `plugin.py` — the single Runtime provider plugin (entry point `agent-runtime`), publishing the `agents` service and binding the private runtime to one Cordis Fiber
+- `plugin.py` — the single Runtime provider plugin (entry point `agent-runtime`), registering the private runtime as the `agents` service's Runtime Factory
 - `engine.py` — `AgentLoop`: active-turn runtime, agent hook dispatch, cancellation, maintenance barrier
 - `turn_executor.py` — the Turn state machine (`BUILDING → RUNNING → FINALIZING → terminal`)
 - `factory.py` — the only Core `ReActAgent` construction point
