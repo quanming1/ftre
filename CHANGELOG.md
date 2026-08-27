@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.1] - 2026-08-27
+
+### 修复
+
+- **responses reasoning 跨 Provider 重放 400**（F30）：历史 reasoning 组重放前按目标协议形状校验，DeepSeek UUID 组发 GPT、GPT summary-only 组发 DeepSeek 不再触发上游 400，不兼容组自动降级 rs_legacy 重建路径；组级原子判定杜绝混合历史
+- **CI 安装失败**（D1）：F33 新增的 ftre-agent/ftre-agent-runtime Package 在 CI 安装序列中缺本地注册，pip 解析失败；补齐 no-deps 注册
+
+### 测试
+
+- inbox hook 测试解除对 Core 私有 LLM API 的依赖，改用 ftre_llm 事件类型
+
 ### F33 Agent Package 终局架构（已完成，未发布）
 
 - 新增 `ftre-agent` 契约包（`packages/ftre-agent`）：AgentService、InboundMessage、
