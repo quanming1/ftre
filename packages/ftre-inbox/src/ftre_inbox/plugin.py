@@ -111,7 +111,10 @@ async def apply(ctx: Context, config=None):
         async def on_before_reasoning(payload, next_):
             """把 active Turn 的 next-step 原子 claim 成 Core 普通消息。"""
             result = await next_()
-            claimed = await service.deliver_next_step_for_reasoning(payload.session_id)
+            claimed = await service.deliver_next_step_for_reasoning(
+                payload.session_id,
+                turn_id=payload.turn_id,
+            )
             if not claimed:
                 return result
             injected = tuple(

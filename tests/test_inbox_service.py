@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from ftre_agent import InboundMessage
+from ftre_inbox.protocol import InboundMessage
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
 

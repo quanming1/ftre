@@ -1552,10 +1552,10 @@ stages:
             status: done
       - id: F35
         title: Agent Service Inbox UserMessage Boundary
-        status: todo
+        status: done
         date: 2026-08-27
         prd: docs/prd/PRD-F35-agent-service-inbox-message-boundary.md
-        prd_status: 开发中
+        prd_status: 已验收
         depends_on:
           - F33
           - F34
@@ -1587,7 +1587,7 @@ stages:
             status: done
           - id: F35.5
             title: UserMessageEvent 注入、Assistant 边界与投影顺序
-            status: in_progress
+            status: done
           - id: F35.6
             title: 生命周期、恢复、架构扫描和全量验收
-            status: todo
+            status: done

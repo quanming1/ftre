@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from ftre_agent import AgentConfig, AgentRegistry, InboundMessage, LLMConfig
+from ftre_agent import AgentConfig, AgentRegistry, LLMConfig
 from ftre_agent_core.agent.runner import RunState, RunStatus
 from ftre_agent_core.event import (
     ReplyEndEvent,
@@ -15,6 +15,7 @@ from ftre_agent_core.event import (
 )
 from ftre_agent_core.message import Msg
 from ftre_agent_runtime import AgentLoop, TurnExecutor
+from ftre_agent_runtime.protocol import RuntimeInput
 
 from ftre.services.messaging.bus import EventBus, MessageBusService
 from ftre.services.session.events import SessionEventService
@@ -138,7 +139,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
 
 
 def _inbound():
-    return InboundMessage(
+    return RuntimeInput(
         session_id="test-session",
         request_id="request-test",
         channel_id="ws",
@@ -233,7 +234,7 @@ async def test_user_message_is_projected_before_frontend_echo():
 async def test_claimed_request_identity_is_persisted_on_user_message():
     executor = _make_executor(FakeAgent())
     inbound = _inbound()
-    inbound = InboundMessage(
+    inbound = RuntimeInput(
         session_id="test-session",
         request_id="request-a",
         channel_id="ws",
@@ -252,7 +253,7 @@ async def test_channel_mismatch_is_failed_instead_of_false_completed():
     """防串台拒绝必须成为失败的 Turn 结果，不能伪装成 completed。"""
     executor = _make_executor(FakeAgent())
     inbound = _inbound()
-    inbound = InboundMessage(
+    inbound = RuntimeInput(
         session_id="test-session",
         request_id="request-channel",
         channel_id="cron",
@@ -260,7 +261,7 @@ async def test_channel_mismatch_is_failed_instead_of_false_completed():
     )
 
     error = await executor._loop._validate_inbound(
-        InboundMessage(
+        RuntimeInput(
             session_id="test-session",
             request_id="request-channel",
             channel_id=inbound.channel_id,
@@ -298,7 +299,7 @@ async def test_compact_decisions_use_selected_agent_context_window():
         soul_prompt="",
         user_prompt_md="",
     ))
-    inbound = InboundMessage(
+    inbound = RuntimeInput(
         session_id="test-session",
         request_id="request-coder",
         channel_id="ws",

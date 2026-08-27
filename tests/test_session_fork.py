@@ -12,8 +12,8 @@
 """
 import pytest
 import pytest_asyncio
-from ftre_agent import InboundMessage
 from ftre_agent_core.message import AssistantMsg, UserMsg
+from ftre_inbox.protocol import InboundMessage
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
 

@@ -5,7 +5,7 @@ Stable Agent service contracts for the ftre platform.
 This package is the contract-only half of the ftre Agent split (PRD-F33):
 
 - `AgentService` — the public `agents` service entry (`run` / `cancel` / `status` / `is_busy` / `delete_session` / `resume_confirmation`), provided by `ftre_agent.plugin`
-- `InboundMessage` — the single execution input, produced by the Inbox package after admission
+- `AgentRunRequest` — the single execution input containing an immutable `Msg[]` snapshot
 - `AgentRunResult` — the single execution result (`completed` / `cancelled` / `failed`)
 - `AgentRegistry` + `HookScopeCarrier` — agent identity and hook scope carriers
 - Agent hooks (`agent/before-run`, `agent/after-run`, `agent/run-error`) plus re-exports of the Core-owned `agent/before-reasoning` / `agent/stop-decision` specs

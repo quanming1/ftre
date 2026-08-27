@@ -40,6 +40,13 @@ class SessionEventService:
         self._sessions = sessions
         self._message_bus = message_bus
 
+    async def active_assistant_message_id(self, session_id: str) -> str | None:
+        """返回当前仍在聚合的 Assistant message_id，供消息边界事件引用。"""
+        snapshot = await self._sessions.projection.snapshot(session_id)
+        if not snapshot:
+            return None
+        return str(snapshot[-1].get("message_id") or snapshot[-1].get("reply_id") or "") or None
+
     async def emit(self, *args, **kwargs) -> Any:
         """先持久化 Session 事件，再广播权威事实。"""
         if len(args) < 3:
@@ -72,6 +79,8 @@ class SessionEventService:
         attachments: tuple[dict[str, Any], ...] = (),
         source: str = "user",
         agent_id: str = "",
+        run_id: str = "",
+        previous_assistant_message_id: str | None = None,
     ) -> Any:
         """幂等持久化并广播一条已经被 Inbox 接纳的用户输入。
 
@@ -99,9 +108,11 @@ class SessionEventService:
         }
         if agent_id:
             message_metadata["agent_id"] = agent_id
+        if previous_assistant_message_id:
+            message_metadata["previous_assistant_message_id"] = previous_assistant_message_id
         event = UserMessageEvent(
             id=event_id,
-            reply_id=f"input_{digest[:16]}",
+            reply_id=run_id or f"input_{digest[:16]}",
             content=from_openai_message(
                 {"role": "user", "content": persisted_content}
             ),
@@ -112,6 +123,8 @@ class SessionEventService:
                 "content": content,
                 "attachments": [dict(item) for item in attachments],
                 "source": source,
+                "run_id": run_id,
+                "previous_assistant_message_id": previous_assistant_message_id,
             },
         )
         return await self.emit(

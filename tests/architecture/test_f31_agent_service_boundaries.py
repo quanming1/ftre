@@ -195,12 +195,12 @@ def test_f32_runtime_uses_public_bus_and_session_exits() -> None:
 
 
 def test_f32_turn_input_and_core_creation_have_single_owner() -> None:
-    """InboundMessage 和 Core 工厂边界必须保持单向，避免 Runtime 再造协议。"""
+    """RuntimeInput 和 Core 工厂边界必须保持单向，避免 Runtime 再造公共协议。"""
     engine = (RUNTIME / "engine.py").read_text(encoding="utf-8")
     turn = (RUNTIME / "turn_executor.py").read_text(encoding="utf-8")
     factory = (RUNTIME / "factory.py").read_text(encoding="utf-8")
-    assert "InboundMessage(" in engine
-    assert "inbound: InboundMessage" in turn
+    assert "RuntimeInput(" in engine
+    assert "inbound: RuntimeInput" in turn
     assert "self._core_factory(" in turn
     assert "return ReActAgent(" in factory
     assert "ReActAgent(" not in turn.replace("ReActAgent | None", "")
@@ -260,7 +260,7 @@ def test_f31_llm_request_publisher_and_channel_boundary_are_real() -> None:
     )
     assert '"agent/request"' in llm_source
     assert '"agent/request"' not in runtime_sources
-    assert "InboundMessage" in (RUNTIME / "engine.py").read_text(encoding="utf-8")
+    assert "RuntimeInput" in (RUNTIME / "engine.py").read_text(encoding="utf-8")
     # F33：Runtime 经 MessageBusService 窄出口发布状态，不 import BusMessage。
     assert "BusMessage" not in runtime_sources
     assert "publish_session_status(" in (RUNTIME / "engine.py").read_text(encoding="utf-8")

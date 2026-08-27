@@ -13,9 +13,9 @@ from ftre_agent import (
     AgentRegistry,
     AgentRunResult,
     AllowRun,
-    InboundMessage,
 )
 from ftre_agent_runtime import AgentLoop
+from ftre_agent_runtime.protocol import RuntimeInput
 
 
 @pytest.mark.asyncio
@@ -67,8 +67,8 @@ async def test_after_run_wires_config_and_maintenance_barrier() -> None:
     # 直接覆盖 AgentLoop 到公开 AfterRunPayload 的接线。
     loop._dispatch_agent_hook = dispatch
 
-    await loop.run_inbound(
-        InboundMessage(
+    await loop.run_input(
+        RuntimeInput(
             session_id="session-1",
             request_id="request-1",
             channel_id="ws",

@@ -36,7 +36,7 @@ def test_ac1_agent_contract_package_imports_without_host() -> None:
     code = (
         "import sys; sys.path.insert(0, r'"
         + str(AGENT_PKG / "src")
-        + "'); import ftre_agent; assert ftre_agent.AgentService and ftre_agent.InboundMessage; "
+        + "'); import ftre_agent; assert ftre_agent.AgentService; assert not hasattr(ftre_agent, 'InboundMessage'); "
         "assert 'ftre.services' not in sys.modules and 'ftre' not in sys.modules; "
         "print('agent contract ok')"
     )
@@ -132,7 +132,7 @@ def test_run_result_contract_has_stable_status_values() -> None:
 
     result = ftre_agent.AgentRunResult(session_id="s", turn_id="t", status="completed")
     assert result.status == "completed"
-    assert ftre_agent.InboundMessage("r", "ws", "user").source == "user"
+    assert not hasattr(ftre_agent, "InboundMessage")
 
 
 def test_composition_loads_agent_service_then_runtime_entry_point() -> None:

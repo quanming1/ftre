@@ -24,7 +24,6 @@ from .contracts import (
     AgentRunResult,
     AgentRuntimeFactory,
     AgentView,
-    InboundMessage,
     RunReservation,
 )
 from .errors import (
@@ -136,7 +135,6 @@ class AgentService:
                 "AgentService already has a registered factory"
             )
         required = (
-            "run_inbound",
             "cancel_session",
             "get_session_status",
             "is_active_session",
@@ -266,33 +264,28 @@ class AgentService:
 
     async def run(
         self,
-        agent_id_or_message: str | InboundMessage,
-        request: AgentRunRequest | None = None,
+        agent_id: str,
+        request: AgentRunRequest,
     ) -> AgentRunResult:
-        """执行新 AgentRun；单参数 InboundMessage 仅供迁移中的旧 Inbox 使用。"""
-        if request is None:
-            if not isinstance(agent_id_or_message, InboundMessage):
-                raise InvalidRunRequestError("run requires (agent_id, AgentRunRequest)")
-            return await self._await(
-                self._factory_or_raise().run_inbound(agent_id_or_message)
-            )
-        if not isinstance(agent_id_or_message, str):
+        """执行一轮 AgentRun。"""
+        self._factory_or_raise()
+        if not isinstance(agent_id, str):
             raise InvalidRunRequestError("agent_id must be a string")
-        entry = self._entry_or_raise(agent_id_or_message)
+        entry = self._entry_or_raise(agent_id)
         self._expire_reservations()
         if entry.state in {"running", "stopping", "compacting"}:
-            raise AgentBusyError(f"Agent is busy: {agent_id_or_message}")
-        if request.session_id != (entry.spec.session_id or agent_id_or_message):
+            raise AgentBusyError(f"Agent is busy: {agent_id}")
+        if request.session_id != (entry.spec.session_id or agent_id):
             raise InvalidRunRequestError("request session does not belong to Agent")
         entry.state = "running"
         entry.run_id = request.request_id
         self._consume_reservation(
-            agent_id_or_message,
+            agent_id,
             request.session_id,
             request.request_id,
         )
-        self.registry.set_state(agent_id_or_message, "running")
-        await self._notify("status-changed", self.view(agent_id_or_message))
+        self.registry.set_state(agent_id, "running")
+        await self._notify("status-changed", self.view(agent_id))
         try:
             result = await self._await(entry.runtime.run(request))
             result = self._with_run_id(result, request.request_id)
@@ -304,8 +297,8 @@ class AgentService:
         finally:
             if entry.state == "running":
                 entry.state = "idle"
-            self.registry.set_state(agent_id_or_message, entry.state)
-            await self._notify("status-changed", self.view(agent_id_or_message))
+            self.registry.set_state(agent_id, entry.state)
+            await self._notify("status-changed", self.view(agent_id))
 
     async def stream(self, agent_id: str, request: AgentRunRequest):
         """转发 Runtime 事件流，并在流结束时更新 Agent 状态。"""
@@ -348,6 +341,7 @@ class AgentService:
                 )
             entry.state = "cancelled" if result else "idle"
             self.registry.set_state(agent_id, entry.state)
+            await self._notify("status-changed", self.view(agent_id))
             return result
         return await self._await(
             self._factory_or_raise().cancel_session(agent_id, **kwargs)

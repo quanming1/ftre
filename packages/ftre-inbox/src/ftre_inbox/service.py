@@ -11,19 +11,24 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ftre.services.messaging.bus import BusMessage
 
-from ftre_agent import AgentCreateSpec, AgentRunRequest
+from ftre_agent import AgentConfig, AgentCreateSpec, AgentRunRequest
 
 from ftre.services.messaging.bus import IngressResult
 
 from .hooks import (
     INBOX_ADMITTED_SPEC,
+    INBOX_BEFORE_ADMIT_SPEC,
     INBOX_BEFORE_CLAIM_SPEC,
     INBOX_CHANGED_SPEC,
     INBOX_CLAIMED_SPEC,
     INBOX_DEFERRED_SPEC,
     INBOX_DELIVERED_SPEC,
+    INBOX_DISCARDED_SPEC,
     INBOX_ERROR_SPEC,
+    INBOX_FAILED_SPEC,
     INBOX_STATUS_CHANGED_SPEC,
+    AllowAdmission,
+    BeforeAdmissionPayload,
     BeforeClaimPayload,
     EnterClaim,
     InboxAdmissionPayload,
@@ -31,8 +36,11 @@ from .hooks import (
     InboxClaimedPayload,
     InboxDeferredPayload,
     InboxDeliveredPayload,
+    InboxDiscardedPayload,
     InboxErrorPayload,
+    InboxFailedPayload,
     InboxStatusPayload,
+    RejectAdmission,
     RejectClaim,
 )
 from .models import InboxSnapshot, QueueItem, QueueTarget
@@ -60,7 +68,8 @@ class InboxService:
     """独立队列能力。
 
     ``agent`` 可以实现 F35 的 ``try_reserve``/``run(agent_id, AgentRunRequest)`` 数据面；
-    迁移中的旧替身仍可实现 ``run(InboundMessage)``。QueueItem 永远不会传进 AgentService。
+    Inbox ingress DTO 只在本 Service 内部转换为 AgentRunRequest，QueueItem 永远不会传进
+    AgentService。
     """
 
     key = "inbox"
@@ -306,6 +315,8 @@ class InboxService:
     async def deliver_next_step_for_reasoning(
         self,
         session_id: str,
+        *,
+        turn_id: str = "",
     ) -> tuple[QueueItem, ...]:
         """在下一次 Reasoning 前完成 next-step 的 DB-first 交付。
 
@@ -327,20 +338,35 @@ class InboxService:
                 removed = await self.repository.remove(session_id, candidate.request_id)
                 if removed is None:
                     continue
+                await self._dispatch_observe(
+                    INBOX_DISCARDED_SPEC,
+                    InboxDiscardedPayload(
+                        session_id=session_id,
+                        request_id=candidate.request_id,
+                        reason="before-claim-discard",
+                    ),
+                )
             await self._publish(session_id)
             return ()
-        history_ids = await self._persist_user_messages(candidates)
+        history_ids = await self._persist_user_messages(candidates, run_id=turn_id)
         claimed = await self._claim_candidates(session_id, snapshot, candidates)
         return self._attach_history_ids(claimed, history_ids)
 
     async def _persist_user_messages(
         self,
         candidates: tuple[QueueItem, ...],
+        *,
+        run_id: str = "",
     ) -> dict[str, str]:
         """在安全 Reasoning 边界持久化正式 UserMessage，并返回稳定 id。"""
         if self._session_events is None:
             return {}
         history_ids: dict[str, str] = {}
+        previous_assistant_id = None
+        if hasattr(self._session_events, "active_assistant_message_id"):
+            previous_assistant_id = await self._session_events.active_assistant_message_id(
+                candidates[0].session_id
+            )
         for candidate in candidates:
             # Plugin inject 只贡献上下文，不伪造用户历史；真正的 role=user 才会
             # 触发 Core 的 Assistant message_id 边界。
@@ -353,10 +379,13 @@ class InboxService:
                 content=candidate.content,
                 attachments=candidate.attachments,
                 source=candidate.source,
+                run_id=run_id,
+                previous_assistant_message_id=previous_assistant_id,
             )
             persisted = getattr(result, "persisted_messages", ()) or ()
             if persisted:
                 history_ids[candidate.request_id] = persisted[0].id
+            previous_assistant_id = None
         return history_ids
 
     @staticmethod
@@ -398,19 +427,44 @@ class InboxService:
                 text for text in (item.get_text_content() or "" for item in messages) if text
             )
             attachments = metadata.get("attachments", ())
+        candidate_item = QueueItem(
+            request_id=message.request_id,
+            sequence=0,
+            session_id=message.session_id,
+            channel_id=message.channel_id,
+            content=content,
+            attachments=tuple(dict(item) for item in attachments),
+            source=message.source if message.source in {"user", "plugin", "system"} else "user",
+            messages=tuple(messages),
+            agent_id=agent_id,
+        )
+        if self._hook_runtime is not None and INBOX_BEFORE_ADMIT_SPEC is not None:
+            decision = await self._hook_runtime.dispatch(
+                INBOX_BEFORE_ADMIT_SPEC,
+                BeforeAdmissionPayload(
+                    session_id=message.session_id,
+                    request_id=message.request_id,
+                    target=target,
+                    item=candidate_item,
+                ),
+            )
+            if isinstance(decision, RejectAdmission):
+                return IngressResult(
+                    False,
+                    message.session_id,
+                    message.request_id,
+                    False,
+                    error={
+                        "code": "admission-rejected",
+                        "message": decision.reason,
+                        "retryable": False,
+                    },
+                )
+            if not isinstance(decision, AllowAdmission):
+                raise TypeError("inbox/before-admit must return AllowAdmission or RejectAdmission")
         try:
             created, _position = await self.repository.admit(
-                QueueItem(
-                    request_id=message.request_id,
-                    sequence=0,
-                    session_id=message.session_id,
-                    channel_id=message.channel_id,
-                    content=content,
-                    attachments=tuple(dict(item) for item in attachments),
-                    source=message.source if message.source in {"user", "plugin", "system"} else "user",
-                    messages=tuple(messages),
-                    agent_id=agent_id,
-                ),
+                candidate_item,
                 target,
             )
         except OverflowError as exc:
@@ -476,6 +530,22 @@ class InboxService:
     def _execution_agent_id(item: QueueItem) -> str:
         return f"{item.session_id}:{item.agent_id or 'default'}"
 
+    @staticmethod
+    def _run_result_info(result: Any) -> tuple[str, str, bool]:
+        if isinstance(result, dict):
+            status = str(result.get("status") or "completed")
+            error = result.get("error")
+        else:
+            status = str(getattr(result, "status", "completed"))
+            error = getattr(result, "error", None)
+        if isinstance(error, dict):
+            reason = str(error.get("message") or error.get("code") or status)
+            retryable = bool(error.get("retryable", status != "failed"))
+        else:
+            reason = str(error or status)
+            retryable = status != "failed"
+        return status, reason, retryable
+
     async def _ensure_agent(self, item: QueueItem) -> str:
         """为一个 Session 建立 AgentService identity；Runtime profile 仍独立解析。"""
         agent = self._agent
@@ -490,7 +560,7 @@ class InboxService:
             await create(
                 AgentCreateSpec(
                     agent_id=agent_id,
-                    config=None,
+                    config=AgentConfig(),
                     session_id=item.session_id,
                     metadata={"profile_agent_id": item.agent_id or "default"},
                 )
@@ -523,6 +593,9 @@ class InboxService:
                 snapshot = await self.repository.snapshot(session_id)
                 candidates = self._candidate_batch(snapshot)
                 if not candidates:
+                    await event.wait()
+                    continue
+                if session_id in self._blocked:
                     await event.wait()
                     continue
                 if self._agent is None:
@@ -560,6 +633,14 @@ class InboxService:
                     # the candidates that the Hook approved for discard, then retry.
                     for candidate in discard_items:
                         await self.repository.remove(session_id, candidate.request_id)
+                        await self._dispatch_observe(
+                            INBOX_DISCARDED_SPEC,
+                            InboxDiscardedPayload(
+                                session_id=session_id,
+                                request_id=candidate.request_id,
+                                reason="before-claim-discard",
+                            ),
+                        )
                     await self._publish(session_id)
                     self._blocked.pop(session_id, None)
                     continue
@@ -643,22 +724,49 @@ class InboxService:
                                 )
                             else:
                                 result = self._agent.run(
-                                    InboundMessage(
-                                        session_id=item.session_id,
-                                        request_id=item.request_id,
-                                        channel_id=item.channel_id,
-                                        content=item.content,
-                                        attachments=item.attachments,
-                                        source=item.source,
-                                        metadata=(
-                                            {"history_message_id": item.history_message_id}
-                                            if item.history_message_id
-                                            else None
-                                        ),
+                                    self._to_agent_request(
+                                        item,
+                                        execution_agent_id or self._execution_agent_id(item),
                                     )
                                 )
                             if inspect.isawaitable(result):
                                 result = await result
+                            status, reason, retryable = self._run_result_info(result)
+                            if status in {"failed", "cancelled", "interrupted"}:
+                                if reservation is not None:
+                                    self._agent.release_reservation(reservation)
+                                    reservation = None
+                                if lease_id is not None:
+                                    if retryable or status != "failed":
+                                        await self.repository.release(session_id, lease_id)
+                                    else:
+                                        await self.repository.ack(session_id, lease_id)
+                                    lease_id = None
+                                await self._dispatch_observe(
+                                    INBOX_ERROR_SPEC,
+                                    InboxErrorPayload(
+                                        session_id=session_id,
+                                        request_id=item.request_id,
+                                        stage="agent-run",
+                                        error=reason,
+                                        retryable=retryable,
+                                    ),
+                                )
+                                await self._dispatch_observe(
+                                    INBOX_FAILED_SPEC,
+                                    InboxFailedPayload(
+                                        session_id=session_id,
+                                        request_id=item.request_id,
+                                        reason=reason,
+                                    ),
+                                )
+                                if retryable or status != "failed":
+                                    self._blocked[session_id] = reason
+                                    await self._publish_status_event(session_id, "blocked")
+                                future = self._receipts.pop((session_id, item.request_id), None)
+                                if future is not None and not future.done():
+                                    future.set_result(result)
+                                continue
                         except Exception as exc:
                             if reservation is not None:
                                 self._agent.release_reservation(reservation)
@@ -672,6 +780,14 @@ class InboxService:
                                     request_id=item.request_id,
                                     stage="agent-run",
                                     error=str(exc),
+                                ),
+                            )
+                            await self._dispatch_observe(
+                                INBOX_FAILED_SPEC,
+                                InboxFailedPayload(
+                                    session_id=session_id,
+                                    request_id=item.request_id,
+                                    reason=str(exc),
                                 ),
                             )
                             future = self._receipts.pop((session_id, item.request_id), None)
@@ -707,7 +823,8 @@ class InboxService:
                         await self.repository.release(session_id, lease_id)
                         lease_id = None
                     await self._publish(session_id)
-                    self._wake_event(session_id).set()
+                    if session_id not in self._blocked:
+                        self._wake_event(session_id).set()
         except asyncio.CancelledError:
             return
         finally:

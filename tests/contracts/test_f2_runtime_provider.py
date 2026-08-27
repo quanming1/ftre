@@ -20,7 +20,7 @@ def test_runtime_plugin_registers_private_loop_with_agent_service(monkeypatch) -
         async def stop(self) -> None:
             stopped.append(True)
 
-        async def run_inbound(self, message):
+        async def run_input(self, message):
             return message
 
         async def cancel_session(self, *args, **kwargs):

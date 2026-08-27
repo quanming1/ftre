@@ -101,9 +101,14 @@ async def test_message_id_keeps_assistant_user_assistant_order(tmp_path):
             "content": "插入下一步",
         },
         content=[{"type": "text", "text": "插入下一步"}],
-        message_metadata={"hide": False, "request_id": "request-steer-boundary"},
+        message_metadata={
+            "hide": False,
+            "request_id": "request-steer-boundary",
+            "previous_assistant_message_id": "assistant-a",
+        },
     )
     await projection.apply(session_id, steer)
+    assert await projection.snapshot(session_id) == []
     await projection.apply(session_id, TextBlockStartEvent(
         reply_id=reply_id, message_id="assistant-b", block_id="after",
     ))
@@ -117,6 +122,7 @@ async def test_message_id_keeps_assistant_user_assistant_order(tmp_path):
     messages = await sessions.get_messages_by_session(session_id)
     assert [message["role"] for message in messages] == ["assistant", "user", "assistant"]
     assert messages[0]["content"][0]["text"] == "前半段"
+    assert messages[0]["finished_at"] is not None
     assert messages[1]["content"][0]["text"] == "插入下一步"
     assert messages[2]["content"][0]["text"] == "后半段"
     assert [message["id"] for message in messages] == [
@@ -178,7 +184,37 @@ async def test_reply_end_keeps_snapshot_when_final_persist_fails():
         error={"code": "persist_retry"},
     )
     assert [message.id for message in completed] == [reply_id]
-    assert await projection.snapshot(session_id) == []
+
+
+@pytest.mark.asyncio
+async def test_user_boundary_keeps_assistant_snapshot_when_close_persist_fails():
+    sessions = AsyncMock()
+    projection = SessionProjection(sessions)
+    session_id = "ws_sess_boundary_failure"
+    await projection.apply(
+        session_id,
+        ReplyStartEvent(
+            session_id=session_id,
+            reply_id="reply-1",
+            message_id="assistant-1",
+            name="assistant",
+        ),
+    )
+    sessions.update_message.side_effect = ValueError("write failed")
+
+    with pytest.raises(ValueError, match="write failed"):
+        await projection.apply(
+            session_id,
+            UserMessageEvent(
+                id="user-1",
+                reply_id="turn-1",
+                content=[{"type": "text", "text": "next"}],
+                message_metadata={"previous_assistant_message_id": "assistant-1"},
+            ),
+        )
+
+    snapshot = await projection.snapshot(session_id)
+    assert snapshot and snapshot[0]["message_id"] == "assistant-1"
 
 
 @pytest.mark.asyncio

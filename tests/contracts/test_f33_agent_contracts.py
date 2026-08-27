@@ -12,12 +12,13 @@ import asyncio
 import pytest
 from ftre_agent import (
     AgentConfig,
+    AgentCreateSpec,
     AgentRegistry,
+    AgentRunRequest,
     AgentRunResult,
     AgentService,
     FactoryAlreadyRegisteredError,
     FactoryNotRegisteredError,
-    InboundMessage,
     InvalidFactoryError,
     ServiceClosedError,
 )
@@ -36,11 +37,20 @@ class _RecordingRuntime:
     def get_session_status(self, session_id: str) -> str:
         return "idle"
 
-    async def run_inbound(self, message: InboundMessage) -> AgentRunResult:
+    async def create(self, spec):
+        return self
+
+    async def resume(self, spec):
+        return self
+
+    async def run(self, request: AgentRunRequest) -> AgentRunResult:
         self.calls.append("run")
         return AgentRunResult(
-            session_id=message.session_id, turn_id="t", status="completed"
+            session_id=request.session_id, turn_id="t", status="completed"
         )
+
+    async def dispose(self):
+        return None
 
     async def cancel_session(self, *args, **kwargs) -> bool:
         self.calls.append("cancel")
@@ -71,7 +81,7 @@ async def test_factory_registration_errors_are_typed() -> None:
     with pytest.raises(InvalidFactoryError):
         service.register_factory(object())
     with pytest.raises(FactoryNotRegisteredError):
-        await service.run(InboundMessage("s", "r", "ws", "hello"))
+        await service.run("agent", AgentRunRequest("s", "r", ()))
     service.close()
     with pytest.raises(ServiceClosedError):
         service.register_factory(_RecordingRuntime())
@@ -82,7 +92,8 @@ async def test_service_run_returns_stable_agent_run_result() -> None:
     service = AgentService()
     service.start()
     service.register_factory(_RecordingRuntime())
-    result = await service.run(InboundMessage("s1", "r1", "ws", "hello"))
+    await service.create(AgentCreateSpec("agent", AgentConfig(), "s1"))
+    result = await service.run("agent", AgentRunRequest("s1", "r1", ()))
     assert isinstance(result, AgentRunResult)
     assert result.status == "completed"
     assert result.session_id == "s1"

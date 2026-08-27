@@ -16,10 +16,13 @@ from .models import QueueItem, QueueTarget
 
 INBOX_BEFORE_CLAIM = "inbox/before-claim"
 INBOX_ADMITTED = "inbox/admitted"
+INBOX_BEFORE_ADMIT = "inbox/before-admit"
 INBOX_CLAIMED = "inbox/claimed"
 INBOX_DEFERRED = "inbox/deferred"
 INBOX_DELIVERED = "inbox/delivered"
 INBOX_ERROR = "inbox/error"
+INBOX_FAILED = "inbox/failed"
+INBOX_DISCARDED = "inbox/discarded"
 INBOX_CHANGED = "inbox/changed"
 INBOX_STATUS_CHANGED = "inbox/status-changed"
 
@@ -70,6 +73,24 @@ class InboxAdmissionPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class BeforeAdmissionPayload:
+    session_id: str
+    request_id: str
+    target: QueueTarget
+    item: QueueItem
+
+
+@dataclass(frozen=True, slots=True)
+class AllowAdmission:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class RejectAdmission:
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class InboxClaimedPayload:
     session_id: str
     request_ids: tuple[str, ...]
@@ -98,6 +119,20 @@ class InboxErrorPayload:
     stage: str
     error: str
     retryable: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class InboxFailedPayload:
+    session_id: str
+    request_id: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class InboxDiscardedPayload:
+    session_id: str
+    request_id: str
+    reason: str = ""
 
 
 async def _enter(payload: BeforeClaimPayload) -> EnterClaim:
@@ -129,6 +164,22 @@ INBOX_CHANGED_SPEC = HookSpec(
 
 def _observe(_payload):
     return None
+
+
+async def _allow_admission(_payload: BeforeAdmissionPayload) -> AllowAdmission:
+    return AllowAdmission()
+
+
+INBOX_BEFORE_ADMIT_SPEC = HookSpec(
+    INBOX_BEFORE_ADMIT,
+    "inbox",
+    HookMode.WATERFALL,
+    failure_policy=HookFailurePolicy.PROPAGATE,
+    payload_type=BeforeAdmissionPayload,
+    result_type=(AllowAdmission, RejectAdmission),
+    default=_allow_admission,
+    scope=HookScope.GLOBAL,
+)
 
 
 INBOX_ADMITTED_SPEC = HookSpec(
@@ -181,6 +232,26 @@ INBOX_ERROR_SPEC = HookSpec(
     default=_observe,
     scope=HookScope.GLOBAL,
 )
+INBOX_FAILED_SPEC = HookSpec(
+    INBOX_FAILED,
+    "inbox",
+    HookMode.PARALLEL,
+    failure_policy=HookFailurePolicy.OBSERVE,
+    payload_type=InboxFailedPayload,
+    result_type=type(None),
+    default=_observe,
+    scope=HookScope.GLOBAL,
+)
+INBOX_DISCARDED_SPEC = HookSpec(
+    INBOX_DISCARDED,
+    "inbox",
+    HookMode.PARALLEL,
+    failure_policy=HookFailurePolicy.OBSERVE,
+    payload_type=InboxDiscardedPayload,
+    result_type=type(None),
+    default=_observe,
+    scope=HookScope.GLOBAL,
+)
 INBOX_STATUS_CHANGED_SPEC = HookSpec(
     INBOX_STATUS_CHANGED,
     "inbox",
@@ -195,6 +266,8 @@ INBOX_STATUS_CHANGED_SPEC = HookSpec(
 __all__ = [
     "INBOX_ADMITTED",
     "INBOX_ADMITTED_SPEC",
+    "INBOX_BEFORE_ADMIT",
+    "INBOX_BEFORE_ADMIT_SPEC",
     "INBOX_BEFORE_CLAIM",
     "INBOX_BEFORE_CLAIM_SPEC",
     "INBOX_CHANGED",
@@ -205,10 +278,16 @@ __all__ = [
     "INBOX_DEFERRED_SPEC",
     "INBOX_DELIVERED",
     "INBOX_DELIVERED_SPEC",
+    "INBOX_DISCARDED",
+    "INBOX_DISCARDED_SPEC",
     "INBOX_ERROR",
     "INBOX_ERROR_SPEC",
+    "INBOX_FAILED",
+    "INBOX_FAILED_SPEC",
     "INBOX_STATUS_CHANGED",
     "INBOX_STATUS_CHANGED_SPEC",
+    "AllowAdmission",
+    "BeforeAdmissionPayload",
     "BeforeClaimPayload",
     "EnterClaim",
     "InboxAdmissionPayload",
@@ -216,7 +295,10 @@ __all__ = [
     "InboxClaimedPayload",
     "InboxDeferredPayload",
     "InboxDeliveredPayload",
+    "InboxDiscardedPayload",
     "InboxErrorPayload",
+    "InboxFailedPayload",
     "InboxStatusPayload",
+    "RejectAdmission",
     "RejectClaim",
 ]

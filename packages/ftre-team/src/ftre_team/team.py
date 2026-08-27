@@ -49,8 +49,8 @@ import asyncio
 import uuid
 from datetime import UTC, datetime
 
-from ftre_agent import InboundMessage
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_inbox.protocol import InboundMessage
 
 from ftre.services.messaging.bus import AgentRef, InboundMetadata
 from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID

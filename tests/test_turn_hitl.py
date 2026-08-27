@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from cordis import Context
-from ftre_agent import AgentConfig, AgentRegistry, InboundMessage, LLMConfig
+from ftre_agent import AgentConfig, AgentRegistry, LLMConfig
 from ftre_agent_core.agent.runner import RunState, RunStatus
 from ftre_agent_core.event import (
     ReplyFinishedReason,
@@ -28,6 +28,7 @@ from ftre_agent_core.message import (
     ToolCallState,
 )
 from ftre_agent_runtime import AgentLoop, TurnExecutor
+from ftre_agent_runtime.protocol import RuntimeInput
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.plugins.builtin.command import CommandService
@@ -195,7 +196,7 @@ class _FakeState:
 
 
 def _user_inbound():
-    return InboundMessage(
+    return RuntimeInput(
         session_id="test-session",
         request_id="request-test",
         channel_id="ws",
@@ -206,7 +207,7 @@ def _user_inbound():
 
 def _confirm_inbound(*, approved=True, tool_call_id="call-1"):
     # Command Plane 仍从 BusMessage 解析 slash command；handler 再把确认恢复
-    # 转为 Agent Runtime 的 InboundMessage。这不是第二套 Agent 输入协议，
+    # 转为 Agent Runtime 的 RuntimeInput。这不是第二套 Agent 输入协议，
     # 而是接入信封到公开运行输入的单向归一化边界。
     return BusMessage(
         type="user_message",
@@ -234,7 +235,7 @@ def _enable_builtin_commands(executor):
             if hasattr(metadata, "model_dump")
             else dict(metadata or {})
         )
-        inbound = InboundMessage(
+        inbound = RuntimeInput(
             session_id=session_id,
             request_id=str(metadata_values.get("request_id") or "request-confirm"),
             channel_id=channel_id,

@@ -10,8 +10,9 @@ from ftre_agent import (
     AgentResumeSpec,
     AgentRunRequest,
     AgentRuntimeFactory,
-    InboundMessage,
 )
+
+from .protocol import RuntimeInput
 
 
 class AgentLoopHandle:
@@ -58,10 +59,10 @@ class AgentLoopFactory(AgentRuntimeFactory):
         return AgentLoopHandle(self, spec)
 
     async def run_request(self, request: AgentRunRequest):
-        return await self._loop.run_inbound(self._to_inbound(request))
+        return await self._loop.run_input(self._to_inbound(request))
 
     @staticmethod
-    def _to_inbound(request: AgentRunRequest) -> InboundMessage:
+    def _to_inbound(request: AgentRunRequest) -> RuntimeInput:
         texts = [message.get_text_content() or "" for message in request.messages]
         metadata = dict(request.metadata)
         attachments = metadata.pop("attachments", ())
@@ -71,7 +72,7 @@ class AgentLoopFactory(AgentRuntimeFactory):
             or request.agent_id
             or "default"
         )
-        return InboundMessage(
+        return RuntimeInput(
             session_id=request.session_id,
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -80,9 +81,6 @@ class AgentLoopFactory(AgentRuntimeFactory):
             source=request.source,
             metadata=metadata,
         )
-
-    async def run_inbound(self, message: InboundMessage):
-        return await self._loop.run_inbound(message)
 
     async def cancel_session(self, *args: Any, **kwargs: Any):
         return await self._loop.cancel_session(*args, **kwargs)

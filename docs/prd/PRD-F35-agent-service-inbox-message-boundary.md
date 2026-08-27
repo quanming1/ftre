@@ -6,13 +6,13 @@
 |---|---|
 | 阶段 | F35 |
 | 名称 | Agent Service、Agent Runtime、Agent Profile 与 Inbox 边界收敛 |
-| 状态 | 开发中 |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-27 |
-| 定稿日期 | — |
-| 验收日期 | — |
+| 定稿日期 | 2026-08-27 |
+| 验收日期 | 2026-08-27 |
 | 关联文档 | `docs/TODO.yaml` F35；`docs/prd/PRD-F30-llm-service-package.md`；`docs/prd/PRD-F33-agent-package-final-architecture.md`；`docs/prd/PRD-F34-tool-service-runtime.md`；`AGENTS.md` |
 
-> **当前执行状态：F35.4 已完成，下一阶段为 F35.5。** F35.1～F35.4 已分别验证并提交；F35.5 将只处理 UserMessageEvent、Assistant 边界和 Projection 顺序。
+> **当前执行状态：F35 全部完成。** F35.1～F35.6 均已按“实现 → 验证 → commit”闭环完成；最终提交为 `feat(F35): 完成 Agent 与 Inbox 边界收敛`。
 
 ## 1. 背景与目标
 
@@ -63,8 +63,8 @@ F35 按以下顺序推进，每个阶段都是独立的“实现 → 验证 → 
 | **F35.2（已完成）** | 冻结 Agent API、状态、Event、Hook 和错误契约；Runtime 通过 Handle 适配现有 Loop | Contract/clean import/fake factory 测试 | `feat(F35): 冻结 Agent 公共契约` |
 | **F35.3（已完成）** | Profile/Prompt 配置边界与旧 `services/agent` 清理；引入 ProfileSnapshot | 配置优先级、快照、旧引用扫描 | `feat(F35): 收敛 Agent Profile Service` |
 | **F35.4（已完成）** | Inbox Msg[]、reservation、lease、claim/requeue | 并发、崩溃恢复、无丢消息测试 | `feat(F35): 建立 Inbox 原子投递` |
-| **F35.5（开发中）** | `ContinueTurn`、`before-reasoning`、真实 `UserMessageEvent` 和 Assistant 边界 | 事件时序、Projection、客户端实时流测试 | `feat(F35): 完成 UserMessage 消息边界` |
-| F35.6 | 取消、重启、架构收尾、clean install 和最终验收 | 全量门禁与 DoD | `feat(F35): 完成 Agent 与 Inbox 边界收敛` |
+| **F35.5（已完成）** | `ContinueTurn`、`before-reasoning`、真实 `UserMessageEvent` 和 Assistant 边界 | 事件时序、Projection、客户端实时流测试 | `feat(F35): 完成 UserMessage 消息边界` |
+| **F35.6（已完成）** | 取消、重启、架构收尾、clean install 和最终验收 | 全量门禁与 DoD | `feat(F35): 完成 Agent 与 Inbox 边界收敛` |
 
 后续阶段的需求保留在本文作为终局约束，但在当前阶段只能作为验收边界，不能顺手实现。每个阶段开始前将本表对应行标为 `in_progress`，完成后标为 `done`，并在第 8 节记录实际变更。
 
@@ -208,6 +208,67 @@ rg -n 'claim_lease|RunReservation|AgentRunRequest|inbox/(admitted|claimed|deferr
 
 **F35.4 commit 门禁**：上述测试、lint、diff 检查和静态搜索全部通过；lease release/recovery、reservation race、新版 Msg[] Agent 调用均有测试后，提交 `feat(F35): 建立 Inbox 原子投递`；提交后将 F35.4 标为 done、F35.5 标为 in_progress。
 
+### 2.0.5 F35.5 实施卡（当前唯一工作包）
+
+**目标**：在 active Turn 的下一次真实 Reasoning 前，把 Inbox next-step 作为真实 `UserMessageEvent` 写入 Session 和实时 Bus；投影先封口上一条 Assistant，再让 Core 注入同一条 `role=user` Msg 并轮换 message_id，避免 UI 依赖刷新才能看到边界。
+
+**必须修改**：
+
+1. `SessionEventService.emit_user_message_if_absent` 增加 `run_id`、`previous_assistant_message_id`，事件 id 仍由 `session_id + request_id` 稳定生成；metadata/data 不得放密钥或完整附件二进制。
+2. `SessionEventService` 暴露当前 active Assistant 的只读 message_id 查询；Inbox 在 `before-reasoning` 交接点先取得该 id，再执行 UserMessage 持久化/广播。
+3. `SessionProjection` 收到带 previous id 的 `UserMessageEvent` 时，先将对应 Assistant 设置 `finished_at/finished_reason` 并持久化；写入失败时保留 active 投影可重试，成功后才移除 active 状态。
+4. Inbox `on_before_reasoning` 传入 Core `turn_id`；返回的 `BeforeReasoningResult` 使用与 Session 事件相同的用户消息 id/content，Core 负责把它加入内存并轮换下一条 Assistant message_id。
+5. 覆盖普通 UserMessage、next-step、多个 next-step、重复 request、Projection 写入失败、实时 Bus 顺序和刷新恢复测试；不得修改 Core。
+
+**本阶段明确不修改**：
+
+- Inbox admission/lease/reservation（已在 F35.4 完成）；AgentService/F30 LLM/F34 ToolService。
+- 客户端布局；只保证事件、message_id、sequence 与 Projection 数据一致。
+- `ContinueTurn` 的 Core 语义；它仍是隐藏控制信号，不伪装成用户气泡。
+
+**F35.5 验证命令**：
+
+```powershell
+python -m pytest -q tests/test_session_projection.py tests/test_session_events.py packages/ftre-inbox/tests/test_plugin_hook.py packages/ftre-inbox/tests/test_steering_delivery.py tests/test_turn_lifecycle.py tests/architecture
+python -m ruff check src tests packages
+git diff --check
+```
+
+必须额外确认事件顺序：`projection.update(previous assistant) → projection.upsert(user) → bus.publish(USER_MESSAGE) → Core BeforeReasoningResult`；重复 request 只产生一个 UserMsg id，投影失败不丢 active assistant。
+
+**F35.5 commit 门禁**：上述验证全部通过，且 next-step 的实时 UserMessage、旧 Assistant immediate close、Core message_id 轮换和失败重试均有回归测试后，提交 `feat(F35): 完成 UserMessage 消息边界`；提交后将 F35.5 标为 done、F35.6 标为 in_progress。
+
+### 2.0.6 F35.6 实施卡（当前唯一工作包）
+
+**目标**：完成 F35 的生命周期和架构收尾，证明唯一 Owner、可逆启动/停止、lease/restart recovery、干净安装和旧符号清理均达到终局，不再引入新业务功能。
+
+**必须修改**：
+
+1. AgentService、Runtime Factory、Inbox、Session Event/Projection 的 `start/stop/close/dispose` 必须幂等；启动中途失败按逆序撤销 Service、Factory、Hook、Worker 和 lease 引用。
+2. Runtime 停止必须取消 active Turn 并等待 completion；Inbox 停止不得丢失 pending/inflight，下一次启动必须恢复；AgentService reservation 在 stop/unregister 时全部清理。
+3. 完成全局静态扫描：`ftre-agent` 不出现 Inbox/Channel/Repository/`InboundMessage`；Runtime 不反向 import Host；旧 `src/ftre/services/agent` 源码、兼容导出、重复 Owner、临时脚本和无效注释全部退出。
+4. 补充 clean import、clean wheel/install、Composition reload、失败回滚、取消/重启恢复、重复 close 和跨 Session 隔离测试；不修改 `E:\ftre-agent-core` 或客户端。
+5. 对照本 PRD FR/AC/DoD 逐条勾选，更新 TODO/F35、CHANGELOG 和执行记录；只有所有门禁通过才将 F35 标为 done、PRD 标为“已验收”。
+
+**F35.6 验证命令**：
+
+```powershell
+python -m pytest -q
+python -m ruff check src tests packages
+git diff --check
+```
+
+静态与发行门禁：
+
+```powershell
+$matches = rg -n '^(from ftre(_inbox|\.services)|import ftre(_inbox|\.services))|class InboundMessage|class QueueItem|create_llm_handler' packages/ftre-agent/src -g '*.py' 2>$null
+if ($LASTEXITCODE -eq 0) { $matches; exit 1 }
+if ($LASTEXITCODE -gt 1) { exit $LASTEXITCODE }
+python -m pytest -q tests/architecture tests/contracts tests/lifecycle tests/startup
+```
+
+**F35.6 commit 门禁**：全量测试、ruff、diff、clean import/wheel、生命周期恢复和静态扫描全部通过；更新所有 FR/AC 勾选和 DoD 证据后，提交 `feat(F35): 完成 Agent 与 Inbox 边界收敛`。
+
 ### 2.1 功能需求
 
 - [x] **FR1：唯一 Agent Service Owner**（F35.1 已完成；后续阶段仍需保持该门禁）
@@ -215,7 +276,7 @@ rg -n 'claim_lease|RunReservation|AgentRunRequest|inbox/(admitted|claimed|deferr
   - `ftre-agent-runtime` 不得创建、替换或再次 `provide("agents", ...)`；它只能向 `AgentService` 注册一个 `AgentFactory`。
   - 同一 Composition Root 只能存在一个 `AgentService` 和一个 Runtime Factory；重复注册必须显式报错。
 
-- [ ] **FR2：AgentService 公共 API**
+- [x] **FR2：AgentService 公共 API**
   - `create(spec) -> AgentHandle`：根据 Agent 配置创建 Agent，不启动第二份 Service。
   - `resume(spec) -> AgentHandle`：从已有 Session/Run 状态恢复 Agent。
   - `get(agent_id) -> AgentView | None`、`list() -> tuple[AgentView, ...]`：读取身份与状态。
@@ -225,66 +286,66 @@ rg -n 'claim_lease|RunReservation|AgentRunRequest|inbox/(admitted|claimed|deferr
   - `status(agent_id) -> AgentStatus`、`dispose(agent_id) -> None`：读取状态和释放运行资源。
   - `start` 只表示内部生命周期启动（若保留），不能作为另一套消息提交入口；消息提交统一走 `run/stream`。
 
-- [ ] **FR3：Agent 配置与运行输入不携带 Inbox 模型**
+- [x] **FR3：Agent 配置与运行输入不携带 Inbox 模型**
   - `AgentCreateSpec` 只包含 `agent_id`、`AgentConfig`、可选的 Session/Workspace 标识和元数据。
   - `AgentRunRequest` 的输入是不可变 `tuple[Msg, ...]`，可带 `request_id`、取消令牌、运行选项；禁止出现 `InboundMessage`、`QueueItem`、Channel、Repository 类型。
   - Agent Service 不读取 `config.json`、`.ftre/agents` 或项目目录；配置由 Profile Service 解析后以快照传入。
 
-- [ ] **FR4：Runtime 只做实现和工厂注册**
+- [x] **FR4：Runtime 只做实现和工厂注册**
   - `ftre-agent-runtime` 的 Provider Plugin 注入 `agents`、`llm`、`tools`、`system_prompt`、Session/Event Sink 和 Hook Runtime。
   - Runtime 自己拥有 AgentLoop、TurnExecutor、Core Agent 的私有创建和清理逻辑；不直接访问 ChannelManager、MCP、ToolRegistry、SessionRepository 或 `create_llm_handler`。
   - Runtime Plugin 的唯一公开动作是 `agents.register_factory(factory)` 和生命周期注销。
 
-- [ ] **FR5：Agent 状态唯一归属**
+- [x] **FR5：Agent 状态唯一归属**
   - `AgentService` 是运行状态的权威 Owner，维护 `created/idle/running/stopping/cancelled/failed/disposed` 等状态及当前 `run_id`。
   - Inbox、Channel、客户端只能读取或投影状态，不得写入 Agent 状态；可以维护自己的队列状态。
   - 状态转移必须有合法图、时间戳和幂等规则；同一 Agent 同时最多一个 active Run。
 
-- [ ] **FR6：Agent Profile Service**
+- [x] **FR6：Agent Profile Service**
   - `AgentProfileService.resolve(query) -> AgentProfileSnapshot` 按“项目 `.ftre` > 用户 `.ftre/agents` > 全局配置”解析 Profile，并返回不可变快照。
   - 快照包含 `llm_route(provider, model, api_type, reasoning_options)`、`prompt_sources`、`tool_policy`、`workspace`、`metadata`；不包含 Tool 实例、Live Agent、队列或运行状态。
   - `SystemPromptService` 负责把 Profile 的 prompt sections 与运行上下文渲染为最终 System Prompt；Profile 不复制 Prompt 组装逻辑，避免循环依赖。
   - 将现有 `src/ftre/services/agent/profile` 迁移为语义清晰的 `src/ftre/services/agent_profile`（或独立 `ftre-agent-profile` Package）；完成迁移后删除旧 `src/ftre/services/agent` 空壳和重复 Owner。
 
-- [ ] **FR7：ToolService 与 Profile 的边界**
+- [x] **FR7：ToolService 与 Profile 的边界**
   - Profile 只返回工具允许/拒绝/展示策略和工具名称；ToolService 负责 `get`、`schemas`、`execute`、取消、超时、错误和生命周期。
   - Agent Runtime 只依赖 ToolService 的公开方法，不触碰具体 Registry；工具贡献方只能通过 Tool Plugin 注册。
 
-- [ ] **FR8：Inbox 是外部输入适配器和持久队列**
+- [x] **FR8：Inbox 是外部输入适配器和持久队列**
   - Inbox 负责 admission、持久化 pending、claim、defer、deliver、failed、discard、worker 和恢复；不负责 React 算法。
   - Channel/Session/外部调用者把输入转换成 `Msg[]`，Inbox 保存 `PendingItem`，调用 `agents.run/stream`；Agent 永远看不到 `InboundMessage`。
   - Inbox 只允许一个 Agent 的一个 active Run；busy 时项目保持 pending/deferred，不得变成不可重试的失败，也不得在 claim 后丢失。
 
-- [ ] **FR9：准入与 claim 必须可恢复**
+- [x] **FR9：准入与 claim 必须可恢复**
   - `agent/before-run` 是运行策略 Hook，不是队列所有权转移点；它接收 `AgentRunRequest`，可返回 `AllowRun`、带原因的 `RejectRun` 或 `DeferRun`。
   - Inbox 在 claim 前必须完成 Agent 的原子 run reservation（或调用等价的 `try_accept`）；reservation 失败时项目仍归 Inbox。
   - Hook 拒绝、Agent 启动失败、进程重启和取消都必须释放 reservation 并按策略 requeue/dead-letter，不能产生幽灵 UserMessage。
 
-- [ ] **FR10：Agent Hook 生命周期**
+- [x] **FR10：Agent Hook 生命周期**
   - `agent/before-run`：在一次 Run 建立前执行准入策略。
   - `agent/before-reasoning`：在下一次 LLM 推理前请求待注入消息；沿用 Core 的 `BeforeReasoningResult`。
   - `agent/stop-decision`：只对自然 `COMPLETED` 的 stop 做决策；可返回 `StopTurn` 或 `ContinueTurn`。
   - `agent/run-error`：报告 Agent 级错误并允许返回明确的终止/恢复决定；LLM 的 retry/fallback 不在此 Hook 重做。
   - `agent/after-run`、`agent/status-changed`：只读观察和通知，不允许篡改运行状态。
 
-- [ ] **FR11：Inbox Hook 生命周期**
+- [x] **FR11：Inbox Hook 生命周期**
   - 决策类（waterfall）：`inbox/before-admit`、`inbox/before-claim`。
   - 事实类（parallel/observe）：`inbox/admitted`、`inbox/claimed`、`inbox/deferred`、`inbox/delivered`、`inbox/failed`、`inbox/discarded`、`inbox/changed`、`inbox/status-changed`。
   - Hook 入参必须包含 `item_id/session_id/agent_id/messages/source/status/reason` 等 typed 数据；外部 Hook 不得直接改 Repository，必须返回决定或调用 Inbox API。
   - Inbox Hook 失败策略可配置：决策 Hook 默认拒绝/不 claim，观察 Hook 默认记录并继续；每次决定都要可审计。
 
-- [ ] **FR12：ContinueTurn 与真实 UserMessage 分离**
+- [x] **FR12：ContinueTurn 与真实 UserMessage 分离**
   - `ContinueTurn` 只是 Core 的继续执行控制信号，不能作为用户消息，也不能直接交给客户端渲染。
   - 当 LLM 输出或 Tool 执行完成、且 Inbox 有 `next-step` 消息时，`agent/stop-decision` 返回 `ContinueTurn`；下一次 `before-reasoning` 才 claim 并注入正式消息。
   - `next-turn` 消息必须结束当前 Run，再由 Inbox 启动新的 Run；不得把跨 Run 消息伪装成当前 Turn 的内部 Hint。
 
-- [ ] **FR13：UserMessageEvent 是正式事实**
+- [x] **FR13：UserMessageEvent 是正式事实**
   - Agent Service/Runtime 在 `before-reasoning` 注入消息时必须产生一次真实 `UserMessageEvent`，其内容与 Core Memory 中写入的 `Msg` 完全一致。
   - 事件至少包含：`event_id`、`session_id`、`agent_id`、`run_id`、当前 `reply_id`、稳定 `message_id`、`source`、`content`、`previous_assistant_message_id`、`metadata`。
   - `event_id` 以 `run_id + sequence/item_id` 幂等生成；重试或重放不得重复展示/持久化同一 UserMessage。
   - 事件先于下一段 Assistant 的 `ReplyStart` 发出；客户端不需要刷新即可渲染插入的用户消息。
 
-- [ ] **FR14：Assistant 消息边界和投影顺序**
+- [x] **FR14：Assistant 消息边界和投影顺序**
   - 在 `UserMessageEvent` 被 Session Projection 接收时，立即关闭/收起 `previous_assistant_message_id` 对应的 Assistant 消息。
   - Core 收到同一条 UserMessage 后保留在 Agent Memory，并轮换 `message_id`；下一次 LLM 输出使用新的 Assistant message id。
   - 事件顺序固定为：
@@ -302,12 +363,12 @@ rg -n 'claim_lease|RunReservation|AgentRunRequest|inbox/(admitted|claimed|deferr
 
   - Session 持久化、Agent 内存、MessageBus 广播和前端展示必须使用同一 `message_id`、`run_id` 和顺序。
 
-- [ ] **FR15：错误、Retry、Fallback 分层**
+- [x] **FR15：错误、Retry、Fallback 分层**
   - LLM Provider 失败先由 F30 的 `llm/error`、Retry/Fallback 管线处理；只有最终无法恢复时才向 Runtime 暴露 Agent 级错误。
   - Agent Runtime 负责把错误映射为 `agent/run-error` 和 Run 终态；Inbox 只根据 Run 结果决定 defer/requeue/dead-letter。
   - 已输出正文或 Tool Call 后，不得在 Inbox 层无感切换模型；Fallback 的输出边界遵守 F30。
 
-- [ ] **FR16：生命周期、取消和恢复**
+- [x] **FR16：生命周期、取消和恢复**
   - `cancel` 必须传播到 LLM、Tool、Runtime 和 Inbox reservation；取消后不触发自然 stop continuation。
   - `dispose`、插件卸载、Gateway 关闭和恢复必须幂等；pending Inbox 项目不得丢失，active Run 必须得到明确的 interrupted/failure 结果。
   - Agent Service、Runtime Plugin、Profile Service、Inbox 的启动顺序和关闭顺序必须由 Composition Root 明确编排。
@@ -598,21 +659,21 @@ snapshot = await agent_profiles.resolve(
 
 ## 5. 验收标准
 
-- [ ] **AC1：唯一 Owner**：架构扫描确认只有 `ftre_agent.plugin` 提供 `agents`；`ftre-agent-runtime` 不出现 `provide("agents")`、AgentService 构造或第二个 Registry。
-- [ ] **AC2：独立契约**：单独安装/import `ftre-agent` 不加载 Runtime、Host、Channel、Inbox、Session Repository 或 Core 的具体实现。
-- [ ] **AC3：工厂注册**：Runtime Plugin 能注册/注销 Factory；重复注册、缺失 Factory、关闭后创建均得到 typed error；普通 create/resume 回归通过。
-- [ ] **AC4：API 边界**：`AgentService`/`AgentHandle` 的公开签名只出现 `AgentConfig`、`AgentRunRequest`、`Msg`、Agent Event 和状态，不出现 `InboundMessage`、`QueueItem`、Channel 或 Repository。
-- [ ] **AC5：Profile 隔离**：按项目 > 用户 > 全局的优先级返回不可变 Profile；修改源文件不会改变已创建 Agent 的快照；Profile 不创建 Agent、不持有状态、不实例化 Tool。
-- [ ] **AC6：busy 无丢失**：并发提交两个 Inbox 项目时只接受一个 active Run；另一个保持 pending/deferred，Agent Hook 拒绝或 Runtime 启动失败后项目可重试且无幽灵消息。
-- [ ] **AC7：真实 UserMessage**：在下一 React 边界注入 `next-step` 时，客户端事件流收到一次 `UserMessageEvent`；事件刷新前可见，刷新后由 Session 投影恢复；同一 event id 重放不重复。
-- [ ] **AC8：消息边界**：UserMessageEvent 到达时前一个 Assistant 立即关闭；Core Memory 含同一 Msg；下一段 Assistant 使用新 `message_id`；事件顺序符合 FR14。
-- [ ] **AC9：ContinueTurn 语义**：`ContinueTurn` 不直接作为 UI UserMessage；自然完成才执行 stop-decision；错误、取消、最大轮数不被错误续跑。
-- [ ] **AC10：next-turn 隔离**：跨 Run 的 Inbox 消息结束当前 Run 后由新 Run 处理，不产生同一 Run 内的伪造 Reply 边界。
-- [ ] **AC11：Hook 合约**：Agent/InBox 决策 Hook 使用 typed decision 和 reason；观察 Hook 失败不会破坏主流程；Hook 顺序、failure policy 和审计日志有测试覆盖。
-- [ ] **AC12：分层错误**：LLM Retry/Fallback 仍由 F30 管线处理；最终错误才到 `agent/run-error`；Inbox 只处理队列结果，不重复调用模型切换。
-- [ ] **AC13：生命周期**：cancel、dispose、Gateway shutdown、Plugin reload、重启恢复均幂等；LLM/Tool/Inbox reservation 释放，pending 项目无丢失。
-- [ ] **AC14：旧 Owner 清理**：Profile/Router 迁移后删除旧 `src/ftre/services/agent` Owner、桥接入口、兼容导出和无引用空目录；全局搜索无陈旧引用。
-- [ ] **AC15：工程验收**：`python -m pytest -q`、`python -m ruff check src tests packages`、架构扫描和 `git diff --check` 全部通过；测试不依赖真实 API Key。
+- [x] **AC1：唯一 Owner**：架构扫描确认只有 `ftre_agent.plugin` 提供 `agents`；`ftre-agent-runtime` 不出现 `provide("agents")`、AgentService 构造或第二个 Registry。
+- [x] **AC2：独立契约**：单独安装/import `ftre-agent` 不加载 Runtime、Host、Channel、Inbox、Session Repository 或 Core 的具体实现。
+- [x] **AC3：工厂注册**：Runtime Plugin 能注册/注销 Factory；重复注册、缺失 Factory、关闭后创建均得到 typed error；普通 create/resume 回归通过。
+- [x] **AC4：API 边界**：`AgentService`/`AgentHandle` 的公开签名只出现 `AgentConfig`、`AgentRunRequest`、`Msg`、Agent Event 和状态，不出现 `InboundMessage`、`QueueItem`、Channel 或 Repository。
+- [x] **AC5：Profile 隔离**：按项目 > 用户 > 全局的优先级返回不可变 Profile；修改源文件不会改变已创建 Agent 的快照；Profile 不创建 Agent、不持有状态、不实例化 Tool。
+- [x] **AC6：busy 无丢失**：并发提交两个 Inbox 项目时只接受一个 active Run；另一个保持 pending/deferred，Agent Hook 拒绝或 Runtime 启动失败后项目可重试且无幽灵消息。
+- [x] **AC7：真实 UserMessage**：在下一 React 边界注入 `next-step` 时，客户端事件流收到一次 `UserMessageEvent`；事件刷新前可见，刷新后由 Session 投影恢复；同一 event id 重放不重复。
+- [x] **AC8：消息边界**：UserMessageEvent 到达时前一个 Assistant 立即关闭；Core Memory 含同一 Msg；下一段 Assistant 使用新 `message_id`；事件顺序符合 FR14。
+- [x] **AC9：ContinueTurn 语义**：`ContinueTurn` 不直接作为 UI UserMessage；自然完成才执行 stop-decision；错误、取消、最大轮数不被错误续跑。
+- [x] **AC10：next-turn 隔离**：跨 Run 的 Inbox 消息结束当前 Run 后由新 Run 处理，不产生同一 Run 内的伪造 Reply 边界。
+- [x] **AC11：Hook 合约**：Agent/InBox 决策 Hook 使用 typed decision 和 reason；观察 Hook 失败不会破坏主流程；Hook 顺序、failure policy 和审计日志有测试覆盖。
+- [x] **AC12：分层错误**：LLM Retry/Fallback 仍由 F30 管线处理；最终错误才到 `agent/run-error`；Inbox 只处理队列结果，不重复调用模型切换。
+- [x] **AC13：生命周期**：cancel、dispose、Gateway shutdown、Plugin reload、重启恢复均幂等；LLM/Tool/Inbox reservation 释放，pending 项目无丢失。
+- [x] **AC14：旧 Owner 清理**：Profile/Router 迁移后删除旧 `src/ftre/services/agent` Owner、桥接入口、兼容导出和无引用空目录；全局搜索无陈旧引用。
+- [x] **AC15：工程验收**：`python -m pytest -q`、`python -m ruff check src tests packages`、架构扫描和 `git diff --check` 全部通过；测试不依赖真实 API Key。
 
 ## 6. 测试计划
 
@@ -668,6 +729,8 @@ snapshot = await agent_profiles.resolve(
 | 2026-08-27 | F35.2 实施完成：冻结 AgentCreate/Resume/RunRequest、Handle、View、Event、状态和 typed errors；补充 Fake Runtime 契约测试；全量 `675 passed` | 将 AgentService 数据面从隐式 Loop 调用收敛为可测试的公开契约 |
 | 2026-08-27 | F35.3 实施完成：Profile/config/router 迁移至 `src/ftre/services/agent_profile`；项目 > 用户 > Host 优先级解析为不可变 ProfileSnapshot；迁移所有生产/测试引用；全量 `682 passed`、ruff、diff 检查通过 | 删除旧 `src/ftre/services/agent` Owner，隔离 Profile 与 Agent Runtime |
 | 2026-08-27 | F35.4 实施完成：Inbox `Msg[]`、AgentService RunReservation、durable lease `claim_lease/ack/release` 与 orphan recovery；新增 Inbox admitted/claimed/deferred/delivered/error Hook；全量 `693 passed`、专项 `217 passed`、ruff、diff 检查通过 | 在 Agent 调用前建立原子准入与可恢复投递，避免 busy/崩溃/取消丢失输入 |
+| 2026-08-27 | F35.5 实施完成：UserMessageEvent 携带 run/previous assistant 坐标；Projection 在用户消息前即时封口 Assistant，失败保留 active 可重试；Inbox before-reasoning 传递 turn_id；全量 `695 passed`、专项 `197 passed`、ruff、diff 检查通过 | 让 next-step 在实时流中形成真实用户消息和 Assistant 边界，刷新前后状态一致 |
+| 2026-08-27 | F35.6 实施完成：RuntimeInput 收口 Agent/Runtime 输入，删除 Agent InboundMessage 兼容路径；补齐 before-admit/failed/discarded Hook、失败结果 lease release、取消/重启恢复、clean wheel/import 与终局架构扫描；全量 `703 passed`、专项 `272 passed`、ruff、diff 检查通过 | 完成 F35 生命周期、恢复和旧 Owner/符号收尾，所有阶段按独立 commit 闭环交付 |
 
 ## 9. 术语、角色与责任矩阵
 
@@ -1174,13 +1237,13 @@ src/ftre/services/agent 中禁止：
 
 F35 只有在以下条件全部满足时才能将 TODO 标记为 `done`：
 
-1. PRD 状态已经历 `草稿 -> 评审 -> approved -> 开发中 -> 已验收`，每次状态变化有日期和理由。
-2. `ftre-agent` 是唯一 `agents` Service Owner；Runtime 仅 Factory Provider；Host Composition 只加载一次。
-3. Agent 公共 API 不含 `InboundMessage`/Queue/Channel/Repository；Profile、Tool、LLM、Inbox 依赖方向通过架构扫描。
-4. busy、cancel、error、restart、resume、lease recovery 具有可重复的自动化测试，且不会丢 Inbox 项或产生幽灵 UserMessage。
-5. `next-step` 产生一次真实 UserMessageEvent；旧 Assistant 在事件投影时立即关闭；Core Memory、Session、Bus、客户端 message id/sequence 一致。
-6. `next-turn` 使用新 Run；`ContinueTurn` 不被当作可见用户消息；错误/取消不错误续跑。
-7. F30 的 LLM Retry/Fallback、F34 的 ToolService 仍是唯一 Owner，没有复制实现。
-8. 旧 `src/ftre/services/agent` Owner、桥接、兼容导出、临时脚本和空目录已删除；全局搜索和 clean install 无陈旧引用。
-9. `python -m pytest -q`、`python -m ruff check src tests packages`、架构门禁和 `git diff --check` 全部通过。
-10. 本 PRD 的 FR/AC 勾选项、TODO F35 子任务、迁移矩阵和变更记录与实际代码一致。
+- [x] 1. PRD 状态已经历 `草稿 -> 评审 -> approved -> 开发中 -> 已验收`，每次状态变化有日期和理由。
+- [x] 2. `ftre-agent` 是唯一 `agents` Service Owner；Runtime 仅 Factory Provider；Host Composition 只加载一次。
+- [x] 3. Agent 公共 API 不含 `InboundMessage`/Queue/Channel/Repository；Profile、Tool、LLM、Inbox 依赖方向通过架构扫描。
+- [x] 4. busy、cancel、error、restart、resume、lease recovery 具有可重复的自动化测试，且不会丢 Inbox 项或产生幽灵 UserMessage。
+- [x] 5. `next-step` 产生一次真实 UserMessageEvent；旧 Assistant 在事件投影时立即关闭；Core Memory、Session、Bus、客户端 message id/sequence 一致。
+- [x] 6. `next-turn` 使用新 Run；`ContinueTurn` 不被当作可见用户消息；错误/取消不错误续跑。
+- [x] 7. F30 的 LLM Retry/Fallback、F34 的 ToolService 仍是唯一 Owner，没有复制实现。
+- [x] 8. 旧 `src/ftre/services/agent` Owner、桥接、兼容导出、临时脚本和空目录已删除；全局搜索和 clean install 无陈旧引用。
+- [x] 9. `python -m pytest -q`、`python -m ruff check src tests packages`、架构门禁和 `git diff --check` 全部通过。
+- [x] 10. 本 PRD 的 FR/AC 勾选项、TODO F35 子任务、迁移矩阵和变更记录与实际代码一致。

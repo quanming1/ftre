@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ftre_agent_core.event import (
@@ -114,6 +114,17 @@ class SessionProjection:
         Reply 事件都会推进内存快照的 revision。
         """
         if isinstance(event, UserMessageEvent):
+            previous_id = str(
+                event.message_metadata.get("previous_assistant_message_id")
+                or event.data.get("previous_assistant_message_id")
+                or ""
+            )
+            if previous_id:
+                await self._close_assistant_at_user_boundary(
+                    session_id,
+                    previous_id,
+                    finished_at=event.created_at,
+                )
             message = UserMsg(
                 name=MsgName.DEFAULT,
                 content=event.content,
@@ -334,6 +345,53 @@ class SessionProjection:
         for message in completed:
             await self._session_manager.update_message(message)
         return completed
+
+    async def _close_assistant_at_user_boundary(
+        self,
+        session_id: str,
+        message_id: str,
+        *,
+        finished_at: str | None,
+    ) -> None:
+        """在真实 UserMessage 到达时立即封口上一条 Assistant。"""
+        boundary: Msg | None = None
+        active_state: ReplyState | None = None
+        async with self._lock:
+            replies = self._replies.get(session_id, {})
+            state = replies.get(message_id)
+            if state is not None:
+                active_state = state
+                state.message.finished_at = finished_at or datetime.now(UTC).isoformat()
+                state.message.finished_reason = ReplyFinishedReason.COMPLETED
+                state.revision += 1
+                state.dirty = False
+                boundary = state.message.model_copy(deep=True)
+
+        if boundary is None:
+            from ftre.services.session.message.converter import _as_msg
+
+            records = await self._session_manager.get_messages_by_session(session_id)
+            for record in records:
+                record_id = record.id if isinstance(record, Msg) else record.get("id")
+                if record_id != message_id:
+                    continue
+                candidate = _as_msg(record)
+                if candidate.role != "assistant" or candidate.finished_at is not None:
+                    return
+                candidate.finished_at = finished_at or datetime.now(UTC).isoformat()
+                candidate.finished_reason = ReplyFinishedReason.COMPLETED
+                boundary = candidate
+                break
+
+        if boundary is not None:
+            await self._session_manager.update_message(boundary)
+            if active_state is not None:
+                async with self._lock:
+                    replies = self._replies.get(session_id)
+                    if replies is not None and replies.get(message_id) is active_state:
+                        replies.pop(message_id, None)
+                        if not replies:
+                            self._replies.pop(session_id, None)
 
     async def snapshot(self, session_id: str) -> list[dict]:
         """返回一个 session 内每条运行中 AssistantMsg 的最新完整快照。"""

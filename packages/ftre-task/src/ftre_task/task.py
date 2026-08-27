@@ -16,8 +16,8 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 import asyncio
 import uuid
 
-from ftre_agent import InboundMessage
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_inbox.protocol import InboundMessage
 
 from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
 

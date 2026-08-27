@@ -14,6 +14,8 @@ from typing import Any, Protocol
 
 from ftre_agent_core.message import Msg
 
+from .config import AgentConfig
+
 RunStatus = str
 
 
@@ -30,7 +32,7 @@ class AgentCreateSpec:
     """创建 Agent 所需的稳定配置快照引用。"""
 
     agent_id: str
-    config: Any
+    config: AgentConfig
     session_id: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -41,7 +43,7 @@ class AgentResumeSpec:
 
     agent_id: str
     session_id: str
-    config: Any
+    config: AgentConfig
     checkpoint_id: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -56,8 +58,19 @@ class AgentRunRequest:
     agent_id: str | None = None
     channel_id: str = ""
     source: str = "user"
-    metadata: Mapping[str, Any] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
     options: RunOptions = field(default_factory=RunOptions)
+
+    @property
+    def content(self) -> str:
+        return "\n".join(
+            text for text in (message.get_text_content() or "" for message in self.messages) if text
+        )
+
+    @property
+    def attachments(self) -> tuple[dict[str, Any], ...]:
+        raw = self.metadata.get("attachments", ())
+        return tuple(dict(item) for item in raw if isinstance(item, Mapping))
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,23 +131,6 @@ class AgentHandle(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class InboundMessage:
-    """已经归一化、准备交给 AgentService 执行的一条输入。
-
-    这是 AgentService 的唯一数据面输入。它不包含队列条目、pending、容量或
-    客户端队列状态；Inbox Package 负责决定何时生成它。
-    """
-
-    session_id: str
-    request_id: str
-    channel_id: str
-    content: str = ""
-    attachments: tuple[dict[str, Any], ...] = ()
-    source: str = "user"
-    metadata: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class AgentRunResult:
     """一次 Agent Run 的稳定公开结果。
 
@@ -159,8 +155,7 @@ AgentListener = Callable[[dict[str, Any]], Any]
 class AgentRuntimeFactory(Protocol):
     """AgentService 可消费的唯一 Runtime 数据面协议。
 
-    Runtime 的正式数据面使用 AgentCreateSpec/AgentRunRequest；InboundMessage
-    仅保留到 F35.6 的迁移兼容入口，不属于新的 Agent API。
+    Runtime 的正式数据面使用 AgentCreateSpec/AgentRunRequest。
     """
 
     name: str
@@ -169,7 +164,6 @@ class AgentRuntimeFactory(Protocol):
     async def create(self, spec: AgentCreateSpec) -> AgentRuntimeHandle: ...
     async def resume(self, spec: AgentResumeSpec) -> AgentRuntimeHandle: ...
 
-    def run_inbound(self, message: InboundMessage) -> Any: ...
     def cancel_session(self, *args: Any, **kwargs: Any) -> Any: ...
     def get_session_status(self, session_id: str) -> str: ...
     def is_active_session(self, session_id: str) -> bool: ...
@@ -187,7 +181,6 @@ __all__ = [
     "AgentRuntimeFactory",
     "AgentRuntimeHandle",
     "AgentView",
-    "InboundMessage",
     "RunOptions",
     "RunReservation",
     "RunStatus",

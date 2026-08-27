@@ -6,8 +6,8 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-from ftre_agent import InboundMessage
 from ftre_agent_runtime import AgentLoop
+from ftre_inbox.protocol import InboundMessage
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
 

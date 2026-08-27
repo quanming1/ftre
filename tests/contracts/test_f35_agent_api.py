@@ -70,9 +70,6 @@ class _Factory:
             AgentCreateSpec(spec.agent_id, spec.config, spec.session_id, spec.metadata)
         )
 
-    async def run_inbound(self, message):
-        return AgentRunResult(session_id=message.session_id, turn_id="legacy", status="completed")
-
     async def cancel_session(self, *args, **kwargs):
         return True
 

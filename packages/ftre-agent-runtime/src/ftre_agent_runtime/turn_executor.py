@@ -27,7 +27,6 @@ from ftre_agent import (
     AGENT_RUN_ERROR_SPEC,
     AgentConfig,
     AgentRunResult,
-    InboundMessage,
     RequestErrorPayload,
     RetryRequest,
 )
@@ -40,6 +39,7 @@ from ftre_agent_core.event import (
 from ftre_agent_core.message import Msg
 
 from .factory import compose_system_prompt, create_core_agent, default_agent_state
+from .protocol import RuntimeInput
 from .state import PUBLIC_RUN_STATUS, Turn, TurnStatus
 
 if TYPE_CHECKING:
@@ -97,7 +97,7 @@ class TurnExecutor:
 
     async def execute(
         self,
-        inbound: InboundMessage,
+        inbound: RuntimeInput,
         *,
         turn_id: str | None = None,
         config: AgentConfig | None = None,
@@ -670,8 +670,8 @@ class TurnExecutor:
     # ─── 工具方法 ──────────────────────────────────────────
 
     @staticmethod
-    def _session_id_of(inbound: InboundMessage) -> str:
-        """读取已归一化 InboundMessage 的 Session 身份。"""
+    def _session_id_of(inbound: RuntimeInput) -> str:
+        """读取已归一化 RuntimeInput 的 Session 身份。"""
         return inbound.session_id
 
     def _load_current_config(self) -> AgentConfig:
@@ -684,7 +684,7 @@ class TurnExecutor:
         return self._config_service.resolve_agent_config()
 
     async def resolve_inbound_config(
-        self, inbound: InboundMessage, *, turn_id: str
+        self, inbound: RuntimeInput, *, turn_id: str
     ) -> tuple[AgentConfig, Any | None]:
         """解析 Hook 门控和实际执行共同使用的精确配置快照。"""
         turn = Turn(

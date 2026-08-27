@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import pytest
-from ftre_agent import AgentRegistry, AgentService, InboundMessage
+from ftre_agent import (
+    AgentConfig,
+    AgentCreateSpec,
+    AgentRegistry,
+    AgentRunRequest,
+    AgentRunResult,
+    AgentService,
+)
+from ftre_agent_core.message import UserMsg
 
 
 class FakeRuntime:
-    """实现 AgentService 约定的 runtime 方法集（run_inbound/cancel_session/…）。"""
+    """实现 AgentService 约定的 runtime 方法集。"""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
@@ -16,9 +24,18 @@ class FakeRuntime:
     def get_session_status(self, session_id: str) -> str:
         return "running" if session_id == "busy" else "idle"
 
-    async def run_inbound(self, message):
-        self.calls.append(("run", (message,), {}))
-        return "executed"
+    async def create(self, spec):
+        return self
+
+    async def resume(self, spec):
+        return self
+
+    async def run(self, request):
+        self.calls.append(("run", (request,), {}))
+        return AgentRunResult(session_id=request.session_id, turn_id=request.request_id, status="completed")
+
+    async def dispose(self):
+        return None
 
     async def cancel_session(self, *args, **kwargs):
         self.calls.append(("cancel", args, kwargs))
@@ -43,7 +60,12 @@ async def test_agent_service_uses_factory_registration_and_closes_cleanly():
     assert service.list() == ()
     assert service.get_session_status("busy") == "running"
     assert service.is_session_busy("busy") is True
-    assert await service.run(InboundMessage("session", "request", "ws", "message")) == "executed"
+    await service.create(AgentCreateSpec("agent", AgentConfig(), "session"))
+    result = await service.run(
+        "agent",
+        AgentRunRequest("session", "request", (UserMsg(content="message"),)),
+    )
+    assert result.status == "completed"
     assert await service.cancel("session") is True
     assert [call[0] for call in runtime.calls] == ["run", "cancel"]
 
