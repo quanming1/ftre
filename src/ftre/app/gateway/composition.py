@@ -44,7 +44,7 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("message-bus", "ftre.services.messaging.bus.plugin:apply", "builtin", True, True, description="business message plane"),
         PluginManifest("tools", "ftre.services.tools.plugin:apply", "builtin", True, True, description="scoped tool registry"),
         PluginManifest("core-tools", "ftre.plugins.builtin.core_tools.plugin:apply", "builtin", True, True, description="core built-in tools"),
-        PluginManifest("agent-profiles", "ftre.services.agent.profile.plugin:apply", "builtin", True, True, description="agent profile merge"),
+        PluginManifest("agent-profiles", "ftre.services.agent_profile.plugin:apply", "builtin", True, True, description="agent profile merge"),
         PluginManifest("sessions", "ftre.services.session.plugin:apply", "builtin", True, True, description="session persistence service"),
         PluginManifest("commands", "ftre.plugins.builtin.command.plugin:apply", "builtin", True, True, description="command registry"),
         PluginManifest("workspaces", "ftre.services.workspace.plugin:apply", "builtin", True, True, description="workspace boundary"),

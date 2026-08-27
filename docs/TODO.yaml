@@ -1581,10 +1581,10 @@ stages:
             status: done
           - id: F35.3
             title: Agent Profile 配置解析与旧 agent 目录清理
-            status: in_progress
+            status: done
           - id: F35.4
             title: Inbox Msg 队列、原子 reservation 与 Hook 接入
-            status: todo
+            status: in_progress
           - id: F35.5
             title: UserMessageEvent 注入、Assistant 边界与投影顺序
             status: todo

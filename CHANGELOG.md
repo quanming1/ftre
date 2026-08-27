@@ -1,5 +1,13 @@
 # Changelog
 
+### F35 Agent Service / Agent Profile 边界收敛（开发中，未发布）
+
+- F35.3 将 Host 侧 Profile、配置、路由和 Team 成员 Profile 迁移至
+  `src/ftre/services/agent_profile/`，由 `AgentProfileService` 统一持有；Profile 按项目、用户、Host
+  优先级解析并冻结为带来源 trace/hash 的 `AgentProfileSnapshot`。
+- 删除旧 `src/ftre/services/agent` 源码 Owner，更新 Composition、Session、Compaction、测试引用；
+  全量 pytest 682 passed，ruff、架构门禁和 diff check 通过。
+
 ### F33 Agent Package 终局架构（已完成，未发布）
 
 - 新增 `ftre-agent` 契约包（`packages/ftre-agent`）：AgentService、InboundMessage、

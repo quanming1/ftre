@@ -33,7 +33,7 @@ from ftre_agent import (
 )
 from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, EnterClaim, RejectClaim
 
-from ftre.services.agent.config import load_config
+from ftre.services.agent_profile.config import load_config
 
 logger = logging.getLogger(__name__)
 

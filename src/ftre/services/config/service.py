@@ -163,7 +163,7 @@ class ConfigService:
         if not system_prompt:
             prompt_path = self._store.path.parent / "system_prompt.md"
             if not prompt_path.exists():
-                from ftre.services.agent.config import SYSTEM_PROMPT_PATH
+                from ftre.services.agent_profile.config import SYSTEM_PROMPT_PATH
 
                 prompt_path = SYSTEM_PROMPT_PATH
             try:

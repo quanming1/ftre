@@ -12,7 +12,7 @@
 | 验收日期 | — |
 | 关联文档 | `docs/TODO.yaml` F35；`docs/prd/PRD-F30-llm-service-package.md`；`docs/prd/PRD-F33-agent-package-final-architecture.md`；`docs/prd/PRD-F34-tool-service-runtime.md`；`AGENTS.md` |
 
-> **当前执行状态：F35.3 开发中。** F35.1、F35.2 已完成并提交；本轮只迁移 Agent Profile/配置/路由 Owner 并引入 ProfileSnapshot，不开始 Inbox reservation 或 UserMessage 投影。
+> **当前执行状态：F35.3 已完成，下一阶段为 F35.4。** F35.1、F35.2、F35.3 已分别验证并提交；F35.4 将只处理 Inbox Msg、reservation、lease 和 claim，不在本阶段提前改 UserMessage 投影。
 
 ## 1. 背景与目标
 
@@ -60,9 +60,9 @@ F35 按以下顺序推进，每个阶段都是独立的“实现 → 验证 → 
 | 阶段 | 只做什么 | 阶段验证 | 阶段完成后的 commit |
 |---|---|---|---|
 | **F35.1（已完成）** | `ftre-agent` 提供唯一 `agents` Service；Runtime 删除 Service 构造/provide，改为注册 Factory；固定 Composition 顺序 | Owner 架构扫描、Plugin 启动/关闭测试、现有 run/cancel/status 回归、`pytest`、`ruff`、`git diff --check` | `feat(F35): 分离 AgentService Owner 与 Runtime Factory` |
-| **F35.2（开发中）** | 冻结 Agent API、状态、Event、Hook 和错误契约；Runtime 通过 Handle 适配现有 Loop | Contract/clean import/fake factory 测试 | `feat(F35): 冻结 Agent 公共契约` |
-| **F35.3（开发中）** | Profile/Prompt 配置边界与旧 `services/agent` 清理；引入 ProfileSnapshot | 配置优先级、快照、旧引用扫描 | `feat(F35): 收敛 Agent Profile Service` |
-| F35.4 | Inbox Msg[]、reservation、lease、claim/requeue | 并发、崩溃恢复、无丢消息测试 | `feat(F35): 建立 Inbox 原子投递` |
+| **F35.2（已完成）** | 冻结 Agent API、状态、Event、Hook 和错误契约；Runtime 通过 Handle 适配现有 Loop | Contract/clean import/fake factory 测试 | `feat(F35): 冻结 Agent 公共契约` |
+| **F35.3（已完成）** | Profile/Prompt 配置边界与旧 `services/agent` 清理；引入 ProfileSnapshot | 配置优先级、快照、旧引用扫描 | `feat(F35): 收敛 Agent Profile Service` |
+| **F35.4（开发中）** | Inbox Msg[]、reservation、lease、claim/requeue | 并发、崩溃恢复、无丢消息测试 | `feat(F35): 建立 Inbox 原子投递` |
 | F35.5 | `ContinueTurn`、`before-reasoning`、真实 `UserMessageEvent` 和 Assistant 边界 | 事件时序、Projection、客户端实时流测试 | `feat(F35): 完成 UserMessage 消息边界` |
 | F35.6 | 取消、重启、架构收尾、clean install 和最终验收 | 全量门禁与 DoD | `feat(F35): 完成 Agent 与 Inbox 边界收敛` |
 
@@ -163,7 +163,13 @@ rg -n 'ftre\.services\.agent(\.| import)|services\.agent\.profile|services\.agen
 git diff --check
 ```
 
-`rg` 无匹配是成功；如需在 PowerShell 中严格返回 0，沿用 F35.1 的 `$LASTEXITCODE` 处理脚本。
+`rg` 无匹配是成功；PowerShell 严格验证使用：
+
+```powershell
+$matches = rg -n 'ftre\.services\.agent(\.| import)|services\.agent\.profile|services\.agent\.config' src packages tests -g '*.py' 2>$null
+if ($LASTEXITCODE -eq 0) { $matches; exit 1 }
+if ($LASTEXITCODE -gt 1) { exit $LASTEXITCODE }
+```
 
 **F35.3 commit 门禁**：上述验证全部通过，且旧 `src/ftre/services/agent` 不再存在后，才提交 `feat(F35): 收敛 Agent Profile Service`；提交后将 F35.3 标为 done、F35.4 标为 in_progress。
 
@@ -624,6 +630,8 @@ snapshot = await agent_profiles.resolve(
 | 2026-08-27 | 扩展为实施规格：补充术语/Owner 矩阵、完整 API 与错误、三套状态机、Inbox 原子 claim、事件持久化/恢复、Hook 失败矩阵、Profile 配置、当前代码迁移映射、架构门禁、观测、安全、版本和 DoD | 初稿不足以指导这一规模的边界重构，需要把讨论结论转成可执行约束 |
 | 2026-08-27 | F35.1 实施完成：`ftre-agent` 独立提供 `agents`，Runtime 改为 Factory Provider；全量 `675 passed`、ruff、架构扫描和 diff 检查通过 | 完成第一阶段 Owner 分离，后续阶段暂不启动 |
 | 2026-08-27 | F35.1 收尾：新增 `AgentRuntimeFactory` Protocol、`AgentLoopFactory` 包装器、AgentService typed errors，并修正 `rg` 无匹配时的验收脚本 | 消除“Loop 冒充 Factory”、通用异常和验证命令退出码偏差 |
+| 2026-08-27 | F35.2 实施完成：冻结 AgentCreate/Resume/RunRequest、Handle、View、Event、状态和 typed errors；补充 Fake Runtime 契约测试；全量 `675 passed` | 将 AgentService 数据面从隐式 Loop 调用收敛为可测试的公开契约 |
+| 2026-08-27 | F35.3 实施完成：Profile/config/router 迁移至 `src/ftre/services/agent_profile`；项目 > 用户 > Host 优先级解析为不可变 ProfileSnapshot；迁移所有生产/测试引用；全量 `682 passed`、ruff、diff 检查通过 | 删除旧 `src/ftre/services/agent` Owner，隔离 Profile 与 Agent Runtime |
 
 ## 9. 术语、角色与责任矩阵
 

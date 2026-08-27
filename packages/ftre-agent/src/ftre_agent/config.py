@@ -5,7 +5,7 @@
 PRD-F33 §5.4 作为"最小、稳定、可复用的契约"提取到本包。
 
 这里只包含纯数据结构与无副作用的解析函数；读取 ``~/.ftre`` 磁盘配置、缓存和
-system_prompt.md 的逻辑仍由 Host 的 ``ftre.services.agent.config`` 唯一持有。
+system_prompt.md 的逻辑仍由 Host 的 ``ftre.services.agent_profile.config`` 唯一持有。
 """
 
 from __future__ import annotations

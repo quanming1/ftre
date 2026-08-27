@@ -237,7 +237,7 @@ class SessionService:
         若是 team leader：级联取消并删除全部成员 session 与 sub_agents profile 树。
         若是 team 成员（被单独删除）：反向从 leader 的 teams 摘除并删其 profile。
         """
-        from ftre.services.agent.profile import (
+        from ftre.services.agent_profile import (
             sub_agent as sub_agent_profile,  # 惰性导入避免包间循环
         )
 

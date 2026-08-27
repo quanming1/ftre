@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ftre.services.agent.profile.manager import AgentProfile
+    from ftre.services.agent_profile.manager import AgentProfile
     from ftre.services.session import SessionService
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,7 @@ def load_member_profile(
                 leader_session_id, member_session_id,
             )
             return None
-        from ftre.services.agent.profile.manager import AgentManager
+        from ftre.services.agent_profile.manager import AgentManager
         from ftre.services.config.paths import AGENTS_DIR
 
         return AgentManager(

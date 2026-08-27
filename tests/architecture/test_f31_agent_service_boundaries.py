@@ -91,7 +91,7 @@ def test_f31_service_provider_entries_have_one_owner() -> None:
         "message_bus": "bus",
         "tools": "tools",
         "system_prompt": "system_prompt",
-        "agent_profiles": "agent/profile",
+        "agent_profiles": "agent_profile",
     }
     owners: dict[str, list[Path]] = {}
     for path in _provider_files():
