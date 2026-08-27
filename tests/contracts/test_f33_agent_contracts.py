@@ -15,7 +15,11 @@ from ftre_agent import (
     AgentRegistry,
     AgentRunResult,
     AgentService,
+    FactoryAlreadyRegisteredError,
+    FactoryNotRegisteredError,
     InboundMessage,
+    InvalidFactoryError,
+    ServiceClosedError,
 )
 from ftre_agent_runtime.completion import CompletionRegistry
 
@@ -54,11 +58,23 @@ def test_factory_registration_rejects_second_factory_and_unregistration_is_idemp
     runtime = _RecordingRuntime()
     service.start()
     registration = service.register_factory(runtime)
-    with pytest.raises(RuntimeError, match="already has a registered factory"):
+    with pytest.raises(FactoryAlreadyRegisteredError, match="already has a registered factory"):
         service.register_factory(_RecordingRuntime())
     assert service.factory_name == "_RecordingRuntime"
     assert service.unregister_factory(registration) is True
     assert service.unregister_factory(registration) is False
+
+
+@pytest.mark.asyncio
+async def test_factory_registration_errors_are_typed() -> None:
+    service = AgentService()
+    with pytest.raises(InvalidFactoryError):
+        service.register_factory(object())
+    with pytest.raises(FactoryNotRegisteredError):
+        await service.run(InboundMessage("s", "r", "ws", "hello"))
+    service.close()
+    with pytest.raises(ServiceClosedError):
+        service.register_factory(_RecordingRuntime())
 
 
 @pytest.mark.asyncio

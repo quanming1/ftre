@@ -73,7 +73,7 @@ def test_runtime_plugin_registers_private_loop_with_agent_service(monkeypatch) -
     assert provided == {}
     service = context.agents
     assert service.is_ready()
-    assert service.factory_name == "FakeLoop"
+    assert service.factory_name == "ftre-agent-runtime"
     assert started == [True]
 
     # 注入映射：inject 声明的每个 Service 都按窄公开 key 传入 Loop。

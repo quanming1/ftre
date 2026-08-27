@@ -85,7 +85,7 @@ async def run_gateway_runtime(*, port: int | None = None, host: str | None = Non
         )
         context = composition.context
         channel_service = context.channels
-        # Agent Provider Plugin 已完成 AgentService 与私有 Runtime 装配；
+        # AgentService Provider 与 Runtime Provider 已在 Composition 中完成装配；
         # Bootstrap 只启动 Host 通道，不保存第二份 Agent 对象图。
         await channel_service.start_all()
         composition.context.get("http").freeze()  # 冻结路由：此后不可再注册

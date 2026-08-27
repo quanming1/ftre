@@ -90,9 +90,13 @@ F35 按以下顺序推进，每个阶段都是独立的“实现 → 验证 → 
 ```powershell
 python -m pytest -q
 python -m ruff check src tests packages
-rg -n 'provide\s*=\s*\("agents"\)|AgentService\(' packages/ftre-agent-runtime src/ftre/plugins src/ftre/app
+$matches = rg -n 'provide\s*=\s*\("agents"\)|AgentService\(' packages/ftre-agent-runtime src/ftre/plugins src/ftre/app 2>$null
+if ($LASTEXITCODE -eq 0) { $matches; exit 1 }
+if ($LASTEXITCODE -gt 1) { exit $LASTEXITCODE }
 git diff --check
 ```
+
+其中 `rg` 返回 1 表示“未发现违规匹配”，由脚本按成功处理；返回大于 1 才表示扫描错误。
 
 **F35.1 验收断言**：
 
@@ -559,6 +563,7 @@ snapshot = await agent_profiles.resolve(
 | 2026-08-27 | 初始草稿：汇总 Agent Service、Runtime、Profile、Inbox、Hook、UserMessage 边界和最终事件顺序 | 固化多轮架构讨论，作为 F35 唯一实施依据 |
 | 2026-08-27 | 扩展为实施规格：补充术语/Owner 矩阵、完整 API 与错误、三套状态机、Inbox 原子 claim、事件持久化/恢复、Hook 失败矩阵、Profile 配置、当前代码迁移映射、架构门禁、观测、安全、版本和 DoD | 初稿不足以指导这一规模的边界重构，需要把讨论结论转成可执行约束 |
 | 2026-08-27 | F35.1 实施完成：`ftre-agent` 独立提供 `agents`，Runtime 改为 Factory Provider；全量 `675 passed`、ruff、架构扫描和 diff 检查通过 | 完成第一阶段 Owner 分离，后续阶段暂不启动 |
+| 2026-08-27 | F35.1 收尾：新增 `AgentRuntimeFactory` Protocol、`AgentLoopFactory` 包装器、AgentService typed errors，并修正 `rg` 无匹配时的验收脚本 | 消除“Loop 冒充 Factory”、通用异常和验证命令退出码偏差 |
 
 ## 9. 术语、角色与责任矩阵
 

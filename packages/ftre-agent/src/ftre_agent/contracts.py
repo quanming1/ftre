@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 RunStatus = str
 
@@ -50,9 +50,29 @@ class AgentRunResult:
 
 AgentListener = Callable[[dict[str, Any]], Any]
 
+
+class AgentRuntimeFactory(Protocol):
+    """AgentService 可消费的唯一 Runtime 数据面协议。
+
+    F35.1 仍保留现有 InboundMessage 数据面；F35.2 会把这些方法收敛为
+    AgentCreateSpec/AgentRunRequest。这里先用独立 Protocol 约束 Service 与
+    Runtime 的所有权方向，禁止把具体 AgentLoop 当作公共 Service。
+    """
+
+    name: str
+    version: str
+
+    def run_inbound(self, message: InboundMessage) -> Any: ...
+    def cancel_session(self, *args: Any, **kwargs: Any) -> Any: ...
+    def get_session_status(self, session_id: str) -> str: ...
+    def is_active_session(self, session_id: str) -> bool: ...
+    def delete_session(self, session_id: str) -> Any: ...
+    def resume_confirmation(self, *args: Any, **kwargs: Any) -> Any: ...
+
 __all__ = [
     "AgentListener",
     "AgentRunResult",
+    "AgentRuntimeFactory",
     "InboundMessage",
     "RunStatus",
 ]

@@ -10,7 +10,21 @@ Host 独立引用。
 """
 
 from .config import AgentConfig, LLMConfig, build_llm_config, sanitize_agent_effort
-from .contracts import AgentListener, AgentRunResult, InboundMessage, RunStatus
+from .contracts import (
+    AgentListener,
+    AgentRunResult,
+    AgentRuntimeFactory,
+    InboundMessage,
+    RunStatus,
+)
+from .errors import (
+    AgentServiceError,
+    FactoryAlreadyRegisteredError,
+    FactoryNotRegisteredError,
+    FactoryRegistrationMismatchError,
+    InvalidFactoryError,
+    ServiceClosedError,
+)
 from .hooks import (
     AGENT_AFTER_RUN,
     AGENT_AFTER_RUN_SPEC,
@@ -56,7 +70,9 @@ __all__ = [
     "AgentRecord",
     "AgentRegistry",
     "AgentRunResult",
+    "AgentRuntimeFactory",
     "AgentService",
+    "AgentServiceError",
     "AgentStatus",
     "AgentSubject",
     "AllowRun",
@@ -64,14 +80,19 @@ __all__ = [
     "BeforeReasoningResult",
     "BeforeRunPayload",
     "ContinueTurn",
+    "FactoryAlreadyRegisteredError",
+    "FactoryNotRegisteredError",
     "FactoryRegistration",
+    "FactoryRegistrationMismatchError",
     "HookScopeCarrier",
     "InboundMessage",
+    "InvalidFactoryError",
     "LLMConfig",
     "RejectRun",
     "RequestErrorPayload",
     "RetryRequest",
     "RunStatus",
+    "ServiceClosedError",
     "StopDecisionPayload",
     "StopTurn",
     "build_llm_config",

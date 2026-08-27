@@ -12,7 +12,19 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .contracts import AgentListener, AgentRunResult, InboundMessage
+from .contracts import (
+    AgentListener,
+    AgentRunResult,
+    AgentRuntimeFactory,
+    InboundMessage,
+)
+from .errors import (
+    FactoryAlreadyRegisteredError,
+    FactoryNotRegisteredError,
+    FactoryRegistrationMismatchError,
+    InvalidFactoryError,
+    ServiceClosedError,
+)
 from .registry import AgentRegistry, HookScopeCarrier
 
 
@@ -55,12 +67,14 @@ class AgentService:
         for record in tuple(self.registry.list()):
             self.registry.dispose(record["id"])
 
-    def register_factory(self, factory: Any) -> FactoryRegistration:
+    def register_factory(self, factory: AgentRuntimeFactory) -> FactoryRegistration:
         """注册唯一 Runtime Factory，不暴露第二个 Context Service。"""
         if self._closed:
-            raise RuntimeError("AgentService is closed")
+            raise ServiceClosedError("AgentService is closed")
         if self._factory is not None:
-            raise RuntimeError("AgentService already has a registered factory")
+            raise FactoryAlreadyRegisteredError(
+                "AgentService already has a registered factory"
+            )
         required = (
             "run_inbound",
             "cancel_session",
@@ -71,7 +85,9 @@ class AgentService:
         )
         missing = [name for name in required if not callable(getattr(factory, name, None))]
         if missing:
-            raise TypeError(f"invalid Agent Runtime Factory; missing: {', '.join(missing)}")
+            raise InvalidFactoryError(
+                f"invalid Agent Runtime Factory; missing: {', '.join(missing)}"
+            )
         registration = FactoryRegistration(token=object(), name=_factory_name(factory))
         self._factory = factory
         self._factory_registration = registration
@@ -84,7 +100,9 @@ class AgentService:
         if self._factory_registration is None:
             return False
         if registration.token is not self._factory_registration.token:
-            raise RuntimeError("Agent Runtime Factory registration does not match")
+            raise FactoryRegistrationMismatchError(
+                "Agent Runtime Factory registration does not match"
+            )
         self._factory = None
         self._factory_registration = None
         for record in tuple(self.registry.list()):
@@ -101,9 +119,9 @@ class AgentService:
 
     def _factory_or_raise(self) -> Any:
         if self._closed:
-            raise RuntimeError("AgentService is closed")
+            raise ServiceClosedError("AgentService is closed")
         if self._factory is None:
-            raise RuntimeError("AgentService Runtime Factory is not ready")
+            raise FactoryNotRegisteredError("AgentService Runtime Factory is not ready")
         return self._factory
 
     async def run(self, message: InboundMessage) -> AgentRunResult:

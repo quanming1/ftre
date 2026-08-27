@@ -1,7 +1,7 @@
 """F33 Runtime Package 生命周期测试。
 
 验证 Runtime Plugin 在真实 Composition 中的装配与卸载（AC4/AC12/AC14 的
-生命周期侧面）：agents Service 由 entry point 装载、关闭后 Runtime 解绑、
+生命周期侧面）：agents Service 与 Runtime Factory 由各自 entry point 装载、关闭后解绑、
 重复关闭安全，以及洁净环境导入（AC16 的导入侧面）。
 """
 
@@ -26,7 +26,7 @@ async def test_runtime_plugin_composes_binds_and_detaches(tmp_path) -> None:
     agents = composition.context.get("agents")
     assert agents is not None
     assert agents.is_ready()
-    assert agents.factory_name == "AgentLoop"
+    assert agents.factory_name == "ftre-agent-runtime"
     # Runtime 通过 Service 转发状态；具体 Loop 不从 Service 公共面暴露。
     assert agents.get_session_status("nope") == "idle"
 

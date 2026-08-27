@@ -11,7 +11,7 @@ async def test_agent_service_owner_and_runtime_factory_detach_on_close(tmp_path)
     agents = composition.context.get("agents")
     assert agents is not None
     assert agents.is_ready()
-    assert agents.factory_name == "AgentLoop"
+    assert agents.factory_name == "ftre-agent-runtime"
     assert composition.context.get("agent_runtime", strict=False) is None
     assert composition.plugins.loader._manifests.get("agent-runtime") is not None
     # Channel providers are composed by their own Plugins; the Gateway does

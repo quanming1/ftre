@@ -13,6 +13,7 @@ from __future__ import annotations
 from cordis import Context
 
 from .engine import AgentLoop
+from .runtime_factory import AgentLoopFactory
 
 inject = (
     "agents",
@@ -48,11 +49,14 @@ def apply(ctx: Context, config=None):
         session_events=ctx.session_events,
         llm_service=ctx.llm,
     )
-    registration = service.register_factory(loop)
-    loop.start()
+    factory = AgentLoopFactory(loop)
+    registration = service.register_factory(factory)
+    factory.start()
 
     async def close() -> None:
-        await loop.stop()
-        service.unregister_factory(registration)
+        try:
+            await factory.stop()
+        finally:
+            service.unregister_factory(registration)
 
     ctx.effect(lambda: close, label="agent:runtime")
