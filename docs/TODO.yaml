@@ -1584,10 +1584,10 @@ stages:
             status: done
           - id: F35.4
             title: Inbox Msg 队列、原子 reservation 与 Hook 接入
-            status: in_progress
+            status: done
           - id: F35.5
             title: UserMessageEvent 注入、Assistant 边界与投影顺序
-            status: todo
+            status: in_progress
           - id: F35.6
             title: 生命周期、恢复、架构扫描和全量验收
             status: todo

@@ -65,6 +65,12 @@ class AgentLoopFactory(AgentRuntimeFactory):
         texts = [message.get_text_content() or "" for message in request.messages]
         metadata = dict(request.metadata)
         attachments = metadata.pop("attachments", ())
+        metadata["agent_id"] = str(
+            metadata.get("profile_agent_id")
+            or metadata.get("runtime_agent_id")
+            or request.agent_id
+            or "default"
+        )
         return InboundMessage(
             session_id=request.session_id,
             request_id=request.request_id,

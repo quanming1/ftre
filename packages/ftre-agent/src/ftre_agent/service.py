@@ -12,8 +12,9 @@ import inspect
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from .contracts import (
     AgentCreateSpec,
@@ -24,6 +25,7 @@ from .contracts import (
     AgentRuntimeFactory,
     AgentView,
     InboundMessage,
+    RunReservation,
 )
 from .errors import (
     AgentAlreadyExistsError,
@@ -104,6 +106,7 @@ class AgentService:
         self._closed = False
         self.registry = AgentRegistry()
         self._entries: dict[str, _AgentEntry] = {}
+        self._reservations: dict[str, RunReservation] = {}
         self._listeners: dict[str, list[AgentListener]] = {
             "created": [],
             "disposed": [],
@@ -120,6 +123,7 @@ class AgentService:
         self._factory = None
         self._factory_registration = None
         self._entries.clear()
+        self._reservations.clear()
         for record in tuple(self.registry.list()):
             self.registry.dispose(record["id"])
 
@@ -162,6 +166,7 @@ class AgentService:
         self._factory = None
         self._factory_registration = None
         self._entries.clear()
+        self._reservations.clear()
         for record in tuple(self.registry.list()):
             self.registry.dispose(record["id"])
         return True
@@ -274,12 +279,18 @@ class AgentService:
         if not isinstance(agent_id_or_message, str):
             raise InvalidRunRequestError("agent_id must be a string")
         entry = self._entry_or_raise(agent_id_or_message)
+        self._expire_reservations()
         if entry.state in {"running", "stopping", "compacting"}:
             raise AgentBusyError(f"Agent is busy: {agent_id_or_message}")
         if request.session_id != (entry.spec.session_id or agent_id_or_message):
             raise InvalidRunRequestError("request session does not belong to Agent")
         entry.state = "running"
         entry.run_id = request.request_id
+        self._consume_reservation(
+            agent_id_or_message,
+            request.session_id,
+            request.request_id,
+        )
         self.registry.set_state(agent_id_or_message, "running")
         await self._notify("status-changed", self.view(agent_id_or_message))
         try:
@@ -353,7 +364,64 @@ class AgentService:
 
     def is_busy(self, session_id: str) -> bool:
         """判断 Session 是否仍有活动 Turn 或维护任务。"""
-        return self.status(session_id) in {"running", "processing", "compacting"}
+        self._expire_reservations()
+        return self.status(session_id) in {"running", "processing", "compacting"} or any(
+            item.session_id == session_id for item in self._reservations.values()
+        )
+
+    def try_reserve(
+        self,
+        agent_id: str,
+        session_id: str,
+        request_id: str,
+        *,
+        lease_seconds: float = 30.0,
+    ) -> RunReservation | None:
+        """原子保留一次 Run；Inbox 在 durable claim 前调用。"""
+        self._factory_or_raise()
+        self._validate_agent_id(agent_id)
+        if not session_id or not request_id:
+            raise InvalidRunRequestError("session_id and request_id must be non-empty")
+        entry = self._entries.get(agent_id)
+        if entry is None:
+            raise AgentNotFoundError(f"Agent not found: {agent_id}")
+        self._expire_reservations()
+        if entry.state in {"running", "stopping", "compacting"}:
+            return None
+        if any(item.agent_id == agent_id for item in self._reservations.values()):
+            return None
+        reservation = RunReservation(
+            reservation_id=uuid4().hex,
+            agent_id=agent_id,
+            session_id=session_id,
+            request_id=request_id,
+            expires_at=datetime.now(UTC) + timedelta(seconds=max(0.1, lease_seconds)),
+        )
+        self._reservations[reservation.reservation_id] = reservation
+        return reservation
+
+    def release_reservation(self, reservation: RunReservation | str) -> bool:
+        """释放一次尚未消费的 Run 保留；重复释放安全。"""
+        reservation_id = (
+            reservation.reservation_id if isinstance(reservation, RunReservation) else reservation
+        )
+        return self._reservations.pop(reservation_id, None) is not None
+
+    def _consume_reservation(self, agent_id: str, session_id: str, request_id: str) -> None:
+        for reservation_id, reservation in tuple(self._reservations.items()):
+            if (
+                reservation.agent_id == agent_id
+                and reservation.session_id == session_id
+                and reservation.request_id == request_id
+            ):
+                self._reservations.pop(reservation_id, None)
+                return
+
+    def _expire_reservations(self) -> None:
+        now = datetime.now(UTC)
+        for reservation_id, reservation in tuple(self._reservations.items()):
+            if reservation.expires_at <= now:
+                self._reservations.pop(reservation_id, None)
 
     def get_session_status(self, session_id: str) -> str:
         """公开状态查询命名，与 Runtime 的 ``get_session_status`` 对齐。"""

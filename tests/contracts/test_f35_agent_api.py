@@ -150,5 +150,21 @@ async def test_stream_and_resume_are_available_without_runtime_object_leak() -> 
     assert service.get("agent-1").run_id == "request-1"
 
 
+@pytest.mark.asyncio
+async def test_run_reservation_serializes_inbox_claims() -> None:
+    service = AgentService()
+    factory = _Factory()
+    service.start()
+    service.register_factory(factory)
+    # Registration alone does not invent an Agent identity; Inbox must create it.
+    await service.create(AgentCreateSpec("agent-1", AgentConfig(), "session-1"))
+    reservation = service.try_reserve("agent-1", "session-1", "request-1")
+    assert reservation is not None
+    assert service.try_reserve("agent-1", "session-1", "request-2") is None
+    assert service.is_busy("session-1") is True
+    assert service.release_reservation(reservation) is True
+    assert service.release_reservation(reservation) is False
+
+
 def test_factory_registration_handle_is_public_and_immutable() -> None:
     assert FactoryRegistration.__dataclass_params__.frozen is True

@@ -1,6 +1,13 @@
 # Changelog
 
-### F35 Agent Service / Agent Profile 边界收敛（开发中，未发布）
+### F35 Agent Service / Profile / Inbox 边界收敛（开发中，未发布）
+
+- F35.4 将 Inbox 输入冻结为可持久化 `Msg[]`，新增 `AgentService` RunReservation 与 Inbox durable
+  lease（`claim_lease/ack/release`）；新进程会回收旧 owner 的 inflight 项，Agent 失败/取消会 release，
+  成功才 ack，避免忙时或崩溃丢消息。
+- 扩展 `inbox/admitted`、`inbox/claimed`、`inbox/deferred`、`inbox/delivered`、`inbox/error` 观察 Hook，
+  Agent 状态变化通过事件唤醒 worker，移除 quiescent 固定时间轮询；保留旧 InboundMessage 仅供 F35.6 清理。
+- 全量 pytest 693 passed，Inbox/契约/架构专项 217 passed，ruff 与 diff check 通过。
 
 - F35.3 将 Host 侧 Profile、配置、路由和 Team 成员 Profile 迁移至
   `src/ftre/services/agent_profile/`，由 `AgentProfileService` 统一持有；Profile 按项目、用户、Host

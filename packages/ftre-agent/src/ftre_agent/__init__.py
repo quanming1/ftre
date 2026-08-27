@@ -23,6 +23,7 @@ from .contracts import (
     AgentView,
     InboundMessage,
     RunOptions,
+    RunReservation,
     RunStatus,
 )
 from .errors import (
@@ -119,6 +120,7 @@ __all__ = [
     "RetryRequest",
     "RunConflictError",
     "RunOptions",
+    "RunReservation",
     "RunStatus",
     "ServiceClosedError",
     "StopDecisionPayload",

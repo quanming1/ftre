@@ -1,7 +1,7 @@
 """Agent Service 的公开契约。
 
 这些模型是 Gateway、HTTP、Channel、Inbox 和其他 Feature 可依赖的稳定边界：
-``InboundMessage`` 是唯一执行输入，``AgentRunResult`` 是唯一执行结果。它们
+``AgentRunRequest`` 是执行输入，``AgentRunResult`` 是执行结果。它们
 不暴露 Inbox 队列、Session Repository、TurnExecutor 或 AgentLoop 对象。
 """
 
@@ -53,6 +53,7 @@ class AgentRunRequest:
     session_id: str
     request_id: str
     messages: tuple[Msg, ...]
+    agent_id: str | None = None
     channel_id: str = ""
     source: str = "user"
     metadata: Mapping[str, Any] = ()
@@ -69,6 +70,17 @@ class AgentView:
     run_id: str | None = None
     created_at: datetime | None = None
     config_snapshot_hash: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RunReservation:
+    """AgentService 为一次 Inbox 投递保留的短生命周期执行权。"""
+
+    reservation_id: str
+    agent_id: str
+    session_id: str
+    request_id: str
+    expires_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,9 +159,8 @@ AgentListener = Callable[[dict[str, Any]], Any]
 class AgentRuntimeFactory(Protocol):
     """AgentService 可消费的唯一 Runtime 数据面协议。
 
-    F35.1 仍保留现有 InboundMessage 数据面；F35.2 会把这些方法收敛为
-    AgentCreateSpec/AgentRunRequest。这里先用独立 Protocol 约束 Service 与
-    Runtime 的所有权方向，禁止把具体 AgentLoop 当作公共 Service。
+    Runtime 的正式数据面使用 AgentCreateSpec/AgentRunRequest；InboundMessage
+    仅保留到 F35.6 的迁移兼容入口，不属于新的 Agent API。
     """
 
     name: str
@@ -178,5 +189,6 @@ __all__ = [
     "AgentView",
     "InboundMessage",
     "RunOptions",
+    "RunReservation",
     "RunStatus",
 ]

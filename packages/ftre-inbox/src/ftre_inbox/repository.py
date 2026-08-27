@@ -14,9 +14,10 @@ import os
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .models import InboxSnapshot, QueueItem, QueueTarget, _MutableInbox
+from .models import InboxSnapshot, LeaseRecord, QueueItem, QueueTarget, _MutableInbox
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class InboxRepository:
         self._request_seen = request_seen
         self._states: dict[str, _MutableInbox] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._owner_id = uuid.uuid4().hex
 
     def lock_for(self, session_id: str) -> asyncio.Lock:
         return self._locks.setdefault(session_id, asyncio.Lock())
@@ -55,6 +57,9 @@ class InboxRepository:
                 # 不把一个损坏队列当成空队列；保留文件供诊断，跳过该 Session。
                 path.rename(path.with_name(f"inbox.json.corrupt-{uuid.uuid4().hex[:8]}"))
                 continue
+            if state.inflight:
+                self._requeue_orphaned_leases(state)
+                await self._commit(state)
             self._states[state.session_id] = state
 
     async def _migrate_legacy_mailboxes(self) -> None:
@@ -93,6 +98,7 @@ class InboxRepository:
                         content=str(value.get("content", "")),
                         attachments=tuple(dict(item) for item in value.get("attachments", ())),
                         source="user",
+                        agent_id=str(value.get("agent_id") or "default"),
                     ))
                 state.validate()
                 # 同一个旧 state 在“新 Inbox 已写入、旧字段尚未删除”的崩溃窗口
@@ -110,7 +116,11 @@ class InboxRepository:
                 continue
 
     def recoverable_sessions(self) -> list[str]:
-        return [sid for sid, state in self._states.items() if state.next_turn or state.next_step]
+        return [
+            sid
+            for sid, state in self._states.items()
+            if state.next_turn or state.next_step or state.inflight
+        ]
 
     def close(self) -> None:
         """丢弃进程内快照和锁，但保留磁盘文件供下次启用恢复。"""
@@ -134,11 +144,13 @@ class InboxRepository:
             existing = self._find(state, item.request_id)
             if existing is not None:
                 return False, existing[1] + 1
+            if item.request_id in state.inflight:
+                return False, 0
             if self._request_seen is not None and self._request_seen(
                 item.session_id, item.request_id
             ):
                 return False, 0
-            if len(state.next_turn) + len(state.next_step) >= self.capacity:
+            if len(state.next_turn) + len(state.next_step) + len(state.inflight) >= self.capacity:
                 raise OverflowError(f"Inbox 已满: {self.capacity}")
             queued = copy.deepcopy(item)
             if queued.sequence <= 0:
@@ -151,6 +163,8 @@ class InboxRepository:
                     attachments=queued.attachments,
                     source=queued.source,
                     history_message_id=queued.history_message_id,
+                    messages=queued.messages,
+                    agent_id=queued.agent_id,
                 )
             state.next_sequence = max(state.next_sequence, queued.sequence + 1)
             (state.next_turn if target == "next-turn" else state.next_step).append(queued)
@@ -181,6 +195,77 @@ class InboxRepository:
             await self._commit(state)
             return tuple(found)
 
+    async def claim_lease(
+        self,
+        session_id: str,
+        request_ids: tuple[str, ...],
+        *,
+        lease_seconds: float = 30.0,
+    ) -> tuple[LeaseRecord, ...]:
+        """原子领取并保留 durable lease；调用方必须随后 ack 或 release。"""
+        if not request_ids:
+            return ()
+        async with self.lock_for(session_id):
+            state = self._state(session_id)
+            found: list[tuple[list[QueueItem], int, QueueTarget]] = []
+            for request_id in request_ids:
+                hit = self._find_with_target(state, request_id)
+                if hit is None:
+                    return ()
+                found.append(hit)
+            lease_id = uuid.uuid4().hex
+            expires_at = datetime.now(UTC) + timedelta(seconds=max(0.1, lease_seconds))
+            records: list[LeaseRecord] = []
+            for items, index, target in sorted(found, key=lambda value: value[1], reverse=True):
+                item = items.pop(index)
+                record = LeaseRecord(
+                    lease_id=lease_id,
+                    owner_id=self._owner_id,
+                    target=target,
+                    item=item,
+                    expires_at=expires_at,
+                )
+                state.inflight[item.request_id] = record
+                records.append(record)
+            state.revision += 1
+            state.validate()
+            await self._commit(state)
+            return tuple(reversed(records))
+
+    async def ack(self, session_id: str, lease_id: str) -> tuple[QueueItem, ...]:
+        """确认 lease 已交付，永久移除其 inflight 记录。"""
+        async with self.lock_for(session_id):
+            state = self._state(session_id)
+            records = [
+                lease for lease in state.inflight.values() if lease.lease_id == lease_id
+            ]
+            if not records:
+                return ()
+            for record in records:
+                state.inflight.pop(record.item.request_id, None)
+            state.revision += 1
+            await self._commit(state)
+            return tuple(record.item for record in records)
+
+    async def release(self, session_id: str, lease_id: str) -> tuple[QueueItem, ...]:
+        """释放 lease 并按原 target/sequence 放回 pending，供失败或取消恢复。"""
+        async with self.lock_for(session_id):
+            state = self._state(session_id)
+            records = [
+                lease for lease in state.inflight.values() if lease.lease_id == lease_id
+            ]
+            if not records:
+                return ()
+            for record in records:
+                state.inflight.pop(record.item.request_id, None)
+                target_items = state.next_step if record.target == "next-step" else state.next_turn
+                target_items.append(record.item)
+                target_items.sort(key=lambda item: item.sequence)
+            state.revision += 1
+            state.validate()
+            await self._commit(state)
+            return tuple(record.item for record in records)
+
     async def remove(self, session_id: str, request_id: str) -> QueueItem | None:
         async with self.lock_for(session_id):
             state = self._state(session_id)
@@ -210,6 +295,8 @@ class InboxRepository:
                 attachments=tuple(dict(item) for item in (attachments or ())),
                 source=old.source,
                 history_message_id=old.history_message_id,
+                messages=(),
+                agent_id=old.agent_id,
             )
             state.revision += 1
             await self._commit(state)
@@ -264,6 +351,27 @@ class InboxRepository:
                 if item.request_id == request_id:
                     return items, index
         return None
+
+    @classmethod
+    def _find_with_target(
+        cls, state: _MutableInbox, request_id: str
+    ) -> tuple[list[QueueItem], int, QueueTarget] | None:
+        for target, items in (("next-turn", state.next_turn), ("next-step", state.next_step)):
+            for index, item in enumerate(items):
+                if item.request_id == request_id:
+                    return items, index, target
+        return None
+
+    @staticmethod
+    def _requeue_orphaned_leases(state: _MutableInbox) -> None:
+        """新进程加载时，上一进程留下的 inflight 一律回到 pending。"""
+        records = tuple(state.inflight.values())
+        state.inflight.clear()
+        for record in records:
+            target_items = state.next_step if record.target == "next-step" else state.next_turn
+            target_items.append(record.item)
+        state.next_turn.sort(key=lambda item: item.sequence)
+        state.next_step.sort(key=lambda item: item.sequence)
 
     async def _commit(self, state: _MutableInbox) -> None:
         path = self.path_for(state.session_id)

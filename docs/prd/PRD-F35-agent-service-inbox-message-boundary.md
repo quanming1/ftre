@@ -12,7 +12,7 @@
 | 验收日期 | — |
 | 关联文档 | `docs/TODO.yaml` F35；`docs/prd/PRD-F30-llm-service-package.md`；`docs/prd/PRD-F33-agent-package-final-architecture.md`；`docs/prd/PRD-F34-tool-service-runtime.md`；`AGENTS.md` |
 
-> **当前执行状态：F35.3 已完成，下一阶段为 F35.4。** F35.1、F35.2、F35.3 已分别验证并提交；F35.4 将只处理 Inbox Msg、reservation、lease 和 claim，不在本阶段提前改 UserMessage 投影。
+> **当前执行状态：F35.4 已完成，下一阶段为 F35.5。** F35.1～F35.4 已分别验证并提交；F35.5 将只处理 UserMessageEvent、Assistant 边界和 Projection 顺序。
 
 ## 1. 背景与目标
 
@@ -62,8 +62,8 @@ F35 按以下顺序推进，每个阶段都是独立的“实现 → 验证 → 
 | **F35.1（已完成）** | `ftre-agent` 提供唯一 `agents` Service；Runtime 删除 Service 构造/provide，改为注册 Factory；固定 Composition 顺序 | Owner 架构扫描、Plugin 启动/关闭测试、现有 run/cancel/status 回归、`pytest`、`ruff`、`git diff --check` | `feat(F35): 分离 AgentService Owner 与 Runtime Factory` |
 | **F35.2（已完成）** | 冻结 Agent API、状态、Event、Hook 和错误契约；Runtime 通过 Handle 适配现有 Loop | Contract/clean import/fake factory 测试 | `feat(F35): 冻结 Agent 公共契约` |
 | **F35.3（已完成）** | Profile/Prompt 配置边界与旧 `services/agent` 清理；引入 ProfileSnapshot | 配置优先级、快照、旧引用扫描 | `feat(F35): 收敛 Agent Profile Service` |
-| **F35.4（开发中）** | Inbox Msg[]、reservation、lease、claim/requeue | 并发、崩溃恢复、无丢消息测试 | `feat(F35): 建立 Inbox 原子投递` |
-| F35.5 | `ContinueTurn`、`before-reasoning`、真实 `UserMessageEvent` 和 Assistant 边界 | 事件时序、Projection、客户端实时流测试 | `feat(F35): 完成 UserMessage 消息边界` |
+| **F35.4（已完成）** | Inbox Msg[]、reservation、lease、claim/requeue | 并发、崩溃恢复、无丢消息测试 | `feat(F35): 建立 Inbox 原子投递` |
+| **F35.5（开发中）** | `ContinueTurn`、`before-reasoning`、真实 `UserMessageEvent` 和 Assistant 边界 | 事件时序、Projection、客户端实时流测试 | `feat(F35): 完成 UserMessage 消息边界` |
 | F35.6 | 取消、重启、架构收尾、clean install 和最终验收 | 全量门禁与 DoD | `feat(F35): 完成 Agent 与 Inbox 边界收敛` |
 
 后续阶段的需求保留在本文作为终局约束，但在当前阶段只能作为验收边界，不能顺手实现。每个阶段开始前将本表对应行标为 `in_progress`，完成后标为 `done`，并在第 8 节记录实际变更。
@@ -166,12 +166,47 @@ git diff --check
 `rg` 无匹配是成功；PowerShell 严格验证使用：
 
 ```powershell
-$matches = rg -n 'ftre\.services\.agent(\.| import)|services\.agent\.profile|services\.agent\.config' src packages tests -g '*.py' 2>$null
+$matches = rg -n 'ftre\.services\.agent\.profile|ftre\.services\.agent\.config|services/agent/profile|services/agent/config' src packages tests -g '*.py' 2>$null
 if ($LASTEXITCODE -eq 0) { $matches; exit 1 }
 if ($LASTEXITCODE -gt 1) { exit $LASTEXITCODE }
 ```
 
 **F35.3 commit 门禁**：上述验证全部通过，且旧 `src/ftre/services/agent` 不再存在后，才提交 `feat(F35): 收敛 Agent Profile Service`；提交后将 F35.3 标为 done、F35.4 标为 in_progress。
+
+### 2.0.4 F35.4 实施卡（当前唯一工作包）
+
+**目标**：把 Inbox 的持久输入转换为 Core `Msg[]`，并在 AgentService reservation 与 durable lease 双重保护下完成 claim；任何进程崩溃、Agent 失败或取消都不能静默丢失 pending 输入。
+
+**必须修改**：
+
+1. `QueueItem` 增加 `messages: tuple[Msg, ...]` 与 Agent profile 标识；旧 schema 仍可读取，写入升级为 schema 2。
+2. `InboxRepository` 增加 inflight lease、原子 `claim_lease/ack/release`；新进程加载时把旧 owner 的 inflight 项按原 target/sequence 重新排回 pending。
+3. `AgentService` 增加短生命周期 `RunReservation`、`try_reserve`、`release_reservation`；执行开始时消费匹配 reservation，reservation 参与 busy 判断。
+4. Inbox 新版 AgentService 路径必须按 `ensure identity → reservation → history/claim lease → AgentRunRequest(Msg[]) → ack` 顺序执行；失败/取消统一 release，不得先永久 claim 再调用 Agent。
+5. 扩展 Inbox 观察 Hook：`inbox/admitted`、`inbox/claimed`、`inbox/deferred`、`inbox/delivered`、`inbox/error`；Hook 失败只记录，不改变队列事实。
+6. AgentService 状态变化唤醒 Inbox worker；`wait_session_quiescent` 不使用固定时间 sleep 轮询。旧 Fake Agent 的 InboundMessage 适配只作为现有回归路径，F35.6 删除。
+
+**本阶段明确不修改**：
+
+- `UserMessageEvent` 投影、Assistant message_id 轮换、`before-reasoning` 注入语义和客户端；这些属于 F35.5。
+- `E:\ftre-agent-core`；不修改 Core Msg/Hook 类型。
+- F30 LLM Retry/Fallback、F34 ToolService 和 Profile 解析行为。
+
+**F35.4 验证命令**：
+
+```powershell
+python -m pytest -q packages/ftre-inbox/tests tests/test_inbox_service.py tests/lifecycle/test_f10_lifecycle_faults.py tests/contracts/test_f35_agent_api.py tests/architecture
+python -m ruff check src tests packages
+git diff --check
+```
+
+必须额外确认：
+
+```powershell
+rg -n 'claim_lease|RunReservation|AgentRunRequest|inbox/(admitted|claimed|deferred|delivered|error)' packages/ftre-inbox packages/ftre-agent src/ftre tests
+```
+
+**F35.4 commit 门禁**：上述测试、lint、diff 检查和静态搜索全部通过；lease release/recovery、reservation race、新版 Msg[] Agent 调用均有测试后，提交 `feat(F35): 建立 Inbox 原子投递`；提交后将 F35.4 标为 done、F35.5 标为 in_progress。
 
 ### 2.1 功能需求
 
@@ -632,6 +667,7 @@ snapshot = await agent_profiles.resolve(
 | 2026-08-27 | F35.1 收尾：新增 `AgentRuntimeFactory` Protocol、`AgentLoopFactory` 包装器、AgentService typed errors，并修正 `rg` 无匹配时的验收脚本 | 消除“Loop 冒充 Factory”、通用异常和验证命令退出码偏差 |
 | 2026-08-27 | F35.2 实施完成：冻结 AgentCreate/Resume/RunRequest、Handle、View、Event、状态和 typed errors；补充 Fake Runtime 契约测试；全量 `675 passed` | 将 AgentService 数据面从隐式 Loop 调用收敛为可测试的公开契约 |
 | 2026-08-27 | F35.3 实施完成：Profile/config/router 迁移至 `src/ftre/services/agent_profile`；项目 > 用户 > Host 优先级解析为不可变 ProfileSnapshot；迁移所有生产/测试引用；全量 `682 passed`、ruff、diff 检查通过 | 删除旧 `src/ftre/services/agent` Owner，隔离 Profile 与 Agent Runtime |
+| 2026-08-27 | F35.4 实施完成：Inbox `Msg[]`、AgentService RunReservation、durable lease `claim_lease/ack/release` 与 orphan recovery；新增 Inbox admitted/claimed/deferred/delivered/error Hook；全量 `693 passed`、专项 `217 passed`、ruff、diff 检查通过 | 在 Agent 调用前建立原子准入与可恢复投递，避免 busy/崩溃/取消丢失输入 |
 
 ## 9. 术语、角色与责任矩阵
 
