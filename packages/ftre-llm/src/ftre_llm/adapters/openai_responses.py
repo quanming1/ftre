@@ -72,6 +72,7 @@ class OpenAIResponsesAdapter(OpenAIAdapterBase):
                 allow_legacy_reasoning_content=_legacy_reasoning_content_supported(
                     self.model
                 ),
+                model=self.model,
             )
             resp_tools = _convert_tools_to_responses(tools) if tools else []
 
@@ -368,12 +369,72 @@ def _sanitize_reasoning_item(
     return result
 
 
+def _has_reasoning_text_content(item: dict[str, Any]) -> bool:
+    """判断 reasoning item 是否携带可回传的 ``reasoning_text`` 内容块。"""
+    blocks = item.get("content")
+    if not isinstance(blocks, list):
+        return False
+    return any(
+        isinstance(block, dict)
+        and block.get("type") == "reasoning_text"
+        and block.get("text")
+        for block in blocks
+    )
+
+
+def _replay_items_match_target(
+    items: list[dict[str, Any]],
+    *,
+    allow_content: bool,
+    model: str | None = None,
+) -> bool:
+    """校验历史 reasoning replay 组与当前目标协议是否形状兼容。
+
+    历史快照可能来自另一个 Provider/中转（例如 DeepSeek 中转返回的普通 UUID
+    id + ``reasoning_text`` content，或 GPT 返回的 summary-only item）。跨目标
+    重放会直接触发上游 400：
+
+      - input-safe 目标（GPT Responses）：要求 id 为 ``rs`` 前缀，且以
+        ``encrypted_content`` 或 ``summary`` 恢复状态；带普通 UUID 的 item
+        视为外来产物。
+      - legacy 兼容目标（DeepSeek thinking）：要求每个 item 都携带
+        ``reasoning_text`` content；summary-only 的 item 回传后 provider 会报
+        "reasoning_text must be passed back"。
+
+    采用组级原子判定：一条历史消息的 replay 组不允许混合来源，任何一项不兼容
+    则整组丢弃，让调用方回落到 ``reasoning_content`` 重建路径。
+    """
+    if not items:
+        return False
+    if allow_content:
+        return all(_has_reasoning_text_content(item) for item in items)
+    for item in items:
+        item_id = str(item.get("id") or "")
+        if item_id and not item_id.startswith("rs"):
+            if model:
+                logger.warning(
+                    "[responses] dropping foreign reasoning replay item "
+                    "(id prefix mismatch): model=%s id=%.32s",
+                    model,
+                    item_id,
+                )
+            return False
+        if not (item.get("encrypted_content") or item.get("summary")):
+            return False
+    return True
+
+
 def _reasoning_replay_items(
     message: dict[str, Any],
     *,
     allow_content: bool = False,
+    model: str | None = None,
 ) -> list[dict[str, Any]]:
-    """读取 Host 写入 assistant 消息的原始 reasoning Output Item。"""
+    """读取 Host 写入 assistant 消息的原始 reasoning Output Item。
+
+    只有与当前目标协议形状兼容的组才会返回；外来的历史组返回空列表，
+    由调用方决定走旧式重建或直接省略。
+    """
     candidates: Any = message.get("responses_output_items")
     if candidates is None:
         metadata = message.get("response_metadata")
@@ -390,6 +451,14 @@ def _reasoning_replay_items(
         sanitized = _sanitize_reasoning_item(item, allow_content=allow_content)
         if sanitized is not None:
             result.append(sanitized)
+    if result and not _replay_items_match_target(
+        result,
+        allow_content=allow_content,
+        model=model,
+    ):
+        # 外来或残缺的历史组：整体作废，避免把上一个 Provider 的私有传输
+        # 状态混入当前请求。
+        return []
     return result
 
 
@@ -466,6 +535,7 @@ def _convert_messages_to_responses_input(
     *,
     include_reasoning: bool = False,
     allow_legacy_reasoning_content: bool = False,
+    model: str | None = None,
 ) -> tuple[str | None, list[dict]]:
     """Chat Completions messages → Responses API (instructions, input)。
 
@@ -511,6 +581,7 @@ def _convert_messages_to_responses_input(
                 replay_items = _reasoning_replay_items(
                     msg,
                     allow_content=allow_legacy_reasoning_content,
+                    model=model,
                 )
                 if replay_items:
                     input_items.extend(replay_items)

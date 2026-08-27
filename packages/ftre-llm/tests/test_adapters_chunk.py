@@ -694,3 +694,139 @@ class TestResponsesAdapter:
         [chunk async for chunk in adapter.stream(messages)]
 
         assert captured["input"] == [{"role": "user", "content": "inspect"}]
+
+    @pytest.mark.asyncio
+    async def test_foreign_uuid_reasoning_group_rejected_on_gpt_target(self):
+        """DeepSeek 中转产生的 UUID reasoning 组不得重放给 GPT Responses。
+
+        回归场景（session ws_sess_dbc1167004b6）：同会话先跑 DeepSeek，落盘的
+        reasoning item id 是普通 UUID；切换 GPT 后原样重放触发
+        ``Invalid 'input[1].id': Expected an ID that begins with 'rs'``。
+        修复后该外来组必须整体丢弃。
+        """
+        captured = {}
+        adapter = OpenAIResponsesAdapter(
+            model="gpt-5.6-luna",
+            api_key="k",
+            reasoning_effort="max",
+        )
+
+        async def _create(**kwargs):
+            captured.update(kwargs)
+            return _FakeResponsesStream([
+                _FakeRespEvent("ResponseCompletedEvent", response=_FakeResponse()),
+            ])
+
+        adapter._client.responses.create = _create  # type: ignore[attr-defined]
+        messages = [
+            {"role": "user", "content": "检查配置"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "旧思考",
+                "responses_output_item_groups": [[
+                    {
+                        "type": "reasoning",
+                        "id": "d93394b9-0496-4c06-93f8-48f8abb485c8",
+                        "summary": [],
+                        "content": [{"type": "reasoning_text", "text": "旧思考"}],
+                        "encrypted_content": "75d3429f-foreign",
+                    }
+                ]],
+            },
+        ]
+
+        [chunk async for chunk in adapter.stream(messages)]
+
+        kinds = {item.get("type") for item in captured["input"]}
+        assert "reasoning" not in kinds
+
+    @pytest.mark.asyncio
+    async def test_summary_only_group_falls_back_on_deepseek_target(self):
+        """GPT 形态的 summary-only 历史组不得以原样回传 DeepSeek thinking。
+
+        回归场景：切回 DeepSeek 后第 4 次迭代报
+        ``The reasoning_text in the thinking mode must be passed back``；
+        修复后不兼容组降级为 rs_legacy reasoning_text 重建。
+        """
+        captured = {}
+        adapter = OpenAIResponsesAdapter(
+            model="deepseek-v4-flash",
+            api_key="k",
+            reasoning_effort="high",
+        )
+
+        async def _create(**kwargs):
+            captured.update(kwargs)
+            return _FakeResponsesStream([
+                _FakeRespEvent("ResponseCompletedEvent", response=_FakeResponse()),
+            ])
+
+        adapter._client.responses.create = _create  # type: ignore[attr-defined]
+        messages = [
+            {"role": "user", "content": "继续"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "配置结构清晰了",
+                "responses_output_item_groups": [[
+                    {
+                        "type": "reasoning",
+                        "id": "rs_from_gpt_abc123",
+                        "summary": [{"type": "summary_text", "text": "gpt 摘要"}],
+                    }
+                ]],
+            },
+        ]
+
+        [chunk async for chunk in adapter.stream(messages)]
+
+        reasoning = captured["input"][1]
+        assert reasoning["type"] == "reasoning"
+        assert reasoning["id"].startswith("rs_legacy_")
+        assert reasoning["content"] == [{
+            "type": "reasoning_text",
+            "text": "配置结构清晰了",
+        }]
+
+    @pytest.mark.asyncio
+    async def test_native_uuid_group_kept_on_deepseek_target(self):
+        """同源历史组（UUID id + reasoning_text）在 DeepSeek 上保持原样重放。
+
+        兼容性保护：存量会话没有来源标记，只要是形状兼容的同 Provider 数据，
+        修复不得改变既有成功路径的行为。
+        """
+        captured = {}
+        adapter = OpenAIResponsesAdapter(
+            model="deepseek-v4-flash",
+            api_key="k",
+            reasoning_effort="high",
+        )
+
+        async def _create(**kwargs):
+            captured.update(kwargs)
+            return _FakeResponsesStream([
+                _FakeRespEvent("ResponseCompletedEvent", response=_FakeResponse()),
+            ])
+
+        adapter._client.responses.create = _create  # type: ignore[attr-defined]
+        native_item = {
+            "type": "reasoning",
+            "id": "8288fb1f-8efa-49ea-9ee8-2246fea39ebf",
+            "summary": [],
+            "content": [{"type": "reasoning_text", "text": "先检查文件"}],
+            "encrypted_content": "native-encrypted",
+        }
+        messages = [
+            {"role": "user", "content": "inspect"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "先检查文件",
+                "responses_output_item_groups": [[native_item]],
+            },
+        ]
+
+        [chunk async for chunk in adapter.stream(messages)]
+
+        assert captured["input"][1] == native_item
