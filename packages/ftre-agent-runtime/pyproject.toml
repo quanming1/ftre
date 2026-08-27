@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ftre-agent-runtime"
+version = "0.1.0"
+description = "AgentLoop runtime implementation and provider plugin for ftre"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    "cordis-py==0.4.0",
+    "ftre-agent-core>=0.2.0,<0.3.0",
+    "ftre-agent>=0.1.0,<0.2.0",
+    "ftre-llm>=0.1.0,<0.2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.entry-points."ftre.plugins"]
+agent-runtime = "ftre_agent_runtime.plugin:apply"

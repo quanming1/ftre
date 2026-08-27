@@ -8,6 +8,7 @@ from ftre_agent_core.event import (
     ReplyStartEvent,
     RequireUserConfirmEvent,
     TextBlockDeltaEvent,
+    TextBlockEndEvent,
     TextBlockStartEvent,
     ToolCallEndEvent,
     ToolCallStartEvent,
@@ -21,6 +22,7 @@ from ftre_agent_core.message import (
 )
 
 from ftre.services.session.projection import SessionProjection
+from ftre.services.session.service import SessionService
 
 
 @pytest.mark.asyncio
@@ -70,6 +72,57 @@ async def test_user_message_event_projects_complete_user_msg():
     assert message.name == "default"
     assert message.get_text_content() == "hello"
     sessions.upsert_message.assert_awaited_once_with("ws_sess_test", message)
+
+
+@pytest.mark.asyncio
+async def test_message_id_keeps_assistant_user_assistant_order(tmp_path):
+    """Core 提供新 message_id 后，Projection 只按 id 投影 A→User→B。"""
+    sessions = SessionService(sessions_dir=str(tmp_path / "sessions"))
+    await sessions.init()
+    session_id = await sessions.create_session("ws")
+    projection = sessions.projection
+    reply_id = "reply-steer"
+
+    await projection.apply(session_id, ReplyStartEvent(
+        session_id=session_id, reply_id=reply_id, message_id="assistant-a", name="assistant",
+    ))
+    await projection.apply(session_id, TextBlockStartEvent(
+        reply_id=reply_id, message_id="assistant-a", block_id="before",
+    ))
+    await projection.apply(session_id, TextBlockDeltaEvent(
+        reply_id=reply_id, message_id="assistant-a", block_id="before", delta="前半段",
+    ))
+    steer = UserMessageEvent(
+        id="user-steer-boundary",
+        reply_id="input-steer-boundary",
+        data={
+            "session_id": session_id,
+            "request_id": "request-steer-boundary",
+            "content": "插入下一步",
+        },
+        content=[{"type": "text", "text": "插入下一步"}],
+        message_metadata={"hide": False, "request_id": "request-steer-boundary"},
+    )
+    await projection.apply(session_id, steer)
+    await projection.apply(session_id, TextBlockStartEvent(
+        reply_id=reply_id, message_id="assistant-b", block_id="after",
+    ))
+    await projection.apply(session_id, TextBlockDeltaEvent(
+        reply_id=reply_id, message_id="assistant-b", block_id="after", delta="后半段",
+    ))
+    await projection.apply(session_id, TextBlockEndEvent(
+        reply_id=reply_id, message_id="assistant-b", block_id="after",
+    ))
+
+    messages = await sessions.get_messages_by_session(session_id)
+    assert [message["role"] for message in messages] == ["assistant", "user", "assistant"]
+    assert messages[0]["content"][0]["text"] == "前半段"
+    assert messages[1]["content"][0]["text"] == "插入下一步"
+    assert messages[2]["content"][0]["text"] == "后半段"
+    assert [message["id"] for message in messages] == [
+        "assistant-a", "user-steer-boundary", "assistant-b",
+    ]
+    await sessions.close()
 
 
 @pytest.mark.asyncio
@@ -189,7 +242,7 @@ async def test_user_confirmation_result_checkpoints_tool_call_state():
         reply_id=reply_id,
         tool_call_id=call_id,
         tool_call_name="bash",
-        arguments={"command": "pwd"},
+        arguments='{"command":"pwd"}',
     ))
     await projection.apply(session_id, RequireUserConfirmEvent(
         reply_id=reply_id,

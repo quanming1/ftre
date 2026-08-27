@@ -7,7 +7,7 @@ ftre 核心的 ``AgentConfig`` 里。这个模块只负责把原始 ``config.jso
 
 配置来源约定：
 
-* agents.context：压缩阈值和预算安全余量；
+* agents.context：压缩阈值、预算安全余量和 token 分块参数；
 * ``agents.compact_generation``：可选的摘要专用 provider/model；
 * 缺省值由本包提供，不依赖 ftre 核心是否曾经实现过压缩配置。
 
@@ -21,11 +21,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ftre.services.agent.config import LLMConfig, build_llm_config
+from ftre_agent import LLMConfig, build_llm_config
 
 DEFAULT_PRECOMPACT_THRESHOLD = 0.7
 DEFAULT_COMPACT_THRESHOLD = 0.8
 DEFAULT_SAFETY_BUFFER = 1024
+DEFAULT_CHUNK_TOKENS = 200_000
+DEFAULT_CHUNK_PARALLELISM = 4
+DEFAULT_CHUNK_TIMEOUT_SECONDS = 120.0
+DEFAULT_CHUNK_RETRY_ATTEMPTS = 1
+MIN_CHUNK_TOKENS = 16_000
+MAX_CHUNK_TOKENS = 1_000_000
+MAX_CHUNK_PARALLELISM = 8
+MAX_CHUNK_TIMEOUT_SECONDS = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +49,12 @@ class CompactionConfig:
     compact_threshold: float = DEFAULT_COMPACT_THRESHOLD
     safety_buffer: int = DEFAULT_SAFETY_BUFFER
     llm: LLMConfig | None = None
+    # 分块参数属于 Package；chunk LLM 只是在同一个 Service Task 内运行，
+    # 不会变成额外的 Plugin/Service。
+    chunk_tokens: int = DEFAULT_CHUNK_TOKENS
+    chunk_parallelism: int = DEFAULT_CHUNK_PARALLELISM
+    chunk_timeout_seconds: float = DEFAULT_CHUNK_TIMEOUT_SECONDS
+    chunk_retry_attempts: int = DEFAULT_CHUNK_RETRY_ATTEMPTS
 
 
 def parse_compaction_config(
@@ -95,6 +109,49 @@ def parse_compaction_config(
         # 没有专用摘要模型时保留默认快照中的覆盖值；若默认值也为空，
         # Service 才会回退到本轮 AgentConfig.llm。
         llm=compact_llm or base.llm,
+        chunk_tokens=min(
+            MAX_CHUNK_TOKENS,
+            max(
+                MIN_CHUNK_TOKENS,
+                _integer(context, "chunkTokens", "chunk_tokens", base.chunk_tokens),
+            ),
+        ),
+        chunk_parallelism=min(
+            MAX_CHUNK_PARALLELISM,
+            max(
+                1,
+                _integer(
+                    context,
+                    "chunkParallelism",
+                    "chunk_parallelism",
+                    base.chunk_parallelism,
+                ),
+            ),
+        ),
+        chunk_timeout_seconds=min(
+            MAX_CHUNK_TIMEOUT_SECONDS,
+            max(
+                5.0,
+                _number(
+                    context,
+                    "chunkTimeoutSeconds",
+                    "chunk_timeout_seconds",
+                    base.chunk_timeout_seconds,
+                ),
+            ),
+        ),
+        chunk_retry_attempts=min(
+            2,
+            max(
+                0,
+                _integer(
+                    context,
+                    "chunkRetryAttempts",
+                    "chunk_retry_attempts",
+                    base.chunk_retry_attempts,
+                ),
+            ),
+        ),
     )
 
 
@@ -139,9 +196,17 @@ def _integer(
 
 
 __all__ = [
+    "DEFAULT_CHUNK_PARALLELISM",
+    "DEFAULT_CHUNK_RETRY_ATTEMPTS",
+    "DEFAULT_CHUNK_TIMEOUT_SECONDS",
+    "DEFAULT_CHUNK_TOKENS",
     "DEFAULT_COMPACT_THRESHOLD",
     "DEFAULT_PRECOMPACT_THRESHOLD",
     "DEFAULT_SAFETY_BUFFER",
+    "MAX_CHUNK_PARALLELISM",
+    "MAX_CHUNK_TIMEOUT_SECONDS",
+    "MAX_CHUNK_TOKENS",
+    "MIN_CHUNK_TOKENS",
     "CompactionConfig",
     "parse_compaction_config",
 ]

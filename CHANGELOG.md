@@ -1,5 +1,135 @@
 # Changelog
 
+## [0.3.1] - 2026-08-27
+
+### 修复
+
+- **responses reasoning 跨 Provider 重放 400**（F30）：历史 reasoning 组重放前按目标协议形状校验，DeepSeek UUID 组发 GPT、GPT summary-only 组发 DeepSeek 不再触发上游 400，不兼容组自动降级 rs_legacy 重建路径；组级原子判定杜绝混合历史
+- **CI 安装失败**（D1）：F33 新增的 ftre-agent/ftre-agent-runtime Package 在 CI 安装序列中缺本地注册，pip 解析失败；补齐 no-deps 注册
+
+### 测试
+
+- inbox hook 测试解除对 Core 私有 LLM API 的依赖，改用 ftre_llm 事件类型
+
+### F33 Agent Package 终局架构（已完成，未发布）
+
+- 新增 `ftre-agent` 契约包（`packages/ftre-agent`）：AgentService、InboundMessage、
+  AgentRunResult、AgentRegistry/HookScopeCarrier、Agent Hook（before-run/after-run/run-error）
+  和 AgentConfig/LLMConfig 数据契约；不依赖 Host、不注册业务 Plugin entry point。
+- 新增 `ftre-agent-runtime` Provider 包（`packages/ftre-agent-runtime`）：AgentLoop、
+  TurnExecutor、Core factory、CompletionRegistry 和唯一 Provider Plugin（entry point
+  `agent-runtime = ftre_agent_runtime.plugin:apply`）；Runtime 通过能力参数化消费 Host Service
+  窄方法，源码不 import `ftre.services.*`（AST 与 wheel 双重验证）。
+- Host 侧改造：SessionService 新增 build_user_content/to_openai_messages 等 4 个窄方法，
+  MessageBusService 新增 publish_session_status，SystemPromptService 新增 assemble_agent_prompt
+  （内含 Hook dispatch）；HookScopeCarrier 值类型从 kernel 迁至契约包，kernel 仅保留
+  context_for_scope 机制函数；config.py 收缩为磁盘加载。
+- 删除旧 Owner：`src/ftre/services/agent/{service,contracts,hooks,registry,plugin}.py` 与整个
+  `runtime/` 目录（含 AgentLoopDriver/Driver 适配层）；TurnOutcome 替换为 AgentRunResult，
+  无兼容 alias；composition.py 改为加载 Runtime entry point，不再手工组装 AgentLoop。
+- 行为不变：Session/Inbox/Client wire、Core Hook 语义、Steering、Compaction、Retry、Fallback、
+  取消与生命周期协议全部保持；全量 pytest 667 passed、ruff、diff check、Gateway smoke 与
+  wheel 洁净安装（三种场景）验收通过。
+
+### F34 ToolService 最终运行时边界（已完成，未发布）
+
+- 新增 core-tools Plugin：bash/read/write/edit/set_workspace 从 `services/tools/builtin/` 迁至
+  `plugins/builtin/core_tools/`，作为普通 ToolContribution（owner=core-tools）注册，卸载可逆；
+  `ToolService.prepare_view()` 删除硬编码构造，`build_default_tools()` 死代码删除；plan 工具实现
+  随 Owner 迁至 `plugins/builtin/plan/`。
+- `ToolService.registry` 私有化为 `_registry`；新增作用域感知 `get()`；`execute()` 的
+  `agent_id` 路径执行作用域投影（scoped shadow 覆盖同名 global、scoped-only 工具可执行，
+  `get/schemas/execute` 共享投影），global 贡献卸载不再因同名 scoped shadow 在
+  `_registry` 残留；view preparer 契约泛化为 `(agent_id, session_id, profile_config, llm_config)`，
+  MCP 自行读取 mcp_config 字段；filter_tools 语义冻结（allow/deny 不豁免内置工具）。
+- read 工具描述中性化（不再随模型 vision 能力改写，运行时仍由 llm_config.vision 拦截）；
+  新增 tool-audit 可选 Plugin：消费 `tool/after` 输出结构化审计日志（logger=ftre.tool_audit），
+  guard 门禁另立后续阶段。
+
+### F32 Agent Runtime Service 解耦（已完成，未发布）
+
+- AgentLoop/TurnExecutor 改为只消费公开 `sessions`、`message_bus`、`tools`、`workspaces`、
+  `agent_profiles`、`system_prompt`、`config`、`llm`、Hook 和 Session Events Service，删除
+  ChannelManager、MCP、AgentManager、Session Projection、底层 EventBus 和全局配置加载直连。
+- 新增 `MessageBusService.publish_outbound()`、`SessionService.finish_open_replies()`、
+  `ToolService.prepare_view()` 与 Workspace Owner 的同步 accessor；MCP 通过可逆 view preparer
+  注册，Core Agent 由 Runtime 唯一私有 factory 创建。
+- 删除 AgentManager 重复 Core 构造逻辑和 tools builtin 的 Workspace 私有模块；普通消息、Steer、
+  Tool、Compaction、Retry、Fallback、Confirmation、取消、删除和生命周期行为保持既有协议。
+
+### F31 Agent Runtime Service 边界与契约基线（已完成，未发布）
+
+- 依据真实 `AgentLoop`、`TurnExecutor` 和 Provider 调用链，冻结 Agent、Session、MessageBus、
+  Tools、System Prompt、Profile、LLM、Hook Runtime 与 Session Events 的 Owner 和公开入口。
+- 新增 F31 迁移矩阵、Fake Service 契约测试和 AST 不增债门禁；登记现存具体依赖并明确移交
+  F32 的删除顺序。未修改 Agent Runtime、Core、客户端、Inbox/Queue 或 Session wire。
+
+### F30 Unified LLM Service Package（已完成，未发布）
+
+- 新增 `ftre-llm` Package：统一 `LlmService`、`LlmRequest`、`StreamChunk`、Provider Adapter
+  注册和 OpenAI Completions/Responses 协议。
+- Agent Runtime、Compaction、Session Title 统一通过 `ctx.llm` 调用；Core Runner 接收宿主注入的
+  LLM Adapter，删除重复 Chunk 协议和 Host `core_bridge`。
+- `llm/stream`、`agent/request`、`llm/error`、`llm/adapters-updated` 契约及 Retry/Fallback 协作、
+  生命周期和跨仓 CI 验收完成。
+
+### F29 LLM Stream Fallback Plugin（已完成，未发布）
+
+- 新增 `ftre-llm-fallback` Package：仅在最后一次 Core attempt、主模型尚无任何流式输出且
+  错误码命中配置时调用备用模型；前序失败仍由 Core Retry 处理。
+- ConfigService 新增公开 `resolve_llm(provider, model)` 快照解析；取消、overflow、部分输出、
+  未知错误和备用失败均不递归 fallback。
+
+### F28 LLM Error Recovery Plugin（已完成，未发布）
+
+- 新增 `ftre-llm-recovery` 可选 Package，消费 Core `llm/error`，按错误码配置 retry/stop
+  和退避建议；Core 仍唯一拥有重试执行器。
+- 默认安装但可配置禁用；overflow/context_length 继续由 `ftre-compaction` 处理，Plugin
+  支持 Fiber restart/unload 且不残留 listener。
+
+### F27 Compaction 用户消息确定性生成（开发中）
+
+- `all_user_messages` 改由 `ftre-compaction` 按 Msg 快照代码生成，LLM 不再承担机械性复述。
+- 默认 `chunkTokens` 调整为 200000，显式配置仍可覆盖。
+
+### F26 Compaction 按 token 分块摘要（开发中）
+
+- 压缩内容默认按约 100k token、保持 Msg 边界切块，每个 chunk 只交给一个 LLM，避免多个
+  Worker 重复处理完整 Session；chunk 并发数、超时、重试和 token 上限均可配置。
+- 分块摘要按原始顺序本地确定性合并，保留现有 `state_snapshot`、Hook、Session 和 WebSocket 协议。
+
+### F25 Compaction 三路并行摘要（已完成，未发布）
+
+- `ftre-compaction` 对同一 Session 快照并行运行 intent/technical/continuity 三个摘要 Worker，
+  本地确定性合并为一个 `state_snapshot`，不改变 Hook、Session 或 WebSocket 协议。
+- Worker 支持独立重试、超时和统一失败回退；只有三路全部成功才发出唯一
+  `context_compact_done`，避免半成品摘要污染历史。
+
+### F24 Queue Operation Response（已完成，未发布）
+
+- `session.prompt` 与 `session.updateQueue` 成功后统一返回 `type=session/queue`，将
+  `request_id`、操作结果和 Inbox `revision/items` 放进同一个响应；取消指令仍保留独立控制 ACK。
+- 删除 WebSocket admission ACK 的 `value.accepted` 成功路径；原始 `inbox.json`、`next_turn`、
+  `next_step` 不进入 wire payload，重复 request_id 继续由 Inbox 幂等处理。
+- 配套 Core C4 已发布为 `ftre-agent-core==0.2.1`，CI 与跨仓安装锁定该消息边界版本。
+
+### F23 Steering 消息边界（已完成，未发布）
+
+- Inbox 在 `agent/before-reasoning` 安全边界执行 `checkpoint → UserMessage 落库/广播 → claim`，
+  失败时 pending 保留，重试复用稳定 UserMessage id。
+- SessionProjection 改按 Core `message_id` 聚合，同一 `reply_id` 下自然持久化
+  `Assistant A → UserMessage → Assistant B`；删除 Host 的 segment、重排 API 和 capability flag。
+- Desktop B4 只按服务端 `message_id` 投影，USER_MESSAGE 与 queue snapshot 乱序时保持无空窗。
+
+### F22 Runtime Steering（已完成，未发布）
+
+- `session.prompt` 的 `mode=queue|steer` 在 WebSocket、Bus 和 Inbox 间完整保真；非法 mode
+  明确拒绝，旧客户端缺省仍按 queue。
+- Steering 在 `agent/before-reasoning` Hook 中 DB-first 持久化并广播 `USER_MESSAGE`，再
+  claim Inbox；Session 写入失败时 pending 保留，重试使用稳定 message id 幂等。
+- 客户端队列横幅新增“插入当前运行”按钮，服务端 placement 切换为 steering 后等待
+  `USER_MESSAGE` 交接，不创建第二条消息，也不产生消失→出现的视觉空窗。
+
 ## [0.3.0] - 2026-08-24
 
 ### F21 Command 接入异步化（已完成，未发布）

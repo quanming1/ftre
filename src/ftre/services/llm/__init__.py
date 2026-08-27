@@ -1,6 +1,54 @@
-"""LLM provider Hook contracts."""
-# 中文说明：LLM Hook 合约导出：只定义 stream 观察协议，不创建 Provider、Client 或模型连接。
+"""Ftre LLM Service 与其稳定 Hook 合约。"""
 
-from .hooks import LLM_STREAM_SPEC, LLMStreamPayload
+from ftre_llm import (
+    AdaptersUpdatedPayload,
+    BlockAssembler,
+    BlockEnd,
+    BlockStart,
+    FinishChunk,
+    FinishReason,
+    LlmAdapter,
+    LlmCallConfig,
+    LlmCredentials,
+    LLMError,
+    LlmRequest,
+    LlmService,
+    ReasoningDeltaChunk,
+    StreamChunk,
+    TextDeltaChunk,
+    ToolCallDeltaChunk,
+    UsageChunk,
+)
 
-__all__ = ["LLM_STREAM_SPEC", "LLMStreamPayload"]
+from .hooks import (
+    ADAPTERS_UPDATED_SPEC,
+    AGENT_REQUEST_SPEC,
+    LLM_STREAM_SPEC,
+    AgentRequestPayload,
+    LlmStreamPayload,
+)
+
+__all__ = [
+    "ADAPTERS_UPDATED_SPEC",
+    "AGENT_REQUEST_SPEC",
+    "LLM_STREAM_SPEC",
+    "AdaptersUpdatedPayload",
+    "AgentRequestPayload",
+    "BlockAssembler",
+    "BlockEnd",
+    "BlockStart",
+    "FinishChunk",
+    "FinishReason",
+    "LLMError",
+    "LlmAdapter",
+    "LlmCallConfig",
+    "LlmCredentials",
+    "LlmRequest",
+    "LlmService",
+    "LlmStreamPayload",
+    "ReasoningDeltaChunk",
+    "StreamChunk",
+    "TextDeltaChunk",
+    "ToolCallDeltaChunk",
+    "UsageChunk",
+]

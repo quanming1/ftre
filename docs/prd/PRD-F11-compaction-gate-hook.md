@@ -485,3 +485,4 @@ def apply(ctx, config=None):
 | 2026-08-22 | 根据评审目标补充：压缩 Hook、Service、算法、命令和配置必须收敛为可独立安装/发布的 `ftre-compaction` 包；ftre 核心不要求 compaction Service，未安装时 Hook 默认继续、Gateway 正常启动 | 压缩应成为真正可选的产品能力，启用、调整或替换压缩时只需要维护一个包，不应让 Agent 核心承担压缩依赖 |
 | 2026-08-22 | 实施完成：新增 `agent/after-turn`，SessionLane 改为 Hook barrier，删除 ContextGate 与核心压缩依赖；CompactionService、三条 Hook、压缩命令和算法迁入 `packages/ftre-compaction`，核心默认组合不再启用压缩 | 让压缩成为可安装、可启用、可卸载的独立能力，同时保持 pending、串行、状态和客户端协议不变 |
 | 2026-08-22 | 配置 Owner 收尾：删除核心 AgentConfig 中的压缩字段，新增 `ftre_compaction.config.CompactionConfig`；Hook/Command 从 ConfigService 快照读取压缩设置，并清理无消费者的历史配置示例 | 消除“行为已在可选包、配置却仍在核心”的重复 Owner，使压缩包可以独立调整阈值和摘要模型 |
+| 2026-08-24 | 修复 AgentLoop 构造 `agent/after-run` Payload 时遗漏本轮配置和维护状态回调的问题；压缩 Hook 现在可真正执行轮后预压缩，并在压缩期间让 Session 保持 `compacting/busy`，避免 Inbox 提前领取下一条消息 | 原实现会因 `payload.config` 为空直接跳过轮后压缩，且无法接通 `set_maintenance`；补充回归测试，F11 的 AC8/AC9 重新核验通过（全量 513 passed） |

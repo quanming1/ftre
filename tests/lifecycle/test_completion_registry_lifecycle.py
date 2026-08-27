@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
-from ftre.services.agent.runtime.completion import CompletionRegistry
+from ftre_agent_runtime.completion import CompletionRegistry
 
 
 @pytest.mark.asyncio

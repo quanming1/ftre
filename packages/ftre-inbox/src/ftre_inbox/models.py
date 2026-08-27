@@ -24,6 +24,9 @@ class QueueItem:
     content: str = ""
     attachments: tuple[dict[str, Any], ...] = ()
     source: QueueSource = "user"
+    # Steering 在 Hook 前已由 SessionProjection 持久化时，保存同一 UserMsg id，
+    # 让 idle fallback 进入独立 Turn 时不重复写历史。该字段不改变 Queue 协议。
+    history_message_id: str | None = None
 
     def to_json(self, target: QueueTarget) -> dict[str, Any]:
         return {
@@ -53,6 +56,11 @@ class QueueItem:
             content=str(value.get("content", "")),
             attachments=tuple(dict(item) for item in value.get("attachments", ())),
             source=source,
+            history_message_id=(
+                str(value["history_message_id"])
+                if value.get("history_message_id")
+                else None
+            ),
         ), target
 
 

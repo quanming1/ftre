@@ -869,10 +869,10 @@ stages:
 
       - id: F15
         title: Hook 语义收敛与生命周期安全
-        status: in_progress
+        status: done
         date: 2026-08-24
         prd: docs/prd/PRD-F15-hook-surface-convergence.md
-        prd_status: 开发中
+        prd_status: 已验收
         depends_on:
           - F14
         implementation_boundary: 只修改 E:\ftre Host 与仓内 packages；Core 7 个 Hook 冻结不变
@@ -1136,3 +1136,417 @@ stages:
             title: 全量验收、Gateway smoke 与工程卫生
             status: done
             date: 2026-08-24
+
+      - id: F22
+        title: 运行中 Steering 消息注入与协议闭环
+        status: done
+        prd: docs/prd/PRD-F22-runtime-steering-message-injection.md
+        prd_status: 已验收
+        date: 2026-08-24
+        completed_date: 2026-08-24
+        depends_on:
+          - F21
+          - F12
+          - F15
+        implementation_boundary: F22.1-F22.4 只修改 E:\\ftre Host、ftre-inbox Package、测试和协议文档；F22.5-F22.6 在 E:\\binn\\ftre-desktop 独立分支实施客户端交互；不修改 E:\\ftre-agent-core 或 E:\\cordis-py
+        acceptance: session.prompt 的 mode 从接入层完整传递到 Inbox；queue 项可由客户端按钮升级为 steer；steer 在 active Turn 的下一次 agent/before-reasoning 边界只消费一次并能恢复；UserMessage 先落库并回显到 MessageList，session/queue 随后移除对应项目且无视觉空窗；queue 旧语义不变；全量质量门禁与跨仓 E2E 通过
+        tasks:
+          - id: F22.1
+            title: 协议数据流基线与 mode 丢失回归
+            status: done
+          - id: F22.2
+            title: Inbox Steering 交付事务与历史持久化
+            status: done
+          - id: F22.3
+            title: active Turn、自然结束与重启边界
+            status: done
+          - id: F22.4
+            title: WebSocket/Package/架构测试与文档收尾
+            status: done
+          - id: F22.5
+            title: 客户端 queue→steer 按钮与状态投影
+            status: done
+          - id: F22.6
+            title: UserMessage/队列交接与跨仓无卡顿 E2E
+            status: done
+
+      - id: F23
+        title: Steering 安全边界与多 AssistantMessage 持久化
+        status: done
+        prd: docs/prd/PRD-F23-steering-message-boundary.md
+        prd_status: 已验收
+        date: 2026-08-24
+        completed_date: 2026-08-24
+        depends_on:
+          - F22
+        paired_stage: E:\ftre-agent-core C4；E:\binn\ftre-desktop B4
+        implementation_boundary: 修改 ftre Host/ftre-inbox/Session Projection 和测试；配套 Core C4、Desktop B4 独立实施；不修改 cordis-py
+        acceptance: 等待当前 LLM/Tool 完成并 checkpoint Assistant A 后持久化 UserMessage；Core 下一次 Reasoning 产生唯一 message_id 的 Assistant B；三端均为 A→User→B；删除 F22 Host segment 方案；普通 queue、idle fallback、取消、恢复、Package 生命周期和全量门禁通过
+        tasks:
+          - id: F23.1
+            title: Core message_id 消费契约与跨仓基线
+            status: done
+          - id: F23.2
+            title: Inbox checkpoint→User→claim 安全顺序
+            status: done
+          - id: F23.3
+            title: SessionProjection 按 message_id 投影
+            status: done
+          - id: F23.4
+            title: 删除人工 segment 与宽泛重排 API
+            status: done
+          - id: F23.5
+            title: Gateway、恢复、生命周期与跨仓验收
+            status: done
+
+      - id: F24
+        title: Queue Operation Response 与 Inbox 快照统一协议
+        status: done
+        prd: docs/prd/PRD-F24-queue-operation-response.md
+        prd_status: 已验收
+        date: 2026-08-25
+        completed_date: 2026-08-25
+        depends_on:
+          - F23
+        paired_stage: E:\binn\ftre-desktop B5
+        implementation_boundary: 修改 ftre WebSocket/Inbox 协议、测试和文档；配套 Desktop B5 消费协议；不修改 Agent Core、cordis-py 或客户端之外的仓库
+        acceptance: session.prompt 与 session.updateQueue 成功响应直接携带最新 session/queue 快照和服务端 revision；客户端以同一响应完成请求结算与队列投影；后台 claim 仍可主动推送 session/queue；原始 inbox.json 不暴露；旧 ACK 解析与队列操作双阶段状态机删除；steering 在 claim 前不可 edit/remove；错误响应保留 request_id/ok/error；普通 queue、steer、claim、失败、重试、重连和全量质量门禁通过
+        tasks:
+          - id: F24.1
+            title: Queue Operation Response PRD、wire schema 与 revision 基线
+            status: done
+          - id: F24.2
+            title: ftre WebSocket 操作响应合并队列快照
+            status: done
+          - id: F24.3
+            title: Inbox wire snapshot revision 与错误边界
+            status: done
+          - id: F24.4
+            title: 后端协议、生命周期和 Gateway 回归
+            status: done
+      - id: F25
+        title: Compaction 三路并行摘要与确定性合并
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F25-parallel-compaction.md
+        prd_status: 已验收
+        completion_date: 2026-08-25
+        depends_on:
+          - F20
+          - F21
+        implementation_boundary: 只修改 E:\\ftre 的 ftre-compaction Package、测试、配置文档和执行记录；不修改 Agent Core、客户端、Inbox、WebSocket 协议和 Session 持久化协议
+        acceptance: CompactionService 对同一快照并行运行三个语义分工的摘要 LLM，确定性合并为一个 state_snapshot；分片失败可独立重试，全部失败不写半成品并回退现有 compress_fast；压缩共享 Task、取消、Hook 维护状态、全量测试和 Package 构建通过
+        tasks:
+          - id: F25.1
+            title: 并行摘要 PRD、配置与输出契约
+            status: done
+            date: 2026-08-25
+          - id: F25.2
+            title: 三路 LLM 并行调用与分片提示词
+            status: done
+            date: 2026-08-25
+          - id: F25.3
+            title: 确定性合并、校验与失败回退
+            status: done
+            date: 2026-08-25
+          - id: F25.4
+            title: 并发取消、性能日志与回归测试
+            status: done
+            date: 2026-08-25
+          - id: F25.5
+            title: 全量验收、Package 构建与执行报告
+            status: done
+            date: 2026-08-25
+      - id: F26
+        title: Compaction 按 token 分块摘要
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F26-compaction-token-chunks.md
+        prd_status: 已验收
+        depends_on:
+          - F25
+        implementation_boundary: 只修改 E:\ftre 的 ftre-compaction Package、测试、配置文档和执行记录；不修改 Agent Core、客户端、Inbox、WebSocket 和 Session 持久化协议
+        acceptance: 每约 200k token 内容按 Msg 边界切块，每块一个 LLM，受限并发，确定性合并，压缩速度和失败安全回归通过
+        tasks:
+          - id: F26.1
+            title: token 分块与配置契约
+            status: done
+            date: 2026-08-25
+          - id: F26.2
+            title: chunk LLM 调度与确定性合并
+            status: done
+            date: 2026-08-25
+          - id: F26.3
+            title: 失败取消与全量验收
+            status: done
+            date: 2026-08-25
+      - id: F27
+        title: Compaction 用户消息确定性生成
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F27-compaction-deterministic-user-messages.md
+        prd_status: 已验收
+        completed_date: 2026-08-25
+        depends_on:
+          - F26
+        implementation_boundary: 只修改 E:\ftre 的 ftre-compaction Package、测试、配置文档和执行记录；不修改 Agent Core、客户端、Inbox、WebSocket 和 Session 持久化协议
+        acceptance: 用户消息清单由代码按顺序生成且不由 LLM 输出；默认 chunkTokens 为 200000；配置、并发、失败安全和 Package 质量门禁通过
+      - id: F28
+        title: LLM Error Hook 与可插拔恢复策略
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F28-llm-recovery-plugin.md
+        prd_status: 已验收
+        completed_date: 2026-08-25
+        depends_on:
+          - F27
+        paired_stage: E:\\ftre-agent-core C5
+        implementation_boundary: 只修改 E:\\ftre Host 的 LLM Hook 重导出、可选 ftre-llm-recovery Package、配置、测试和文档；不修改客户端、Inbox、Compaction 算法、Session 持久化或 Cordis
+        modules:
+          - src/ftre/services/llm/hooks.py（Core 契约窄重导出）
+          - packages/ftre-llm-recovery/（策略 Plugin/Package）
+          - tests/architecture/、tests/contracts/、tests/lifecycle/
+        acceptance: ftre 可消费 Core C5 的同一 llm/error Spec；恢复 Package 只提供 retry/stop 策略，不复制 Core Retry Loop；未安装/禁用时默认重试不变；overflow 继续由 ftre-compaction 处理；Package 生命周期、独立 wheel、洁净安装、全量质量门禁和 Gateway smoke 通过
+        tasks:
+          - id: F28.1
+            title: Host/Core 契约基线与依赖版本冻结
+            status: done
+          - id: F28.2
+            title: llm-recovery Package 策略与配置
+            status: done
+          - id: F28.3
+            title: 生命周期、Compaction 协同与失败安全
+            status: done
+          - id: F28.4
+            title: 独立发行、跨仓回归与最终验收
+            status: done
+      - id: F29
+        title: LLM Stream Fallback Plugin
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F29-llm-stream-fallback-plugin.md
+        prd_status: 已验收
+        completed_date: 2026-08-25
+        depends_on:
+          - F28
+        paired_stage: E:\\ftre-agent-core C6
+        implementation_boundary: 只修改 E:\\ftre Host 的 ConfigService 公共模型解析、可选 ftre-llm-fallback Package、配置、测试和发行文档；不修改 Agent Core Retry Loop、客户端、Inbox、Compaction 算法、Session 持久化或 Cordis
+        modules:
+          - src/ftre/services/config/（公开模型解析窄接口，如确有必要）
+          - src/ftre/services/llm/hooks.py（Core Hook 重导出复核）
+          - packages/ftre-llm-fallback/（Stream Fallback Plugin）
+          - tests/architecture/、tests/contracts/、tests/lifecycle/
+        acceptance: fallback 仅在最后一次 attempt 且主模型无有效输出时执行一次；前序失败全部由 Core Retry 处理；备用失败不递归；未安装/禁用时主模型直连；Config/Package 生命周期、wheel、洁净安装、Compaction 协同和全量质量门禁通过
+        tasks:
+          - id: F29.1
+            title: ConfigService 模型解析与跨仓版本基线
+            status: done
+          - id: F29.2
+            title: llm-stream fallback Package 与最后一次 attempt 策略
+            status: done
+          - id: F29.3
+            title: 错误、取消、部分输出与重复 fallback 回归
+            status: done
+          - id: F29.4
+            title: 生命周期、独立发行与 Gateway 验收
+            status: done
+      - id: F30
+        title: Unified LLM Service Package and Call Pipeline
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F30-llm-service-package.md
+        prd_status: 已验收
+        depends_on:
+          - F29
+        implementation_boundary: 只修改 E:\\ftre 的 ftre-llm Package、LLM Service Provider、Agent/Compaction/Session Title 的 LLM 调用接线、LLM Hook 契约、Retry/Fallback Package 协作、测试和文档；不修改客户端，不把 Session/Inbox/AgentLoop/TurnExecutor 放入 LLM Package，不改变 Cordis Kernel
+        modules:
+          - packages/ftre-llm/
+          - src/ftre/services/llm/
+          - src/ftre/services/agent/runtime/
+          - packages/ftre-compaction/
+          - src/ftre/plugins/builtin/session_title/
+          - packages/ftre-llm-recovery/
+          - packages/ftre-llm-fallback/
+          - tests/architecture/、tests/contracts/、tests/lifecycle/
+        acceptance: Agent、Compaction、Session Title 统一通过 ctx.llm；Provider 通过 register_adapter 注册；StreamChunk、Failure、prepare_call、llm/stream、agent/request、llm/error 契约稳定；Retry 持久化且重新构建请求；Fallback 不拼接半截流；可选 Package 缺失/禁用不阻断基础 LLM；生命周期、洁净安装、全量质量门禁通过
+        tasks:
+          - id: F30.1
+            title: 冻结 LLM Contract、Request、Failure、StreamChunk 和 Adapter 契约
+            status: done
+          - id: F30.2
+            title: 实现 ftre-llm Service、Provider Registry、模型解析和原子替换
+            status: done
+          - id: F30.3
+            title: 接入 Provider 并迁移 Agent、Compaction、Session Title 消费者
+            status: done
+          - id: F30.4
+            title: 收敛 llm/stream、agent/request、llm/error Hook
+            status: done
+          - id: F30.5
+            title: Retry durable-before-wait 与完整请求重建
+            status: done
+          - id: F30.6
+            title: Fallback 完整请求路由切换与零输出辅助调用保护
+            status: done
+          - id: F30.7
+            title: 生命周期、错误、取消、洁净安装和全量验收
+            status: done
+      - id: F31
+        title: Agent Runtime Service Boundaries
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F31-agent-service-boundaries.md
+        prd_status: 已验收
+        depends_on:
+          - F30
+        implementation_boundary: 只修改 E:\\ftre Host 的 Agent 依赖 Service 公开契约、Agent Hook 契约、架构测试和迁移文档；不移动 AgentLoop/TurnExecutor，不创建 ftre-agent Package，不修改客户端、Inbox、Queue、Session wire 或 Cordis Kernel
+        modules:
+          - src/ftre/services/session/
+          - src/ftre/services/messaging/
+          - src/ftre/services/tools/
+          - src/ftre/services/system_prompt/
+          - src/ftre/services/agent/profile/
+          - src/ftre/services/agent/hooks.py
+          - src/ftre/services/llm/
+          - src/ftre/services/agent/runtime/（只建立迁移门禁，不移动实现）
+          - tests/architecture/、tests/contracts/、tests/lifecycle/
+        acceptance: Agent Runtime 依赖矩阵完整；sessions/message_bus/tools/system_prompt/agent_profiles/llm/hook_runtime 公开契约稳定；Agent Runtime 不直接依赖 ChannelManager、MCP、Workspace、ToolRegistry、AgentManager、SessionRepository 或 create_llm_handler；架构扫描、契约测试和现有功能回归通过
+        tasks:
+          - id: F31.1
+            title: 依赖矩阵和 Owner 基线
+            status: done
+          - id: F31.2
+            title: Session 与 MessageBus 公开边界
+            status: done
+          - id: F31.3
+            title: Tools、System Prompt 与 Agent Profile 公开边界
+            status: done
+          - id: F31.4
+            title: LLM 与 Agent Hook 边界接入
+            status: done
+          - id: F31.5
+            title: 具体依赖扫描、Fake Service 和回归测试
+            status: done
+          - id: F31.6
+            title: 迁移矩阵和文档验收
+            status: done
+      - id: F32
+        title: Agent Runtime Service Decoupling
+        status: done
+        date: 2026-08-25
+        prd: docs/prd/PRD-F32-agent-runtime-service-decoupling.md
+        prd_status: 已验收
+        acceptance_date: 2026-08-26
+        depends_on:
+          - F31
+        implementation_boundary: 只修改 E:\\ftre Host 的 AgentLoop/TurnExecutor 依赖接线、Session/MessageBus/Tools/Profile/Prompt 公开方法、Agent Runtime 私有 Core 创建边界、架构测试和文档；不移动 Package、不修改客户端、Inbox wire、Session wire、Cordis Kernel 或 E:\\ftre-agent-core
+        modules:
+          - src/ftre/services/agent/runtime/
+          - src/ftre/services/session/service.py
+          - src/ftre/services/messaging/bus/service.py
+          - src/ftre/services/tools/service.py
+          - src/ftre/services/system_prompt/service.py
+          - src/ftre/services/agent/profile/service.py
+          - src/ftre/services/workspace/
+          - src/ftre/plugins/builtin/mcp/plugin.py
+          - tests/architecture/、tests/contracts/、tests/lifecycle/、tests/integration/
+        acceptance: AgentLoop/TurnExecutor 只通过公开 Service 接线；移除 ChannelManager、MCP、AgentManager、Session Projection、直接 ToolRegistry 和 create_llm_handler 依赖；MessageBus.publish_outbound、SessionService.finish_open_replies、ToolService.prepare_view 和 Runtime 私有 Core 工厂落地；AgentEvent/SessionEvent 出口无重复；普通消息、Steer、Tool、Compaction、Retry、Fallback、Confirmation、取消和生命周期回归通过
+        tasks:
+          - id: F32.1
+            title: Provider/Runtime 构造图迁移
+            status: done
+          - id: F32.2
+            title: Session 上下文与 open reply 收尾迁移
+            status: done
+          - id: F32.3
+            title: MessageBus 与 SessionEvent 出口收敛
+            status: done
+          - id: F32.4
+            title: Tools、Profile、Prompt 具体依赖移除
+            status: done
+          - id: F32.5
+            title: Core Agent 私有创建边界
+            status: done
+          - id: F32.6
+            title: LLM 统一调用和 Hook 对齐
+            status: done
+          - id: F32.7
+            title: 回归、生命周期和架构验收
+            status: done
+      - id: F33
+        title: Agent Package Final Architecture
+        status: done
+        date: 2026-08-26
+        completion_date: 2026-08-26
+        prd: docs/prd/PRD-F33-agent-package-final-architecture.md
+        prd_status: 已验收
+        depends_on:
+          - F32
+          - F34
+        implementation_boundary: 只在 F31/F32 验收后抽取 E:\\ftre Agent 契约与 Runtime Package；不修改客户端、Inbox wire、Session wire、Cordis Kernel 或 E:\\ftre-agent-core
+        modules:
+          - packages/ftre-agent/
+          - packages/ftre-agent-runtime/
+          - src/ftre/app/gateway/composition.py
+          - src/ftre/services/（仅保留稳定 Host Service）
+          - src/ftre/plugins/builtin/（仅调整 Runtime Plugin 装载）
+          - tests/architecture/、tests/contracts/、tests/lifecycle/、tests/integration/
+        acceptance: Agent 契约与 Runtime 实现分别独立发行；Host 只通过 Composition 加载 Runtime Plugin；旧 Agent Runtime、Facade、桥接和兼容入口删除；普通消息、Tool、LLM、Steer、Compaction、Retry、Fallback、取消和生命周期回归通过
+        tasks:
+          - id: F33.1
+            title: 冻结终局目录、Owner 和依赖方向
+            status: done
+          - id: F33.2
+            title: 抽取 ftre-agent 稳定契约 Package
+            status: done
+          - id: F33.3
+            title: 抽取 ftre-agent-runtime Provider Package
+            status: done
+          - id: F33.4
+            title: Host Composition 改为加载 Runtime Plugin
+            status: done
+          - id: F33.5
+            title: 删除旧 Agent Owner、桥接和兼容入口
+            status: done
+          - id: F33.6
+            title: Package 发行、生命周期和最终验收
+            status: done
+      - id: F34
+        title: ToolService Final Runtime
+        status: done
+        date: 2026-08-26
+        completion_date: 2026-08-26
+        prd: docs/prd/PRD-F34-tool-service-runtime.md
+        prd_status: 已验收
+        depends_on:
+          - F32
+        implementation_boundary: 只修改 E:\\ftre Host 的 ToolService、Tool Hook、Tool Plugin 接入、Runtime 内部 Tool 边界和相关测试；不修改客户端、Inbox wire、Session wire、Cordis Kernel 或 E:\\ftre-agent-core
+        modules:
+          - src/ftre/services/tools/
+          - src/ftre/plugins/builtin/{mcp,skill,schedule,plan}/
+          - packages/ftre-{messaging,task,team}/
+          - src/ftre/services/agent/runtime/（仅内部适配边界）
+          - tests/architecture/、tests/contracts/、tests/lifecycle/、tests/integration/
+        acceptance: ToolService 是唯一 tools Owner；Tool Plugin 只能通过 register 贡献；registry 隐藏；get/schemas/execute 共享作用域投影；Tool Hook、取消、超时、错误、并发和生命周期语义统一；Agent Runtime 不访问具体 Registry 或 Tool 私有实现
+        tasks:
+          - id: F34.1
+            title: 冻结 ToolDefinition 和执行结果契约
+            status: done
+          - id: F34.2
+            title: 收紧 ToolService 和作用域可见性
+            status: done
+          - id: F34.3
+            title: get/schemas/execute 共享作用域投影（guard/execution_mode 为 PRD 非目标，移出本阶段）
+            status: done
+          - id: F34.4
+            title: 统一 Tool Hook 执行管线
+            status: done
+          - id: F34.5
+            title: 迁移内置与外部 Tool Plugin
+            status: done
+          - id: F34.6
+            title: 收口 Agent Runtime 的 Core Tool 边界
+            status: done
+          - id: F34.7
+            title: 取消并发生命周期和发行验收
+            status: done

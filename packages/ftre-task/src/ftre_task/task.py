@@ -8,7 +8,7 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 - 投递后阻塞等待目标 session 跑完，返回最后一条 ai 回复 + session_id
 
 终止判定：
-- 通过 AgentService.wait(request_id) 等待本进程内的 TurnOutcome。
+- 通过 AgentService.wait(request_id) 等待本进程内的 Turn 结果。
 - 同 session 有多条队列消息时，其他 Turn 的完成不会提前唤醒本次 task。
 
 防递归：subagent channel 的调用方禁止再调 task。
@@ -16,9 +16,9 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 import asyncio
 import uuid
 
+from ftre_agent import InboundMessage
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
-from ftre.services.agent.contracts import InboundMessage
 from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
 
 _SUBAGENT_PREAMBLE = """\

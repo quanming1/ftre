@@ -25,15 +25,15 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, EnterClaim, RejectClaim
-
-from ftre.services.agent.config import load_config
-from ftre.services.agent.hooks import (
+from ftre_agent import (
     AGENT_AFTER_RUN_SPEC,
     AGENT_RUN_ERROR_SPEC,
     RequestErrorPayload,
     RetryRequest,
 )
+from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, EnterClaim, RejectClaim
+
+from ftre.services.agent.config import load_config
 
 logger = logging.getLogger(__name__)
 

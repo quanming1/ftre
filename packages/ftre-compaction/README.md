@@ -9,7 +9,7 @@ ftre-compaction 是 ftre 的可选上下文压缩发行物。它把“什么时�
 | 文件 | 职责 |
 |---|---|
 | config.py | 读取 ConfigService.snapshot()，解析本包自己的阈值、预算和摘要模型 |
-| service.py | 唯一真实实现：token 水位、LLM 摘要、快速裁剪、事件、并发和取消 |
+| service.py | 唯一真实实现：token 水位、按 token 分块的 LLM 摘要、确定性合并、快速裁剪、事件、并发和取消 |
 | hooks.py | 在 inbox/before-claim、agent/after-run、agent/run-error 上接入策略 |
 | commands.py | 注册 /compact 与 /compress-fast，绕过 Agent Turn 直接调用 Service |
 | plugin.py | Cordis 装配入口，把 Service、Hook、Command 和关闭 effect 绑定起来 |
@@ -33,6 +33,16 @@ LLM 返回上下文溢出时，agent/run-error 只在压缩 progress generation
 Inbox；pending 的 peek/claim/保留全部由本包的 InboxService 管理，ftre 核心只执行
 已交付的 InboundMessage。
 
+## 按 token 分块摘要
+
+一次摘要读取一份不可变 Session 快照，按消息边界累加估算 token，默认每约 200k token
+形成一个 chunk。每个 chunk 只调用一个 LLM；多个 chunk 受并发上限约束并行执行，最后
+由 Service 按固定节点顺序确定性合并为一个 `state_snapshot`。压缩不再让多个 LLM
+重复处理整份历史。
+
+单个 chunk 失败会独立重试；仍失败时不写入半成品摘要，沿用现有 `compress_fast` 兜底。
+单条消息超过 chunk 上限时保持消息完整，单独形成 oversized chunk 并记录日志。
+
 ## 配置
 
 压缩配置仍放在 ftre 的 config.json，但 Owner 属于本包：
@@ -42,7 +52,11 @@ Inbox；pending 的 peek/claim/保留全部由本包的 InboxService 管理，ft
         "context": {
       "precompactThreshold": 0.7,
       "compactThreshold": 0.8,
-      "safetyBuffer": 1024
+      "safetyBuffer": 1024,
+      "chunkTokens": 200000,
+      "chunkParallelism": 4,
+      "chunkTimeoutSeconds": 120,
+      "chunkRetryAttempts": 1
         },
         "compact_generation": {
           "provider": "cheap-provider",

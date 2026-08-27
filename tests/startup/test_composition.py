@@ -56,9 +56,13 @@ async def test_default_composition_has_required_public_services(tmp_path) -> Non
         required = {item.id: item for item in composition.plugins.statuses() if item.required}
         assert required
         assert all(item.state is FiberState.ACTIVE for item in required.values())
-        assert {"config", "filesystem", "http", "message_bus", "tools"}.issubset(
+        assert {"config", "filesystem", "http", "message_bus", "tools", "llm"}.issubset(
             composition.context.reflect.store
         )
+        assert {item.api_type for item in composition.context.get("llm").list_providers()} == {
+            "completions",
+            "responses",
+        }
         routes = composition.context.get("http").snapshot()
         assert any(route["path"] == "/api/health" for route in routes)
         paths = {route["path"] for route in routes}

@@ -4,21 +4,12 @@ import asyncio
 
 import pytest
 from cordis import Context
-from ftre_agent_core.agent import ReActAgent
+from ftre_agent import AgentRegistry
 from ftre_agent_core.hooks import AGENT_BEFORE_REASONING_SPEC, BeforeReasoningPayload
-from ftre_agent_core.llm import (
-    BlockEnd,
-    BlockStart,
-    FinishChunk,
-    FinishReason,
-    TextDeltaChunk,
-)
-from ftre_agent_core.tool import Tool
 from ftre_inbox.plugin import apply
 from ftre_inbox.protocol import InboundMessage
 
 from ftre.kernel.hooks import HookRuntime
-from ftre.services.agent.registry import AgentRegistry
 
 
 class BusyAgent:
@@ -26,43 +17,15 @@ class BusyAgent:
         return True
 
 
-class SequenceLLM:
-    model = "fake"
-
-    def __init__(self, sequences):
-        self.sequences = sequences
-        self.calls = []
-
-    async def stream(self, messages, tools=None):
-        self.calls.append(messages)
-        for chunk in self.sequences[min(len(self.calls) - 1, len(self.sequences) - 1)]:
-            yield chunk
-
-
 def _provide_plugin_dependencies(context: Context) -> None:
-    """为 Inbox Plugin 提供它真正声明的公开 Service 依赖。"""
+    """为 Inbox Plugin 提供它真正声明的公开 Service 依赖。
 
-
-def _tool_sequence():
-    return [
-        BlockStart(index=0, block_type="tool-call"),
-        BlockEnd(index=0, block={
-            "type": "tool-call",
-            "id": "call-1",
-            "name": "pause",
-            "arguments": "{}",
-        }),
-        FinishChunk(reason=FinishReason(kind="tool-calls")),
-    ]
-
-
-def _text_sequence(text: str):
-    return [
-        BlockStart(index=0, block_type="text"),
-        TextDeltaChunk(index=0, text=text),
-        BlockEnd(index=0, block={"type": "text", "text": text}),
-        FinishChunk(reason=FinishReason(kind="stop")),
-    ]
+    这些测试只验证队列 admission 与 Core Hook 的连接，不需要真实的
+    SessionEventService；但 `session_events` 仍是 Inbox 的必需注入边界，
+    因此用显式的空能力填充最小测试上下文，而不是让 Plugin 回退到隐式
+    `ctx.get()`。
+    """
+    context.provide("session_events", None)
 
 
 @pytest.mark.asyncio
@@ -101,7 +64,12 @@ async def test_plugin_consumes_next_step_through_core_hook(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_running_core_turn_consumes_steer_before_next_reasoning(tmp_path):
+async def test_steer_hook_consumed_before_second_llm_call(tmp_path):
+    """steer 在两次 LLM 调用之间被 before-reasoning Hook 原子消费。
+
+    用最小 stub 驱动两轮 dispatch（等价于 Runtime 在每个 Reasoning 前
+    消费 next-step 队列），避免依赖已退役的 Core ReActRunner。
+    """
     context = Context()
     runtime = HookRuntime(context)
     context.provide("hook_runtime", runtime)
@@ -114,49 +82,32 @@ async def test_running_core_turn_consumes_steer_before_next_reasoning(tmp_path):
     registry.ensure("default")
     scope = runtime.context_for_scope(registry.scope_carrier("default"))
 
-    tool_started = asyncio.Event()
-    release_tool = asyncio.Event()
+    async def reason_once(iteration: int):
+        return await runtime.dispatch(
+            AGENT_BEFORE_REASONING_SPEC,
+            BeforeReasoningPayload(
+                agent=object(),
+                session_id="s1",
+                turn_id="turn-1",
+                iteration=iteration,
+                cancellation=asyncio.Event(),
+            ),
+            context=scope,
+        )
 
-    async def pause_tool():
-        tool_started.set()
-        await release_tool.wait()
-        return "tool complete"
+    # 第一轮 Reasoning：队列空，无注入。
+    first = await reason_once(1)
+    assert list(first.messages) == []
 
-    agent = ReActAgent(
-        model="fake", api_key="fake", hooks=runtime, max_iterations=3,
-        hook_context=scope,
-        tool_registry=None,
-    )
-    agent.tool_registry.register(Tool(name="pause", func=pause_tool))
-    llm = SequenceLLM([_tool_sequence(), _text_sequence("steer 已消费")])
-    agent.runner._llm = llm
-
-    stream = agent.run(
-        "开始",
-        runtime_context={
-            "session_id": "s1",
-            "agent_id": "default",
-            "agent_subject": registry.ensure("default"),
-            "cancellation": asyncio.Event(),
-        },
-    )
-    # 先消费 ReplyStart，再让另一项任务继续驱动真实 ReAct 循环。
-    await stream.__anext__()
-    stream_task = asyncio.create_task(_consume_remaining(stream))
-    await asyncio.wait_for(tool_started.wait(), timeout=1)
+    # 用户 steer 进队；下一轮 Reasoning 必须原子取出并清空 pending。
     await inbox.steer(InboundMessage("s1", "steer-1", "ws", "请改用中文"))
-    release_tool.set()
-    await asyncio.wait_for(stream_task, timeout=2)
+    second = await reason_once(2)
 
-    assert len(llm.calls) == 2
-    assert any("请改用中文" in str(message) for message in llm.calls[1])
+    assert [message["content"] for message in second.messages] == ["请改用中文"]
     assert not (await inbox.snapshot("s1")).has_pending
+    # 第三轮：已消费，不重复注入。
+    third = await reason_once(3)
+    assert list(third.messages) == []
     cleanup = context.dispose()
     if cleanup is not None:
         await cleanup
-
-
-async def _consume_remaining(stream):
-    """独立消费 generator 的剩余事件，便于测试在 Tool 阻塞时插入 steer。"""
-    async for _event in stream:
-        pass

@@ -3,6 +3,7 @@ Tests for AgentManager: config merging, tool filtering, prompt loading.
 """
 
 import json
+from unittest.mock import Mock
 
 import pytest
 
@@ -125,7 +126,7 @@ def test_tool_filter_allow_deny():
     """filter_tools respects allow and deny lists."""
     from ftre_agent_core.tool import Tool, ToolRegistry
 
-    from ftre.services.tools.builtin import filter_tools
+    from ftre.services.tools import filter_tools
 
     def _noop(**kw):
         return ""
@@ -610,18 +611,31 @@ def test_ensure_default_picks_first_provider(tmp_path, monkeypatch):
 # ─── Task 7: Create and Delete agents ────────────────────────────────
 
 
-def test_create_agent_passes_reasoning_effort_to_core(
-    tmp_agents_dir, fake_global_config
+def test_runtime_factory_passes_reasoning_effort_to_core(
+    tmp_agents_dir, fake_global_config, monkeypatch
 ):
-    """The merged effort reaches ReActAgent instead of its empty-string default."""
-    from ftre.services.agent.config import AgentConfig
+    """Profile Manager 只解析配置，Runtime factory 才负责构造 Core Agent。"""
+    from ftre_agent import AgentConfig
+    from ftre_agent_runtime import factory
+
     from ftre.services.agent.profile.manager import AgentManager
 
     mgr = AgentManager(agents_dir=tmp_agents_dir)
     profile = mgr.load("default")
-    agent = mgr.create_agent(profile, AgentConfig())
+    created = Mock()
+    monkeypatch.setattr(factory, "ReActAgent", created)
+    factory.create_core_agent(
+        config=AgentConfig(),
+        profile_snapshot=profile,
+        tool_view=Mock(),
+        system_prompt="prompt",
+        tracer=Mock(),
+        hooks=None,
+        hook_context=None,
+        state=factory.default_agent_state(),
+    )
 
-    assert agent.reasoning_effort == "high"
+    assert created.call_args.kwargs["reasoning_effort"] == "high"
 
 
 def test_create_agent_profile(tmp_path):

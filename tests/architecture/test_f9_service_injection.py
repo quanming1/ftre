@@ -9,10 +9,15 @@ from ftre.services.session import SessionService
 
 ROOT = Path(__file__).parents[2]
 SRC = ROOT / "src" / "ftre"
+RUNTIME_SRC = ROOT / "packages" / "ftre-agent-runtime" / "src" / "ftre_agent_runtime"
 
 
 def _source(relative: str) -> str:
     return (SRC / relative).read_text(encoding="utf-8")
+
+
+def _runtime_source(name: str) -> str:
+    return (RUNTIME_SRC / name).read_text(encoding="utf-8")
 
 
 def test_command_and_feature_code_never_uses_loop_as_service_locator() -> None:
@@ -25,15 +30,29 @@ def test_command_and_feature_code_never_uses_loop_as_service_locator() -> None:
 
 
 def test_agent_runtime_provider_has_no_unbounded_service_any() -> None:
-    source = _source("services/agent/runtime/provider.py")
+    source = _runtime_source("plugin.py")
     assert "Any" not in source
-    assert "build_runtime" in source
     assert "AgentRuntimeServices" not in source
     assert "ctx.sessions" in source
 
 
+def test_agent_runtime_has_no_dead_plugin_manager_bridge() -> None:
+    """Agent Runtime 不应保留从未消费的 PluginManager 透传参数。
+
+    PluginManager 仍由 Composition 持有并用于插件生命周期；它不是 Agent
+    Turn 的运行时依赖。这个门禁防止旧的“先注入、再静默保存”的死字段回归。
+    """
+    sources = (
+        _runtime_source("plugin.py"),
+        _runtime_source("engine.py"),
+        _source("plugins/builtin/channels/websocket/channel.py"),
+    )
+    for source in sources:
+        assert "plugin_manager" not in source
+
+
 def test_turn_executor_receives_data_plane_services_explicitly() -> None:
-    source = _source("services/agent/runtime/turn_executor.py")
+    source = _runtime_source("turn_executor.py")
     for forbidden in (
         'getattr(loop, "agent_service"',
         'getattr(loop, "attachments"',
@@ -54,7 +73,7 @@ def test_plugins_declare_context_service_attributes() -> None:
     ignored = {"get", "provide", "effect", "events", "fiber", "parent", "scope"}
     optional_get = {
         "inbox", "mcp", "attachments", "system_prompt", "session_events",
-        "plugin_manager", "agents",
+        "agents",
     }
     plugin_paths = list((SRC / "services").rglob("plugin.py")) + list(
         (SRC / "plugins" / "builtin").rglob("plugin.py")
@@ -112,7 +131,8 @@ def test_builtin_command_owner_dependencies_are_explicit() -> None:
 
 
 def test_builtin_tools_use_public_agent_service_key() -> None:
-    root = SRC / "services" / "tools" / "builtin"
+    # F34：内置工具已迁至 plugins/builtin/core_tools，随 Owner Plugin 落位。
+    root = SRC / "plugins" / "builtin" / "core_tools"
     for path in root.glob("*.py"):
         source = path.read_text(encoding="utf-8")
         assert 'Injected("agent_loop")' not in source, path

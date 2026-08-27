@@ -4,14 +4,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
 SRC = ROOT / "src" / "ftre"
+RUNTIME_SRC = ROOT / "packages" / "ftre-agent-runtime" / "src" / "ftre_agent_runtime"
 
 
 def _text(relative: str) -> str:
     return (SRC / relative).read_text(encoding="utf-8")
 
 
+def _runtime_text(name: str) -> str:
+    return (RUNTIME_SRC / name).read_text(encoding="utf-8")
+
+
 def test_turn_executor_has_no_command_matching_or_legacy_filter_path() -> None:
-    source = _text("services/agent/runtime/turn_executor.py")
+    source = _runtime_text("turn_executor.py")
     forbidden = (
         "ftre.plugins.builtin.command",
         "command_manager",
@@ -31,7 +36,7 @@ def test_turn_executor_has_no_command_matching_or_legacy_filter_path() -> None:
 
 
 def test_message_bus_dispatches_commands_before_inbox_admission() -> None:
-    agent_source = _text("services/agent/runtime/engine.py")
+    agent_source = _runtime_text("engine.py")
     bus_source = _text("services/messaging/bus/ingress.py")
     command_source = _text("plugins/builtin/command/plugin.py")
     assert "_parse_ingress_command" not in agent_source

@@ -54,21 +54,31 @@ async def env(tmp_path):
 @pytest.mark.asyncio
 async def test_compact_generation_passes_reasoning_effort_to_handler(monkeypatch):
     """Context compaction forwards the selected LLM configuration's effort."""
-    from ftre_compaction import service as compact_manager
-
     captured = {}
 
-    class FakeHandler:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
+    class FakePrepared:
+        def __init__(self, config):
+            self.config = config
 
-        async def stream(self, *args, **kwargs):
+        async def stream(self, _request):
             if False:
                 yield None
 
-    monkeypatch.setattr(compact_manager, "create_llm_handler", lambda api_type, **kw: FakeHandler(**{"api_type": api_type, **kw}))
-    compact = CompactionService(session_manager=None, emit_event=None)
+    class FakeLlm:
+        async def prepare_call(self, config, **_kwargs):
+            captured["reasoning_effort"] = config.reasoning_effort
+            captured["api_type"] = config.api_type
+            return FakePrepared(config)
+
+        async def stream(self, request, **_kwargs):
+            captured["reasoning_effort"] = request.config.reasoning_effort
+            captured["api_type"] = request.config.api_type
+            if False:
+                yield None
+
+    compact = CompactionService(session_manager=None, emit_event=None, llm=FakeLlm())
     llm = SimpleNamespace(
+        provider="summary-provider",
         model="summary-model",
         api_key="key",
         api_base="",

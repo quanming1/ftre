@@ -5,6 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 from cordis import Context
+from ftre_agent import (
+    AGENT_AFTER_RUN_SPEC,
+    AfterRunPayload,
+    AgentRegistry,
+    AgentSubject,
+)
 from ftre_compaction.config import CompactionConfig
 from ftre_compaction.hooks import register_hooks
 from ftre_inbox.hooks import (
@@ -16,12 +22,6 @@ from ftre_inbox.hooks import (
 from ftre_inbox.models import QueueItem
 
 from ftre.kernel.hooks import HookRuntime
-from ftre.services.agent.hooks import (
-    AGENT_AFTER_RUN_SPEC,
-    AfterRunPayload,
-    AgentSubject,
-)
-from ftre.services.agent.registry import AgentRegistry
 
 
 class _Service:

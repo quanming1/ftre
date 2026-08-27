@@ -2,7 +2,7 @@
 
 Loader 内部使用 Cordis ``Fiber``，但 HTTP、CLI、启动日志和测试不应该依赖 Fiber
 的内部对象。这里把状态转换成稳定、可序列化的 ``PluginStatus``，同时保留失败
-原因、缺失依赖、启动耗时和需要重启的提示。
+原因、缺失依赖和启动耗时。
 
 诊断只描述结果，不负责修复失败、重试或启动 Plugin；那些动作分别属于 Loader
 和 Manager。``PluginStartupError`` 用来把“必选 Plugin 没有 ACTIVE”作为一个
@@ -34,7 +34,6 @@ class PluginStatus:
     error: str | None = None  # 脱敏后的异常文本；成功时为空。
     error_code: str | None = None  # 供客户端稳定判断错误类别。
     missing: tuple[str, ...] = ()  # 当前 Fiber 声明但尚未提供的 Service key。
-    restart_required: bool = False  # Host 表面变化后是否需要重启 Gateway。
     duration_ms: float | None = None  # 从 Loader 开始处理到生成状态的耗时。
     contributions: tuple[dict[str, Any], ...] = ()  # 对外能力注册摘要。
 
@@ -53,7 +52,6 @@ class PluginStatus:
             "error": self.error,
             "error_code": self.error_code,
             "missing": list(self.missing),
-            "restart_required": self.restart_required,
             "duration_ms": self.duration_ms,
             "contributions": [dict(item) for item in self.contributions],
         }

@@ -1,8 +1,14 @@
-# ftre 插件内核重构设计（Cordis 风格）
+# ftre 插件内核重构设计（Cordis 风格，历史研究稿）
 
-> 状态：设计提案（待评审）
+> 状态：历史研究稿（已被 F1/F13/F14 当前实现取代，不是运行契约）
 > 日期：2026-08-14
 > 背景：研究 DeepSeek Harness 的 Cordis 插件内核（E:\cordis，koishijs/cordis）后，为 ftre 设计一套等价的插件架构。
+>
+> 当前实现请以 `src/ftre/app`、`src/ftre/kernel`、`src/ftre/services`、
+> `src/ftre/plugins` 和 `docs/prd/PRD-F14-final-plugin-first-architecture.md` 为准。
+> 本文中的 `FtrePluginApi`、旧 `HookManager`、`before_messages_build`、
+> `before_agent_run`、`SessionLane`/`Mailbox` 等名称只用于解释历史决策，不得作为新代码
+> 的 import、Service key 或 Hook 名称。
 
 ## 1. 第一性原理分析
 

@@ -13,6 +13,7 @@ import logging
 import os
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from .models import InboxSnapshot, QueueItem, QueueTarget, _MutableInbox
@@ -149,6 +150,7 @@ class InboxRepository:
                     content=queued.content,
                     attachments=queued.attachments,
                     source=queued.source,
+                    history_message_id=queued.history_message_id,
                 )
             state.next_sequence = max(state.next_sequence, queued.sequence + 1)
             (state.next_turn if target == "next-turn" else state.next_step).append(queued)
@@ -207,12 +209,20 @@ class InboxRepository:
                 content=content,
                 attachments=tuple(dict(item) for item in (attachments or ())),
                 source=old.source,
+                history_message_id=old.history_message_id,
             )
             state.revision += 1
             await self._commit(state)
             return items[index]
 
     async def promote(self, session_id: str, request_id: str) -> QueueItem | None:
+        """将一条普通排队输入提升为用户主动接管的 next-step 输入。
+
+        ``promote`` 只由 WebSocket 的“调整方向”操作调用。即使原消息来自
+        cron 或其它 Plugin，用户明确点击这个动作后，它也必须按正式用户消息
+        进入 Session 历史；否则 Inbox claim 后消息会从队列消失，却没有任何
+        ``USER_MESSAGE`` 可供 MessageList 回显。
+        """
         async with self.lock_for(session_id):
             state = self._state(session_id)
             hit = self._find(state, request_id)
@@ -222,6 +232,10 @@ class InboxRepository:
             if items is state.next_step:
                 return items[index]
             item = items.pop(index)
+            # 用户操作改变的是交付语义，而不是原始来源：被用户主动提升的
+            # Plugin/cron 输入必须走 DB-first UserMessage 持久化路径。
+            if item.source != "user":
+                item = replace(item, source="user")
             state.next_step.append(item)
             state.next_step.sort(key=lambda value: value.sequence)
             state.revision += 1

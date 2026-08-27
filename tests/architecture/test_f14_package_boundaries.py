@@ -32,6 +32,8 @@ def test_host_default_distribution_contains_all_workspace_packages() -> None:
         "ftre-messaging>=0.1.0,<0.2.0",
         "ftre-task>=0.1.0,<0.2.0",
         "ftre-team>=0.1.0,<0.2.0",
+        "ftre-llm-recovery>=0.1.0,<0.2.0",
+        "ftre-llm-fallback>=0.1.0,<0.2.0",
     }.issubset(dependencies)
     extras = project["optional-dependencies"]
     assert extras["inbox"] == ["ftre-inbox>=0.2.0,<0.3.0"]
@@ -39,12 +41,17 @@ def test_host_default_distribution_contains_all_workspace_packages() -> None:
     assert extras["messaging"] == ["ftre-messaging>=0.1.0,<0.2.0"]
     assert extras["task"] == ["ftre-task>=0.1.0,<0.2.0"]
     assert extras["team"] == ["ftre-team>=0.1.0,<0.2.0"]
+    assert extras["llm-recovery"] == ["ftre-llm-recovery>=0.1.0,<0.2.0"]
+    assert extras["llm-fallback"] == ["ftre-llm-fallback>=0.1.0,<0.2.0"]
     assert extras["full"] == [
+        "ftre-llm>=0.1.0,<0.2.0",
         "ftre-inbox>=0.2.0,<0.3.0",
         "ftre-messaging>=0.1.0,<0.2.0",
         "ftre-task>=0.1.0,<0.2.0",
         "ftre-team>=0.1.0,<0.2.0",
         "ftre-compaction>=0.2.0,<0.3.0",
+        "ftre-llm-recovery>=0.1.0,<0.2.0",
+        "ftre-llm-fallback>=0.1.0,<0.2.0",
     ]
 
 
@@ -56,6 +63,8 @@ def test_workspace_packages_have_one_entry_point_and_metadata() -> None:
         "ftre-messaging": ("messaging", "ftre_messaging.plugin:apply"),
         "ftre-task": ("task", "ftre_task.plugin:apply"),
         "ftre-team": ("team", "ftre_team.plugin:apply"),
+        "ftre-llm-recovery": ("llm-recovery", "ftre_llm_recovery.plugin:apply"),
+        "ftre-llm-fallback": ("llm-fallback", "ftre_llm_fallback.plugin:apply"),
     }
     for package_name, (plugin_id, entry) in expected.items():
         package = PACKAGES / package_name

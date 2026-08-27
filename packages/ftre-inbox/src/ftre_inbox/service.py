@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -68,6 +69,7 @@ class InboxService:
         *,
         hook_runtime=None,
         before_claim=None,
+        session_events=None,
     ) -> None:
         self.repository = repository
         self._agent = agent
@@ -77,6 +79,7 @@ class InboxService:
         self._closed = False
         self._before_claim = before_claim
         self._hook_runtime = hook_runtime
+        self._session_events = session_events
         self._blocked: dict[str, str] = {}
 
     async def start(self) -> None:
@@ -104,6 +107,7 @@ class InboxService:
         # 避免旧 Fiber/Task 被队列实例继续保活。
         self._before_claim = None
         self._hook_runtime = None
+        self._session_events = None
         self._agent = None
 
     async def followup(self, message: InboundMessage) -> IngressResult:
@@ -157,6 +161,19 @@ class InboxService:
             metadata=message.metadata.model_dump(mode="json"),
         )
         mode = str(message.data.get("mode") or "queue")
+        if mode not in {"queue", "steer"}:
+            # WebSocket 会在更外层拒绝非法 mode；这里仍需守住 Bus/内部调用边界，
+            # 避免一个拼写错误被静默降级成普通 queue。
+            return IngressResult(
+                accepted=False,
+                session_id=session_id,
+                request_id=str(message.metadata.request_id or message.id),
+                error={
+                    "code": "invalid_mode",
+                    "message": "mode 只能是 queue 或 steer",
+                    "retryable": False,
+                },
+            )
         if mode == "steer":
             return await self.steer(inbound)
         return await self.followup(inbound)
@@ -180,7 +197,13 @@ class InboxService:
             }
             for item in snapshot.pending
         ]
-        return {"session_id": session_id, "items": items}
+        return {
+            "session_id": session_id,
+            # revision 是客户端判断快照新旧的唯一依据；不能让客户端用本地
+            # 收到顺序猜测，否则 operation response 和后台 push 乱序时会回退。
+            "revision": snapshot.revision,
+            "items": items,
+        }
 
     async def edit(self, session_id: str, request_id: str, content: str, attachments=None) -> bool:
         result = await self.repository.edit(session_id, request_id, content, attachments)
@@ -221,7 +244,7 @@ class InboxService:
         """等待本进程内 ``followup`` 交付的 Turn 结果。
 
         ``steer``/``inject`` 可能在 active Turn 的 Core Hook 中直接变成上下文，
-        它们没有独立的 TurnOutcome；因此不创建永不完成的 receipt，调用方应使用
+        它们没有独立的 Turn 结果；因此不创建永不完成的 receipt，调用方应使用
         Session/Turn 状态或 ``wait_session_quiescent`` 观察整体完成。
         """
         key = (session_id, request_id)
@@ -245,12 +268,25 @@ class InboxService:
         self,
         session_id: str,
     ) -> tuple[QueueItem, ...]:
-        """原子领取当前 active Turn 的 ``next-step`` 消息。
+        """交付当前 active Turn 的 ``next-step`` 消息。
 
         该入口只由 ``agent/before-reasoning`` Hook 调用。它复用同一套
-        ``peek → before-claim → claim`` 逻辑，但不会启动第二个 Agent Turn，
-        因而运行中的 steer 会在下一次 LLM snapshot 前进入 Core Memory。
-        ``repository.claim`` 负责和后台 worker 做最后的原子去重。
+        ``peek → before-claim → history upsert → claim`` 逻辑，但不会启动第二个
+        Agent Turn，因而运行中的 steer 会在下一次 LLM snapshot 前进入 Core Memory。
+        ``session_events`` 存在时，正式 UserMessage 先幂等落库并广播，再从 Inbox
+        claim；这样 claim 后崩溃也不会同时丢失 pending 和聊天历史。
+        """
+        return await self.deliver_next_step_for_reasoning(session_id)
+
+    async def deliver_next_step_for_reasoning(
+        self,
+        session_id: str,
+    ) -> tuple[QueueItem, ...]:
+        """在下一次 Reasoning 前完成 next-step 的 DB-first 交付。
+
+        ``session_events`` 是 Host 提供的稳定历史/广播出口。独立 Package 测试在
+        未提供它时仍保留原子 claim 能力；Gateway Composition 始终注入该 Service，
+        生产路径因此不会回到“先 claim 后落库”的旧顺序。
         """
         snapshot = await self.repository.snapshot(session_id)
         candidates = tuple(snapshot.next_step)
@@ -268,7 +304,50 @@ class InboxService:
                     continue
             await self._publish(session_id)
             return ()
-        return await self._claim_candidates(session_id, snapshot, candidates)
+        history_ids = await self._persist_user_messages(candidates)
+        claimed = await self._claim_candidates(session_id, snapshot, candidates)
+        return self._attach_history_ids(claimed, history_ids)
+
+    async def _persist_user_messages(
+        self,
+        candidates: tuple[QueueItem, ...],
+    ) -> dict[str, str]:
+        """在安全 Reasoning 边界持久化正式 UserMessage，并返回稳定 id。"""
+        if self._session_events is None:
+            return {}
+        history_ids: dict[str, str] = {}
+        for candidate in candidates:
+            # Plugin inject 只贡献上下文，不伪造用户历史；真正的 role=user 才会
+            # 触发 Core 的 Assistant message_id 边界。
+            if candidate.source != "user":
+                continue
+            result = await self._session_events.emit_user_message_if_absent(
+                candidate.session_id,
+                candidate.channel_id,
+                request_id=candidate.request_id,
+                content=candidate.content,
+                attachments=candidate.attachments,
+                source=candidate.source,
+            )
+            persisted = getattr(result, "persisted_messages", ()) or ()
+            if persisted:
+                history_ids[candidate.request_id] = persisted[0].id
+        return history_ids
+
+    @staticmethod
+    def _attach_history_ids(
+        claimed: tuple[QueueItem, ...],
+        history_ids: dict[str, str],
+    ) -> tuple[QueueItem, ...]:
+        if not history_ids:
+            return claimed
+        return tuple(
+            replace(
+                item,
+                history_message_id=history_ids.get(item.request_id),
+            )
+            for item in claimed
+        )
 
     def _wake_event(self, session_id: str) -> asyncio.Event:
         return self._wake.setdefault(session_id, asyncio.Event())
@@ -373,7 +452,9 @@ class InboxService:
                     self._blocked.pop(session_id, None)
                     await self._publish_status_event(session_id, "idle")
                 try:
+                    history_ids = await self._persist_user_messages(candidates)
                     claimed = await self._claim_candidates(session_id, snapshot, candidates)
+                    claimed = self._attach_history_ids(claimed, history_ids)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - keep pending on durable claim failure
@@ -397,6 +478,11 @@ class InboxService:
                             content=item.content,
                             attachments=item.attachments,
                             source=item.source,
+                            metadata=(
+                                {"history_message_id": item.history_message_id}
+                                if item.history_message_id
+                                else None
+                            ),
                         )
                         try:
                             result = self._agent.run(inbound)

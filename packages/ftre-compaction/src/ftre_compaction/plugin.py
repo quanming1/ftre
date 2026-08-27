@@ -18,7 +18,7 @@ from .service import CompactionService
 # config 是公开 ConfigService，不是 AgentConfig。压缩包通过 snapshot() 读取
 # 自己拥有的配置字段；sessions/hook_runtime/commands 则分别对应持久化、Hook
 # 调度和 Command Plane 的稳定契约。
-inject = ("config", "sessions", "session_events", "hook_runtime", "commands", "inbox")
+inject = ("config", "sessions", "session_events", "hook_runtime", "commands", "inbox", "llm")
 provide = ("compaction",)
 
 
@@ -34,6 +34,7 @@ def apply(ctx: Context, config=None):
         options = config if isinstance(config, dict) else {}
         service = CompactionService(
             session_manager=ctx.sessions,
+            llm=ctx.llm,
             emit_event=ctx.session_events.emit,
             threshold=float(options.get("threshold", 0.8)),
             config_service=ctx.config,

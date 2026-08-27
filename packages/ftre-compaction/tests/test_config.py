@@ -71,3 +71,45 @@ def test_parse_compaction_config_does_not_mutate_input():
     parse_compaction_config(raw)
 
     assert raw == {"agents": {"context": {"compact_threshold": 0.8}}}
+
+
+def test_parse_compaction_config_reads_chunk_limits():
+    result = parse_compaction_config({
+        "agents": {
+            "context": {
+                "chunkTokens": 100_000,
+                "chunkParallelism": 2,
+                "chunkTimeoutSeconds": 30,
+                "chunkRetryAttempts": 0,
+            }
+        }
+    })
+
+    assert result.chunk_tokens == 100_000
+    assert result.chunk_parallelism == 2
+    assert result.chunk_timeout_seconds == 30
+    assert result.chunk_retry_attempts == 0
+
+
+def test_parse_compaction_config_defaults_to_200k_chunks():
+    result = parse_compaction_config({})
+
+    assert result.chunk_tokens == 200_000
+
+
+def test_parse_compaction_config_clamps_chunk_limits():
+    result = parse_compaction_config({
+        "agents": {
+            "context": {
+                "chunk_tokens": 1,
+                "chunk_parallelism": 99,
+                "chunk_timeout_seconds": 9999,
+                "chunk_retry_attempts": -1,
+            }
+        }
+    })
+
+    assert result.chunk_tokens == 16_000
+    assert result.chunk_parallelism == 8
+    assert result.chunk_timeout_seconds == 600
+    assert result.chunk_retry_attempts == 0

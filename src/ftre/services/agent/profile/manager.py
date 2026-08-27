@@ -18,45 +18,21 @@ AgentManager — 加载和管理 ~/.ftre/agents/ 下的 per-agent 配置。
 """
 from __future__ import annotations
 
-import copy
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass, field
-from datetime import date
 from pathlib import Path
 
-from ftre.services.agent.config import (
-    AgentConfig,
+from ftre_agent import (
     LLMConfig,
     build_llm_config,
-    load_config_file,
     sanitize_agent_effort,
 )
 
+from ftre.services.config.loader import load_config_file
+
 logger = logging.getLogger(__name__)
-
-# 默认只放行常见只读 Bash 命令；参数中出现重定向、管道、分号或单个 &
-# 时不会命中。多个安全命令可以用 && / || 串联。
-_SAFE_BASH_HEAD = (
-    r"(?:cd(?:\s+/d)?|dir|type|where|whoami|hostname|ver|echo|rg|findstr|"
-    r"git\s+(?:status|diff|log|show|ls-files|ls-tree|rev-parse|blame|grep|"
-    r"shortlog|describe))"
-)
-_SAFE_GIT_CONFIG_QUERY = (
-    r"git\s+config(?:\s+--(?:local|global|system|worktree))?\s+"
-    r"(?:--get(?:-all|-regexp)?\s+\S+|--list|-l|[A-Za-z0-9][A-Za-z0-9._-]*)"
-)
-_SAFE_BASH_SEGMENT = (
-    rf"(?:{_SAFE_GIT_CONFIG_QUERY}|"
-    rf"{_SAFE_BASH_HEAD}(?:\s+[^\r\n&|;<>]*)?)"
-)
-_SAFE_BASH_COMMAND_REGEX = (
-    rf"(?i)\s*{_SAFE_BASH_SEGMENT}"
-    rf"(?:\s*(?:&&|\|\|)\s*{_SAFE_BASH_SEGMENT})*\s*"
-)
-
 
 @dataclass
 class AgentProfile:
@@ -182,7 +158,7 @@ class AgentManager:
         if isinstance(tools_config, dict):
             # 宽容降级：手工/LLM 配置出错不应让整个 agent 起不来；
             # 真正的强校验在 filter_tools（执行期严抛，绝不静默清空工具）。
-            from ftre.services.tools.builtin import coerce_tool_name_list
+            from ftre.services.tools import coerce_tool_name_list
             try:
                 for _field in ("allow", "deny"):
                     if _field in tools_config:
@@ -598,177 +574,3 @@ class AgentManager:
 
         filepath = agent_dir / filename
         logger.info(f"[agent-manager] 已写入 {filepath} ({len(content)} chars)")
-
-    # ─── Agent 构建（委托自 AgentLoop） ────────────────────
-
-    def create_agent(
-        self,
-        profile: AgentProfile | None,
-        config: AgentConfig,
-        *,
-        channel_manager=None,
-        tool_registry=None,
-        tracer=None,
-        channel_id: str | None = None,
-        session_id: str | None = None,
-        hooks=None,
-        hook_context=None,
-        state=None,
-    ):
-        """根据 AgentProfile + 全局 config 构建 ReActAgent。
-
-        所有 agent 构建逻辑集中在此：LLM 覆盖 → 工具构建+过滤 → prompt 合成 → ReActAgent 实例化。
-
-        权限：规则与默认行为只通过 AgentState.permission_context 传入；PermissionEngine
-        由 Core 内部创建，应用层不再注入。state 未传时新建一个带默认权限规则的
-        AgentState（bash 需用户确认，其余默认放行）；恢复场景由调用方传入已注入
-        历史 context 的 state。
-        """
-        from ftre_agent_core.agent import ReActAgent
-
-        from ftre.services.tools.builtin import build_default_tools, filter_tools
-
-        c = copy.deepcopy(config)
-
-        if state is None:
-            state = self._default_agent_state()
-
-        # 用 profile 的 llm 覆盖
-        if profile is not None:
-            c.llm = profile.llm
-
-        # 构建 + 过滤工具
-        registry = build_default_tools(
-            tool_registry=tool_registry,
-            llm_config=c.llm,
-        )
-        if profile is not None and profile.tools_config:
-            filter_tools(registry, profile.tools_config)
-
-        # 合成 system prompt
-        system_prompt = self._compose_system_prompt(
-            c, profile, channel_id=channel_id, session_id=session_id
-        )
-
-        return ReActAgent(
-            model=c.llm.model,
-            api_key=c.llm.api_key,
-            api_base=c.llm.api_base,
-            api_type=c.llm.api_type,
-            system_prompt=system_prompt,
-            tool_registry=registry,
-            max_iterations=c.max_iterations,
-            max_tokens=c.llm.max_output,
-            reasoning_effort=c.llm.reasoning_effort,
-            tracer=tracer,
-            hooks=hooks,
-            hook_context=hook_context,
-            state=state,
-        )
-
-    @staticmethod
-    def _default_agent_state():
-        """新建带默认权限规则的 AgentState。
-
-        默认 Bash 规则目前暂时停用，所有工具走 default_behavior=allow。
-        规则以类型化 PermissionContext 存入 AgentState，随 state.json 持久化。
-        """
-        from ftre_agent_core.agent import AgentState
-        from ftre_agent_core.permission import (
-            PermissionBehavior,
-            PermissionContext,
-            PermissionRule,
-        )
-
-        PermissionRule(
-            id="default-bash-safe",
-            tool_name="bash",
-            argument_regex={"command": _SAFE_BASH_COMMAND_REGEX},
-            behavior=PermissionBehavior.ALLOW,
-            priority=10,
-        )
-        PermissionRule(
-            id="default-bash-ask",
-            tool_name="bash",
-            behavior=PermissionBehavior.ASK,
-            priority=0,
-        )
-        return AgentState(
-            permission_context=PermissionContext(
-                permission_rules=[
-                    # 默认 Bash 权限规则暂时停用；需要时取消下面两行注释。
-                    # bash_safe,
-                    # bash_ask,
-                ],
-                default_behavior=PermissionBehavior.ALLOW,
-            )
-        )
-
-    @staticmethod
-    def _compose_system_prompt(
-        config: AgentConfig,
-        profile: AgentProfile | None,
-        *,
-        channel_id: str | None = None,
-        session_id: str | None = None,
-    ) -> str:
-        """合成最终 system prompt：全局 prompt + SOUL.md + USER.md + <env> 环境块。
-
-        从 AgentLoop._compose_system_prompt 迁移而来，增加 per-agent 提示词注入。
-        """
-        c = config
-        system_prompt = c.system_prompt
-
-        # 追加 per-agent 提示词
-        if profile is not None:
-            if profile.soul_prompt:
-                soul_path = f"{profile.agent_dir}/SOUL.md" if profile.agent_dir else ""
-                system_prompt = (
-                    system_prompt + "\n\n"
-                    f'<SOUL desc="智能体人设：角色定义、语气、行为边界" path="{soul_path}">\n'
-                    f"{profile.soul_prompt}\n"
-                    f"</SOUL>"
-                )
-            if profile.user_prompt_md:
-                user_path = f"{profile.agent_dir}/USER.md" if profile.agent_dir else ""
-                system_prompt = (
-                    system_prompt + "\n\n"
-                    f'<USER_PROFILE desc="用户偏好与个人要求" path="{user_path}">\n'
-                    f"{profile.user_prompt_md}\n"
-                    f"</USER_PROFILE>"
-                )
-
-        env_lines = [
-            "<FTRE_SYSTEM_FACT>",
-            "<env>",
-            f"channel_id={channel_id or ''}",
-            f"session_id={session_id or ''}",
-            f"os={os.name}",
-            f"date={date.today().isoformat()}",  # noqa: DTZ011 legacy compatibility boundary reviewed in F1
-        ]
-        if os.name == "nt":
-            env_lines.append(
-                "当前是 Windows 系统。书写路径时优先使用正斜杠 /（如 "
-                "C:/Users/name/AppData/Roaming/npm/x.cmd），Windows 下的命令与 "
-                "Node/npm 系工具都能正确识别正斜杠，可彻底避免反斜杠转义问题。"
-                "如果必须用反斜杠，在 JSON/字符串里务必写成双反斜杠 \\\\；切勿漏写，"
-                "尤其当反斜杠后面跟 n、t、r 等字母时（如 \\npm、\\temp），单反斜杠会被"
-                "当成换行/制表符等转义字符，导致路径被截断、命令执行失败。"
-            )
-        else:
-            env_lines.append(
-                "当前是类 Unix 系统（Linux/macOS）。路径使用正斜杠 /，区分大小写；"
-                "优先使用绝对路径或 ~ 展开，避免依赖当前工作目录。"
-            )
-        if getattr(c.llm, "vision", False):
-            env_lines.append(
-                "vision=true：你当前使用的模型具备识图（视觉理解）能力，可以直接"
-                "看懂图片、截图、浏览器画面和 UI 视觉状态，不要因为自己是文本模型"
-                "而拒绝看图。需要理解视觉内容时，使用 read 工具读取图片文件。"
-                "read 支持图片的绝对路径、相对当前工作区路径，以及 HTTP(S) 图片 URL；"
-                "读取图片后可用于辅助修改 UI、判断浏览器操控结果、检查视觉回归和还原设计细节。"
-            )
-        env_lines.append("</env>")
-        env_lines.append("</FTRE_SYSTEM_FACT>")
-
-        return system_prompt + "\n\n" + "\n".join(env_lines)

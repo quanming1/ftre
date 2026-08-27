@@ -9,10 +9,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
 SRC = ROOT / "src" / "ftre"
+RUNTIME_SRC = ROOT / "packages" / "ftre-agent-runtime" / "src" / "ftre_agent_runtime"
 
 
 def _source(relative: str) -> str:
     return (SRC / relative).read_text(encoding="utf-8")
+
+
+def _runtime_source(name: str) -> str:
+    return (RUNTIME_SRC / name).read_text(encoding="utf-8")
 
 
 def test_lightweight_kernel_has_no_product_imports() -> None:
@@ -46,19 +51,20 @@ def test_gateway_bootstrap_does_not_construct_business_services() -> None:
         "AgentRuntimeServices(",
     )
     assert not any(item in source for item in forbidden_constructors)
-    plugin = (SRC / "services" / "agent" / "plugin.py").read_text(encoding="utf-8")
-    assert "build_runtime(" in plugin
+    # F33：Runtime 装配只发生在 ftre-agent-runtime 的 Provider Plugin 内。
+    plugin = _runtime_source("plugin.py")
+    assert "AgentLoop(" in plugin
 
 
 def test_agent_loop_history_handoff_precedes_turn_execution() -> None:
-    source = _source("services/agent/runtime/engine.py")
+    source = _runtime_source("engine.py")
     handoff = source.index("_persist_inbound_user_message(")
     execution = source.index("self._executor.execute(")
     assert handoff < execution
 
 
 def test_turn_executor_is_not_user_message_owner() -> None:
-    source = _source("services/agent/runtime/turn_executor.py")
+    source = _runtime_source("turn_executor.py")
     forbidden = (
         "_persist_user_message",
         "persist_input",
@@ -74,23 +80,24 @@ def test_turn_executor_is_not_user_message_owner() -> None:
 def test_session_plugin_owns_the_session_event_service() -> None:
     source = _source("services/session/plugin.py")
     assert 'provide = ("sessions", "session_events")' in source
-    assert "SessionEventService(service, ctx.message_bus.bus)" in source
+    assert "SessionEventService(service, ctx.message_bus)" in source
 
 
 def test_builtin_tools_use_public_channel_names_not_provider_modules() -> None:
-    tools_root = SRC / "services" / "tools" / "builtin"
+    # F34：内置工具已迁至 plugins/builtin/core_tools，随 Owner Plugin 落位。
+    tools_root = SRC / "plugins" / "builtin" / "core_tools"
     for path in tools_root.glob("*.py"):
         source = path.read_text(encoding="utf-8")
         assert "channel.providers.subagent" not in source, path
 
 
 def test_agent_runtime_uses_trace_service_owner() -> None:
-    engine = _source("services/agent/runtime/engine.py")
-    provider = _source("services/agent/runtime/provider.py")
+    engine = _runtime_source("engine.py")
+    plugin = _runtime_source("plugin.py")
     trace_service = _source("plugins/builtin/trace/service.py")
     assert "SQLiteTraceExporter" not in engine
     assert "TRACE_DB_PATH" not in engine
-    assert '"traces"' in provider
+    assert '"traces"' in plugin
     assert "def build_tracer" in trace_service
 
 

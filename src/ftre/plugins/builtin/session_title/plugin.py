@@ -19,13 +19,13 @@ from ftre.services.system_prompt.types import PromptSection
 
 from .generator import TitleGenPlugin
 
-inject = ("sessions", "system_prompt", "hook_runtime")
+inject = ("sessions", "system_prompt", "hook_runtime", "llm")
 provide = ()
 
 
 def apply(ctx: Context, config=None):
     """Register title guidance and automatic first-turn generation."""
-    generator = TitleGenPlugin(ctx.sessions, asyncio.get_running_loop())
+    generator = TitleGenPlugin(ctx.sessions, asyncio.get_running_loop(), ctx.llm)
     generator.configure(config)
     async def on_prompt_assemble(payload: PromptAssemblyPayload, next_):
         """Run title observation without mutating the prompt or message history."""

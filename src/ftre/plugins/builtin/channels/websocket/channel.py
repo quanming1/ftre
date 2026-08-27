@@ -152,7 +152,6 @@ class WebSocketChannel(Channel):
         bus: EventBus,
         host: str = "0.0.0.0",
         port: int = 48650,
-        plugin_manager=None,
         app: FastAPI | None = None,
         attachment_service: AttachmentService | None = None,
         http_service=None,
@@ -530,11 +529,7 @@ class WebSocketChannel(Channel):
                     retryable=bool(error.get("retryable")),
                 )
                 return
-            await self._send_admission_ack(
-                ws,
-                request_id,
-                ack,
-            )
+            await self._send_queue_response(ws, request_id, session_id)
         except Exception:
             logger.exception(
                 "[ws-channel] durable admission 失败 session=%s request=%s",
@@ -633,6 +628,21 @@ class WebSocketChannel(Channel):
             return
         kind = action.get("kind")
         try:
+            snapshot = await inbox.snapshot(session_id)
+            steering_ids = {
+                item.request_id
+                for item in snapshot.next_step
+                if getattr(item, "source", "user") == "user"
+            }
+            if kind in {"edit", "remove"} and item_id in steering_ids:
+                await self._reject(
+                    ws,
+                    request_id,
+                    session_id,
+                    "steering 消息已锁定，不能编辑或移除",
+                    code="steering-locked",
+                )
+                return
             if kind == "edit":
                 accepted = await inbox.edit(
                     session_id,
@@ -643,7 +653,6 @@ class WebSocketChannel(Channel):
             elif kind == "remove":
                 accepted = await inbox.remove(session_id, item_id)
             elif kind == "steer":
-                snapshot = await inbox.snapshot(session_id)
                 if not any(item.request_id == item_id for item in snapshot.next_turn):
                     await self._reject(
                         ws,
@@ -664,11 +673,7 @@ class WebSocketChannel(Channel):
         if not accepted:
             await self._reject(ws, request_id, session_id, "消息已不在队列中", code="item-not-pending")
             return
-        await ws.send_text(json.dumps({
-            "request_id": request_id,
-            "ok": True,
-            "value": {"accepted": True, "session_id": session_id, "item_id": item_id},
-        }, ensure_ascii=False))
+        await self._send_queue_response(ws, request_id, session_id)
 
     async def _reject(
         self,
@@ -711,10 +716,44 @@ class WebSocketChannel(Channel):
         }
         await ws.send_text(json.dumps(payload, ensure_ascii=False))
 
-    async def _send_admission_ack(self, ws: WebSocket, request_id: str, ack) -> None:
-        """持久 admission 成功后回写统一 ACK。"""
-        await ws.send_text(json.dumps({
-            "request_id": request_id,
-            "ok": True,
-            "value": {"accepted": True, "session_id": ack.session_id},
-        }, ensure_ascii=False))
+    async def _send_queue_response(
+        self, ws: WebSocket, request_id: str, session_id: str
+    ) -> None:
+        """把操作结算和最新 Inbox wire snapshot 合并成一个响应。"""
+        inbox = self._current_inbox()
+        if inbox is None:
+            await self._reject(
+                ws,
+                request_id,
+                session_id,
+                "队列能力不可用",
+                code="inbox-unavailable",
+                retryable=True,
+            )
+            return
+        try:
+            payload = await inbox.wire_snapshot(session_id)
+            response = {
+                "type": "session/queue",
+                "request_id": request_id,
+                "ok": True,
+                "payload": payload,
+            }
+            # 与 attach/后台 push 共用 Session 输出锁，避免同一连接看到
+            # operation response 先于更旧的 queue snapshot。
+            async with self._output_lock(session_id):
+                await ws.send_text(json.dumps(response, ensure_ascii=False))
+        except Exception:
+            logger.exception(
+                "[ws-channel] queue response failed session=%s request=%s",
+                session_id,
+                request_id,
+            )
+            await self._reject(
+                ws,
+                request_id,
+                session_id,
+                "队列快照读取失败，请使用同一 request_id 重试",
+                code="queue_snapshot_failed",
+                retryable=True,
+            )

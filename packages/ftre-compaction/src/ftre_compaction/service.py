@@ -6,11 +6,12 @@ CompactionService — 上下文压缩 Service 的唯一真实实现
 - /compact 手动：立即压缩
 - /compress-fast：零 LLM 成本裁剪旧 ToolResultBlock 输出
 
-每次压缩：从上一个 compact 摘要 Msg 到现在，全量 LLM 摘要。摘要作为一条
-role=user、name=compact 的 Msg 追加到 messages 数组（由 SessionProjection 投影
-context_compact_done 落盘），原始 Msg 永不删除。下一轮 LLM 上下文从最后一条
-compact Msg 开始。CompactionService 不直接写 state、不直接派发 WebSocket，全部
-通过 CustomEvent + 统一事件出口完成。快速压缩直接更新旧 Msg 中的工具结果块。
+每次压缩：从上一个 compact 摘要 Msg 到现在，按估算 token 数切成多个内容块，每个块
+由一个 LLM 摘要，再由本地确定性逻辑合并。摘要作为一条 role=user、name=compact
+的 Msg 追加到 messages 数组（由 SessionProjection 投影 context_compact_done 落盘），
+原始 Msg 永不删除。下一轮 LLM 上下文从最后一条 compact Msg 开始。
+CompactionService 不直接写 state、不直接派发 WebSocket，全部通过 CustomEvent +
+统一事件出口完成。快速压缩直接更新旧 Msg 中的工具结果块。
 
 并发安全：
 - 每个 session 同一时间最多只有一个真正的压缩 Task。
@@ -21,11 +22,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Literal
 
 from ftre_agent_core.event import CustomEvent
-from ftre_agent_core.llm import LLMError, TextDeltaChunk, create_llm_handler
 from ftre_agent_core.message import Msg, MsgName, TextBlock, ToolResultBlock
+from ftre_llm import LlmCallConfig, LlmCredentials, LLMError, LlmRequest
 
 from .config import CompactionConfig, parse_compaction_config
 from .events import CompactEventName
@@ -38,53 +40,6 @@ DEFAULT_COMPACT_THRESHOLD = 0.8
 DEFAULT_FAST_KEEP_TURNS = 0
 
 
-# LLM 摘要的 system prompt
-COMPACT_LLM_SYSTEM_PROMPT = """\
-你是对话上下文压缩组件。当对话的上下文窗口即将溢出时，由你负责生成摘要。你产出的摘要将成为 Agent 在此之前所有记忆的唯一来源。Agent 将仅依据此摘要（以及少量恢复的文件/图片附件）恢复工作。
-
-首先，将你的推理过程包裹在 <analysis> 块中。在其中按时间线梳理整段对话，逐节识别：用户的明确请求与意图、你处理这些请求的方式、关键决策/技术概念/代码模式、具体细节（文件名、代码片段、函数签名、文件编辑）、遇到的错误及其修复方式、以及用户的任何特定反馈——尤其是用户要求你换种方式做事时。<analysis> 块在摘要传递给下一个 Agent 之前会被剥离；它纯粹是用于提升后续摘要质量的草稿区。
-
-然后，按照下方 EXACT XML 结构输出最终摘要。内容要密集。省略对话性填充。
-
-<state_snapshot>
-    <primary_request_and_intent>
-        <!-- 详细记录用户的所有明确请求和意图。在意图存在歧义时引用用户的原话。 -->
-    </primary_request_and_intent>
-
-    <key_technical_concepts>
-        <!-- 列出所有涉及的重要技术概念、技术和框架。 -->
-    </key_technical_concepts>
-
-    <files_and_code_sections>
-        <!-- 逐一列出检查、修改或创建的文件和代码段。特别关注最近的消息。在适用处包含完整代码片段，并说明该文件读取或编辑为何重要。 -->
-    </files_and_code_sections>
-
-    <errors_and_fixes>
-        <!-- 列出每个遇到的错误及其修复方式。包含被引用给 Agent 的原始错误消息。特别关注用户对错误的反馈，尤其是用户要求你换种方式处理时。 -->
-    </errors_and_fixes>
-
-    <problem_solving>
-        <!-- 记录已解决的问题和任何正在进行的排障工作。 -->
-    </problem_solving>
-
-    <all_user_messages>
-        <!-- 按时间顺序列出所有非工具结果的用户消息。这些对理解用户反馈和意图变化至关重要。包含 "ok"、"continue" 等短消息——它们是信号。 -->
-    </all_user_messages>
-
-    <pending_tasks>
-        <!-- 列出用户已明确要求但尚未完成的待办任务。 -->
-    </pending_tasks>
-
-    <current_work>
-        <!-- 详细描述在请求摘要之前 Agent 正在做什么，特别关注用户和助手的最近消息。在适用处包含文件名和代码片段。 -->
-    </current_work>
-
-    <next_step>
-        <!-- 列出与最近工作相关的唯一下一步。该步骤必须与用户最近的明确请求和请求摘要前 Agent 正在做的任务直接对齐。如果上一个任务已结束，仅在直接符合用户请求时才列出下一步——不要在未与用户确认前开始旁支或旧的工作。如果有下一步，包含最近对话中的直接引用，准确展示你当时在做什么、停在哪里。 -->
-    </next_step>
-</state_snapshot>"""
-
-
 def _select_compact_llm(config, compaction_config: CompactionConfig):
     """返回摘要实际使用的模型。
 
@@ -93,6 +48,31 @@ def _select_compact_llm(config, compaction_config: CompactionConfig):
     压缩预算和摘要模型仍与当前 Turn 对齐。
     """
     return compaction_config.llm or config.llm
+
+
+_SUMMARY_SECTION_ORDER = (
+    "primary_request_and_intent",
+    "key_technical_concepts",
+    "files_and_code_sections",
+    "errors_and_fixes",
+    "problem_solving",
+    "all_user_messages",
+    "pending_tasks",
+    "current_work",
+    "next_step",
+)
+# `all_user_messages` 只是原始历史的机械投影，不需要 LLM 做语义推理。
+# LLM 只输出下面这些需要归纳的节点，完整摘要仍由本地合并器补齐全部节点。
+_LLM_SUMMARY_SECTION_ORDER = tuple(
+    section for section in _SUMMARY_SECTION_ORDER if section != "all_user_messages"
+)
+
+COMPACT_CHUNK_LLM_SYSTEM_PROMPT = """\
+你是对话上下文压缩流水线中的一个分块摘要 Worker。你只会看到整个会话的一段连续内容，
+输出会被宿主程序按原始块顺序合并到下一个 Agent 使用的锚定摘要中。只输出
+state_snapshot XML 节点，不要输出解释、Markdown 围栏或 analysis。只保留当前分块能证明的
+事实；不要回答对话中的问题，不要编造不存在的文件、错误或任务。\
+"""
 
 
 class CompactionService:
@@ -107,12 +87,14 @@ class CompactionService:
         self,
         *,
         session_manager,
+        llm=None,
         emit_event=None,
         threshold: float = DEFAULT_COMPACT_THRESHOLD,
         config_service=None,
         default_config: CompactionConfig | None = None,
     ):
         self.session_manager = session_manager
+        self._llm = llm
         self._emit_event = emit_event or self._noop_event
         self._config_service = config_service
         self._default_config = default_config or CompactionConfig(
@@ -474,23 +456,49 @@ class CompactionService:
 
         compaction_config = compaction_config or self.config_for(config)
 
-        # 4. 通知前端开始（CustomEvent，不持久化）。模型必须显式随事件传递，
+        # 4. 按 token 估算切块；事件里的块数与实际 LLM 调度使用同一份快照。
+        chunks = _chunk_messages_by_tokens(
+            head_messages,
+            compaction_config.chunk_tokens,
+        )
+        from ftre.services.session.message import estimate_messages_tokens
+
+        chunk_sizes = [estimate_messages_tokens(chunk) for chunk in chunks]
+
+        # 5. 通知前端开始（CustomEvent，不持久化）。模型必须显式随事件传递，
         #    不能让客户端从上一条 assistant 回复推断压缩实际使用的模型。
         compact_llm = _select_compact_llm(config, compaction_config)
+        logger.info(
+            "[compact] session=%s prepared chunks=%s target_tokens=%s sizes=%s "
+            "parallelism=%s model=%s api_type=%s",
+            session_id,
+            len(chunks),
+            compaction_config.chunk_tokens,
+            chunk_sizes,
+            compaction_config.chunk_parallelism,
+            compact_llm.model,
+            getattr(compact_llm, "api_type", "unknown"),
+        )
         await self._emit_event(session_id, channel_id, CustomEvent(
             name=CompactEventName.START,
             value={
                 "messages": len(head_messages),
                 "tokens": tokens_before,
                 "model": compact_llm.model,
+                "mode": "token_chunks",
+                "chunks": len(chunks),
+                "chunk_tokens": compaction_config.chunk_tokens,
+                "parallelism": compaction_config.chunk_parallelism,
+                "user_messages": len(_extract_user_message_texts(head_messages)),
             },
         ))
 
-        # 5. LLM 直调摘要（previous_summary 参与滚动摘要）
+        # 6. LLM 直调摘要（previous_summary 只交给首块，避免重复输入）
         summary = await self._run_compact_llm(
             head_messages, config=config, previous_summary=previous_summary,
             session_id=session_id, focus_hint=focus_hint,
             compaction_config=compaction_config,
+            chunks=chunks,
         )
         if not summary:
             # 摘要为空（模型只输出思考、接口异常等）：默认重试一次
@@ -499,6 +507,7 @@ class CompactionService:
                 head_messages, config=config, previous_summary=previous_summary,
                 session_id=session_id, focus_hint=focus_hint,
                 compaction_config=compaction_config,
+                chunks=chunks,
             )
         if not summary:
             # 重试仍失败：回退 compress_fast 兜底，避免直接放弃导致 Lane BLOCKED。
@@ -518,7 +527,7 @@ class CompactionService:
                 )
             return None
 
-        # 6. 估算摘要后 token
+        # 7. 估算摘要后 token
         from ftre.services.session.message import estimate_messages_tokens
         tokens_after = estimate_messages_tokens([{
             "role": "user",
@@ -535,7 +544,7 @@ class CompactionService:
             )
             return None
 
-        # 7. 发 context_compact_done：SessionProjection 将其投影为 user/compact Msg
+        # 8. 发 context_compact_done：SessionProjection 将其投影为 user/compact Msg
         #    value 含完整 summary_text（非预览），持久化由 Projection 完成。
         done_event = CustomEvent(
             name=CompactEventName.DONE,
@@ -568,66 +577,212 @@ class CompactionService:
         session_id: str = "",
         focus_hint: str = "",
         compaction_config: CompactionConfig | None = None,
+        chunks: list[list[dict]] | None = None,
     ) -> str | None:
-        """调用 LLM 生成摘要（异步）。
-
-        采用 OpenCode 的 serialize → select → buildPrompt 模式：
-        1. 序列化 Msg 为纯文本（截断 tool 输出至 2000 字符）
-        2. buildPrompt() 返回多条 user message：对话记录 + 指令/模板
-        3. 多条 user message 依次发给 LLM
-
-        这里是包内唯一的 LLM 摘要调用点。Hook 只决定“要不要调用”，不应
-        自己拼接 Prompt 或创建第二个摘要客户端。
-        """
+        """按 token 分块调用 LLM，再按原始块顺序确定性合并。"""
         try:
-            context = _serialize_messages(head_messages)
-            if not context.strip():
+            snapshot = compaction_config or self.config_for(config)
+            chunk_records = chunks or _chunk_messages_by_tokens(
+                head_messages,
+                snapshot.chunk_tokens,
+            )
+            if not chunk_records:
                 logger.debug("[compact] 消息文本为空，跳过 LLM 调用")
                 return None
 
-            prompt_parts = _build_prompt(
-                previous_summary=previous_summary,
-                context=[context],
-                min_chars=max(200, int(_estimate_body_chars(context) * 0.6)),
-                focus_hint=focus_hint,
+            concurrency = max(1, min(8, snapshot.chunk_parallelism))
+            retry_attempts = max(0, min(2, snapshot.chunk_retry_attempts))
+            timeout_seconds = max(5.0, min(600.0, snapshot.chunk_timeout_seconds))
+            semaphore = asyncio.Semaphore(concurrency)
+
+            async def run_chunk(
+                index: int,
+                records: list[dict],
+            ) -> tuple[int, dict[str, str] | None]:
+                async with semaphore:
+                    context = _serialize_messages(records)
+                    if not context.strip():
+                        return index, None
+                    chunk_tokens = _estimate_chunk_tokens(records)
+                    llm_cfg = _select_compact_llm(config, snapshot)
+                    for attempt in range(retry_attempts + 1):
+                        started = asyncio.get_running_loop().time()
+                        logger.info(
+                            "[compact] session=%s chunk=%s/%s call tokens=%s model=%s "
+                            "api_type=%s attempt=%s/%s",
+                            session_id,
+                            index + 1,
+                            len(chunk_records),
+                            chunk_tokens,
+                            llm_cfg.model,
+                            llm_cfg.api_type,
+                            attempt + 1,
+                            retry_attempts + 1,
+                        )
+                        try:
+                            result = await asyncio.wait_for(
+                                self._run_summary_chunk(
+                                    index,
+                                    context=context,
+                                    previous_summary=previous_summary if index == 0 else None,
+                                    config=config,
+                                    focus_hint=focus_hint,
+                                    compaction_config=snapshot,
+                                ),
+                                timeout=timeout_seconds,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:  # noqa: BLE001 - one part must not cancel siblings
+                            logger.warning(
+                                "[compact] session=%s chunk=%s/%s failed tokens=%s model=%s "
+                                "attempt=%s/%s: %s",
+                                session_id,
+                                index + 1,
+                                len(chunk_records),
+                                chunk_tokens,
+                                llm_cfg.model,
+                                attempt + 1,
+                                retry_attempts + 1,
+                                exc,
+                            )
+                            result = None
+                        elapsed = asyncio.get_running_loop().time() - started
+                        if result:
+                            logger.info(
+                                "[compact] session=%s chunk=%s/%s completed tokens=%s "
+                                "model=%s attempt=%s elapsed=%.2fs",
+                                session_id,
+                                index + 1,
+                                len(chunk_records),
+                                chunk_tokens,
+                                llm_cfg.model,
+                                attempt + 1,
+                                elapsed,
+                            )
+                            return index, result
+                        logger.warning(
+                            "[compact] session=%s chunk=%s/%s empty/failed tokens=%s "
+                            "model=%s attempt=%s/%s elapsed=%.2fs",
+                            session_id,
+                            index + 1,
+                            len(chunk_records),
+                            chunk_tokens,
+                            llm_cfg.model,
+                            attempt + 1,
+                            retry_attempts + 1,
+                            elapsed,
+                        )
+                return index, None
+
+            results = await asyncio.gather(
+                *(run_chunk(index, records) for index, records in enumerate(chunk_records)),
+                return_exceptions=True,
             )
+            summaries: list[dict[str, str]] = []
+            for result in results:
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                if isinstance(result, BaseException):
+                    logger.warning("[compact] chunk task failed: %s", result)
+                    return None
+                index, sections = result
+                if sections is None:
+                    logger.warning("[compact] chunk=%s produced no sections", index)
+                    return None
+                summaries.append(sections)
 
-            messages = [
-                {"role": "system", "content": COMPACT_LLM_SYSTEM_PROMPT},
-                *[{"role": "user", "content": p} for p in prompt_parts],
-            ]
-
-            # 优先使用压缩包解析出的专用模型，未配置则回退到主 llm。
-            # 与 START 事件使用同一选择函数，确保展示模型与真实调用一致。
-            llm_cfg = _select_compact_llm(
-                config,
-                compaction_config or self.config_for(config),
+            summary = _merge_chunk_summaries(
+                summaries,
+                user_messages=_build_user_messages_section(
+                    head_messages,
+                    previous_summary=previous_summary,
+                ),
             )
-            adapter = create_llm_handler(
-                llm_cfg.api_type,
-                model=llm_cfg.model,
-                api_key=llm_cfg.api_key,
-                api_base=llm_cfg.api_base,
-                reasoning_effort=llm_cfg.reasoning_effort,
-                temperature=0.0,
-            )
-
-            collected: list[str] = []
-            async for chunk in adapter.stream(messages):
-                if isinstance(chunk, TextDeltaChunk):
-                    collected.append(chunk.text)
-
-            summary = "".join(collected).strip()
             if not summary:
-                logger.warning("[compact] LLM 摘要为空")
+                logger.warning("[compact] chunk summary merge produced no content")
                 return None
             return summary
+        except asyncio.CancelledError:
+            raise
         except LLMError as exc:
-            logger.warning("[compact] LLM 直调摘要失败 code=%s message=%s", exc.code, exc.message)
+            logger.warning(
+                "[compact] 并行摘要失败 code=%s message=%s", exc.code, exc.message
+            )
             return None
         except Exception:
-            logger.exception("[compact] LLM 直调摘要异常")
+            logger.exception("[compact] 分块摘要异常")
             return None
+
+    async def _run_summary_chunk(
+        self,
+        index: int,
+        *,
+        context: str,
+        previous_summary: str | None,
+        config,
+        focus_hint: str,
+        compaction_config: CompactionConfig,
+    ) -> dict[str, str] | None:
+        """运行一个 token chunk；不写 Session、不发事件。"""
+        prompt_parts = _build_prompt(
+            previous_summary=previous_summary,
+            context=[context],
+            min_chars=max(120, min(12_000, _estimate_body_chars(context) // 20)),
+            focus_hint=focus_hint,
+        )
+        prompt_parts[-1] += (
+            "\n\n本次只总结当前内容块。可以输出以下 XML 节点，节点内容只填写当前块中确认的事实；"
+            "没有内容的节点可以留空：\n"
+            + "\n".join(f"<{section}>...</{section}>" for section in _LLM_SUMMARY_SECTION_ORDER)
+            + "\n不要输出当前块之外的推断。"
+        )
+        messages = [
+            {"role": "system", "content": COMPACT_CHUNK_LLM_SYSTEM_PROMPT},
+            *[{"role": "user", "content": part} for part in prompt_parts],
+        ]
+
+        llm_cfg = _select_compact_llm(config, compaction_config)
+        if self._llm is None:
+            logger.warning("[compact] llm Service 未注入，跳过摘要 chunk=%s", index)
+            return None
+        provider = getattr(llm_cfg, "provider", "")
+        if not isinstance(provider, str) or not provider.strip():
+            logger.warning("[compact] LLM 配置缺少 provider，跳过摘要 chunk=%s", index)
+            return None
+        call_config = LlmCallConfig(
+            provider=provider,
+            model=llm_cfg.model,
+            api_type=llm_cfg.api_type,
+            max_tokens=_summary_chunk_max_tokens(llm_cfg),
+            temperature=0.0,
+            reasoning_effort=llm_cfg.reasoning_effort,
+        )
+        credentials = LlmCredentials(
+            api_key=llm_cfg.api_key,
+            api_base=llm_cfg.api_base,
+        )
+        request = LlmRequest.from_parts(
+            call_config,
+            messages,
+            purpose="compaction",
+        )
+
+        collected: list[str] = []
+        try:
+            async for chunk in self._llm.stream(request, credentials=credentials):
+                if getattr(chunk, "type", "") == "text-delta":
+                    collected.append(chunk.text)
+        except LLMError as exc:
+            logger.warning(
+                "[compact] chunk=%s LLM failed code=%s message=%s",
+                index,
+                exc.code,
+                exc.message,
+            )
+            return None
+
+        return _parse_chunk_sections("".join(collected))
     # ─── 工具方法 ──────────────────────────────────────────────────
 
     async def _emit_failed(self, session_id: str, channel_id: str, reason: str) -> None:
@@ -668,6 +823,139 @@ class CompactionService:
 
 
 # ─── 模块级纯函数（可单测） ───────────────────────────────────────────
+
+
+def _summary_chunk_max_tokens(llm_config) -> int:
+    """为每个 chunk 设置独立输出预算，避免单块摘要无限膨胀。"""
+    configured = getattr(llm_config, "max_output", None)
+    if isinstance(configured, int) and configured > 0:
+        return max(512, min(8192, configured))
+    return 4096
+
+
+def _parse_chunk_sections(raw: str) -> dict[str, str] | None:
+    """解析一个 chunk 的局部 state_snapshot；缺失节点按空正文处理。"""
+    clean = re.sub(r"```(?:xml)?|```", "", raw or "", flags=re.IGNORECASE).strip()
+    clean = re.sub(
+        r"<analysis>.*?</analysis>",
+        "",
+        clean,
+        flags=re.DOTALL | re.IGNORECASE,
+    ).strip()
+    sections: dict[str, str] = {}
+    for section in _LLM_SUMMARY_SECTION_ORDER:
+        match = re.search(
+            rf"<{re.escape(section)}>(.*?)</{re.escape(section)}>",
+            clean,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        sections[section] = match.group(1).strip() if match else ""
+    if not any(value for value in sections.values()):
+        return None
+    return sections
+
+
+def _merge_chunk_summaries(
+    summaries: list[dict[str, str]],
+    *,
+    user_messages: str = "",
+) -> str | None:
+    """按 chunk 顺序合并节点，并确定性补齐真实用户消息清单。"""
+    if not summaries or not any(
+        part.get(section, "").strip()
+        for part in summaries
+        for section in _SUMMARY_SECTION_ORDER
+    ):
+        return None
+    lines = ["<state_snapshot>"]
+    for section in _SUMMARY_SECTION_ORDER:
+        if section == "all_user_messages":
+            values = [user_messages.strip()] if user_messages.strip() else []
+        else:
+            values = [part.get(section, "").strip() for part in summaries]
+        values = [value for value in values if value]
+        lines.extend([
+            f"  <{section}>",
+            "\n\n".join(values),
+            f"  </{section}>",
+        ])
+    lines.append("</state_snapshot>")
+    return "\n".join(lines)
+
+
+def _extract_user_message_texts(messages: list[dict]) -> list[str]:
+    """提取当前快照中的真实用户消息，跳过压缩摘要和展示气泡。"""
+    texts: list[str] = []
+    for record in messages:
+        if record.get("role") != "user":
+            continue
+        name = record.get("name", MsgName.DEFAULT.value)
+        if str(name) != MsgName.DEFAULT.value:
+            continue
+        metadata = record.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("hide"):
+            continue
+        text = Msg.model_validate(record).get_text_content() or ""
+        if text.strip():
+            texts.append(text.strip())
+    return texts
+
+
+def _build_user_messages_section(
+    messages: list[dict],
+    *,
+    previous_summary: str | None = None,
+) -> str:
+    """代码生成 `all_user_messages`，避免让 LLM 机械复述用户输入。
+
+    增量压缩时，历史快照已经被上一条 compact 摘要替代，因此先读取上一份摘要中的
+    同名节点，再追加本次 tail 的真实 UserMsg；这样不会因为分块压缩丢掉早期用户消息。
+    """
+    values: list[str] = []
+    if previous_summary:
+        match = re.search(
+            r"<all_user_messages>(.*?)</all_user_messages>",
+            previous_summary,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if match and match.group(1).strip():
+            values.append(match.group(1).strip())
+    values.extend(
+        f"用户消息 {index}: {text}"
+        for index, text in enumerate(_extract_user_message_texts(messages), start=1)
+    )
+    return "\n\n".join(values)
+
+
+def _chunk_messages_by_tokens(
+    messages: list[dict],
+    chunk_tokens: int,
+) -> list[list[dict]]:
+    """按稳定的 Msg 边界切分上下文，单条超限 Msg 独立成为 oversized chunk。"""
+    from ftre.services.session.message import estimate_messages_tokens
+
+    limit = max(1, int(chunk_tokens))
+    chunks: list[list[dict]] = []
+    current: list[dict] = []
+    current_tokens = 0
+    for record in messages:
+        record_tokens = estimate_messages_tokens([record])
+        if current and current_tokens + record_tokens > limit:
+            chunks.append(current)
+            current = []
+            current_tokens = 0
+        current.append(record)
+        current_tokens += record_tokens
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _estimate_chunk_tokens(records: list[dict]) -> int:
+    """估算单个 chunk 的 token 数，供诊断日志复用同一估算器。"""
+    from ftre.services.session.message import estimate_messages_tokens
+
+    return estimate_messages_tokens(records)
 
 
 def _serialize_messages(

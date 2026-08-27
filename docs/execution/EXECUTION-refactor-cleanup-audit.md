@@ -499,3 +499,183 @@ git diff --check
   CHANGELOG 和 F20 执行报告已同步。
 - 工作区仍不干净，状态来源是审计开始前的 F12–F19 累计修改及本轮 F20 文件；本轮没有
   伪造干净状态，也没有提交。独立 Package 的 PyPI 发布仍是后置发行任务。
+
+## 最新审计：C4/F23/B4 Steering 消息边界（2026-08-24）
+
+### 范围与边界
+
+- 仓库与分支：`E:\ftre-agent-core` / `feature/C4-user-message-boundary`；
+  `E:\ftre` / `feature/F23-steering-message-boundary`；
+  `E:\binn\ftre-desktop` / `feature/B4-steering-message-projection`。
+- 只审计本次三端 `message_id`、Steering、Inbox→Session→Client 交接及其 PRD/TODO/测试；
+  未修改 `E:\cordis-py`、用户 Session 数据、其它未授权仓库，也未执行 commit/push。
+- 三个工作树在审计前已有本阶段未提交修改；保留现场，不用 reset/checkout 或删除无关改动伪造干净。
+
+### Owner 迁移与引用证据
+
+| 旧 Owner/入口 | 当前 Owner | 审计证据 |
+|---|---|---|
+| Core 以 `reply_id` 作为 Msg.id | Core `RunState.message_id` + `MessageContext` + Event `message_id` | Core AST/`rg` 无旧 segment 引用；C4 A→U→B 测试通过 |
+| ftre Host 人工 segment / `insert_messages_after()` | Core message boundary + `SessionProjection` | `src/`、`packages/`、`tests/` 中旧符号扫描 0；F23 Projection 集成测试通过 |
+| 客户端 `reply_segment` / `splitActiveReplyBeforeUserMessage` | Desktop `chat.ts` 按服务端 `message_id` reducer | renderer 源码旧符号扫描 0；A/U/B、乱序、重连测试通过 |
+| pending/claim | `packages/ftre-inbox` | `InboxService` 单一 Repository/worker/claim Owner；Agent 只接收 `InboundMessage` |
+
+历史文档中的旧名称均位于明确的历史 PRD/迁移矩阵/负向架构断言中，不是生产入口；
+旧 `C4 Cordis 风格插件内核` PRD 与 `design-plugin-kernel.md` 已补充“历史阶段/非当前契约”
+标记，且 PRD 状态与 TODO `done/已验收` 对齐。
+
+### 生命周期与入口复核
+
+- Core 无进程级队列、Session 或 Plugin 状态；Runner 只生成/旋转 `message_id`，宿主负责 Hook Scope。
+- ftre Inbox 由 Composition Plugin provide，Hook/Worker/Receipt/Session 引用绑定 `ctx.effect`；
+  `close` 清理 worker、wake、receipt 和依赖引用，重复关闭为安全 no-op。
+- SessionProjection 是唯一 Reply Msg 投影/持久化协调者；`SessionEventService` 先投影再广播，
+  `AgentLoop` 不再持有 Inbox 或人工消息重排入口。
+- Desktop 只消费 WebSocket `message_id`/`reply_id`；不执行 claim、Reasoning、Tool 或 Session 写入。
+- 当前 `rg`/Python AST 检查未发现旧生产 import、重复 segment Owner 或跨仓私有 import。
+
+### 验证证据
+
+```text
+Core:    python -m pytest -q                         → 240 passed
+ftre:    python -m pytest -q                          → 527 passed
+ftre:    python -m ruff check src tests packages     → All checks passed
+Desktop: pnpm --filter @ftre/renderer test            → 52 files / 514 passed
+Desktop: pnpm exec tsc -p packages/renderer/tsconfig.json --noEmit → passed
+Desktop: pnpm --filter @ftre/renderer build          → passed（仅既有 CSS/chunk 警告）
+Core:    wheel + 临时 venv 洁净安装                  → clean wheel import ok
+三仓库:  git diff --check                             → passed
+跨层:    tests/test_f23_core_projection_integration.py → 1 passed
+```
+
+### 生成物与最终状态
+
+- 最后一次测试后已清理三仓库本阶段生成的 `__pycache__`、`.pytest_cache`、`.ruff_cache`、
+  `.vite`、Core `build` 和临时 wheel/venv；复核目标目录数量均为 **0**。
+- 依赖目录、用户数据、Session 数据、既有 `node_modules`/`dist` 未做宽泛删除。
+- 三仓库工作树仍非 clean，原因是本阶段源码、测试、PRD、TODO、CHANGELOG 和执行报告均未提交；
+  按各仓库 AGENTS 规则，本次审计没有擅自 commit/push。提交拆分和 PR 合入仍是后续显式操作。
+
+### 再审计修复记录（2026-08-24）
+
+- 复核 `ftre-inbox` 的依赖图时确认 `session_events` 是 Plugin 的必需公开 Service；生产入口
+  已使用声明式 `ctx.session_events`，不再通过动态 `ctx.get()` 查找。
+- 该收紧最初暴露两个只验证 Hook 的最小测试上下文缺失依赖，已在测试 fixture 显式提供
+  `session_events=None`，并复跑后端全量回归：`527 passed in 120.84s`。
+- 三端最终门禁：Core `240 passed`、ftre `527 passed`、Desktop `517 passed`；Core/ftre
+  Ruff 与三仓库 `git diff --check` 全部通过。Desktop 本轮仅运行测试，B4 代码未改动，已有
+  TypeScript/build 通过记录继续有效。
+- Core 的 Vulture 仅报告 `src/tests/test_tool_decorator.py` 中 4 个用于签名反射断言的测试参数
+  （`exact`、`limit`、`encoding`、`config`）；它们不是生产死代码，本轮不改动。
+- 2026-08-25 复现并修复 Steering placement 的客户端更新缺口：Desktop 在控制 ACK 成功后
+  立即更新本地 `steering` placement，并用本地意图防止旧快照回退。
+
+## 最新审计：F24/B5 Queue Operation Response 收尾（2026-08-25）
+
+### 范围与边界
+
+- `E:\ftre` / `feature/F23-steering-message-boundary`：Inbox wire、WebSocket Channel、F24 PRD/TODO/测试。
+- `E:\binn\ftre-desktop` / `feature/B4-steering-message-projection`：renderer Queue Response、B5 PRD/TODO/测试与测试入口。
+- 未修改 `E:\ftre-agent-core`、`E:\cordis-py`、Electron 业务主进程、用户 Session 数据；未执行 commit/push/merge。
+
+### Owner / 入口 / 生命周期审计
+
+| 能力 | 唯一 Owner | 证据与结论 |
+|---|---|---|
+| Inbox 状态与 revision | `packages/ftre-inbox` `InboxRepository`/`InboxService` | Repository 原子递增 revision；`wire_snapshot()` 只转换为公开 `session_id/revision/items` |
+| Queue Operation Response | WebSocket Channel `_send_queue_response` | `session.prompt`、edit/remove/steer 成功均走同一包装；错误走 `_reject`；Channel 不读原始文件 |
+| Queue 广播 | WebSocket Plugin | 监听 Inbox changed Hook；动态解析仅为支持 Inbox 独立 restart，缺失不 fallback，默认 Composition required 门禁失败 |
+| 客户端队列投影 | `ClientSessionProjection` + `applyQueueSnapshot` | 仅按服务端 revision 应用；旧 ACK parser、Steering 本地意图和第二队列状态机不存在 |
+| Steering 可变性 | WebSocket Channel | next-step 用户项在 claim 前拒绝 edit/remove；queued 项仍由 Inbox 处理 |
+
+### 旧引用与陈旧文档审计
+
+- ftre/renderer 生产代码无 `_send_admission_ack`、`getMessageAckPayload`、`QueueUpdateResult`、
+  `MessageAckPayload`、`consumeDurableAdmissionAck`、`steeringRequests`、`markQueueItemSteering`。
+- 根 `AGENTS.md`、桌面 `AGENTS.md`、`docs/prd/README.md` 已同步 revision/Queue Operation Response
+  当前契约；F12/F22/B4 历史 PRD 增加 F24/B5 supersession 注记，历史 ACK 示例不再被当作现行协议。
+- `value.accepted` 生产命中仅位于不修改 Inbox 的 `session.cancel` 控制 ACK；不属于 admission 成功路径。
+- `ctx.get("inbox")` 是 WebSocket restart 边界的明确动态解析例外，已在代码注释和本报告登记；其他必选
+  依赖仍通过 inject 或 Service Provider 声明。
+- `vulture --min-confidence 90` 无生产高置信度死代码；现有 `legacy compatibility boundary reviewed in F1`
+  仅是历史 Ruff 注释/异常边界，未被误判为兼容入口。
+
+### 额外清理修复
+
+- 服务端补齐 Steering 只读不变量，避免客户端禁用按钮可被旧/恶意 WS 帧绕过。
+- renderer 测试脚本先构建 `@ftre/shared`、`@ftre/ui`，解决清洁工作树下 workspace package `dist` 不存在导致
+  12 个测试套件无法解析 `@ftre/ui` 的工程卫生问题。
+
+### 最终验证
+
+```text
+ftre:     python -m pytest -q                                  → 531 passed
+ftre:     python -m ruff check src tests packages --no-cache   → All checks passed
+ftre:     python -m vulture ... --min-confidence 90           → 无输出，退出码 0
+desktop:  pnpm test                                            → 517 renderer + 10 platform tests passed
+desktop:  pnpm exec tsc -p packages/renderer/tsconfig.json --noEmit → passed
+desktop:  pnpm --filter @ftre/renderer build                    → passed（仅既有 CSS/chunk 警告）
+both:     git diff --check                                     → passed
+```
+
+### 生成物与工作树
+
+- 最终构建/测试后仅清理仓库源码范围内的缓存和自有构建输出；跳过 `node_modules`、`release`、`.git`、用户
+  Session/Inbox 数据。源码范围目标目录复核为 0。
+- 两个工作树仍有 F22/F23、B3/B4 及本次 F24/B5 的未提交修改；这是既有现场和本次审计变更，未擅自 reset、
+  commit 或伪造 clean 状态。
+
+## 本次复审：2026-08-25 `refactor-cleanup-audit`
+
+### 范围与基线
+
+- 仓库：`E:\ftre-agent-core` 与 `E:\ftre`；分支均为本地/远程 `develop`。
+- Core 工作树在审计前干净，ftre 工作树在审计前干净；未修改客户端、`E:\cordis-py`、用户 Session
+  数据或正在运行的 Gateway；未执行 commit、push、merge、release。
+- 已读取两仓库 `AGENTS.md`、`docs/COMMIT.md`、`docs/PROCESS.md`、`docs/TODO.yaml`、当前 PRD、
+  既有执行报告以及本 Skill 的完整清单。
+
+### Owner / 旧引用 / 生命周期结论
+
+| 检查项 | 证据与结论 |
+|---|---|
+| Composition / Plugin | ftre `composition.py` 的 30 个 Manifest id 唯一；AST 检查未发现重复 `provide` key；Core 与 ftre Kernel 无业务 import |
+| 旧数据面 | ftre 生产 Python 无 `ftre.agent/session/bus/channel/command/tools/api/config/mcp` 退役 import；历史 PRD、superpowers 文档和负向架构断言不作为运行入口 |
+| Package 边界 | 7 个仓内 Package 各有唯一 `plugin:apply`；未发现反向 import Host Runtime/Repository/Composition 私有实现；`ftre.plugins.builtin.command` 是现有公开 CommandService 入口，未判定为私有 Owner 侵入 |
+| 生命周期 | Plugin/Fiber、Hook Receipt、后台 Task、WS/HTTP 路由均由 Composition/Provider/Plugin Effect 管理；专项 lifecycle、startup 和 unload/restart 测试通过 |
+| 死透传 | 删除 AgentLoop/runtime provider 与 WebSocket Channel 中从未读取的 `plugin_manager` 参数、字段和 Context 注入；Composition 仍保留并拥有 PluginManager 生命周期 |
+| Kernel 业务判断 | 删除 Loader 根据 `http`/`websocket` Plugin id 推断 `restart_required` 的分支；Host 表面变化继续由 `HttpService` 自己拥有和报告 |
+| 保留项 | Core 测试 fake 的 legacy event shim、Session/Inbox 一次性数据迁移、异常/PATH fallback 仍有实际消费者，不删除 |
+
+### 本次改动
+
+- `plugin_manager` 不属于 Agent Turn 或 WebSocket Channel 的运行时依赖，移除 7 个源码/测试位置的
+  16 行死透传，并新增架构门禁防止回归。
+- `PluginStatus.restart_required` 是旧 Loader 对 Host 路由的业务猜测，实际没有生产消费者；删除该字段和
+  `http`/`websocket` id 判断，避免 Kernel 识别产品 Plugin。`HttpService.restart_required` 保持不变。
+- F14 执行表同步移除已不存在的 Agent `plugin_manager` inject 依赖；历史设计稿未改写。
+
+### 验证与静态门禁
+
+```text
+Core: python -B -m pytest -q -p no:cacheprovider                 -> 261 passed
+ftre: python -B -m pytest -x -vv -p no:cacheprovider              -> 568 passed
+两仓库 ruff check --no-cache                                    -> All checks passed
+ftre git diff --check                                             -> passed
+vulture (Core / ftre + 7 Package src, confidence >= 90)          -> 无输出
+Manifest / provide / retired import AST 扫描                     -> id 唯一、provide 无重复、退役 import=0
+wheel (Core、Host、7 Package；无 tests/pyc/cache)                 -> 全部构建成功
+```
+
+第一次安静全量运行出现一次不可复现的早期失败且进程未正常收尾；未以该结果宣称通过，随后用 `-x -vv`
+  完整重跑，568 项全部通过。该过程没有修改或重启后端服务。
+
+### 生成物与最终状态
+
+- wheel 构建在 `C:\Users\蒋全明\AppData\Local\Temp\ftre-refactor-cleanup-*` 的临时目录完成；
+  未将 wheel、build、egg-info、缓存写入交付内容。
+- 最终清理仅针对两个仓库内本次测试/构建产生的 `__pycache__`、`.pyc`、`.pytest_cache`、`.ruff_cache`、
+  `build`、`dist`、`*.egg-info` 和空的 `build/bdist.win-amd64` 目录；不触碰 `.git`、`node_modules`、
+  `data`、`.ftre` 或用户 Session 数据。
+- 按仓库规则本次不擅自 commit；因此 ftre 工作树保留本次 7 个文件的代码、测试和报告修改，Core 工作树
+  保持干净。下一步如需交付，应在新的 refactor 提交/PR 中提交这些改动。

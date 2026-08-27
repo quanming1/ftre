@@ -4,12 +4,12 @@ from types import SimpleNamespace
 import pytest
 from cordis import Context, FiberState
 from fastapi import APIRouter
+from ftre_agent import AgentRegistry, AgentSubject
 from ftre_agent_core.event import HintBlockEvent
 from ftre_agent_core.tool import Tool, ToolRegistry
 
 from ftre.kernel.hooks import HookRuntime
-from ftre.services.agent.hooks import AgentSubject
-from ftre.services.agent.registry import AgentRegistry
+from ftre.plugins.builtin.core_tools import create_read_tool
 from ftre.services.attachment import AttachmentService
 from ftre.services.http.service import HttpService
 from ftre.services.system_prompt.hooks import (
@@ -19,9 +19,7 @@ from ftre.services.system_prompt.hooks import (
 from ftre.services.system_prompt.service import SystemPromptService
 from ftre.services.system_prompt.types import PromptSection
 from ftre.services.tools import ToolService
-from ftre.services.tools.builtin import build_default_tools
-from ftre.services.tools.builtin._workspace import WorkspaceAccessor
-from ftre.services.tools.builtin.read import create_read_tool
+from ftre.services.workspace.accessor import WorkspaceAccessor
 
 
 def _dummy_tool(name: str = "dummy") -> Tool:
@@ -37,12 +35,6 @@ def test_tool_registry_overwrites_duplicate_names():
     registry.register(_dummy_tool("dup"))
     assert len(registry) == 1
     assert registry.get("dup") is not None
-
-
-def test_build_default_tools_includes_registry_tools():
-    registry = ToolRegistry()
-    registry.register(_dummy_tool("extra"))
-    assert "extra" in build_default_tools(tool_registry=registry).names
 
 
 def test_read_tool_reads_relative_image_path(tmp_path):

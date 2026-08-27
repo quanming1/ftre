@@ -20,10 +20,10 @@ send_message 工具 - 向另一个 session 发送一条消息
 import asyncio
 import uuid
 
+from ftre_agent import InboundMessage
 from ftre_agent_core.message import AssistantMsg
 from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
-from ftre.services.agent.contracts import InboundMessage
 from ftre.services.messaging.bus import BusMessage
 from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
 

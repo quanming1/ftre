@@ -6,17 +6,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 from cordis import Context
-from ftre_compaction.plugin import apply
-
-from ftre.kernel.hooks import HookRuntime
-from ftre.plugins.builtin.command import CommandService
-from ftre.services.agent.hooks import (
+from ftre_agent import (
     AGENT_RUN_ERROR_SPEC,
+    AgentRegistry,
     AgentSubject,
     RequestErrorPayload,
     RetryRequest,
 )
-from ftre.services.agent.registry import AgentRegistry
+from ftre_compaction.plugin import apply
+
+from ftre.kernel.hooks import HookRuntime
+from ftre.plugins.builtin.command import CommandService
 from ftre.services.messaging.bus import BusMessage, InboundMetadata
 
 
@@ -49,6 +49,7 @@ async def test_compaction_service_and_feature_hooks_register_separately():
     runtime = HookRuntime(context)
     context.provide("hook_runtime", runtime)
     context.provide("config", _Config())
+    context.provide("llm", object())
     context.provide("sessions", _Sessions())
     context.provide("session_events", _SessionEvents())
     context.provide("inbox", object())
@@ -67,6 +68,7 @@ async def test_overflow_hook_retries_only_after_generation_advances():
     runtime = HookRuntime(context)
     context.provide("hook_runtime", runtime)
     context.provide("config", _Config())
+    context.provide("llm", object())
     context.provide("sessions", _Sessions())
     context.provide("session_events", _SessionEvents())
     context.provide("inbox", object())
@@ -120,6 +122,7 @@ async def test_compaction_service_effect_cancels_inflight_tasks_on_unload():
     runtime = HookRuntime(context)
     context.provide("hook_runtime", runtime)
     context.provide("config", _Config())
+    context.provide("llm", object())
     context.provide("sessions", _Sessions())
     context.provide("session_events", _SessionEvents())
     context.provide("inbox", object())
@@ -142,6 +145,7 @@ async def test_compaction_commands_execute_directly_without_turn():
     commands = CommandService()
     context.provide("hook_runtime", runtime)
     context.provide("config", _Config())
+    context.provide("llm", object())
     context.provide("sessions", _Sessions())
     context.provide("session_events", _SessionEvents())
     context.provide("inbox", object())

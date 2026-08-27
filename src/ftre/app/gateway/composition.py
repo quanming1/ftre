@@ -36,11 +36,14 @@ def default_manifests() -> list[PluginManifest]:
         # 按依赖顺序排列：config 是配置事实源，filesystem 是 IO 策略，
         # http 提供路由注册表，其余服务依次建立在它们之上。
         PluginManifest("config", "ftre.services.config.plugin:apply", "builtin", True, True, description="root configuration"),
+        PluginManifest("llm-service", "ftre.services.llm.plugin:apply", "builtin", True, True, description="unified LLM service"),
+        PluginManifest("llm-providers", "ftre_llm.adapters.plugin:apply", "builtin", True, True, description="OpenAI LLM protocol adapters"),
         PluginManifest("filesystem", "ftre.services.filesystem.plugin:apply", "builtin", True, True, description="path policy and atomic IO"),
         PluginManifest("http-service", "ftre.services.http.plugin:apply", "builtin", True, True, description="route contribution registry"),
         PluginManifest("system-prompt", "ftre.services.system_prompt.plugin:apply", "builtin", True, True, description="prompt section registry"),
         PluginManifest("message-bus", "ftre.services.messaging.bus.plugin:apply", "builtin", True, True, description="business message plane"),
         PluginManifest("tools", "ftre.services.tools.plugin:apply", "builtin", True, True, description="scoped tool registry"),
+        PluginManifest("core-tools", "ftre.plugins.builtin.core_tools.plugin:apply", "builtin", True, True, description="core built-in tools"),
         PluginManifest("agent-profiles", "ftre.services.agent.profile.plugin:apply", "builtin", True, True, description="agent profile merge"),
         PluginManifest("sessions", "ftre.services.session.plugin:apply", "builtin", True, True, description="session persistence service"),
         PluginManifest("commands", "ftre.plugins.builtin.command.plugin:apply", "builtin", True, True, description="command registry"),
@@ -51,9 +54,11 @@ def default_manifests() -> list[PluginManifest]:
         # MCP Service；Trace 是独立观察能力，失败不能阻断基础 Agent。
         PluginManifest("mcp", "ftre.plugins.builtin.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
         PluginManifest("traces", "ftre.plugins.builtin.trace.plugin:apply", "builtin", False, True, description="trace persistence"),
-        # Agent Provider 同时发布 agents 和私有执行 Runtime；Inbox 在它之后
+        PluginManifest("tool-audit", "ftre.plugins.builtin.tool_audit.plugin:apply", "builtin", False, True, description="tool call audit log"),
+        # Agent Runtime Package 同时发布 agents 契约 Service 和私有执行 Runtime；
+        # Host 不再拥有 AgentLoop 实现，只加载该 entry point。Inbox 在它之后
         # 接管 pending/worker。Inbox 只提供队列，不注册依赖它的业务 Tool。
-        PluginManifest("agents", "ftre.services.agent.plugin:apply", "builtin", True, True, description="agent service and private runtime"),
+        PluginManifest("agents", "ftre_agent_runtime.plugin:apply", "builtin", True, True, description="agent service and private runtime"),
         # 当前 Gateway 的基础数据面必须有 Inbox；缺失时由 required Plugin 门禁
         # 直接失败，不允许启动一个没有队列行为的半成品 Host。
         PluginManifest("inbox", "ftre_inbox.plugin:apply", "builtin", True, True, description="durable inbox queue"),
@@ -69,6 +74,8 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("messaging", "ftre_messaging.plugin:apply", "builtin", False, True, description="cross-session messaging tools"),
         PluginManifest("task", "ftre_task.plugin:apply", "builtin", False, True, description="subagent task tools"),
         PluginManifest("team", "ftre_team.plugin:apply", "builtin", False, True, description="team collaboration tools"),
+        PluginManifest("llm-recovery", "ftre_llm_recovery.plugin:apply", "builtin", False, True, description="LLM retry policy"),
+        PluginManifest("llm-fallback", "ftre_llm_fallback.plugin:apply", "builtin", False, True, description="last-attempt LLM fallback"),
         # ── 产品行为与适配器 Plugin（可选）──
         # 这些 Plugin 只消费上面的公开 Service key，不访问私有实现；
         # required=False 表示能力缺失（如 MCP 未配置）不应阻止 Gateway 启动。
@@ -140,9 +147,6 @@ async def build_composition(
             context.provide(name, value)
     # 装载全部内置 Plugin + 扫描外部插件目录；config 作为装载参数传给每个 apply()
     manager = PluginManager(context, plugins_dir=plugins_dir)
-    # PluginManager is itself a kernel capability.  The runtime Provider Plugin
-    # receives this same manager through Context instead of bootstrap wiring it.
-    context.provide("plugin_manager", manager)
     await manager.load(default_manifests(), config)
     # 组装完成：封装句柄；路由已由各自 Provider/Feature Plugin 贡献。
     composition = Composition(context=context, plugins=manager, config=config)
