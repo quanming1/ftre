@@ -1,5 +1,5 @@
-"""cron Agent Tool contributed by the Schedule Feature."""
-# Cron Agent Tool：把模型参数转换为 ScheduleService 调用，工具层不接触 Store 文件格式。
+"""cron Agent ToolDefinition contributed by the Schedule Feature."""
+# Cron Agent ToolDefinition：把模型参数转换为 ScheduleService 调用，工具层不接触 Store 文件格式。
 # 关键约束：cron/subagent 内部触发的会话禁止使用本工具（防循环创建/修改任务）。
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import uuid
 from typing import Any
 
 from croniter import croniter
-from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
 
 from .service import ScheduleService
 
@@ -31,8 +31,8 @@ disabled=true 时调度器会跳过该任务（保留任务定义和历史，可
 """
 
 
-def build_cron_tool(schedule: ScheduleService) -> Tool:
-    """Build a Tool bound to one ScheduleService instance."""
+def build_cron_tool(schedule: ScheduleService) -> ToolDefinition:
+    """Build a ToolDefinition bound to one ScheduleService instance."""
     # caller_channel 由 AgentLoop 注入：用于识别触发来源，阻止内部会话滥用 cron
     def cron(
         action: str,
@@ -129,7 +129,7 @@ def build_cron_tool(schedule: ScheduleService) -> Tool:
             return f"已更新 {job_id}"
         return f"[error] 未知 action: {action}（支持 create/list/delete/update）"
 
-    return Tool(
+    return ToolDefinition(
         name="cron",
         description=CRON_TOOL_DESCRIPTION,
         parameters=[

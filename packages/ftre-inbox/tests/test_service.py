@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 from cordis import Context
-from ftre_agent import InboundMessage
 from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, RejectClaim
+from ftre_inbox.protocol import InboundMessage
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
 

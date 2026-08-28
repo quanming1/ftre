@@ -205,3 +205,4 @@ tool_call: session_id=... agent_id=... turn_id=... call_id=... name=... status=c
 | 2026-08-26 | 定稿并转入开发中：用户确认按草稿执行；plan 工具实现随 Owner 迁至 plugins/builtin/plan/（FR1 补充，目录删除前置条件） | 用户确认开始执行；FR9 删除 builtin/ 目录要求 plan.py 一并迁入其 Owner Plugin |
 | 2026-08-26 | 验收定稿：AC1-AC9 全部通过（全量 649 passed、专项 233、ruff、diff check、Gateway smoke 48771 health ok） | PROCESS.md 六步闭环验证→收尾；push/PR 待用户指示 |
 | 2026-08-26 | 审查修正（round 2）：① execute(agent_id) 从仅校验可见性改为执行作用域投影（scoped shadow 覆盖 global、支持 scoped-only 工具）；② global 贡献卸载在同名 scoped shadow 存在时不再跳过 _registry 注销（消除可执行残留）；③ FR1-FR9 勾选补齐；④ TODO F34.3 标题按 PRD 非目标修正；⑤ 暂存内容 CRLF 规范化为 LF 使 git diff --cached --check 真实通过。受影响 AC5 已重跑通过 | 用户审查发现：TODO 验收"get/schemas/execute 共享作用域投影"与 FR4 原文仅校验不一致；卸载残留违反生命周期语义；PRD 勾选/TODO 标题/--cached 检查三处文档失实 |
+| 2026-08-28 | F36 立项：保留 ToolService 唯一管理面，将 Core `ToolRegistry` 替换为 `ToolView`/Service 私有索引；F36.4 为 F34 的后续细化 | 消除 Host ToolService 对 Core Registry 的最后实现耦合 |

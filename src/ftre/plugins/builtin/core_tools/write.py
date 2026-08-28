@@ -1,7 +1,7 @@
 """
 write 工具 - 写入/覆盖文件
 """
-from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
 
 from ftre.services.workspace.accessor import WorkspaceAccessor
 
@@ -10,7 +10,7 @@ from ._io import _NEWLINE_LABEL, read_text, write_text_new, write_text_preservin
 from .read import _resolve
 
 
-def create_write_tool() -> Tool:
+def create_write_tool() -> ToolDefinition:
     """创建 write 工具（覆盖写入整个文件）
 
     行为：
@@ -55,7 +55,7 @@ def create_write_tool() -> Tool:
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] {type(e).__name__}: {e}"
 
-    return Tool(
+    return ToolDefinition(
         name="write",
         description=(
             "创建新文件或覆盖现有文件。相对路径基于当前会话的工作区目录。\n"

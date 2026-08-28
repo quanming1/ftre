@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from ftre_agent_core.message import Msg
+from ftre_agent.message import Msg
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CURRENT_SCHEMA_VERSION = 1

@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-from cordis import Context
-
 from .openai_completions import OpenAICompletionsAdapter
 from .openai_responses import OpenAIResponsesAdapter
 
@@ -17,7 +15,7 @@ inject = ("llm",)
 provide = ()
 
 
-def apply(ctx: Context, config=None):
+def apply(ctx, config=None):
     """注册 OpenAI 两种 wire 协议，并把每个句柄绑定到当前 Fiber。"""
 
     del config

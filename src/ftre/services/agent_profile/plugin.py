@@ -27,7 +27,7 @@ def apply(ctx: Context, config=None):
         service = AgentProfileService(manager, sessions=ctx.sessions)
         ctx.provide("agent_profiles", service)
 
-    from ..router import build_router
+    from .router import build_router
 
     disposer = ctx.http.register_router(build_router(service), owner="agent-profiles")
     ctx.effect(lambda: disposer, label="http:agent-profiles")

@@ -95,7 +95,7 @@ SessionLane.take → execute → _advance → _command → _build → [before_me
 ### 4.1 持久化与事件顺序
 
 1. `_command` 先将原始 inbound 写成 UserMsg（metadata.request_id），再执行普通命令或进入 BUILDING。
-2. `SessionProjection` 接收 Reply/CustomEvent：ReplyStart、完整 block、tool call/result、模型调用结束和 HITL 确认边界立即 checkpoint；高频 delta 允许节流写盘。
+2. `SessionProjection` 接收 Agent Reply 事件；Pipeline 与维护事件分别由 Host typed event sink 处理。ReplyStart、完整 block、tool call/result、模型调用结束和 HITL 确认边界立即 checkpoint；高频 delta 允许节流写盘。
 3. `AgentLoop.emit_session_event` 遵循“Projection 落盘成功 → EventBus outbound 广播”；客户端实时事件不是历史事实源。
 4. `REPLY_END` 或取消/异常收尾后，SessionProjection 将 assistant Msg 写成终态；TurnExecutor 返回 `TurnOutcome`，SessionLane 再完成 request waiter 并推进 mailbox revision。
 

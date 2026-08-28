@@ -1,8 +1,6 @@
-"""StreamChunk —— ftre LLM 流协议（从 Agent Core 迁移的协议 Owner）。
+"""StreamChunk —— ftre LLM 流协议的唯一协议 Owner。
 
-这份协议代码从 ``ftre-agent-core.llm.events`` 迁入，今后由 ftre-llm 维护。
-Core 目前仍保留自己的旧副本，直到 Agent Runtime 一并迁出；两套类型不能
-混用，所以旧 Core Agent 的过渡适配只允许存在于 Host，不得进入本 Package。
+这份协议代码由 `ftre-llm` Package 维护；Runtime 只消费这里的协议对象。
 
 协议契约（适配器必须遵守，BlockAssembler 校验）：
 

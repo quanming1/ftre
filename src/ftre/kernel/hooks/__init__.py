@@ -4,7 +4,7 @@
 个很薄的适配层：
 
 ``HookSpec`` / ``HookMode`` / ``HookScope``
-    来自 ``ftre-agent-core``，描述一个 Hook 的名字、调用方式和作用域。
+    来自 ``ftre-agent``，描述一个 Hook 的名字、调用方式和作用域。
 ``HookRuntime``
     负责把监听器注册到 Cordis Context，并在触发时选择 Cordis 的事件调度模式。
 ``context_for_scope``

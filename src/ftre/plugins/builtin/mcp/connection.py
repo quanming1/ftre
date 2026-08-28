@@ -21,9 +21,8 @@ except ImportError:  # mcp 2.0 起改名为 streamable_http_client
 from .config import McpServerConfig, parse_mcp_config
 
 if TYPE_CHECKING:
-    from ftre_agent_core.tool import ToolRegistry
-
     from ftre.services.attachment import AttachmentService
+    from ftre.services.tools import ToolService
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +165,7 @@ class McpManager:
     """MCP 连接管理器 — 管理所有 MCP 服务器连接、工具注册和配置热重载。
 
     使用方式：
-        mcp_manager = McpManager(tool_registry=tool_registry)
+        mcp_manager = McpManager(tool_service=tool_service)
         await mcp_manager.start_and_register(config_data.get("mcp", {}))
         mcp_manager.start_config_watcher()  # 启动后台监听 config.json 变化
 
@@ -176,14 +175,12 @@ class McpManager:
 
     def __init__(
         self,
-        tool_registry: ToolRegistry | None = None,
+        tool_service: ToolService | None = None,
         attachment_service: AttachmentService | None = None,
-        tool_service=None,
         tool_scope: str = "global",
         tool_owner: str = "mcp",
     ):
         self._connections: dict[str, McpConnection] = {}
-        self._tool_registry = tool_registry
         self._tool_service = tool_service
         self._tool_scope = tool_scope
         self._tool_owner = tool_owner
@@ -329,7 +326,7 @@ class McpManager:
 
     async def _register_tools(self) -> None:
         """刷新当前作用域的 MCP 工具，并绑定可逆的 ToolService disposer。"""
-        if self._tool_registry is None and self._tool_service is None:
+        if self._tool_service is None:
             return
         self._dispose_registered_tools()
         from .adapter import build_mcp_tools
@@ -344,8 +341,6 @@ class McpManager:
                     source="mcp",
                 )
                 self._tool_disposers.append(disposer)
-            else:
-                self._tool_registry.register(tool)
             self._registered_tool_names.add(tool.name)
         logger.info(f"[mcp] 注册 {len(mcp_tools)} 个 MCP 工具")
 
@@ -357,9 +352,6 @@ class McpManager:
             except Exception:
                 logger.debug("[mcp] tool disposer failed", exc_info=True)
         self._tool_disposers.clear()
-        if self._tool_registry is not None:
-            for name in self._registered_tool_names:
-                self._tool_registry.unregister(name)
         self._registered_tool_names.clear()
 
     @property

@@ -9,7 +9,7 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
 
 from ftre.services.workspace.accessor import WorkspaceAccessor
 
@@ -284,7 +284,7 @@ def _semble_hints() -> str:
     )
 
 
-def create_bash_tool(default_timeout: int = 60, max_timeout: int = 3600) -> Tool:
+def create_bash_tool(default_timeout: int = 60, max_timeout: int = 3600) -> ToolDefinition:
     """创建 bash 工具
 
     cwd 由当前会话的 workspace 字段承载（sessions 表）。纯 cd 命令会持久切换
@@ -370,7 +370,7 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 3600) -> Tool
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] {type(e).__name__}: {e}"
 
-    return Tool(
+    return ToolDefinition(
         name="bash",
         description=(
             "执行 shell 命令并返回输出。\n"

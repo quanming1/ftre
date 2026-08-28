@@ -11,7 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from ftre_agent_core.tool import Tool
+from ftre_agent.tool import ToolDefinition
 
 from ftre.plugins.builtin.mcp.adapter import (
     _convert_parameters,
@@ -255,7 +255,7 @@ class TestConvertParameters:
 @pytest.mark.asyncio
 async def test_private_agent_mcp_is_loaded_into_agent_scope(monkeypatch):
     """Merged profile config must activate private MCP and expose scoped tools."""
-    global_tool = Tool(name="mcp__global__search", description="search", func=lambda: "ok")
+    global_tool = ToolDefinition(name="mcp__global__search", description="search", func=lambda: "ok")
 
     class _GlobalManager:
         attachment_service = None
@@ -318,7 +318,7 @@ async def test_private_agent_mcp_is_loaded_into_agent_scope(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_agent_mcp_scope_can_hide_disabled_global_server():
-    global_tool = Tool(name="mcp__global__search", description="search", func=lambda: "ok")
+    global_tool = ToolDefinition(name="mcp__global__search", description="search", func=lambda: "ok")
 
     class _GlobalManager:
         attachment_service = None
@@ -349,7 +349,7 @@ async def test_agent_mcp_scope_can_hide_disabled_global_server():
 
 @pytest.mark.asyncio
 async def test_mcp_manager_registers_and_disposes_scoped_tools(monkeypatch):
-    tool = Tool(name="mcp__private__search", description="search", func=lambda: "ok")
+    tool = ToolDefinition(name="mcp__private__search", description="search", func=lambda: "ok")
     tools = ToolService()
     manager = McpManager(
         tool_service=tools,

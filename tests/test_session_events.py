@@ -64,3 +64,60 @@ async def test_steering_retry_reuses_stable_message_id():
     second = sessions.upsert_message.await_args_list[1].args[1]
     assert first.id == second.id
     assert first.id.startswith("user_")
+
+
+@pytest.mark.asyncio
+async def test_user_message_boundary_carries_run_and_previous_assistant_id():
+    sessions = AsyncMock()
+    projection = SessionProjection(sessions)
+    bus = AsyncMock(spec=EventBus)
+    service = SessionEventService(
+        SimpleNamespace(projection=projection),
+        MessageBusService(bus=bus),
+    )
+
+    await service.emit_user_message_if_absent(
+        "session-steer",
+        "ws",
+        request_id="request-boundary",
+        content="插入",
+        run_id="turn-1",
+        previous_assistant_message_id="assistant-1",
+    )
+
+    event = bus.publish_outbound.await_args.args[0]
+    assert event.data["data"]["run_id"] == "turn-1"
+    assert event.data["data"]["previous_assistant_message_id"] == "assistant-1"
+    assert event.data["type"] == "USER_MESSAGE"
+
+
+@pytest.mark.asyncio
+async def test_host_pipeline_event_uses_session_topic_without_agent_projection():
+    sessions = AsyncMock()
+    projection = SessionProjection(sessions)
+    bus = AsyncMock(spec=EventBus)
+    service = SessionEventService(
+        SimpleNamespace(projection=projection),
+        MessageBusService(bus=bus),
+    )
+
+    await service.emit_pipeline(
+        "session-1",
+        "ws",
+        "TURN_END",
+        {"reason": ""},
+        reply_id="turn-1",
+    )
+
+    event = bus.publish_outbound.await_args.args[0]
+    assert event.type == "session_event"
+    assert event.data.model_dump(mode="json") == {
+        "type": "PIPELINE_EVENT",
+        "name": "TURN_END",
+        "value": {"reason": ""},
+        "reply_id": "turn-1",
+        "id": event.data.id,
+        "created_at": event.data.created_at,
+        "metadata": {},
+    }
+    sessions.projection.apply.assert_not_awaited()

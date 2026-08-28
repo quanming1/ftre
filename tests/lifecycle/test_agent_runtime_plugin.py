@@ -6,13 +6,14 @@ from ftre.app.gateway.composition import build_composition
 
 
 @pytest.mark.asyncio
-async def test_agent_service_owns_private_runtime_and_detaches_on_close(tmp_path) -> None:
+async def test_agent_service_owner_and_runtime_factory_detach_on_close(tmp_path) -> None:
     composition = await build_composition({"sessions_dir": str(tmp_path / "sessions")})
     agents = composition.context.get("agents")
     assert agents is not None
-    assert agents.runtime is not None
+    assert agents.is_ready()
+    assert agents.factory_name == "ftre-agent-runtime"
     assert composition.context.get("agent_runtime", strict=False) is None
-    assert composition.plugins.loader._manifests.get("agent-runtime") is None
+    assert composition.plugins.loader._manifests.get("agent-runtime") is not None
     # Channel providers are composed by their own Plugins; the Gateway does
     # not need to instantiate or register protocol implementations manually.
     channels = composition.context.get("channels")
@@ -21,8 +22,7 @@ async def test_agent_service_owns_private_runtime_and_detaches_on_close(tmp_path
 
     await composition.close()
 
-    with pytest.raises(RuntimeError, match="runtime is not ready"):
-        _ = agents.runtime
+    assert not agents.is_ready()
 
 
 @pytest.mark.asyncio

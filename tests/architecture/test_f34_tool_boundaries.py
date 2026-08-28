@@ -63,7 +63,6 @@ def test_agent_runtime_does_not_construct_tool_registry_or_import_builtin() -> N
     for path in _python_files(runtime_root):
         source = path.read_text(encoding="utf-8")
         assert "ToolRegistry(" not in source, path
-        assert "from ftre_agent_core.tool import" not in source, path
         assert "ftre.services.tools.builtin" not in source, path
         assert "ftre.plugins.builtin.core_tools" not in source, path
         assert "tools.registry" not in source, path

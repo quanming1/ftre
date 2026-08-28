@@ -5,18 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 from cordis import Context
-from ftre_agent import AGENT_STOP_DECISION_SPEC, AgentRegistry, AgentSubject
-from ftre_agent_core.agent import ReActAgent
-from ftre_agent_core.agent.runner._execute_acting import ExitExecutor
-from ftre_agent_core.agent.runner._state import Exit, RunState
-from ftre_agent_core.agent.runner.tool_handler import ToolHandler
-from ftre_agent_core.hooks import (
-    AGENT_STOP_DECISION_SPEC as CORE_STOP_SPEC,
+from ftre_agent import (
+    AGENT_STOP_DECISION_SPEC,
+    AgentRegistry,
+    AgentSubject,
+    ToolDefinition,
 )
-from ftre_agent_core.hooks import (
-    LLM_STREAM_SPEC as CORE_STREAM_SPEC,
-)
-from ftre_agent_core.hooks import (
+from ftre_agent.hooks import (
     ContinueTurn,
     StopDecisionPayload,
     ToolAfterPayload,
@@ -25,8 +20,10 @@ from ftre_agent_core.hooks import (
     ToolCallIdentity,
     ToolExecutionResult,
 )
-from ftre_agent_core.tool import Tool, ToolRegistry
-from ftre_agent_core.types import ReplyFinishedReason
+from ftre_agent.types import ReplyFinishedReason
+from ftre_agent_runtime import ReActAgent, ToolCallScheduler
+from ftre_agent_runtime.executors.acting import ExitExecutor
+from ftre_agent_runtime.run_state import Exit, RunState
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.services.llm import LLM_STREAM_SPEC
@@ -40,22 +37,21 @@ from ftre.services.system_prompt.types import PromptSection
 from ftre.services.tools import (
     TOOL_AFTER_SPEC,
     TOOL_BEFORE_SPEC,
+    ToolService,
 )
 
 
 @pytest.mark.asyncio
-async def test_ftre_reexports_core_hook_contracts_without_duplicate_owner():
+async def test_ftre_hook_contracts_have_one_public_owner():
     from ftre_agent import StopDecisionPayload as FtreStopPayload
 
     from ftre.services.llm.hooks import LlmStreamPayload as FtreLlmPayload
     from ftre.services.tools.hooks import ToolBeforePayload as FtreToolPayload
 
-    assert AGENT_STOP_DECISION_SPEC is CORE_STOP_SPEC
     assert LLM_STREAM_SPEC.name == "llm/stream"
-    assert LLM_STREAM_SPEC is CORE_STREAM_SPEC
     assert FtreStopPayload is StopDecisionPayload
     assert FtreLlmPayload.__module__ == "ftre_llm.contracts"
-    assert FtreToolPayload.__module__ == "ftre_agent_core.hooks"
+    assert FtreToolPayload.__module__ == "ftre_agent.hooks"
 
 
 @pytest.mark.asyncio
@@ -63,14 +59,15 @@ async def test_core_direct_tool_dispatch_pipeline_uses_cordis_runtime():
     runtime = HookRuntime(Context())
     agent_registry = AgentRegistry()
     agent_registry.ensure("default")
-    registry = ToolRegistry()
     calls: list[str] = []
 
     def echo(value: str) -> str:
         calls.append(value)
         return value
 
-    registry.register(Tool(name="echo", func=echo))
+    tools = ToolService(hook_runtime=runtime)
+    tools.register(ToolDefinition(name="echo", execute=echo), owner="test")
+    view = await tools.prepare_view("default", "session-1")
     seen: list[str] = []
 
     async def before(payload: ToolBeforePayload, next_):
@@ -93,7 +90,8 @@ async def test_core_direct_tool_dispatch_pipeline_uses_cordis_runtime():
         "cancellation": asyncio.Event(),
     }
     state.start()
-    result = await ToolHandler(registry, runtime, context).run_one(
+    scheduler = ToolCallScheduler(view, hooks=runtime, hook_context=context)
+    result = await scheduler.run_one(
         call.call_id,
         call.name,
         {"value": "original"},
@@ -115,7 +113,23 @@ async def test_stop_decision_core_directly_uses_ftre_runtime():
         return ContinueTurn("继续完成剩余工作", source="policy")
 
     runtime.register(AGENT_STOP_DECISION_SPEC, continue_work, owner="policy", all_agent_scopes=True)
-    agent = ReActAgent(model="fake", api_key="fake", hooks=runtime)
+    class EmptyView:
+        names = ()
+
+        def to_openai_tools(self):
+            return []
+
+    class FakeLlm:
+        async def stream(self, _messages, _tools=None):
+            return
+            yield
+
+        def cancel(self):
+            return None
+
+    agent = ReActAgent(
+        model="fake", api_key="fake", hooks=runtime, tool_view=EmptyView(), llm=FakeLlm()
+    )
     state = RunState()
     state.runtime_context = {
         "session_id": "session-1",

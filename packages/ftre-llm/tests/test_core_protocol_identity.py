@@ -1,4 +1,4 @@
-"""验证迁入后的协议由 ftre-llm 自己持有，不反向依赖待退役 Core。"""
+"""验证迁入后的协议由 ftre-llm 自己持有，不反向依赖已退休的旧包。"""
 
 from ftre_llm.events import FinishChunk, TextDeltaChunk
 

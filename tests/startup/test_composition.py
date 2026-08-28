@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from cordis import FiberState
-from ftre_agent_core.tool import ToolRegistry
+from ftre_agent import AgentService
 
 from ftre.app.gateway.bootstrap import start_gateway
 from ftre.app.gateway.composition import build_composition, default_manifests
@@ -45,10 +45,10 @@ async def test_default_composition_has_required_public_services(tmp_path) -> Non
             "sessions": object(),
             "message_bus": MessageBusService(),
             "channels": ChannelService(ChannelManager(EventBus())),
-            "tools": ToolService(ToolRegistry()),
+            "tools": ToolService(),
             "commands": CommandService(),
             "agent_profiles": object(),
-            "agents": object(),
+            "agents": AgentService(),
             "traces": object(),
         },
     )

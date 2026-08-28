@@ -1,10 +1,10 @@
-"""把一次 Core 风格调用接到 ``LlmService``，不转换流事件。
+"""把一次 Runtime 风格调用接到 ``LlmService``，不转换流事件。
 
 Agent Runner 的最小调用形状是 ``stream(messages, tools)``，而 LlmService 需要
 完整的 ``LlmRequest``。这个适配器只负责补齐配置、凭据和运行坐标；Service
 产出的 ``ftre_llm.events.StreamChunk`` 原样返回给调用方。
 
-它不 import ``ftre-agent-core``，因此 LLM Package 仍可独立安装。Core 退役时，
+它不 import ``ftre-agent``，因此 LLM Package 仍可独立安装。Runtime 迁移完成后，
 只要 Agent Runtime 不再需要 ``stream(messages, tools)`` 这个入口，本文件也可
 删除，而不会影响 Provider、Compaction 或 Title。
 """
@@ -18,7 +18,7 @@ from .service import LlmService
 
 
 class LlmServiceAdapter:
-    """将 Core Runner 的调用参数组装为一次公开 LlmService 请求。"""
+    """将 Runtime Runner 的调用参数组装为一次公开 LlmService 请求。"""
 
     def __init__(
         self,

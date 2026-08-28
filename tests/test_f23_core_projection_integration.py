@@ -1,9 +1,9 @@
-"""F23 跨 Core/SessionProjection 的 A→User→B 协议回归。"""
+"""F23 跨 Agent Runtime/SessionProjection 的 A→User→B 协议回归。"""
 
 import pytest
-from ftre_agent_core.agent import ReActAgent
-from ftre_agent_core.event import UserMessageEvent
-from ftre_agent_core.tool import Tool
+from ftre_agent import ToolDefinition
+from ftre_agent.event import UserMessageEvent
+from ftre_agent_runtime import ReActAgent
 from ftre_llm.events import (
     BlockEnd,
     BlockStart,
@@ -14,10 +14,11 @@ from ftre_llm.events import (
 )
 
 from ftre.services.session import SessionService
+from ftre.services.tools import ToolService
 
 
 class TwoStepProvider:
-    """不访问网络的 Core provider：第一步 Tool，第二步文本。"""
+    """不访问网络的 Runtime provider：第一步 Tool，第二步文本。"""
 
     model = "fake-f23"
 
@@ -59,7 +60,7 @@ class SteeringHook:
     async def dispatch(self, spec, payload, *, context=None):
         del context
         if spec.name == "agent/before-reasoning" and payload.iteration == 2:
-            from ftre_agent_core.hooks import BeforeReasoningResult
+            from ftre_agent.hooks import BeforeReasoningResult
 
             return BeforeReasoningResult(({
                 "id": "user-f23",
@@ -72,14 +73,17 @@ class SteeringHook:
 
 @pytest.mark.asyncio
 async def test_core_events_and_session_projection_share_message_id_boundary(tmp_path):
+    tools = ToolService()
+    tools.register(ToolDefinition(name="echo", execute=lambda value: value), owner="test")
+    tool_view = await tools.prepare_view("default", "session-f23")
     agent = ReActAgent(
         model="fake-f23",
         api_key="fake",
+        tool_view=tool_view,
+        llm=TwoStepProvider(),
         hooks=SteeringHook(),
         max_iterations=3,
     )
-    agent.tool_registry.register(Tool(name="echo", func=lambda value: value))
-    agent.runner.set_llm(TwoStepProvider())
     events = [event async for event in agent.run("开始")]
 
     model_message_ids = [

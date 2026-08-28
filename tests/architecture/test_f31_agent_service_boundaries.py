@@ -85,13 +85,13 @@ def _provider_files() -> list[Path]:
 def test_f31_service_provider_entries_have_one_owner() -> None:
     """F31 依赖图必须仍由 Composition + Provider Plugin 唯一声明。"""
     expected = {
-        "agents": "ftre-agent-runtime",
+        "agents": "ftre-agent/src/ftre_agent/plugin.py",
         "sessions": "session",
         "session_events": "session",
         "message_bus": "bus",
         "tools": "tools",
         "system_prompt": "system_prompt",
-        "agent_profiles": "agent/profile",
+        "agent_profiles": "agent_profile",
     }
     owners: dict[str, list[Path]] = {}
     for path in _provider_files():
@@ -112,6 +112,8 @@ def test_f31_service_provider_entries_have_one_owner() -> None:
             "agent_profiles": "agent-profiles",
         }[key]
         assert manifest_id in manifests
+
+    assert manifests["agent-runtime"].entry_text == "ftre_agent_runtime.plugin:apply"
 
 
 def test_f31_manifest_entries_resolve_to_unique_plugin_callables() -> None:
@@ -137,8 +139,8 @@ def test_f32_runtime_dependency_baseline_has_only_public_services() -> None:
     assert "ctx.agent_profiles.manager" not in plugin
 
     engine = (RUNTIME / "engine.py").read_text(encoding="utf-8")
-    for marker in ("channel_manager=None,", "tool_registry: ToolRegistry | None = None,",
-                   "mcp_service=None,", "agent_manager=None,", "self.session_projection ="):
+    for marker in ("channel_manager=None,", "mcp_service=None,", "agent_manager=None,",
+                   "self.session_projection ="):
         assert marker not in engine, marker
     assert "self.message_bus = message_bus" in engine
     assert "self.sessions = sessions" in engine
@@ -192,17 +194,26 @@ def test_f32_runtime_uses_public_bus_and_session_exits() -> None:
     assert "finish_open_replies(" in runtime_sources
 
 
-def test_f32_turn_input_and_core_creation_have_single_owner() -> None:
-    """InboundMessage 和 Core 工厂边界必须保持单向，避免 Runtime 再造协议。"""
+def test_f32_turn_input_and_runtime_creation_have_single_owner() -> None:
+    """RuntimeInput 和 Runtime 工厂边界必须保持单向。"""
     engine = (RUNTIME / "engine.py").read_text(encoding="utf-8")
     turn = (RUNTIME / "turn_executor.py").read_text(encoding="utf-8")
     factory = (RUNTIME / "factory.py").read_text(encoding="utf-8")
-    assert "InboundMessage(" in engine
-    assert "inbound: InboundMessage" in turn
-    assert "self._core_factory(" in turn
+    assert "RuntimeInput(" in engine
+    assert "inbound: RuntimeInput" in turn
+    assert "self._runtime_factory(" in turn
     assert "return ReActAgent(" in factory
     assert "ReActAgent(" not in turn.replace("ReActAgent | None", "")
     assert "or AgentRegistry()" not in engine
+
+
+def test_prompt_assembly_has_single_service_owner() -> None:
+    """Runtime 只消费组装结果，不保留第二个 Prompt 组装入口。"""
+    factory = (RUNTIME / "factory.py").read_text(encoding="utf-8")
+    turn = (RUNTIME / "turn_executor.py").read_text(encoding="utf-8")
+    assert "compose_system_prompt" not in factory
+    assert "compose_system_prompt" not in turn
+    assert "system_prompt = config.system_prompt" in turn
 
 
 def test_f32_llm_hook_callback_does_not_use_context_as_locator() -> None:
@@ -239,7 +250,7 @@ def test_f31_hook_specs_have_unique_names_and_real_owner_contracts() -> None:
     }
     assert AGENT_REQUEST_SPEC.payload_type.__module__ == "ftre_llm.contracts"
     assert LLM_STREAM_SPEC.name == "llm/stream"
-    assert AGENT_STOP_DECISION_SPEC.payload_type.__module__.startswith("ftre_agent_core")
+    assert AGENT_STOP_DECISION_SPEC.payload_type.__module__ == "ftre_agent.hooks"
     assert ADAPTERS_UPDATED_SPEC.mode.value == "emit"
     # F33：Ftre Agent Hook 的唯一 Owner 是契约包 ftre_agent。
     assert AGENT_BEFORE_RUN_SPEC.payload_type.__module__ == "ftre_agent.hooks"
@@ -258,7 +269,7 @@ def test_f31_llm_request_publisher_and_channel_boundary_are_real() -> None:
     )
     assert '"agent/request"' in llm_source
     assert '"agent/request"' not in runtime_sources
-    assert "InboundMessage" in (RUNTIME / "engine.py").read_text(encoding="utf-8")
+    assert "RuntimeInput" in (RUNTIME / "engine.py").read_text(encoding="utf-8")
     # F33：Runtime 经 MessageBusService 窄出口发布状态，不 import BusMessage。
     assert "BusMessage" not in runtime_sources
     assert "publish_session_status(" in (RUNTIME / "engine.py").read_text(encoding="utf-8")

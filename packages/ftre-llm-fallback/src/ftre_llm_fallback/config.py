@@ -17,7 +17,7 @@ class FallbackConfig:
 
     ``provider``/``model`` 是 Host 配置中的逻辑名称，不是直接传给 SDK 的完整配置；
     ``errors`` 是允许接管的主模型错误码；``exclude_errors`` 拥有更高优先级，用来明确
-    排除应该交给 Compaction 或 Core 的错误。
+    排除应该交给 Compaction 或 Runtime 的错误。
     """
 
     provider: str

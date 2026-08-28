@@ -12,11 +12,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from ftre_agent import AgentConfig, InboundMessage
+from ftre_agent import AgentConfig
+
+from .protocol import RuntimeInput
 
 if TYPE_CHECKING:
-    from ftre_agent_core.agent import ReActAgent
-    from ftre_agent_core.event import UserConfirmResultEvent
+    from ftre_agent.event import UserConfirmResultEvent
+
+    from .react_agent import ReActAgent
 
 
 class TurnStatus(str, Enum):
@@ -56,7 +59,7 @@ class Turn:
 
     # ── 身份（execute 入口创建时设置，不可变）──
     turn_id: str  # 本 Turn 唯一标识，作为 reply_id 关联事件
-    inbound: InboundMessage  # 触发本 Turn 的用户消息
+    inbound: RuntimeInput  # 触发本 Turn 的用户消息
     session_id: str  # 所属会话
 
     # ── 当前状态（状态机读写）──

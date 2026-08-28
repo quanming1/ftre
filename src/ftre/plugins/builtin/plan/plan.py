@@ -24,7 +24,7 @@ ON_STOP hook 会检查 session.metadata.plan：
 """
 import asyncio
 
-from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
 
 
 def _run_async(coro, event_loop, timeout: float = 10.0):
@@ -32,7 +32,7 @@ def _run_async(coro, event_loop, timeout: float = 10.0):
     return asyncio.run_coroutine_threadsafe(coro, event_loop).result(timeout=timeout)
 
 
-def create_plan_tool() -> Tool:
+def create_plan_tool() -> ToolDefinition:
     """创建 plan 工具"""
 
     def plan(
@@ -44,7 +44,7 @@ def create_plan_tool() -> Tool:
         status: str = "",
         updates: list | None = None,
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        event_loop=Injected("event_loop"),  # noqa: B008 - ToolDefinition execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
     ) -> str:
         if not session_id or event_loop is None or session_manager is None:
@@ -175,7 +175,7 @@ def create_plan_tool() -> Tool:
         # ── 未知 action ─────────────────────────────────────
         return f"[error] 未知 action: {action}，支持: create / update / complete"
 
-    return Tool(
+    return ToolDefinition(
         name="plan",
         description=(
             "创建和管理结构化执行计划，确保长任务的完整生命周期被跟踪和执行。\n"

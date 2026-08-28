@@ -6,8 +6,9 @@ FTRE is a local-first AI coding assistant. This repository contains its stateful
 Python Gateway: it composes runtime Services and Plugins, owns sessions and
 agent execution, and exposes HTTP/WebSocket APIs to the desktop client.
 
-The stateless algorithm layer lives in `ftre-agent-core`; the desktop and docs
-projects are separate repositories and are outside the scope of this backend.
+The stateless Agent contracts and runtime live in the in-repository
+`packages/ftre-agent` and `packages/ftre-agent-runtime` packages. The former
+`ftre-agent-core` repository is retired and is not a runtime dependency.
 
 ## Architecture at a glance
 
@@ -36,10 +37,10 @@ and owns the reversible shutdown path.
 | Kernel Runtime | `src/ftre/kernel/plugins/` | Manifest validation, installed entry point discovery, Cordis loading, status and failure diagnostics |
 | App Host | `src/ftre/app/` | Process boundaries only: CLI, Gateway bootstrap, FastAPI and uvicorn |
 
-`services/agent/runtime/` is the private implementation behind the single
-`agents` Service. It is not a second Service or Plugin entry point. Plugin
-entries use `module:attribute` and normally point to an `apply(ctx, config)`
-function.
+`ftre-agent-runtime` is the private implementation behind the single `agents`
+Service. It is loaded through its Provider Plugin and is not a second Service
+entry point. Plugin entries use `module:attribute` and normally point to an
+`apply(ctx, config)` function.
 
 ## Repository tree
 
@@ -61,8 +62,8 @@ ftre/
 │     ├─ services/                 # public stable runtime capabilities
 │     │  ├─ config/ filesystem/ http/
 │     │  ├─ messaging/{bus,channel}/
-│     │  ├─ session/ agent/ tools/ workspace/
-│     │  ├─ attachment/ agent/runtime/
+│     │  ├─ session/ tools/ workspace/
+│     │  ├─ agent_profile/ attachment/
 │     │  └─ system_prompt/
 │     ├─ plugins/builtin/          # product behavior + adapters
 │     │  ├─ command/ trace/ session_title/
@@ -118,13 +119,13 @@ after its manifest is explicitly enabled in `~/.ftre/config.json`:
 Channel → MessageBus → messaging/inbound Hook
                          ├─ Command Plugin → CommandResult（不创建 Turn）
                          ├─ Inbox Package → pending → claim
-                         └─ AgentService.run(InboundMessage) → Agent Runtime → core
+                         └─ AgentService.run(RuntimeInput) → ftre-agent-runtime
 
 Context compaction is optional: when `ftre-compaction` is explicitly enabled,
-its Service owns the `inbox/before-claim`/`agent/after-turn` gates and overflow recovery. The core
-ftre-inbox owns pending/worker/claim; AgentService only executes an already
-admitted InboundMessage. Compaction remains optional and does not belong to the
-queue or Core Agent implementation.
+its Service owns the `inbox/before-claim`/`agent/after-turn` gates and overflow recovery. The
+`ftre-inbox` package owns pending/worker/claim; AgentService only executes an already
+admitted RuntimeInput. Compaction remains optional and does not belong to the
+queue or Agent Runtime implementation.
 ```
 
 Different sessions run concurrently. A session has at most one active turn;
@@ -163,7 +164,7 @@ workflow and `docs/COMMIT.md` for commit conventions.
 
 ## Related repositories
 
-- [ftre-agent-core](https://github.com/quanming1/ftre-agent-core) — stateless Agent/LLM/Tool core
+- `packages/ftre-agent` + `packages/ftre-agent-runtime` — stateless Agent contracts and runtime
 - [ftre-desktop](https://github.com/quanming1/ftre-desktop) — Electron + React client
 - [ftre-docs](https://github.com/quanming1/ftre-docs) — documentation site
 

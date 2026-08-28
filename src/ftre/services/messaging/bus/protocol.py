@@ -9,7 +9,7 @@ Inbound（外部 → Bus → Agent）：
     metadata : InboundMetadata  请求/执行标记（request_id、agent_id、agent_ref）
 
 Outbound（Agent → Bus → 外部）：
-    data     : dict             事件 dump（core Event 形状，由 ftre-agent-core 定义）
+    data     : dict             事件 dump（Agent Event 形状，由 ftre-agent 定义）
     metadata : OutboundMetadata 序列化到 ws 帧时由 InboundMetadata 透传字段
                                 + channel_id/session_id 组成
 

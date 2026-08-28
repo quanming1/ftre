@@ -29,6 +29,9 @@ class _SessionEvents:
     async def emit(self, *_args, **_kwargs):
         return None
 
+    async def emit_maintenance(self, *_args, **_kwargs):
+        return None
+
 
 class _Config:
     """最小 ConfigService 替身：插件只需要读取 snapshot。"""

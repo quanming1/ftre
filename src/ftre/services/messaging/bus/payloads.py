@@ -1,6 +1,6 @@
 """Gateway 自有 Bus Payload 模型。
 
-核心 Agent 事件仍由 ``ftre-agent-core`` 定义；本模块只约束 Gateway
+核心 Agent 事件由 ``ftre-agent`` 定义；本模块只约束 Gateway
 自己拥有的 session/global 协议，避免业务代码继续拼接裸字典。
 """
 

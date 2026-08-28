@@ -57,4 +57,4 @@ def test_business_packages_do_not_import_private_host_owners() -> None:
             source = path.read_text(encoding="utf-8")
             assert "ftre.services.tools.builtin" not in source, path
             assert "ftre.services.agent.runtime" not in source, path
-            assert "ftre.services.agent.profile import sub_agent" not in source, path
+            assert "ftre.services.agent_profile import sub_agent" not in source, path

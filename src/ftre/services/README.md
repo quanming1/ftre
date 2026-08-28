@@ -26,16 +26,16 @@ Composition Root 通过 Provider Plugin 创建和销毁。
 | `channels` | `messaging/channel/service.py` | Channel 注册、启动/停止和发送 | WebSocket、Subagent、Cron |
 | `sessions` | `session/service.py` | Session 身份、Msg 历史和 Session 元数据的唯一持久化入口 | AgentLoop、Workspace、Command |
 | `session_events` | `session/events.py` | 将可选 Feature 事件接入 SessionProjection | AgentLoop Provider、Feature |
-| `agents` | `agent/service.py` | Agent 身份、状态和公开数据面 Driver | HTTP/WS、AgentLoop Provider |
-| `agent_profiles` | `agent/profile/service.py` | Agent 配置文件的 CRUD 与解析 | Agent、MCP、Tools |
+| `agents` | `packages/ftre-agent` + Runtime Provider | Agent 身份、状态和公开数据面 | HTTP/WS、Agent Runtime Provider |
+| `agent_profiles` | `agent_profile/service.py` | Agent 配置文件的 CRUD 与解析 | Agent Runtime、MCP、Tools |
 | `tools` | `tools/service.py` | 全局工具、Agent scoped 工具和 allow/deny 视图 | AgentLoop、Tool Feature |
 | `workspaces` | `workspace/service.py` | Session 工作区选择和 `PathPolicy` 构造 | Tools、Workspace API |
 | `attachments` | `attachment/service.py` | 请求附件的安全保存、读取和 MIME 判断 | WebSocket、HTTP |
 | `system_prompt` | `system_prompt/service.py` | 有序、按 scope 的 Prompt section 组装 | AgentLoop、Prompt Feature |
 | `traces` | `plugins/builtin/trace/service.py` | Agent trace 的 SQLite 查询门面 | Trace Plugin、诊断工具 |
 
-`services/agent/runtime/` 是 AgentService 的私有执行实现；它不是独立 Service。唯一公开
-的 Agent key 是 `agents`，HTTP/WS 和 Plugin 只依赖这个 Service，不会拿到 Loop/Executor。
+`ftre-agent-runtime` 是 AgentService 的私有执行实现；它不是独立 Service。唯一公开的
+Agent key 是 `agents`，HTTP/WS 和 Plugin 只依赖这个 Service，不会拿到 Loop/Executor。
 
 ## 一条消息如何经过这些 Service
 
@@ -45,7 +45,7 @@ Channel
   → AgentService（内部 Runtime）
   → ftre-inbox.InboxService
   → SystemPromptService + ToolService
-  → ftre-agent-core / LLM
+  → ftre-agent-runtime / ftre-llm
   → SessionEventService + SessionService 持久化投影
   → MessageBusService.publish_outbound()
   → ChannelService / Channel

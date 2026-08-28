@@ -1,22 +1,22 @@
-"""ftre-agent-runtime 的唯一 Provider Plugin。
+"""ftre-agent-runtime 的 Runtime Provider Plugin。
 
-它同时创建公开的 ``agents`` Service（来自 ftre-agent 契约包）和私有执行
-Runtime，并把两者绑定到同一个 Fiber；Runtime 没有第二个 Context key，避免
-AgentService 与 AgentLoop 形成两个可见 Owner。
+它只创建私有 AgentLoop，并把 Loop 注册为已经存在的 ``agents`` Service 的
+Runtime Factory。公开 AgentService 由 ``ftre-agent.plugin`` 唯一提供。
 
 Host Service 依赖全部通过 ``inject`` 声明后由 Cordis 注入；``attachments`` 与
 ``traces`` 是可选能力，由本 Provider 显式解析后传入，Runtime 代码自身不调用
-``ctx.get()``（PRD-F33 §5.2）。
+``ctx.get()``（PRD-F35.1）。
 """
 
 from __future__ import annotations
 
 from cordis import Context
-from ftre_agent import AgentService
 
 from .engine import AgentLoop
+from .runtime_factory import AgentLoopFactory
 
 inject = (
+    "agents",
     "config",
     "agent_profiles",
     "sessions",
@@ -28,18 +28,12 @@ inject = (
     "session_events",
     "llm",
 )
-provide = ("agents",)
+provide = ()
 
 
 def apply(ctx: Context, config=None):
-    """创建 AgentService、私有 Runtime 并把两者绑定到同一个 Fiber。"""
-    if ctx.get("agents", strict=False) is not None:
-        return
-
-    service = AgentService()
-    # 先 provide 公开 Service，再把同一实例显式传给私有 Runtime；不通过
-    # Context 反查自己，也不向外发布第二个 Runtime Service 句柄。
-    ctx.provide("agents", service)
+    """创建私有 Runtime，并注册到 AgentService 的唯一 Factory 槽位。"""
+    service = ctx.agents
     loop = AgentLoop(
         message_bus=ctx.message_bus,
         sessions=ctx.sessions,
@@ -55,11 +49,14 @@ def apply(ctx: Context, config=None):
         session_events=ctx.session_events,
         llm_service=ctx.llm,
     )
-    service.attach_runtime(loop)
-    loop.start()
+    factory = AgentLoopFactory(loop)
+    registration = service.register_factory(factory)
+    factory.start()
 
     async def close() -> None:
-        await loop.stop()
-        service.detach_runtime()
+        try:
+            await factory.stop()
+        finally:
+            service.unregister_factory(registration)
 
     ctx.effect(lambda: close, label="agent:runtime")

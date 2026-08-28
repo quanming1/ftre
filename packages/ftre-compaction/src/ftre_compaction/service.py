@@ -10,8 +10,8 @@ CompactionService — 上下文压缩 Service 的唯一真实实现
 由一个 LLM 摘要，再由本地确定性逻辑合并。摘要作为一条 role=user、name=compact
 的 Msg 追加到 messages 数组（由 SessionProjection 投影 context_compact_done 落盘），
 原始 Msg 永不删除。下一轮 LLM 上下文从最后一条 compact Msg 开始。
-CompactionService 不直接写 state、不直接派发 WebSocket，全部通过 CustomEvent +
-统一事件出口完成。快速压缩直接更新旧 Msg 中的工具结果块。
+CompactionService 不直接写 state、不直接派发 WebSocket，全部通过注入的
+``emit_maintenance`` Host sink 完成。快速压缩直接更新旧 Msg 中的工具结果块。
 
 并发安全：
 - 每个 session 同一时间最多只有一个真正的压缩 Task。
@@ -25,8 +25,7 @@ import logging
 import re
 from typing import Literal
 
-from ftre_agent_core.event import CustomEvent
-from ftre_agent_core.message import Msg, MsgName, TextBlock, ToolResultBlock
+from ftre_agent.message import Msg, MsgName, TextBlock, ToolResultBlock
 from ftre_llm import LlmCallConfig, LlmCredentials, LLMError, LlmRequest
 
 from .config import CompactionConfig, parse_compaction_config
@@ -88,14 +87,14 @@ class CompactionService:
         *,
         session_manager,
         llm=None,
-        emit_event=None,
+        emit_maintenance=None,
         threshold: float = DEFAULT_COMPACT_THRESHOLD,
         config_service=None,
         default_config: CompactionConfig | None = None,
     ):
         self.session_manager = session_manager
         self._llm = llm
-        self._emit_event = emit_event or self._noop_event
+        self._emit_maintenance = emit_maintenance or self._noop_maintenance
         self._config_service = config_service
         self._default_config = default_config or CompactionConfig(
             compact_threshold=threshold
@@ -106,7 +105,9 @@ class CompactionService:
         # 这里只保存压缩本体，不保存后台调度的包装 Task，避免任务取消自己。
         self._compact_tasks: dict[str, asyncio.Task[str | None]] = {}
 
-    async def _noop_event(self, _session_id: str, _channel_id: str, _event) -> None:
+    async def _noop_maintenance(
+        self, _session_id: str, _channel_id: str, _name: str, _value: dict
+    ) -> None:
         return None
 
     def progress_generation(self, session_id: str) -> int:
@@ -390,16 +391,18 @@ class CompactionService:
             return False
 
         # 通知前端（fast 模式投影为一条 compact_fast 展示气泡 Msg）
-        await self._emit_event(session_id, channel_id, CustomEvent(
-            name=CompactEventName.DONE,
-            value={
+        await self._emit_maintenance(
+            session_id,
+            channel_id,
+            CompactEventName.DONE,
+            {
                 "mode": "fast",
                 "messages": len(changed_messages),
                 "tool_results": len(tool_results),
                 "tokens_before": tokens_before,
                 "tokens_after": tokens_after,
             },
-        ))
+        )
 
         logger.info(
             f"[compact-fast] session={session_id} 裁剪 {len(tool_results)} 个工具结果, "
@@ -465,7 +468,7 @@ class CompactionService:
 
         chunk_sizes = [estimate_messages_tokens(chunk) for chunk in chunks]
 
-        # 5. 通知前端开始（CustomEvent，不持久化）。模型必须显式随事件传递，
+        # 5. 通知 Host 开始（不持久化）。模型必须显式随事件传递，
         #    不能让客户端从上一条 assistant 回复推断压缩实际使用的模型。
         compact_llm = _select_compact_llm(config, compaction_config)
         logger.info(
@@ -479,9 +482,11 @@ class CompactionService:
             compact_llm.model,
             getattr(compact_llm, "api_type", "unknown"),
         )
-        await self._emit_event(session_id, channel_id, CustomEvent(
-            name=CompactEventName.START,
-            value={
+        await self._emit_maintenance(
+            session_id,
+            channel_id,
+            CompactEventName.START,
+            {
                 "messages": len(head_messages),
                 "tokens": tokens_before,
                 "model": compact_llm.model,
@@ -491,7 +496,7 @@ class CompactionService:
                 "parallelism": compaction_config.chunk_parallelism,
                 "user_messages": len(_extract_user_message_texts(head_messages)),
             },
-        ))
+        )
 
         # 6. LLM 直调摘要（previous_summary 只交给首块，避免重复输入）
         summary = await self._run_compact_llm(
@@ -544,11 +549,13 @@ class CompactionService:
             )
             return None
 
-        # 8. 发 context_compact_done：SessionProjection 将其投影为 user/compact Msg
+        # 8. 发 context_compact_done：Host Projection 将其投影为 user/compact Msg
         #    value 含完整 summary_text（非预览），持久化由 Projection 完成。
-        done_event = CustomEvent(
-            name=CompactEventName.DONE,
-            value={
+        await self._emit_maintenance(
+            session_id,
+            channel_id,
+            CompactEventName.DONE,
+            {
                 "summary_text": summary,
                 "through_message_id": through_message_id,
                 "trigger": trigger,
@@ -557,7 +564,6 @@ class CompactionService:
                 "mode": "summary",
             },
         )
-        await self._emit_event(session_id, channel_id, done_event)
         self._mark_progress(session_id)
 
         logger.info(
@@ -786,12 +792,14 @@ class CompactionService:
     # ─── 工具方法 ──────────────────────────────────────────────────
 
     async def _emit_failed(self, session_id: str, channel_id: str, reason: str) -> None:
-        """发 context_compact_failed CustomEvent（不持久化）。"""
+        """发 context_compact_failed Host maintenance record（不持久化）。"""
         try:
-            await self._emit_event(session_id, channel_id, CustomEvent(
-                name=CompactEventName.FAILED,
-                value={"reason": reason},
-            ))
+            await self._emit_maintenance(
+                session_id,
+                channel_id,
+                CompactEventName.FAILED,
+                {"reason": reason},
+            )
         except Exception:  # noqa: BLE001 - 事件出口失败不能掩盖压缩任务本身的结果
             logger.debug(f"[compact] 通知失败失败: {reason}")
 

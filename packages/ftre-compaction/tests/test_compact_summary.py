@@ -1,11 +1,11 @@
-"""CompactionService CustomEvent → SessionProjection 改造测试。
+"""CompactionService → typed SessionMaintenanceRecord 集成测试。
 
 验收标准（新协议）：
 - compact done 由 SessionProjection 投影为 messages 中一条 user/compact Msg；
 - 连续两次 compact 后有两条 compact Msg，get_context_messages 返回最后一条 + tail；
 - LLM 失败 / 摘要膨胀时无 compact Msg 写入；
 - compact 期间新增消息保留在最后一条 compact Msg 之后；
-- start/done/failed 全部为 CustomEvent，经统一事件出口派发。
+- start/done/failed 全部经注入的 Host maintenance sink 派发。
 """
 import asyncio
 from types import SimpleNamespace
@@ -13,11 +13,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from ftre_agent_core.event import CustomEvent
-from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
+from ftre_agent.message import AssistantMsg, MsgName, UserMsg
 from ftre_compaction.config import CompactionConfig
 from ftre_compaction.service import CompactionService
 
+from ftre.services.session.events import SessionMaintenanceRecord
 from ftre.services.session.projection import SessionProjection
 from ftre.services.session.service import SessionService as SessionManager
 
@@ -33,15 +33,16 @@ async def env(tmp_path):
     manager = SessionManager(str(tmp_path / "sessions.db"))
     await manager.init()
     projection = SessionProjection(manager)
-    emitted: list[CustomEvent] = []
+    emitted: list[SessionMaintenanceRecord] = []
 
-    async def emit_event(session_id, channel_id, event):
+    async def emit_maintenance(session_id, channel_id, name, value):
+        event = SessionMaintenanceRecord(name=name, value=value)
         emitted.append(event)
-        return await projection.apply(session_id, event)
+        return await projection.apply_maintenance(session_id, event)
 
     compact = CompactionService(
         session_manager=manager,
-        emit_event=emit_event,
+        emit_maintenance=emit_maintenance,
         default_config=CompactionConfig(
             compact_threshold=0.7,
             llm=SimpleNamespace(model="summary-model"),
@@ -76,7 +77,7 @@ async def test_compact_generation_passes_reasoning_effort_to_handler(monkeypatch
             if False:
                 yield None
 
-    compact = CompactionService(session_manager=None, emit_event=None, llm=FakeLlm())
+    compact = CompactionService(session_manager=None, emit_maintenance=None, llm=FakeLlm())
     llm = SimpleNamespace(
         provider="summary-provider",
         model="summary-model",
@@ -133,7 +134,7 @@ async def _seed_more(manager, sid, *, start: int, turns: int) -> list[str]:
 
 
 def _event_names(emitted) -> list[str]:
-    return [e.name for e in emitted if isinstance(e, CustomEvent)]
+    return [e.name for e in emitted]
 
 
 @pytest.mark.asyncio
@@ -290,7 +291,7 @@ async def test_empty_summary_retries_once_then_succeeds(env, monkeypatch):
 @pytest.mark.asyncio
 async def test_empty_summary_after_retry_falls_back_to_compress_fast(env, monkeypatch):
     """重试后摘要仍为空：回退 compress_fast 裁剪工具输出，不写 compact Msg。"""
-    from ftre_agent_core.message import ToolCallBlock, ToolResultBlock
+    from ftre_agent.message import ToolCallBlock, ToolResultBlock
 
     manager, emitted, _projection, compact = env
     sid = await manager.create_session("ws")
@@ -330,7 +331,7 @@ async def test_compress_fast_invalidates_stale_usage_anchor(env):
     last_call_usage 仍是裁剪前实算值，should_compact 永远判过线 →
     Inbox blocked 死锁（"压缩后上下文仍超过安全水位"）。
     """
-    from ftre_agent_core.message import (
+    from ftre_agent.message import (
         MsgToken,
         TokenUsage,
         ToolCallBlock,
@@ -447,9 +448,7 @@ async def test_done_event_idempotent_no_duplicate(env, monkeypatch):
     manager, _emitted, projection, _compact = env
     sid = await manager.create_session("ws")
     await _seed(manager, sid, 1)
-    from ftre_agent_core.event import CustomEvent
-
-    event = CustomEvent(
+    event = SessionMaintenanceRecord(
         name="context_compact_done",
         value={
             "summary_text": "摘要",
@@ -460,8 +459,8 @@ async def test_done_event_idempotent_no_duplicate(env, monkeypatch):
             "tokens_after": 10,
         },
     )
-    await projection.apply(sid, event)
-    await projection.apply(sid, event)  # 重放同一 event.id
+    await projection.apply_maintenance(sid, event)
+    await projection.apply_maintenance(sid, event)  # 重放同一 event.id
     full = await manager.get_messages_by_session(sid)
     compact_msgs = [m for m in full if m["name"] == MsgName.COMPACT]
     assert len(compact_msgs) == 1
@@ -482,10 +481,10 @@ async def test_compress_fast_no_tool_results_returns_false(env):
 async def test_compress_fast_projects_compact_fast_msg(env):
     """fast 压缩裁剪工具输出后投影为一条 name=compact_fast 的展示气泡 Msg，
     且不污染上下文锚点（get_context_messages 的 tail 起点只认 MsgName.COMPACT）。"""
-    from ftre_agent_core.message import (
+    from ftre_agent.message import (
         AssistantMsg as _AssistantMsg,
     )
-    from ftre_agent_core.message import (
+    from ftre_agent.message import (
         ToolCallBlock,
         ToolResultBlock,
     )

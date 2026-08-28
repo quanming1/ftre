@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 from cordis import Context, FiberState
-from ftre_agent_core.tool import ToolRegistry
 
 from ftre.plugins.builtin.schedule.plugin import apply, inject, provide
 from ftre.services.http.service import HttpService
@@ -29,7 +28,7 @@ schedule_plugin.provide = provide
 async def test_schedule_plugin_owns_channel_tool_scheduler_and_cleanup(tmp_path) -> None:
     bus = EventBus()
     channels = ChannelService(ChannelManager(bus))
-    tools = ToolService(ToolRegistry())
+    tools = ToolService()
     root = Context()
     root.provide("message_bus", MessageBusService(bus))
     root.provide("sessions", _Sessions())

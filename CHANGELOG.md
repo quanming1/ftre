@@ -1,5 +1,37 @@
 # Changelog
 
+### F36 Agent Core 合并与 Package 分层简化（已完成，未发布）
+
+- `ftre-agent`、`ftre-agent-runtime`、`ftre-llm` 和 Host `ToolService` 分别成为
+  Agent 契约、ReAct Runtime、LLM 协议和工具执行的唯一 Owner；Ftre 生产代码与活动测试不再
+  导入 `ftre_agent_core`。
+- Runtime 现在输出真实有序 AgentStreamEvent，ToolView 负责权限/审批/执行，Host
+  `PIPELINE_EVENT`/`SESSION_MAINTENANCE` 与 Agent 回复流分离；无生产者的旧事件与客户端 reducer
+  分支已删除。
+- 完成 Ftre Package wheel 与 Desktop renderer 回归、跨仓残留扫描；Core C8 已删除旧生产目录、
+  测试、示例和 `pyproject.toml`，不提供兼容 alias/re-export，保留 `docs/`、`work/` 和用户数据。
+
+### F35 Agent Service / Profile / Inbox 边界收敛（已完成，未发布）
+
+- F35.4 将 Inbox 输入冻结为可持久化 `Msg[]`，新增 `AgentService` RunReservation 与 Inbox durable
+  lease（`claim_lease/ack/release`）；新进程会回收旧 owner 的 inflight 项，Agent 失败/取消会 release，
+  成功才 ack，避免忙时或崩溃丢消息。
+- 扩展 `inbox/before-admit` 决策 Hook 与 `inbox/admitted`、`inbox/claimed`、`inbox/deferred`、
+  `inbox/delivered`、`inbox/failed`、`inbox/discarded`、`inbox/error` 观察 Hook；Agent 状态变化通过
+  事件唤醒 worker，移除 quiescent 固定时间轮询；Agent 公共入口不再接受 InboundMessage。
+- 全量 pytest 693 passed，Inbox/契约/架构专项 217 passed，ruff 与 diff check 通过。
+- F35.5 在 `before-reasoning` 交接点派发带 run/previous assistant 坐标的真实 `UserMessageEvent`；
+  Session Projection 先即时封口旧 Assistant，再持久化/广播 UserMsg，失败保留 active 供重试；
+  全量 pytest 695 passed，消息边界专项 197 passed。
+- F35.6 完成 RuntimeInput 收口、Agent InboundMessage 兼容路径删除、失败结果 lease release、取消/重启
+  恢复、clean wheel/import 和终局架构扫描；全量 pytest 703 passed，架构/契约/生命周期专项 272 passed。
+
+- F35.3 将 Host 侧 Profile、配置、路由和 Team 成员 Profile 迁移至
+  `src/ftre/services/agent_profile/`，由 `AgentProfileService` 统一持有；Profile 按项目、用户、Host
+  优先级解析并冻结为带来源 trace/hash 的 `AgentProfileSnapshot`。
+- 删除旧 `src/ftre/services/agent` 源码 Owner，更新 Composition、Session、Compaction、测试引用；
+  全量 pytest 682 passed，ruff、架构门禁和 diff check 通过。
+
 ### F33 Agent Package 终局架构（已完成，未发布）
 
 - 新增 `ftre-agent` 契约包（`packages/ftre-agent`）：AgentService、InboundMessage、

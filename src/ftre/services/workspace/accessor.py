@@ -1,6 +1,6 @@
 """同步工具使用的工作区访问器。
 
-文件工具运行在 Core 的同步调用边界，而 WorkspaceService 的公开 API 是异步的。
+文件工具运行在同步调用边界，而 WorkspaceService 的公开 API 是异步的。
 这个小型适配对象属于 Workspace Owner；Agent Runtime 只向 Service 请求它，
 不再 import 工具目录里的私有实现。
 """

@@ -1,10 +1,10 @@
-"""Tool factory that keeps Skill loading inside the Skill Feature boundary."""
-# Skill 工具工厂：把技能名称解析委托给 SkillService，保持 Agent Core 不知道目录布局。
+"""ToolDefinition factory that keeps Skill loading inside the Skill Feature boundary."""
+# Skill 工具工厂：把技能名称解析委托给 SkillService，保持 Agent Runtime 不知道目录布局。
 # 工具执行时按名字取 winner，命中则返回正文，未命中返回错误提示。
 
 from __future__ import annotations
 
-from ftre_agent_core.tool import Tool, ToolParameter
+from ftre_agent.tool import ToolDefinition, ToolParameter
 
 
 def build_load_skill_tool(service):
@@ -15,4 +15,4 @@ def build_load_skill_tool(service):
             return f"Skill not found: {name}"
         return record.content
 
-    return Tool(name="loadSkill", description="Load a named Skill", parameters=[ToolParameter("name", "string", "Skill name")], func=load_skill)
+    return ToolDefinition(name="loadSkill", description="Load a named Skill", parameters=[ToolParameter("name", "string", "Skill name")], func=load_skill)

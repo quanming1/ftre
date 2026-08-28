@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from ftre_agent_core.message import Msg
+from ftre_agent.message import Msg
 
 from ftre.services.session.entity.state import AgentStateFile, SessionState
 from ftre.services.session.search import MAX_HITS_PER_SESSION, search_sessions

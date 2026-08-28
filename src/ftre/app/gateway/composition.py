@@ -44,7 +44,7 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("message-bus", "ftre.services.messaging.bus.plugin:apply", "builtin", True, True, description="business message plane"),
         PluginManifest("tools", "ftre.services.tools.plugin:apply", "builtin", True, True, description="scoped tool registry"),
         PluginManifest("core-tools", "ftre.plugins.builtin.core_tools.plugin:apply", "builtin", True, True, description="core built-in tools"),
-        PluginManifest("agent-profiles", "ftre.services.agent.profile.plugin:apply", "builtin", True, True, description="agent profile merge"),
+        PluginManifest("agent-profiles", "ftre.services.agent_profile.plugin:apply", "builtin", True, True, description="agent profile merge"),
         PluginManifest("sessions", "ftre.services.session.plugin:apply", "builtin", True, True, description="session persistence service"),
         PluginManifest("commands", "ftre.plugins.builtin.command.plugin:apply", "builtin", True, True, description="command registry"),
         PluginManifest("workspaces", "ftre.services.workspace.plugin:apply", "builtin", True, True, description="workspace boundary"),
@@ -55,10 +55,11 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("mcp", "ftre.plugins.builtin.mcp.plugin:apply", "builtin", False, True, description="MCP connection state"),
         PluginManifest("traces", "ftre.plugins.builtin.trace.plugin:apply", "builtin", False, True, description="trace persistence"),
         PluginManifest("tool-audit", "ftre.plugins.builtin.tool_audit.plugin:apply", "builtin", False, True, description="tool call audit log"),
-        # Agent Runtime Package 同时发布 agents 契约 Service 和私有执行 Runtime；
-        # Host 不再拥有 AgentLoop 实现，只加载该 entry point。Inbox 在它之后
-        # 接管 pending/worker。Inbox 只提供队列，不注册依赖它的业务 Tool。
-        PluginManifest("agents", "ftre_agent_runtime.plugin:apply", "builtin", True, True, description="agent service and private runtime"),
+        # Agent Service 与 Agent Runtime 必须由两个 Provider 装载：前者是唯一
+        # agents Owner，后者只注册 Runtime Factory。Inbox 在 Runtime 之后接管
+        # pending/worker，但不提供 Agent Service 或 AgentLoop。
+        PluginManifest("agents", "ftre_agent.plugin:apply", "builtin", True, True, description="public agent service"),
+        PluginManifest("agent-runtime", "ftre_agent_runtime.plugin:apply", "builtin", True, True, description="private agent runtime factory"),
         # 当前 Gateway 的基础数据面必须有 Inbox；缺失时由 required Plugin 门禁
         # 直接失败，不允许启动一个没有队列行为的半成品 Host。
         PluginManifest("inbox", "ftre_inbox.plugin:apply", "builtin", True, True, description="durable inbox queue"),

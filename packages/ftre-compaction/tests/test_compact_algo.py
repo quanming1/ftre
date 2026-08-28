@@ -2,8 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from ftre_agent_core.event import CustomEvent
-from ftre_agent_core.message import (
+from ftre_agent.message import (
     AssistantMsg,
     MsgName,
     TextBlock,
@@ -92,10 +91,10 @@ async def test_fast_compact_updates_tool_result_blocks_via_emit_event():
     session_manager.get_context_messages.return_value = records
     emitted: list = []
 
-    async def emit_event(session_id, channel_id, event):
-        emitted.append(event)
+    async def emit_maintenance(session_id, channel_id, name, value):
+        emitted.append(SimpleNamespace(name=name, value=value))
 
-    manager = CompactionService(session_manager=session_manager, emit_event=emit_event)
+    manager = CompactionService(session_manager=session_manager, emit_maintenance=emit_maintenance)
 
     # keep_turns=0（默认）：不保护任何轮，活跃区间内全部工具结果被裁
     changed = await manager.compress_fast(
@@ -123,7 +122,7 @@ async def test_fast_compact_updates_tool_result_blocks_via_emit_event():
     ]
     # done 事件经统一出口派发
     assert any(
-        isinstance(e, CustomEvent) and e.name == "context_compact_done"
+        e.name == "context_compact_done"
         and e.value.get("mode") == "fast"
         for e in emitted
     )
@@ -155,7 +154,7 @@ async def test_fast_compact_batches_multiple_changed_messages():
     session_manager.get_context_messages.return_value = records
     manager = CompactionService(
         session_manager=session_manager,
-        emit_event=AsyncMock(),
+        emit_maintenance=AsyncMock(),
     )
 
     changed = await manager.compress_fast(
@@ -200,10 +199,10 @@ async def test_fast_compact_keep_turns_protects_recent_turns():
     session_manager.get_context_messages.return_value = records
     emitted: list = []
 
-    async def emit_event(session_id, channel_id, event):
-        emitted.append(event)
+    async def emit_maintenance(session_id, channel_id, name, value):
+        emitted.append(SimpleNamespace(name=name, value=value))
 
-    manager = CompactionService(session_manager=session_manager, emit_event=emit_event)
+    manager = CompactionService(session_manager=session_manager, emit_maintenance=emit_maintenance)
 
     # keep_turns=1：保护最近一轮（user1 及之后）——recent 保留，old 被裁
     changed = await manager.compress_fast(
@@ -236,10 +235,10 @@ async def test_fast_compact_keep_turns_covers_all_returns_false():
     session_manager.get_context_messages.return_value = records
     emitted: list = []
 
-    async def emit_event(session_id, channel_id, event):
-        emitted.append(event)
+    async def emit_maintenance(session_id, channel_id, name, value):
+        emitted.append(SimpleNamespace(name=name, value=value))
 
-    manager = CompactionService(session_manager=session_manager, emit_event=emit_event)
+    manager = CompactionService(session_manager=session_manager, emit_maintenance=emit_maintenance)
     # keep_turns=1 保护这唯一一轮 → 无可裁剪 → False
     changed = await manager.compress_fast(
         "ws::session", "ws", config=SimpleNamespace(), keep_turns=1,
@@ -283,10 +282,10 @@ async def test_fast_compact_ignores_compact_fast_bubble_in_turn_count():
     session_manager.get_context_messages.return_value = records
     emitted: list = []
 
-    async def emit_event(session_id, channel_id, event):
-        emitted.append(event)
+    async def emit_maintenance(session_id, channel_id, name, value):
+        emitted.append(SimpleNamespace(name=name, value=value))
 
-    manager = CompactionService(session_manager=session_manager, emit_event=emit_event)
+    manager = CompactionService(session_manager=session_manager, emit_maintenance=emit_maintenance)
     # keep_turns=1：气泡不占轮 → 保护 user1 轮（recent 保留），old 被裁
     changed = await manager.compress_fast(
         "ws::session", "ws", config=SimpleNamespace(), keep_turns=1,

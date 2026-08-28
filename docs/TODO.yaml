@@ -1550,3 +1550,106 @@ stages:
           - id: F34.7
             title: 取消并发生命周期和发行验收
             status: done
+      - id: F35
+        title: Agent Service Inbox UserMessage Boundary
+        status: done
+        date: 2026-08-27
+        prd: docs/prd/PRD-F35-agent-service-inbox-message-boundary.md
+        prd_status: 已验收
+        depends_on:
+          - F33
+          - F34
+        implementation_boundary: 只修改 E:\\ftre 的 Agent Service、Agent Runtime Provider、Agent Profile、Inbox Hook、UserMessageEvent 投影和架构/集成测试；不修改 E:\\ftre-agent-core 的 ReAct、Hook 或 Tool 协议，不修改客户端布局
+        modules:
+          - packages/ftre-agent/
+          - packages/ftre-agent-runtime/
+          - packages/ftre-inbox/
+          - src/ftre/services/agent_profile/
+          - src/ftre/services/session/
+          - src/ftre/app/gateway/composition.py
+          - tests/architecture/
+          - tests/contracts/
+          - tests/integration/
+          - tests/lifecycle/
+        acceptance: AgentService 是唯一 agents Owner；Runtime 只注册 Factory；Agent 不依赖 InboundMessage；Profile、Inbox 和 Tool/LLM Service 边界清晰；next-step 在 before-reasoning 产生一次真实 UserMessageEvent，立即关闭旧 Assistant 并轮换 message_id；busy、取消、错误、恢复和全量测试通过
+        tasks:
+          - id: F35.1
+            title: AgentService Owner 与 Runtime Factory 分离
+            status: done
+          - id: F35.2
+            title: 冻结 Agent API、状态、事件和 Hook 契约
+            status: done
+          - id: F35.3
+            title: Agent Profile 配置解析与旧 agent 目录清理
+            status: done
+          - id: F35.4
+            title: Inbox Msg 队列、原子 reservation 与 Hook 接入
+            status: done
+          - id: F35.5
+            title: UserMessageEvent 注入、Assistant 边界与投影顺序
+            status: done
+          - id: F35.6
+            title: 生命周期、恢复、架构扫描和全量验收
+            status: done
+      - id: F36
+        title: Agent Core 合并与 Package 分层简化
+        status: done
+        date: 2026-08-28
+        completion_date: 2026-08-28
+        prd: docs/prd/PRD-F36-agent-core-consolidation.md
+        prd_status: 已验收
+        depends_on:
+          - F33
+          - F34
+          - F35
+        implementation_boundary: 只在 E:\\ftre 与配对 E:\\ftre-agent-core、E:\\binn\\ftre-desktop 的协同 PR 中迁移；不重启或 kill 运行中的 Gateway，不在本地直接合并 develop
+        modules:
+          - packages/ftre-agent/
+          - packages/ftre-agent-runtime/
+          - packages/ftre-llm/
+          - src/ftre/services/tools/
+          - src/ftre/services/session/
+          - packages/ftre-inbox/
+          - packages/ftre-compaction/
+          - packages/ftre-llm-recovery/
+          - packages/ftre-llm-fallback/
+          - packages/ftre-messaging/
+          - packages/ftre-task/
+          - packages/ftre-team/
+          - tests/
+          - 配对 E:\\ftre-agent-core（仅 C8 Core Package Retire）
+          - 配对 E:\\binn\\ftre-desktop（仅 F36.6 事件协议清理）
+        acceptance: F36.1-F36.8 全部完成；ftre 生产代码与活动测试不再依赖 ftre-agent-core；ftre-agent、ftre-agent-runtime、ftre-llm 各有唯一 Owner；AgentService.stream 输出真实事件；ToolService 只通过 ToolView 向 Runtime 提供工具；Retry/Fallback/Confirmation/Steer/Compaction/取消/恢复回归通过；无兼容壳、无第二套 Registry、无第二套 ReAct 状态机；洁净环境安装不需要 Core；运行中的 Gateway 未被 kill 或重启
+        tasks:
+          - id: F36.1
+            title: 基线、Owner 和事件矩阵冻结
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.2
+            title: LLM Owner 收敛
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.3
+            title: 公共契约迁移到 ftre-agent
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.4
+            title: ToolService 与 Tool Runtime 解耦
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.5
+            title: Agent Runtime 迁移与唯一状态机 Owner
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.6
+            title: 事件面简化与 Host 事件分离
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.7
+            title: 移除 Core 依赖、发行和仓库退休
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.8
+            title: 重构收尾审计与跨仓库交付门禁
+            status: done
+            completion_date: 2026-08-28

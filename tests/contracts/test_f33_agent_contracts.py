@@ -12,10 +12,15 @@ import asyncio
 import pytest
 from ftre_agent import (
     AgentConfig,
+    AgentCreateSpec,
     AgentRegistry,
+    AgentRunRequest,
     AgentRunResult,
     AgentService,
-    InboundMessage,
+    FactoryAlreadyRegisteredError,
+    FactoryNotRegisteredError,
+    InvalidFactoryError,
+    ServiceClosedError,
 )
 from ftre_agent_runtime.completion import CompletionRegistry
 
@@ -26,17 +31,30 @@ class _RecordingRuntime:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
+    @property
+    def control(self):
+        return self
+
     def is_active_session(self, session_id: str) -> bool:
         return False
 
     def get_session_status(self, session_id: str) -> str:
         return "idle"
 
-    async def run_inbound(self, message: InboundMessage) -> AgentRunResult:
+    async def create(self, spec):
+        return self
+
+    async def resume(self, spec):
+        return self
+
+    async def run(self, request: AgentRunRequest) -> AgentRunResult:
         self.calls.append("run")
         return AgentRunResult(
-            session_id=message.session_id, turn_id="t", status="completed"
+            session_id=request.session_id, turn_id="t", status="completed"
         )
+
+    async def dispose(self):
+        return None
 
     async def cancel_session(self, *args, **kwargs) -> bool:
         self.calls.append("cancel")
@@ -49,21 +67,37 @@ class _RecordingRuntime:
         self.calls.append("resume")
 
 
-def test_runtime_binding_is_idempotent_and_rejects_second_runtime() -> None:
+def test_factory_registration_rejects_second_factory_and_unregistration_is_idempotent() -> None:
     service = AgentService()
     runtime = _RecordingRuntime()
-    service.attach_runtime(runtime)
-    service.attach_runtime(runtime)  # 同一实例幂等
-    with pytest.raises(RuntimeError, match="already has an attached runtime"):
-        service.attach_runtime(_RecordingRuntime())
-    assert service.runtime is runtime
+    service.start()
+    registration = service.register_factory(runtime)
+    with pytest.raises(FactoryAlreadyRegisteredError, match="already has a registered factory"):
+        service.register_factory(_RecordingRuntime())
+    assert service.factory_name == "_RecordingRuntime"
+    assert service.unregister_factory(registration) is True
+    assert service.unregister_factory(registration) is False
+
+
+@pytest.mark.asyncio
+async def test_factory_registration_errors_are_typed() -> None:
+    service = AgentService()
+    with pytest.raises(InvalidFactoryError):
+        service.register_factory(object())
+    with pytest.raises(FactoryNotRegisteredError):
+        await service.run("agent", AgentRunRequest("s", "r", ()))
+    service.close()
+    with pytest.raises(ServiceClosedError):
+        service.register_factory(_RecordingRuntime())
 
 
 @pytest.mark.asyncio
 async def test_service_run_returns_stable_agent_run_result() -> None:
     service = AgentService()
-    service.attach_runtime(_RecordingRuntime())
-    result = await service.run(InboundMessage("s1", "r1", "ws", "hello"))
+    service.start()
+    service.register_factory(_RecordingRuntime())
+    await service.create(AgentCreateSpec("agent", AgentConfig(), "s1"))
+    result = await service.run("agent", AgentRunRequest("s1", "r1", ()))
     assert isinstance(result, AgentRunResult)
     assert result.status == "completed"
     assert result.session_id == "s1"

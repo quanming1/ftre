@@ -300,7 +300,7 @@ class LlmStreamPayload:
     attempt: int = 1
     max_attempts: int = 1
     invoke: Callable[[], AsyncIterator[StreamChunk]] | None = None
-    # Core Runner 兼容字段：Provider 和调用目的由 Host 传入；直接构造时可省略。
+    # Runtime Runner 的调用字段：Provider 和调用目的由 Host 传入；直接构造时可省略。
     provider: str = ""
     purpose: str = "conversation"
 

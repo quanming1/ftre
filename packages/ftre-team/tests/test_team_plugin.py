@@ -15,7 +15,7 @@ def test_public_entry_and_factory() -> None:
 
 def test_team_create_rejects_empty_name_before_session_access() -> None:
     tool = create_team_tools(object(), object(), object())[0]
-    result = tool.func(
+    result = tool.execute_callable(
         "",
         session_id="leader",
         event_loop=object(),

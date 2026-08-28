@@ -1,7 +1,7 @@
 """把备用模型流包装器注册到 ``llm/stream`` 的 Cordis Plugin 入口。
 
-``llm/stream`` 在 Core 每次真正调用主模型前触发。listener 先通过 ``next_()`` 获得下游
-提供的主模型流，再返回一个惰性的包装流。只有 Core 随后开始 ``async for`` 消费时，
+``llm/stream`` 在 Runtime 每次真正调用主模型前触发。listener 先通过 ``next_()`` 获得下游
+提供的主模型流，再返回一个惰性的包装流。只有 Runtime 随后开始 ``async for`` 消费时，
 ``stream_with_fallback`` 才实际执行，因此不会在 Hook dispatch 阶段提前调用 LLM。
 """
 

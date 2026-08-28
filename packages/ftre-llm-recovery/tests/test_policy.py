@@ -1,6 +1,6 @@
 from dataclasses import replace
 
-from ftre_agent_core.hooks import LLMErrorPayload
+from ftre_agent.hooks import LLMErrorPayload
 from ftre_llm_recovery.config import parse_config
 from ftre_llm_recovery.policy import decide
 

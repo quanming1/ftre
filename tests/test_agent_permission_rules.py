@@ -1,4 +1,4 @@
-from ftre_agent_core.permission import PermissionBehavior
+from ftre_agent.tool.permission import PermissionBehavior
 from ftre_agent_runtime.factory import default_agent_state
 
 

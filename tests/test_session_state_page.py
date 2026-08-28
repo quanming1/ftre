@@ -1,7 +1,7 @@
 """state.json 分页只读视图测试。"""
 
 import pytest
-from ftre_agent_core.message import AssistantMsg, UserMsg
+from ftre_agent.message import AssistantMsg, UserMsg
 
 from ftre.services.session.service import SessionService as SessionManager
 

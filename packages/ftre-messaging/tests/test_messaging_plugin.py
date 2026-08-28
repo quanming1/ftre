@@ -15,7 +15,7 @@ def test_send_message_rejects_unknown_channel_before_dispatch() -> None:
             return None
 
     tool = create_send_message_tool(EmptyChannels(), object())
-    result = tool.func(
+    result = tool.execute_callable(
         "missing",
         "session-1",
         "hello",

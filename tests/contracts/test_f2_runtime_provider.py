@@ -4,9 +4,8 @@ from ftre_agent import AgentService
 from ftre_agent_runtime import plugin
 
 
-def test_runtime_plugin_binds_service_and_private_loop(monkeypatch) -> None:
-    """Runtime Plugin 是 agents Service 的唯一装配点：提供契约 Service、
-    构造私有 Loop 并把两者绑定到同一 Fiber（PRD-F33 §5.2）。"""
+def test_runtime_plugin_registers_private_loop_with_agent_service(monkeypatch) -> None:
+    """Runtime Plugin 只构造私有 Loop，并注册到已有的 agents。"""
     captured = {}
     started = []
     stopped = []
@@ -21,12 +20,31 @@ def test_runtime_plugin_binds_service_and_private_loop(monkeypatch) -> None:
         async def stop(self) -> None:
             stopped.append(True)
 
+        async def run_input(self, message):
+            return message
+
+        async def cancel_session(self, *args, **kwargs):
+            return True
+
+        def get_session_status(self, _session_id):
+            return "idle"
+
+        def is_active_session(self, _session_id):
+            return False
+
+        async def delete_session(self, _session_id):
+            return None
+
+        async def resume_confirmation(self, *args, **kwargs):
+            return None
+
     monkeypatch.setattr(plugin, "AgentLoop", FakeLoop)
 
     provided = {}
     effects = []
 
     class FakeContext:
+        agents = AgentService()
         config = object()
         sessions = object()
         message_bus = object()
@@ -48,14 +66,14 @@ def test_runtime_plugin_binds_service_and_private_loop(monkeypatch) -> None:
             effects.append((label, dispose))
 
     context = FakeContext()
+    context.agents.start()
     plugin.apply(context)
 
-    # 唯一公开 Service 是 agents；Loop 不出现在公开注册表里。
-    assert set(provided) == {"agents"}
-    service = provided["agents"]
-    assert isinstance(service, AgentService)
-    assert captured["agent_service"] is service
-    assert service.runtime is not None
+    # Runtime 不再提供 Service，只注册到已有的 agents。
+    assert provided == {}
+    service = context.agents
+    assert service.is_ready()
+    assert service.factory_name == "ftre-agent-runtime"
     assert started == [True]
 
     # 注入映射：inject 声明的每个 Service 都按窄公开 key 传入 Loop。
@@ -75,7 +93,7 @@ def test_runtime_plugin_binds_service_and_private_loop(monkeypatch) -> None:
         "llm_service": context.llm,
     }
 
-    # 卸载效应：停止 Loop 并解除绑定，重复 detach 安全。
+    # 卸载效应：停止 Loop 并解除 Factory 注册。
     assert effects and effects[0][0] == "agent:runtime"
 
     import asyncio
@@ -83,4 +101,5 @@ def test_runtime_plugin_binds_service_and_private_loop(monkeypatch) -> None:
     dispose = effects[0][1]()
     asyncio.run(dispose())
     assert stopped == [True]
-    assert service.list() == []
+    assert not service.is_ready()
+    assert service.list() == ()
