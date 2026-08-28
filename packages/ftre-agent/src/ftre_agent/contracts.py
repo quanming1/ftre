@@ -12,9 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
-from ftre_agent_core.message import Msg
-
 from .config import AgentConfig
+from .message import Msg
 
 RunStatus = str
 
@@ -97,23 +96,32 @@ class RunReservation:
 
 
 @dataclass(frozen=True, slots=True)
-class AgentEvent:
-    """Agent Service 流式出口的通用事件信封。"""
+class AgentStreamEnvelope:
+    """Runtime 真实事件的有序信封；Host 负责 JSON 序列化。"""
 
-    event_type: str
     agent_id: str
     run_id: str
     sequence: int
-    data: Mapping[str, Any] = field(default_factory=dict)
+    event: Any
 
 
 class AgentRuntimeHandle(Protocol):
     """单个 Agent 的 Runtime 操作句柄。"""
 
     async def run(self, request: AgentRunRequest) -> Any: ...
-    async def stream(self, request: AgentRunRequest) -> AsyncIterator[AgentEvent]: ...
+    async def stream(self, request: AgentRunRequest) -> AsyncIterator[AgentStreamEnvelope]: ...
     async def cancel(self, reason: str) -> Any: ...
     async def dispose(self) -> None: ...
+
+
+class RuntimeControlPort(Protocol):
+    """Host-control operations kept outside the Agent data-plane factory."""
+
+    async def cancel_session(self, session_id: str, **kwargs: Any) -> Any: ...
+    def get_session_status(self, session_id: str) -> str: ...
+    def is_active_session(self, session_id: str) -> bool: ...
+    async def delete_session(self, session_id: str) -> Any: ...
+    async def resume_confirmation(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
 class AgentHandle(Protocol):
@@ -125,7 +133,7 @@ class AgentHandle(Protocol):
     def view(self) -> AgentView: ...
     def status(self) -> str: ...
     async def run(self, request: AgentRunRequest) -> Any: ...
-    async def stream(self, request: AgentRunRequest) -> AsyncIterator[AgentEvent]: ...
+    async def stream(self, request: AgentRunRequest) -> AsyncIterator[AgentStreamEnvelope]: ...
     async def cancel(self, reason: str = "") -> Any: ...
     async def dispose(self) -> None: ...
 
@@ -160,19 +168,13 @@ class AgentRuntimeFactory(Protocol):
 
     name: str
     version: str
+    control: RuntimeControlPort
 
     async def create(self, spec: AgentCreateSpec) -> AgentRuntimeHandle: ...
     async def resume(self, spec: AgentResumeSpec) -> AgentRuntimeHandle: ...
 
-    def cancel_session(self, *args: Any, **kwargs: Any) -> Any: ...
-    def get_session_status(self, session_id: str) -> str: ...
-    def is_active_session(self, session_id: str) -> bool: ...
-    def delete_session(self, session_id: str) -> Any: ...
-    def resume_confirmation(self, *args: Any, **kwargs: Any) -> Any: ...
-
 __all__ = [
     "AgentCreateSpec",
-    "AgentEvent",
     "AgentHandle",
     "AgentListener",
     "AgentResumeSpec",
@@ -180,8 +182,10 @@ __all__ = [
     "AgentRunResult",
     "AgentRuntimeFactory",
     "AgentRuntimeHandle",
+    "AgentStreamEnvelope",
     "AgentView",
     "RunOptions",
     "RunReservation",
     "RunStatus",
+    "RuntimeControlPort",
 ]

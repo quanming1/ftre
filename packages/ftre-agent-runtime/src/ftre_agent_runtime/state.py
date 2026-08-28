@@ -17,8 +17,9 @@ from ftre_agent import AgentConfig
 from .protocol import RuntimeInput
 
 if TYPE_CHECKING:
-    from ftre_agent_core.agent import ReActAgent
-    from ftre_agent_core.event import UserConfirmResultEvent
+    from ftre_agent.event import UserConfirmResultEvent
+
+    from .react_agent import ReActAgent
 
 
 class TurnStatus(str, Enum):

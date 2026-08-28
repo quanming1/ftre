@@ -1,6 +1,6 @@
-"""ftre 业务路径对 Core Tool Hook 契约的稳定重导出。"""
+"""ftre Tool Hook 的 Host 入口。"""
 
-from ftre_agent_core.hooks import (
+from ftre_agent.hooks import (
     TOOL_AFTER_SPEC,
     TOOL_BEFORE_SPEC,
     ToolAfterPayload,

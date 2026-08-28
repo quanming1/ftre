@@ -1,7 +1,7 @@
 import json
 
 import pytest
-from ftre_agent_core.message import (
+from ftre_agent.message import (
     AssistantMsg,
     MsgName,
     ThinkingBlock,

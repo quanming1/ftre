@@ -1,5 +1,16 @@
 # Changelog
 
+### F36 Agent Core 合并与 Package 分层简化（已完成，未发布）
+
+- `ftre-agent`、`ftre-agent-runtime`、`ftre-llm` 和 Host `ToolService` 分别成为
+  Agent 契约、ReAct Runtime、LLM 协议和工具执行的唯一 Owner；Ftre 生产代码与活动测试不再
+  导入 `ftre_agent_core`。
+- Runtime 现在输出真实有序 AgentStreamEvent，ToolView 负责权限/审批/执行，Host
+  `PIPELINE_EVENT`/`SESSION_MAINTENANCE` 与 Agent 回复流分离；无生产者的旧事件与客户端 reducer
+  分支已删除。
+- 完成 Ftre Package wheel 与 Desktop renderer 回归、跨仓残留扫描；Core C8 已删除旧生产目录、
+  测试、示例和 `pyproject.toml`，不提供兼容 alias/re-export，保留 `docs/`、`work/` 和用户数据。
+
 ### F35 Agent Service / Profile / Inbox 边界收敛（已完成，未发布）
 
 - F35.4 将 Inbox 输入冻结为可持久化 `Msg[]`，新增 `AgentService` RunReservation 与 Inbox durable

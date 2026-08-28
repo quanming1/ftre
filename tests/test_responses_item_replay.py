@@ -1,7 +1,7 @@
 """Host Session/Provider 边界的 Responses Output Item 重放回归。"""
 
-from ftre_agent_core.event import ModelCallEndEvent
-from ftre_agent_core.message import AssistantMsg, ThinkingBlock
+from ftre_agent.event import ModelCallEndEvent
+from ftre_agent.message import AssistantMsg, ThinkingBlock
 
 from ftre.services.session.message.converter import to_openai
 

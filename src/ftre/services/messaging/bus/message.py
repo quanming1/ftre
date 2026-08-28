@@ -59,7 +59,7 @@ PayloadT = TypeVar("PayloadT", bound=BaseModel)
 class TypedBusMessage[PayloadT: BaseModel](BusMessage):
     """带强类型 Payload 的 Bus 信封。
 
-    旧的 ``BusMessage`` 暂时保留给 inbound/core agent event；Gateway 自有
+    旧的 ``BusMessage`` 暂时保留给 inbound/Agent event；Gateway 自有
     session/global 事件必须使用本类的具体子类，避免再次退回裸字典。
     """
 
@@ -90,3 +90,10 @@ class SessionCommandMessage(TypedBusMessage[CommandMessagePayload]):
     """session_event:command_message。"""
 
     type: Literal["session_event:command_message"] = "session_event:command_message"
+
+
+class SessionEventMessage(TypedBusMessage[BaseModel]):
+    """Host pipeline/maintenance event carried on the session_event topic."""
+
+    type: Literal["session_event"] = "session_event"
+    data: Any

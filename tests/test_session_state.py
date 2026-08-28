@@ -7,7 +7,7 @@
 - 旧 state.json 未知字段直接拒绝（部署时清理历史 session）。
 """
 import pytest
-from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
+from ftre_agent.message import AssistantMsg, MsgName, UserMsg
 from pydantic import ValidationError
 
 from ftre.services.session.entity.state import (

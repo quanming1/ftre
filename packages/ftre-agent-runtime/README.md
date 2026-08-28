@@ -7,14 +7,14 @@ Contents:
 - `plugin.py` — the single Runtime provider plugin (entry point `agent-runtime`), registering the private runtime as the `agents` service's Runtime Factory
 - `engine.py` — `AgentLoop`: active-turn runtime, agent hook dispatch, cancellation, maintenance barrier
 - `turn_executor.py` — the Turn state machine (`BUILDING → RUNNING → FINALIZING → terminal`)
-- `factory.py` — the only Core `ReActAgent` construction point
+- `factory.py` — the only Runtime `ReActAgent` construction point
 - `state.py` — private Turn state (public result type is `ftre_agent.AgentRunResult`)
 - `completion.py` — in-process completion registry for `request_id` waiters
 
 ## Dependency direction
 
 ```
-ftre-agent-runtime → ftre-agent (contracts) → ftre-agent-core
+ftre-agent-runtime → ftre-agent (contracts)
                   → ftre-llm (service adapter)
 ```
 

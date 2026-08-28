@@ -9,16 +9,16 @@ from ftre_agent import (
     AgentBusyError,
     AgentConfig,
     AgentCreateSpec,
-    AgentEvent,
     AgentNotFoundError,
     AgentResumeSpec,
     AgentRunRequest,
     AgentRunResult,
     AgentService,
+    AgentStreamEnvelope,
     AgentView,
     FactoryRegistration,
 )
-from ftre_agent_core.message import UserMsg
+from ftre_agent.message import UserMsg
 
 
 class _Handle:
@@ -37,12 +37,11 @@ class _Handle:
 
     async def stream(self, request: AgentRunRequest):
         result = await self.run(request)
-        yield AgentEvent(
-            event_type="run.completed",
+        yield AgentStreamEnvelope(
             agent_id="agent-1",
             run_id=result.turn_id,
             sequence=0,
-            data={"status": result.status},
+            event={"status": result.status},
         )
 
     async def cancel(self, reason: str = "") -> bool:
@@ -59,6 +58,10 @@ class _Factory:
 
     def __init__(self) -> None:
         self.handles: list[_Handle] = []
+
+    @property
+    def control(self):
+        return self
 
     async def create(self, spec: AgentCreateSpec) -> _Handle:
         handle = _Handle()
@@ -143,7 +146,7 @@ async def test_stream_and_resume_are_available_without_runtime_object_leak() -> 
     )
     factory.handles[0].release.set()
     events = [event async for event in handle.stream(_request())]
-    assert events[0].event_type == "run.completed"
+    assert events[0].event == {"status": "completed"}
     assert service.get("agent-1").run_id == "request-1"
 
 

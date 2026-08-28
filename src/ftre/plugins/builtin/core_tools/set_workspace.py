@@ -9,12 +9,12 @@ edit / bash 立刻看到新值（它们都通过同一个 WorkspaceAccessor 取 
 import os
 from pathlib import Path
 
-from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
 
 from ftre.services.workspace.accessor import WorkspaceAccessor
 
 
-def create_set_workspace_tool() -> Tool:
+def create_set_workspace_tool() -> ToolDefinition:
     """创建 set_workspace 工具"""
 
     def set_workspace(path: str, ws: WorkspaceAccessor = Injected("workspace")) -> str:  # noqa: B008 legacy compatibility boundary reviewed in F1
@@ -46,7 +46,7 @@ def create_set_workspace_tool() -> Tool:
             return f"<FTRE_SYSTEM_FACT>[workspace] {new_dir}（未变化）</FTRE_SYSTEM_FACT>"
         return f"<FTRE_SYSTEM_FACT>[workspace] {old} → {new_dir}</FTRE_SYSTEM_FACT>"
 
-    return Tool(
+    return ToolDefinition(
         name="set_workspace",
         description=(
             "切换当前会话的工作区根目录（持久到 DB）。后续 read / write / edit / "

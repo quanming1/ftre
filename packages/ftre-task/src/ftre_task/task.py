@@ -16,7 +16,7 @@ task 工具 - 把一个提示词派发给另一个 session 同步执行（subage
 import asyncio
 import uuid
 
-from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
 from ftre_inbox.protocol import InboundMessage
 
 from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
@@ -46,7 +46,7 @@ def _wrap_with_preamble(prompt: str) -> str:
 def _run_async(coro, event_loop, timeout: float | None = 10.0):
     """跨线程执行 coroutine 并等结果"""
     return asyncio.run_coroutine_threadsafe(coro, event_loop).result(timeout=timeout)
-def create_task_tool(channel_manager, inbox) -> Tool:
+def create_task_tool(channel_manager, inbox) -> ToolDefinition:
     """创建 task 工具
 
     该工厂属于 ``ftre-task``；Inbox 只是它用于耐久投递和等待的公开依赖。
@@ -61,7 +61,7 @@ def create_task_tool(channel_manager, inbox) -> Tool:
         session_id: str = "",
         working_dir: str = "",
         caller_channel: str = Injected("channel_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        event_loop=Injected("event_loop"),  # noqa: B008 - ToolDefinition execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         workspace=Injected("workspace"),  # noqa: B008 - public WorkspaceAccessor runtime key
@@ -144,7 +144,7 @@ def create_task_tool(channel_manager, inbox) -> Tool:
             return f"{head_full}\n{final_content}"
         return f"{head_full}\n任务结束但 subagent 未输出最终回复（可能仅工具调用 / 异常退出）"
 
-    return Tool(
+    return ToolDefinition(
         name="task",
         description=(
             "把一个提示词派发给一个独立 session 同步执行，等其跑完后返回最后一条 ai 回复。\n"

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from ftre.services.config.paths import CONFIG_PATH
 
 if TYPE_CHECKING:
-    from ftre_agent_core.tracing import TraceRun
+    from ftre_agent.tracing import TraceRun
 
 logger = logging.getLogger(__name__)
 

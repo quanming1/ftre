@@ -53,7 +53,7 @@ async def test_composition_close_is_idempotent_for_runtime(tmp_path) -> None:
 def test_runtime_package_imports_in_clean_interpreter() -> None:
     """AC16 导入侧面：Runtime 包可在不挂载 ftre Host 源码的解释器中导入。
 
-    依赖（ftre_agent、ftre_agent_core、ftre_llm、cordis）以独立安装后的
+    依赖（ftre_agent、ftre_llm、cordis）以独立安装后的
     位置解析：契约包 src 与 Runtime src 同时可见，ftre Host 源码不可见。
     """
     agent_src = ROOT / "packages" / "ftre-agent" / "src"

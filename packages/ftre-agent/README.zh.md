@@ -8,7 +8,8 @@ ftre 平台的 Agent 稳定契约包。
 - `AgentRunRequest` —— 执行输入，携带不可变的 `Msg[]` 快照；Inbox 只负责准入与调度
 - `AgentRunResult` —— 唯一执行结果（`completed` / `cancelled` / `failed`）
 - `AgentRegistry` + `HookScopeCarrier` —— Agent 身份与 Hook 作用域载体
-- Agent Hook（`agent/before-run`、`agent/after-run`、`agent/run-error`），并 re-export Core 拥有的 `agent/before-reasoning` / `agent/stop-decision`
+- Agent Hook（`agent/before-run`、`agent/after-run`、`agent/run-error`），以及共享的
+  `agent/before-reasoning` / `agent/stop-decision` 契约
 - `AgentConfig` / `LLMConfig` —— Hook、Runtime 与压缩包共享的冻结配置快照
 
 本包刻意不包含 AgentLoop、LLM Client 或任何工具执行实现。具体 Runtime 位于

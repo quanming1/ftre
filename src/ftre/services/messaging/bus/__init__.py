@@ -7,6 +7,7 @@ from .message import (
     GLOBAL_SESSION,
     BusMessage,
     SessionCommandMessage,
+    SessionEventMessage,
     TypedBusMessage,
 )
 from .payloads import CommandMessagePayload
@@ -37,6 +38,7 @@ __all__ = [
     "OutboundMetadata",
     "PromptMode",
     "SessionCommandMessage",
+    "SessionEventMessage",
     "TypedBusMessage",
     "coerce_inbound_metadata",
 ]

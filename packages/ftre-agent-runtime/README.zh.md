@@ -7,14 +7,14 @@ ftre 平台的 Agent 具体执行实现包（PRD-F33）。
 - `plugin.py` —— 唯一的 Runtime Provider Plugin（entry point `agent-runtime`），把私有 Runtime 注册为已有 `agents` Service 的 Factory
 - `engine.py` —— `AgentLoop`：active Turn 运行时、Agent Hook 分发、取消与维护屏障
 - `turn_executor.py` —— Turn 状态机（`BUILDING → RUNNING → FINALIZING → 终态`）
-- `factory.py` —— 唯一的 Core `ReActAgent` 构造点
+- `factory.py` —— 唯一的 Runtime `ReActAgent` 构造点
 - `state.py` —— Turn 私有状态（公开结果类型是 `ftre_agent.AgentRunResult`）
 - `completion.py` —— 按 `request_id` 等待的进程内完成注册表
 
 ## 依赖方向
 
 ```
-ftre-agent-runtime → ftre-agent（契约）→ ftre-agent-core
+ftre-agent-runtime → ftre-agent（契约）
                   → ftre-llm（Service 适配）
 ```
 

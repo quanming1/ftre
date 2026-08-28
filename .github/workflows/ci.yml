@@ -16,15 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout ftre-agent-core
-        uses: actions/checkout@v4
-        with:
-          repository: quanming1/ftre-agent-core
-          # C7 LLM 协议收敛已合入 Core develop；用合入提交固定跨仓合同，
-          # 确保 Host 测试使用 Runner 注入和统一 ftre-llm Chunk 协议。
-          ref: 97a99970ad739d96a46a230680b1b0678cf8488d
-          path: ftre-agent-core
-
       - name: Checkout cordis-py
         uses: actions/checkout@v4
         with:
@@ -40,9 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ./cordis-py
-          # Core 声明依赖 ftre-llm；先注册仓内发行物，避免 pip 在安装 Core 时访问 PyPI。
           pip install -e ./packages/ftre-llm --no-deps
-          pip install -e ./ftre-agent-core
           # ftre 默认依赖仓内 Package；先以 no-deps 方式注册本地发行物，
           # 避免 pip 在安装 Host 时去 PyPI 查找尚未发布的 monorepo Package。
           # F33 起 Host 依赖 ftre-agent / ftre-agent-runtime，同样需要先注册。

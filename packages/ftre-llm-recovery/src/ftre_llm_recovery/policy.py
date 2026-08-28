@@ -1,25 +1,25 @@
 """LLM 失败后的纯策略判断。
 
-调用时机是“一次 LLM attempt 已经失败并被 Core 归一化成 LLMError 之后”。本模块只
-回答是否覆盖 Core 默认决定，不执行 sleep、不重新调用模型，也不修改 attempt 计数。
+调用时机是“一次 LLM attempt 已经失败并被 Runtime 归一化成 LLMError 之后”。本模块只
+回答是否覆盖 Runtime 默认决定，不执行 sleep、不重新调用模型，也不修改 attempt 计数。
 因此它可以脱离 Cordis/Agent 单独测试。
 """
 
 from __future__ import annotations
 
-from ftre_agent_core.hooks import LLMErrorDecision, LLMErrorPayload
+from ftre_agent.hooks import LLMErrorDecision, LLMErrorPayload
 
 from .config import RecoveryConfig
 
 
 def decide(payload: LLMErrorPayload, config: RecoveryConfig) -> LLMErrorDecision | None:
-    """返回配置命中的 Core 决策，返回 ``None`` 表示不干预。
+    """返回配置命中的 Runtime 决策，返回 ``None`` 表示不干预。
 
     ``None`` 很重要：它不是“停止”，而是让 Plugin listener 继续调用 ``next_()``。
-    Hook 链后面可能还有其他策略 Plugin；全部不处理时才使用 Core 默认值。
+    Hook 链后面可能还有其他策略 Plugin；全部不处理时才使用 Runtime 默认值。
     """
 
-    # Core 已经完成错误归一化，这里只做大小写清洗，保证配置查找稳定。
+    # Runtime 已经完成错误归一化，这里只做大小写清洗，保证配置查找稳定。
     code = (payload.error_code or "").strip().lower()
     error_text = f"{code} {payload.error_message or ''}".lower()
     # 上下文溢出可能被 Provider 统称为 bad_request；不能只按粗粒度错误码
@@ -31,7 +31,7 @@ def decide(payload: LLMErrorPayload, config: RecoveryConfig) -> LLMErrorDecision
         or any(marker in error_text for marker in overflow_markers)
     ):
         return None
-    # 未配置的错误绝不能擅自改成 retry，否则会改变 Core 原有的安全默认值。
+    # 未配置的错误绝不能擅自改成 retry，否则会改变 Runtime 原有的安全默认值。
     rule = config.rules.get(code)
     if rule is None:
         return None

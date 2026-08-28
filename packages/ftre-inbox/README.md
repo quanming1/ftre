@@ -10,7 +10,7 @@
   `ftre-messaging`、`ftre-task`、`ftre-team` Package 通过 `inject("inbox")` 消费。
 
 只有 `followup`/`next-turn` 会创建可等待的本进程 Turn receipt；`steer`/`inject`
-在 active Turn 的 Core Hook 中作为上下文消息消费，不承诺独立的 Turn 结果。
+在 active Turn 的 Runtime Hook 中作为上下文消息消费，不承诺独立的 Turn 结果。
 
 宿主只需要提供一个结构上兼容的 `run(InboundMessage)` Agent，并可通过
 `ftre_inbox.plugin:apply` 作为 Cordis Plugin 装载。Agent 不需要知道 `QueueItem`、

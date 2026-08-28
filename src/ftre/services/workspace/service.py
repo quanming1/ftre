@@ -98,7 +98,7 @@ class WorkspaceService:
         *,
         fallback_cwd: str,
     ) -> WorkspaceAccessor:
-        """为同步 Core Tool 创建工作区访问器，具体实现归 Workspace Owner。"""
+        """为同步 Tool 创建工作区访问器，具体实现归 Workspace Owner。"""
         return WorkspaceAccessor(
             session_id=session_id,
             session_manager=self.sessions,

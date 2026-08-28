@@ -15,16 +15,18 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ftre_agent_core.event import (
-    CustomEvent,
+from ftre_agent.event import (
     ReplyEndEvent,
     ReplyFinishedReason,
     ReplyStartEvent,
     UserMessageEvent,
 )
-from ftre_agent_core.message import AssistantMsg, Msg, MsgName, UserMsg
+from ftre_agent.message import AssistantMsg, Msg, MsgName, UserMsg
 
-from ftre.services.session.events import SessionMaintenanceEvent
+from ftre.services.session.events import (
+    SessionMaintenanceEvent,
+    SessionMaintenanceRecord,
+)
 
 if TYPE_CHECKING:
     from ftre.services.session import SessionService
@@ -40,7 +42,7 @@ logger = logging.getLogger(__name__)
 # - MODEL_CALL_END：本次模型调用已结束，usage 等统计字段稳定。
 # REPLY_END 不在这里：它走 apply() 中独立的最终写入和 active Reply 移除逻辑。
 IMMEDIATE_CHECKPOINT_TYPES = frozenset({
-    "REPLY_START", "TEXT_BLOCK_END", "THINKING_BLOCK_END", "DATA_BLOCK_END",
+    "REPLY_START", "TEXT_BLOCK_END", "THINKING_BLOCK_END",
     "TOOL_CALL_START", "TOOL_CALL_END", "TOOL_RESULT_END", "MODEL_CALL_END",
     # 权限确认：把 tool_call 置 ASKING 后必须立即落盘。挂起不产 REPLY_END，
     # 若不在此 checkpoint，ASKING 只停留在内存，进程/实例销毁后无法从 state.json 恢复。
@@ -88,7 +90,7 @@ class SessionProjection:
         # 不落盘的 session 级运行状态。它们不是 Msg，也没有 reply_id，但客户端
         # attach 时必须知道（例如正在进行的 context compact）。终态到达即清除。
         self._active_session_events: dict[
-            str, dict[SessionMaintenanceEvent, CustomEvent]
+            str, dict[SessionMaintenanceEvent, SessionMaintenanceRecord]
         ] = {}
         # 保护上述内存投影，避免 Event 流、attach snapshot 与取消路径并发修改同一 Msg。
         # 普通 Event 的磁盘 I/O 在锁外执行；UserMessage 已由 Inbox 在安全边界提交，
@@ -107,8 +109,8 @@ class SessionProjection:
         处理两类事件：
         - Reply 生命周期事件（REPLY_START/.../REPLY_END）：聚合为运行中 assistant
           Msg 快照，REPLY_END 时返回 completed_message。
-        - CustomEvent(name=context_compact_done)：投影为一条 user/compact Msg
-          并 upsert 落盘；其他 CustomEvent 不持久化。
+        - Host maintenance events are handled by ``apply_maintenance`` and never
+          enter the Agent event union.
 
         Msg 只在这里创建和修改，Turn 与 WebSocket 均不持有它。每个成功接收的
         Reply 事件都会推进内存快照的 revision。
@@ -137,26 +139,6 @@ class SessionProjection:
 
         reply_id = getattr(event, "reply_id", "") or ""
         if not reply_id:
-            # 非 Reply 生命周期事件。CustomEvent 可能携带 compact 投影语义。
-            if isinstance(event, CustomEvent):
-                if event.name == SessionMaintenanceEvent.COMPACTION_START:
-                    async with self._lock:
-                        self._active_session_events.setdefault(session_id, {})[
-                            SessionMaintenanceEvent.COMPACTION_START
-                        ] = event
-                    return ProjectionResult()
-                if event.name == SessionMaintenanceEvent.COMPACTION_DONE:
-                    # 先完成 Msg 落盘，再清除 start，避免 attach 落在两者之间时
-                    # 既拿不到 active start，也读不到已完成摘要。
-                    result = await self._project_compact_done(session_id, event)
-                    await self._clear_active_session_event(
-                        session_id, SessionMaintenanceEvent.COMPACTION_START
-                    )
-                    return result
-                if event.name == SessionMaintenanceEvent.COMPACTION_FAILED:
-                    await self._clear_active_session_event(
-                        session_id, SessionMaintenanceEvent.COMPACTION_START
-                    )
             return ProjectionResult()
 
         event_type = getattr(event, "type", "")
@@ -194,7 +176,7 @@ class SessionProjection:
             replies = self._replies.setdefault(session_id, {})
             state = replies.get(message_id)
             if state is None:
-                # Core 在同一次 reply 中开启新的 message_id 时，上一条 Assistant
+                # Runtime 在同一次 reply 中开启新的 message_id 时，上一条 Assistant
                 # 已经完成安全边界；先封口，稍后在锁外 checkpoint。
                 for previous_id, previous in tuple(replies.items()):
                     if previous.reply_id != reply_id or previous_id == message_id:
@@ -265,8 +247,30 @@ class SessionProjection:
                         self._replies.pop(session_id, None)
         return ProjectionResult(completed_message=completed)
 
+    async def apply_maintenance(
+        self, session_id: str, event: SessionMaintenanceRecord
+    ) -> ProjectionResult:
+        """Apply a typed Host maintenance record outside AgentStreamEvent."""
+        if event.name == SessionMaintenanceEvent.COMPACTION_START:
+            async with self._lock:
+                self._active_session_events.setdefault(session_id, {})[
+                    SessionMaintenanceEvent.COMPACTION_START
+                ] = event
+            return ProjectionResult()
+        if event.name == SessionMaintenanceEvent.COMPACTION_DONE:
+            result = await self._project_compact_done(session_id, event)
+            await self._clear_active_session_event(
+                session_id, SessionMaintenanceEvent.COMPACTION_START
+            )
+            return result
+        if event.name == SessionMaintenanceEvent.COMPACTION_FAILED:
+            await self._clear_active_session_event(
+                session_id, SessionMaintenanceEvent.COMPACTION_START
+            )
+        return ProjectionResult()
+
     async def _project_compact_done(
-        self, session_id: str, event: CustomEvent
+        self, session_id: str, event: SessionMaintenanceRecord
     ) -> ProjectionResult:
         """把 context_compact_done 投影为一条 Msg 并幂等落盘。
 

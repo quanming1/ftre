@@ -35,7 +35,7 @@ Cordis 按 HookMode 调度所有 listener
 
 | 文件 | 作用 | 不负责什么 |
 | --- | --- | --- |
-| `spec.py` | 从 `ftre-agent-core` 重新导出 Hook 契约类型，保证 Core/Gateway 使用同一协议 | 不重新实现 `HookSpec` |
+| `spec.py` | 从 `ftre-agent` 导入公共 Hook 契约类型，保证 Runtime/Gateway 使用同一协议 | 不重新实现 `HookSpec` |
 | `runtime.py` | 注册、触发、失败处理、in-flight 计数和诊断 | 不定义业务 Hook 名称 |
 | `scope.py` | 为 Agent 生成生命周期身份，并创建 Cordis isolate Context | 不维护第二套事件系统 |
 | `diagnostics.py` | 定义失败和监听器状态的不可变快照 | 不记录 payload 或异常对象 |
@@ -46,9 +46,9 @@ Cordis 按 HookMode 调度所有 listener
 
 Kernel 不维护业务 Hook 名称总表。哪个模块定义了语义，哪个模块就是 Owner：
 
-- Agent Hook 由 `services/agent/hooks.py` 定义；
+- Agent Hook 由 `ftre-agent.hooks` 定义；
 - Session Hook 由 `services/session/hooks.py` 定义；
-- Tool/LLM Hook 由 Agent Core 或对应 Service 定义；
+- Tool/LLM Hook 由 `ftre-agent` 或对应 Service 定义；
 - Inbox、Compaction 等业务能力由各自 Package 定义；Kernel 不感知当前 Gateway 是否必选 Inbox。
 
 Kernel 只知道“如何调度一个合法的 HookSpec”，不应该出现 `compact`、`pending`、
@@ -57,7 +57,7 @@ Kernel 只知道“如何调度一个合法的 HookSpec”，不应该出现 `co
 
 ## 调度模式怎么理解
 
-`HookMode` 由 `ftre-agent-core` 定义，Runtime 只做映射：
+`HookMode` 由 `ftre-agent` 定义，Runtime 只做映射：
 
 | 模式 | 直观含义 | 典型用途 |
 | --- | --- | --- |

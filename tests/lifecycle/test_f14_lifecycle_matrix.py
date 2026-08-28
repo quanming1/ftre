@@ -126,7 +126,7 @@ async def test_llm_fallback_plugin_restart_and_unload_are_reversible(tmp_path) -
 
 @pytest.mark.asyncio
 async def test_llm_fallback_can_be_disabled_without_affecting_agent(tmp_path) -> None:
-    """禁用可选 fallback 后 Host 仍保留 Core 直连和 Agent Service。"""
+    """禁用可选 fallback 后 Host 仍保留 Runtime 直连和 Agent Service。"""
     composition = await build_composition(
         {
             "sessions_dir": str(tmp_path / "sessions"),

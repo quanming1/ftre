@@ -6,10 +6,10 @@ from typing import Any
 
 from ftre_agent import (
     AgentCreateSpec,
-    AgentEvent,
     AgentResumeSpec,
     AgentRunRequest,
     AgentRuntimeFactory,
+    AgentStreamEnvelope,
 )
 
 from .protocol import RuntimeInput
@@ -26,21 +26,53 @@ class AgentLoopHandle:
         return await self._factory.run_request(request)
 
     async def stream(self, request: AgentRunRequest):
-        result = await self.run(request)
-        yield AgentEvent(
-            event_type="run.completed",
-            agent_id=self.spec.agent_id,
-            run_id=result.run_id or result.turn_id,
-            sequence=0,
-            data={"status": result.status},
-        )
+        sequence = 0
+        inbound = self._factory._to_inbound(request)
+        async for event in self._factory._loop.stream_input(inbound):
+            metadata = getattr(event, "metadata", {})
+            run_id = (
+                getattr(event, "reply_id", None)
+                or (metadata.get("reply_id") if isinstance(metadata, dict) else None)
+                or request.request_id
+            )
+            yield AgentStreamEnvelope(
+                agent_id=self.spec.agent_id,
+                run_id=str(run_id),
+                sequence=sequence,
+                event=event,
+            )
+            sequence += 1
 
     async def cancel(self, reason: str = ""):
         del reason
-        return await self._factory.cancel_session(self.spec.session_id or self.spec.agent_id)
+        return await self._factory.control.cancel_session(
+            self.spec.session_id or self.spec.agent_id
+        )
 
     async def dispose(self) -> None:
         return None
+
+
+class AgentLoopControl:
+    """Control-plane port for the shared AgentLoop."""
+
+    def __init__(self, loop: Any) -> None:
+        self._loop = loop
+
+    async def cancel_session(self, *args: Any, **kwargs: Any):
+        return await self._loop.cancel_session(*args, **kwargs)
+
+    def get_session_status(self, session_id: str) -> str:
+        return self._loop.get_session_status(session_id)
+
+    def is_active_session(self, session_id: str) -> bool:
+        return self._loop.is_active_session(session_id)
+
+    async def delete_session(self, session_id: str):
+        return await self._loop.delete_session(session_id)
+
+    async def resume_confirmation(self, *args: Any, **kwargs: Any):
+        return await self._loop.resume_confirmation(*args, **kwargs)
 
 
 class AgentLoopFactory(AgentRuntimeFactory):
@@ -51,6 +83,7 @@ class AgentLoopFactory(AgentRuntimeFactory):
 
     def __init__(self, loop: Any) -> None:
         self._loop = loop
+        self.control = AgentLoopControl(loop)
 
     async def create(self, spec: AgentCreateSpec) -> AgentLoopHandle:
         return AgentLoopHandle(self, spec)
@@ -82,21 +115,6 @@ class AgentLoopFactory(AgentRuntimeFactory):
             metadata=metadata,
         )
 
-    async def cancel_session(self, *args: Any, **kwargs: Any):
-        return await self._loop.cancel_session(*args, **kwargs)
-
-    def get_session_status(self, session_id: str) -> str:
-        return self._loop.get_session_status(session_id)
-
-    def is_active_session(self, session_id: str) -> bool:
-        return self._loop.is_active_session(session_id)
-
-    async def delete_session(self, session_id: str):
-        return await self._loop.delete_session(session_id)
-
-    async def resume_confirmation(self, *args: Any, **kwargs: Any):
-        return await self._loop.resume_confirmation(*args, **kwargs)
-
     async def stop(self) -> None:
         await self._loop.stop()
 
@@ -104,4 +122,4 @@ class AgentLoopFactory(AgentRuntimeFactory):
         self._loop.start()
 
 
-__all__ = ["AgentLoopFactory", "AgentLoopHandle"]
+__all__ = ["AgentLoopControl", "AgentLoopFactory", "AgentLoopHandle"]

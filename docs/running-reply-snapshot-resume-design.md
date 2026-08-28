@@ -157,7 +157,6 @@ Gateway 重启时，若读取到 `finished_at == null` 的 assistant Msg，不�
 | `REPLY_START` | 使 Reply 立刻成为可恢复 Msg |
 | `TEXT_BLOCK_END` | 已完成文本 block 是稳定语义单元 |
 | `THINKING_BLOCK_END` | 已完成思考 block 是稳定语义单元 |
-| `DATA_BLOCK_END` | 数据块完整后才能可靠恢复 |
 | `TOOL_CALL_START` | 客户端切回后可显示正在调用的工具 |
 | `TOOL_CALL_END` | 工具参数已经完整 |
 | `TOOL_RESULT_END` | 工具执行结果是关键状态 |
@@ -172,10 +171,8 @@ Gateway 重启时，若读取到 `finished_at == null` 的 assistant Msg，不�
 ```text
 TEXT_BLOCK_DELTA
 THINKING_BLOCK_DELTA
-DATA_BLOCK_DELTA
 TOOL_CALL_DELTA
 TOOL_RESULT_TEXT_DELTA
-TOOL_RESULT_DATA_DELTA
 ```
 
 建议初始参数：

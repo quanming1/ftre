@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from ftre_agent_core.message import Msg
+    from ftre_agent.message import Msg
 
 QueueTarget = Literal["next-turn", "next-step"]
 QueueSource = Literal["user", "plugin", "system"]
@@ -40,7 +40,7 @@ class QueueItem:
         """返回至少包含一条消息的执行输入。"""
         if self.messages:
             return self.messages
-        from ftre_agent_core.message import UserMsg
+        from ftre_agent.message import UserMsg
 
         return (UserMsg(content=self.content, metadata={"request_id": self.request_id}),)
 
@@ -69,7 +69,7 @@ class QueueItem:
         raw_messages = value.get("messages", ())
         if not isinstance(raw_messages, list):
             raise TypeError("messages 必须是数组")
-        from ftre_agent_core.message import Msg
+        from ftre_agent.message import Msg
 
         messages = tuple(Msg.model_validate(item) for item in raw_messages)
         return cls(

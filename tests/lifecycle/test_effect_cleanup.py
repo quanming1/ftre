@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 from cordis import Context, FiberState
-from ftre_agent_core.tool import Tool, ToolRegistry
+from ftre_agent.tool import ToolDefinition
 
 from ftre.plugins.builtin.command import CommandService
 from ftre.services.messaging.bus import EventBus
@@ -33,7 +33,7 @@ class FakeChannel:
 @pytest.mark.asyncio
 async def test_contributions_are_removed_in_reverse_order() -> None:
     ctx = Context()
-    tools = ToolService(ToolRegistry())
+    tools = ToolService()
     commands = CommandService()
     channels = ChannelService(ChannelManager(EventBus()))
     prompts = SystemPromptService()
@@ -41,7 +41,7 @@ async def test_contributions_are_removed_in_reverse_order() -> None:
         ctx.provide(name, value)
 
     def behavior(plugin_ctx, _config=None):
-        tool_disposer = plugin_ctx.tools.register(Tool(name="cleanup", description="", func=lambda: "ok"), owner="behavior")
+        tool_disposer = plugin_ctx.tools.register(ToolDefinition(name="cleanup", description="", func=lambda: "ok"), owner="behavior")
         plugin_ctx.effect(lambda: tool_disposer, label="tool:cleanup")
         command_disposer = plugin_ctx.commands.register("/cleanup", lambda _ctx: None)
         plugin_ctx.effect(lambda: command_disposer, label="command:cleanup")

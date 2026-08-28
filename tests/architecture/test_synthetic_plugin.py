@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 from cordis import Context, FiberState
-from ftre_agent_core.tool import ToolRegistry
 
 from ftre.kernel.plugins import PluginManager
 from ftre.services.system_prompt import SystemPromptService
@@ -12,7 +11,7 @@ from ftre.services.tools import ToolService
 @pytest.mark.asyncio
 async def test_synthetic_plugin_uses_only_public_contracts() -> None:
     ctx = Context()
-    tools = ToolService(ToolRegistry())
+    tools = ToolService()
     prompts = SystemPromptService()
     ctx.provide("tools", tools)
     ctx.provide("system_prompt", prompts)
@@ -25,4 +24,3 @@ async def test_synthetic_plugin_uses_only_public_contracts() -> None:
     assert any(section.owner == "synthetic-audit" for section in prompts.snapshot())
     await manager.close()
     assert not prompts.snapshot()
-

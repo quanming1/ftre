@@ -9,7 +9,7 @@ from ftre_agent import (
     AgentRunResult,
     AgentService,
 )
-from ftre_agent_core.message import UserMsg
+from ftre_agent.message import UserMsg
 
 
 class FakeRuntime:
@@ -17,6 +17,10 @@ class FakeRuntime:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
+
+    @property
+    def control(self):
+        return self
 
     def is_active_session(self, session_id: str) -> bool:
         return session_id == "busy"

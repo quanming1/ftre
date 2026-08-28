@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from ftre_agent_core.message import AssistantMsg, UserMsg
+from ftre_agent.message import AssistantMsg, UserMsg
 
 from ftre.services.session.persistence.repository import SessionRepository
 

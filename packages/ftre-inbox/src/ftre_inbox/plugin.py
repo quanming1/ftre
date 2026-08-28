@@ -109,7 +109,7 @@ async def apply(ctx: Context, config=None):
         from ftre.services.session.hooks import SESSION_DISPOSED_SPEC
 
         async def on_before_reasoning(payload, next_):
-            """把 active Turn 的 next-step 原子 claim 成 Core 普通消息。"""
+            """把 active Turn 的 next-step 原子 claim 成 Runtime 普通消息。"""
             result = await next_()
             claimed = await service.deliver_next_step_for_reasoning(
                 payload.session_id,

@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from cordis import Context
 from ftre_agent import AgentRegistry
-from ftre_agent_core.hooks import AGENT_BEFORE_REASONING_SPEC, BeforeReasoningPayload
+from ftre_agent.hooks import AGENT_BEFORE_REASONING_SPEC, BeforeReasoningPayload
 from ftre_inbox.plugin import apply
 from ftre_inbox.protocol import InboundMessage
 
@@ -20,7 +20,7 @@ class BusyAgent:
 def _provide_plugin_dependencies(context: Context) -> None:
     """为 Inbox Plugin 提供它真正声明的公开 Service 依赖。
 
-    这些测试只验证队列 admission 与 Core Hook 的连接，不需要真实的
+    这些测试只验证队列 admission 与 Runtime Hook 的连接，不需要真实的
     SessionEventService；但 `session_events` 仍是 Inbox 的必需注入边界，
     因此用显式的空能力填充最小测试上下文，而不是让 Plugin 回退到隐式
     `ctx.get()`。
@@ -68,7 +68,7 @@ async def test_steer_hook_consumed_before_second_llm_call(tmp_path):
     """steer 在两次 LLM 调用之间被 before-reasoning Hook 原子消费。
 
     用最小 stub 驱动两轮 dispatch（等价于 Runtime 在每个 Reasoning 前
-    消费 next-step 队列），避免依赖已退役的 Core ReActRunner。
+    消费 next-step 队列），避免依赖 Runtime 之外的执行实现。
     """
     context = Context()
     runtime = HookRuntime(context)

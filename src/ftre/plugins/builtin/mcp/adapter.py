@@ -1,8 +1,8 @@
 """
-MCP Tool → ftre Tool 适配器
+MCP ToolDefinition → ftre ToolDefinition 适配器
 
-将 MCP 服务器提供的工具转换为 ftre_agent_core.tool.Tool 实例，
-使其可以像内置工具（bash / read / write 等）一样注册到 ToolRegistry。
+将 MCP 服务器提供的工具转换为 ftre_agent.tool.ToolDefinition 实例，
+使其可以像内置工具（bash / read / write 等）一样注册到 ToolService。
 
 工具名规则：mcp__{server_name}__{tool_name}
   - 例如：mcp__filesystem__read_file
@@ -23,8 +23,8 @@ import base64
 import logging
 import uuid
 
-from ftre_agent_core.event import HintBlockEvent
-from ftre_agent_core.tool import Tool, ToolParameter
+from ftre_agent.event import HintBlockEvent
+from ftre_agent.tool import ToolDefinition, ToolParameter
 from mcp import Tool as McpToolDef
 
 from .connection import McpManager
@@ -42,7 +42,7 @@ _TYPE_MAP = {
 }
 
 # 工具名前缀：所有 MCP 工具统一以 mcp__ 开头。
-# 这样在 ToolRegistry 里能一眼区分 MCP 工具和内置工具（bash/read/write 等），
+# 这样在 ToolService 里能一眼区分 MCP 工具和内置工具（bash/read/write 等），
 # 热重载时也方便批量清理旧工具（按前缀过滤）。
 MCP_TOOL_PREFIX = "mcp__"
 
@@ -119,8 +119,8 @@ def create_mcp_tool(
     server_name: str,
     mcp_tool: McpToolDef,
     manager: McpManager,
-) -> Tool:
-    """将单个 MCP 工具转换为 ftre Tool 实例
+) -> ToolDefinition:
+    """将单个 MCP 工具转换为 ftre ToolDefinition 实例
 
     Args:
         server_name: MCP 服务器名
@@ -242,7 +242,7 @@ def create_mcp_tool(
             logger.error(f"[mcp] call_tool 失败: {tool_id} — {e}")
             return f"[MCP 错误] {type(e).__name__}: {e}"
 
-    return Tool(
+    return ToolDefinition(
         name=tool_id,
         description=description,
         parameters=parameters,
@@ -253,11 +253,11 @@ def create_mcp_tool(
 async def build_mcp_tools_for_servers(
     manager: McpManager,
     server_names: set[str],
-) -> list[Tool]:
-    """为指定服务器构建 ftre Tool 实例列表。
+) -> list[ToolDefinition]:
+    """为指定服务器构建 ftre ToolDefinition 实例列表。
 
     只从 server_names 指定的服务器发现工具，不影响连接池中其他服务器。
-    返回的 Tool 列表未注册到任何 registry，由调用方决定注册目标。
+    返回的 ToolDefinition 列表未注册到任何 registry，由调用方决定注册目标。
 
     Args:
         manager: McpManager 实例
@@ -267,7 +267,7 @@ async def build_mcp_tools_for_servers(
     if not mcp_tools:
         return []
 
-    tools: list[Tool] = []
+    tools: list[ToolDefinition] = []
     for server_name, mcp_tool in mcp_tools:
         try:
             tool = create_mcp_tool(server_name, mcp_tool, manager)
@@ -279,7 +279,7 @@ async def build_mcp_tools_for_servers(
     return tools
 
 
-async def build_mcp_tools(manager: McpManager) -> list[Tool]:
+async def build_mcp_tools(manager: McpManager) -> list[ToolDefinition]:
     """从所有已连接的 MCP 服务器发现并转换工具。
 
     build_mcp_tools_for_servers 的便捷封装——自动取所有已连接的服务器名集合。
@@ -287,7 +287,7 @@ async def build_mcp_tools(manager: McpManager) -> list[Tool]:
     使用 build_mcp_tools_for_servers 传入指定服务器集合。
 
     Returns:
-        ftre Tool 实例列表，可直接注册到 ToolRegistry
+        ftre ToolDefinition 实例列表，可直接注册到 ToolService
     """
     all_servers = set(manager.get_connected_servers())
     return await build_mcp_tools_for_servers(manager, all_servers)

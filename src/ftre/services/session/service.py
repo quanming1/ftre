@@ -20,8 +20,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ftre_agent_core.message import Msg, MsgName
-from ftre_agent_core.types import ReplyFinishedReason
+from ftre_agent.message import Msg, MsgName
+from ftre_agent.types import ReplyFinishedReason
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.services.session.entity.models import (
@@ -769,7 +769,7 @@ class SessionService:
 
 
 def _gen_msg_id() -> str:
-    """与 ftre_agent_core Msg 的 id 生成规则保持一致（uuid4 hex 前 16 位）。"""
+    """与 ftre_agent Msg 的 id 生成规则保持一致（uuid4 hex 前 16 位）。"""
     return uuid.uuid4().hex[:16]
 
 

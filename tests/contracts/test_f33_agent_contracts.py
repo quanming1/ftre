@@ -31,6 +31,10 @@ class _RecordingRuntime:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
+    @property
+    def control(self):
+        return self
+
     def is_active_session(self, session_id: str) -> bool:
         return False
 

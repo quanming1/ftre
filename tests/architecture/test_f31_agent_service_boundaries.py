@@ -139,8 +139,8 @@ def test_f32_runtime_dependency_baseline_has_only_public_services() -> None:
     assert "ctx.agent_profiles.manager" not in plugin
 
     engine = (RUNTIME / "engine.py").read_text(encoding="utf-8")
-    for marker in ("channel_manager=None,", "tool_registry: ToolRegistry | None = None,",
-                   "mcp_service=None,", "agent_manager=None,", "self.session_projection ="):
+    for marker in ("channel_manager=None,", "mcp_service=None,", "agent_manager=None,",
+                   "self.session_projection ="):
         assert marker not in engine, marker
     assert "self.message_bus = message_bus" in engine
     assert "self.sessions = sessions" in engine
@@ -194,17 +194,26 @@ def test_f32_runtime_uses_public_bus_and_session_exits() -> None:
     assert "finish_open_replies(" in runtime_sources
 
 
-def test_f32_turn_input_and_core_creation_have_single_owner() -> None:
-    """RuntimeInput 和 Core 工厂边界必须保持单向，避免 Runtime 再造公共协议。"""
+def test_f32_turn_input_and_runtime_creation_have_single_owner() -> None:
+    """RuntimeInput 和 Runtime 工厂边界必须保持单向。"""
     engine = (RUNTIME / "engine.py").read_text(encoding="utf-8")
     turn = (RUNTIME / "turn_executor.py").read_text(encoding="utf-8")
     factory = (RUNTIME / "factory.py").read_text(encoding="utf-8")
     assert "RuntimeInput(" in engine
     assert "inbound: RuntimeInput" in turn
-    assert "self._core_factory(" in turn
+    assert "self._runtime_factory(" in turn
     assert "return ReActAgent(" in factory
     assert "ReActAgent(" not in turn.replace("ReActAgent | None", "")
     assert "or AgentRegistry()" not in engine
+
+
+def test_prompt_assembly_has_single_service_owner() -> None:
+    """Runtime 只消费组装结果，不保留第二个 Prompt 组装入口。"""
+    factory = (RUNTIME / "factory.py").read_text(encoding="utf-8")
+    turn = (RUNTIME / "turn_executor.py").read_text(encoding="utf-8")
+    assert "compose_system_prompt" not in factory
+    assert "compose_system_prompt" not in turn
+    assert "system_prompt = config.system_prompt" in turn
 
 
 def test_f32_llm_hook_callback_does_not_use_context_as_locator() -> None:
@@ -241,7 +250,7 @@ def test_f31_hook_specs_have_unique_names_and_real_owner_contracts() -> None:
     }
     assert AGENT_REQUEST_SPEC.payload_type.__module__ == "ftre_llm.contracts"
     assert LLM_STREAM_SPEC.name == "llm/stream"
-    assert AGENT_STOP_DECISION_SPEC.payload_type.__module__.startswith("ftre_agent_core")
+    assert AGENT_STOP_DECISION_SPEC.payload_type.__module__ == "ftre_agent.hooks"
     assert ADAPTERS_UPDATED_SPEC.mode.value == "emit"
     # F33：Ftre Agent Hook 的唯一 Owner 是契约包 ftre_agent。
     assert AGENT_BEFORE_RUN_SPEC.payload_type.__module__ == "ftre_agent.hooks"

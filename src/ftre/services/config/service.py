@@ -74,7 +74,7 @@ class ConfigService:
 
         这是 ConfigService 对外公开的最小模型解析边界：调用方只能拿到一次
         防御性快照，不能访问内部配置字典或 AgentProfile。返回值包含构造
-        Core Adapter 所需的协议和凭据，但本方法不记录、不打印 API key。
+        LLM Adapter 所需的协议和凭据，但本方法不记录、不打印 API key。
         未找到 provider/model 时返回 ``None``，由调用方决定是否放弃可选能力。
         """
         if not isinstance(provider_name, str) or not provider_name:

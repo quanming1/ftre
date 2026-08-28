@@ -10,10 +10,10 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"
 dependencies = [
+    "ftre-agent>=0.1.0,<0.2.0",
     "ftre>=0.3.0,<0.4.0",
     "ftre-inbox>=0.2.0,<0.3.0",
     "cordis-py==0.4.0",
-    "ftre-agent-core>=0.2.0,<0.3.0",
 ]
 
 [tool.setuptools.packages.find]

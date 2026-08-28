@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ftre_agent_core.message import Msg, MsgName
+from ftre_agent.message import Msg, MsgName
 
 from ftre.services.config.paths import CONFIG_PATH
 from ftre.services.session.entity.models import (

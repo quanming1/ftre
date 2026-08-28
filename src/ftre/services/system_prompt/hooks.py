@@ -30,6 +30,8 @@ class PromptAssemblyPayload:
     config: Any
     event_loop: Any
     cancellation: asyncio.Event
+    profile: Any = None
+    channel_id: str = ""
 
 
 async def _accept(payload: PromptAssemblyPayload) -> PromptAssembly:

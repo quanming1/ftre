@@ -16,7 +16,7 @@ from ftre_agent import (
     AgentRunResult,
     AgentService,
 )
-from ftre_agent_core.message import UserMsg
+from ftre_agent.message import UserMsg
 
 from ftre.services.agent_profile.models import EffectiveProfile
 from ftre.services.agent_profile.service import AgentProfileService
@@ -33,6 +33,10 @@ class _FakeAgentRuntime:
 
     def is_active_session(self, session_id: str) -> bool:
         return session_id == "busy"
+
+    @property
+    def control(self):
+        return self
 
     def get_session_status(self, session_id: str) -> str:
         return "running" if session_id == "busy" else "idle"

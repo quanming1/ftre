@@ -4,7 +4,7 @@ MessageBus、Command 和 Inbox 在接入平面完成裁决；这里收到的只�
 ``RuntimeInput``。Loop 只负责 active Turn、Hook、Projection 和取消。
 
 依赖边界（PRD-F33 §5.4）：本模块只 import ``ftre_agent`` 契约、
-``ftre_agent_core`` 与独立 Package（``ftre_llm``）；Host Service 一律以构造
+``ftre_llm`` 与独立 Runtime；Host Service 一律以构造
 参数注入并按公开窄方法调用，不 import ``ftre.services.*`` 实现模块。
 """
 
@@ -23,10 +23,10 @@ from ftre_agent import (
     BeforeRunPayload,
     RejectRun,
 )
-from ftre_agent_core import Tracer
-from ftre_agent_core.event import UserMessageEvent
-from ftre_agent_core.hooks import HookSpec
-from ftre_agent_core.message import from_openai_message
+from ftre_agent.event import UserMessageEvent
+from ftre_agent.hooks import HookSpec
+from ftre_agent.message import from_openai_message
+from ftre_agent.tracing import Tracer
 
 from .completion import CompletionRegistry
 from .protocol import RuntimeInput
@@ -94,6 +94,7 @@ class AgentLoop:
         self._direct_completion_events: dict[str, asyncio.Event] = {}
         self._direct_parent_tasks: dict[str, asyncio.Task | None] = {}
         self._direct_reservations: set[str] = set()
+        self._stream_queues: dict[str, asyncio.Queue] = {}
         # active Turn 结束后，Compaction 等维护 Hook 仍可能继续运行。这个集合
         # 是 Agent Runtime 的最小维护状态，不保存队列或维护任务本身；它只让
         # AgentService/Inbox 知道该 Session 在维护期间仍然 busy。
@@ -378,6 +379,30 @@ class AgentLoop:
             if self._direct_completion_events.get(session_id) is completion:
                 self._direct_completion_events.pop(session_id, None)
                 self._direct_parent_tasks.pop(session_id, None)
+            queue = getattr(self, "_stream_queues", {}).get(session_id)
+            if queue is not None:
+                await queue.put(None)
+
+    async def stream_input(self, message: RuntimeInput):
+        """Stream the real Runtime/Session events for one delivered input."""
+        queue: asyncio.Queue = asyncio.Queue()
+        session_id = message.session_id
+        if session_id in self._stream_queues:
+            raise RuntimeError(f"Session {session_id!r} already has an event stream")
+        self._stream_queues[session_id] = queue
+        task = asyncio.create_task(self.run_input(message), name=f"stream-input:{session_id}")
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield event
+            await task
+        finally:
+            self._stream_queues.pop(session_id, None)
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     async def _persist_inbound_user_message(
         self,
@@ -503,6 +528,9 @@ class AgentLoop:
         metadata=None,
     ):
         """Delegate Session event persistence and broadcast to its sole Owner."""
+        queue = getattr(self, "_stream_queues", {}).get(session_id)
+        if queue is not None:
+            await queue.put(event)
         if self.session_events is None:
             raise RuntimeError("SessionEventService is not available")
         return await self.session_events.emit(

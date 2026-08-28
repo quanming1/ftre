@@ -7,15 +7,13 @@
 
 from __future__ import annotations
 
-from cordis import Context
-
 from .service import AgentService
 
 inject = ()
 provide = ("agents",)
 
 
-def apply(ctx: Context, config=None) -> None:
+def apply(ctx, config=None) -> None:
     """提供唯一 ``agents`` Service，并绑定可逆生命周期。"""
     service = ctx.get("agents", strict=False)
     if service is not None:

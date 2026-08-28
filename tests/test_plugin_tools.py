@@ -5,8 +5,8 @@ import pytest
 from cordis import Context, FiberState
 from fastapi import APIRouter
 from ftre_agent import AgentRegistry, AgentSubject
-from ftre_agent_core.event import HintBlockEvent
-from ftre_agent_core.tool import Tool, ToolRegistry
+from ftre_agent.event import HintBlockEvent
+from ftre_agent.tool import ToolDefinition
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.plugins.builtin.core_tools import create_read_tool
@@ -22,19 +22,18 @@ from ftre.services.tools import ToolService
 from ftre.services.workspace.accessor import WorkspaceAccessor
 
 
-def _dummy_tool(name: str = "dummy") -> Tool:
+def _dummy_tool(name: str = "dummy") -> ToolDefinition:
     def dummy() -> str:
         return "ok"
 
-    return Tool(name=name, description="dummy tool", parameters=[], func=dummy)
+    return ToolDefinition(name=name, description="dummy tool", parameters=[], func=dummy)
 
 
-def test_tool_registry_overwrites_duplicate_names():
-    registry = ToolRegistry()
-    registry.register(_dummy_tool("dup"))
-    registry.register(_dummy_tool("dup"))
-    assert len(registry) == 1
-    assert registry.get("dup") is not None
+def test_tool_service_rejects_duplicate_names_in_one_scope():
+    service = ToolService()
+    service.register(_dummy_tool("dup"), owner="test")
+    with pytest.raises(ValueError, match="already registered"):
+        service.register(_dummy_tool("dup"), owner="test")
 
 
 def test_read_tool_reads_relative_image_path(tmp_path):
@@ -45,7 +44,7 @@ def test_read_tool_reads_relative_image_path(tmp_path):
         b"\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00"
         b"\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
     )
-    result = create_read_tool().func(
+    result = create_read_tool().execute_callable(
         "screen.png",
         ws=_FakeWorkspace(str(tmp_path)),
         llm_config=SimpleNamespace(vision=True),
@@ -58,7 +57,7 @@ def test_read_tool_reads_relative_image_path(tmp_path):
 @pytest.mark.asyncio
 async def test_cordis_plugin_failure_rolls_back_registered_tools():
     root = Context()
-    tools = ToolService(ToolRegistry())
+    tools = ToolService()
     root.provide("tools", tools)
 
     def failing_plugin(ctx, _config=None):
@@ -79,7 +78,7 @@ async def test_cordis_plugin_failure_rolls_back_registered_tools():
 @pytest.mark.asyncio
 async def test_cordis_plugin_contributions_and_router_are_reversible():
     root = Context()
-    tools = ToolService(ToolRegistry())
+    tools = ToolService()
     http = HttpService()
     root.provide("tools", tools)
     root.provide("http", http)

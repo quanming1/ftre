@@ -8,7 +8,7 @@ from ftre_agent import (
     AgentRunResult,
     AgentRuntimeFactory,
 )
-from ftre_agent_core.message import UserMsg
+from ftre_agent.message import UserMsg
 from ftre_inbox.hooks import INBOX_BEFORE_ADMIT_SPEC, RejectAdmission
 from ftre_inbox.models import QueueItem
 from ftre_inbox.protocol import InboundMessage
@@ -42,6 +42,10 @@ class RuntimeFactory(AgentRuntimeFactory):
 
     def __init__(self) -> None:
         self.calls = []
+
+    @property
+    def control(self):
+        return self
 
     async def create(self, spec):
         return RuntimeHandle(self.calls)

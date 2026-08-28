@@ -2,7 +2,7 @@
 
 覆盖 PRD-F33 的架构验收：契约包独立导入（AC1）、旧 Owner 退出（AC3）、
 Package 元数据与 entry point（AC15）、Runtime 无 Host 反向依赖（AC21）、
-DSH 对照项（AC22：不复制 Inbox/队列模型，不复制 Core Hook）。
+DSH 对照项（AC22：不复制 Inbox/队列模型，不复制 Agent Hook）。
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def test_ac21_runtime_never_imports_host_services() -> None:
         host = {m for m in modules if m == "ftre" or m.startswith("ftre.")}
         assert host == set(), (path, sorted(host))
 
-        allowed_roots = {"ftre_agent", "ftre_agent_core", "ftre_llm"}
+        allowed_roots = {"ftre_agent", "ftre_llm"}
         for module in modules:
             if "." in module:
                 root, _, _ = module.partition(".")
@@ -112,7 +112,7 @@ def test_ac21_agent_contract_package_depends_on_nothing_ftre() -> None:
 
 
 def test_ac22_no_dsh_inbox_or_duplicated_core_hooks() -> None:
-    """AC22：不复制 DSH 的 Agent 内置 Inbox，也不复制 Core Hook。"""
+    """AC22：不复制 DSH 的 Agent 内置 Inbox，也不复制 Agent Hook。"""
     inbox_words = ("QueueItem", "next-turn", "next-step", "mailbox", "queue worker")
     for path in [*AGENT_SRC.rglob("*.py"), *RUNTIME_SRC.rglob("*.py")]:
         source = path.read_text(encoding="utf-8")
@@ -120,10 +120,9 @@ def test_ac22_no_dsh_inbox_or_duplicated_core_hooks() -> None:
             assert word not in source, (path, word)
 
     import ftre_agent
-    from ftre_agent_core import hooks as core_hooks
 
-    assert ftre_agent.AGENT_BEFORE_REASONING_SPEC is core_hooks.AGENT_BEFORE_REASONING_SPEC
-    assert ftre_agent.AGENT_STOP_DECISION_SPEC is core_hooks.AGENT_STOP_DECISION_SPEC
+    assert ftre_agent.AGENT_BEFORE_REASONING_SPEC.name == "agent/before-reasoning"
+    assert ftre_agent.AGENT_STOP_DECISION_SPEC.name == "agent/stop-decision"
 
 
 def test_run_result_contract_has_stable_status_values() -> None:

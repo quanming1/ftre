@@ -5,14 +5,12 @@
 ## 开发环境
 
 ```bash
-# Clone 所有四个仓库到同级目录
+# Clone 需要参与开发的仓库
 git clone https://github.com/quanming1/ftre.git
-git clone https://github.com/quanming1/ftre-agent-core.git
 git clone https://github.com/quanming1/ftre-desktop.git
 git clone https://github.com/quanming1/ftre-docs.git
 
 # 安装后端依赖
-cd ftre-agent-core && pip install -e . && cd ..
 cd ftre && pip install -e . && cd ..
 
 # 安装前端依赖
@@ -40,7 +38,7 @@ type 包括：`feat`、`fix`、`refactor`、`docs`、`test`、`chore`。
 
 ## 代码风格
 
-### Python（ftre + agent-core）
+### Python（ftre 与 packages）
 
 - Python 3.12+，使用类型注解
 - 日志统一用 `logging`（Python）
@@ -56,10 +54,6 @@ type 包括：`feat`、`fix`、`refactor`、`docs`、`test`、`chore`。
 提交前确保测试通过：
 
 ```bash
-# agent-core
-cd ftre-agent-core
-python -m pytest tests/ -q --ignore=tests/test_fake_llm.py --ignore=tests/test_probe_real_model.py
-
 # ftre
 cd ftre
 python -m pytest tests/ -q
@@ -74,4 +68,4 @@ python -m pytest tests/ -q
 
 ## 仓库关系
 
-改 `ftre-agent-core` 后需要同步验证 `ftre` 后端（`ftre` import `ftre-agent-core`）。改前端后需要同步验证后端 API 兼容性。
+Agent 契约、Runtime 和 LLM 的改动均在 `ftre/packages/` 内完成；改前端后需要同步验证后端 API 兼容性。

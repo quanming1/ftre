@@ -30,16 +30,15 @@ from ftre_agent import (
     RequestErrorPayload,
     RetryRequest,
 )
-from ftre_agent_core.agent import RunStatus
-from ftre_agent_core.event import (
-    CustomEvent,
+from ftre_agent.event import (
     ReplyFinishedReason,
     UserConfirmResultEvent,
 )
-from ftre_agent_core.message import Msg
+from ftre_agent.message import Msg
 
-from .factory import compose_system_prompt, create_core_agent, default_agent_state
+from .factory import create_runtime_agent, default_agent_state
 from .protocol import RuntimeInput
+from .run_state import RunStatus
 from .state import PUBLIC_RUN_STATUS, Turn, TurnStatus
 
 if TYPE_CHECKING:
@@ -91,7 +90,7 @@ class TurnExecutor:
         self._config_service = config_service
         self._llm_service = llm_service
         # 测试可替换这一处纯构造函数；生产路径始终使用 Runtime 唯一工厂。
-        self._core_factory = create_core_agent
+        self._runtime_factory = create_runtime_agent
 
     # ─── 驱动入口 ────────────────────────────────────────────
 
@@ -226,6 +225,7 @@ class TurnExecutor:
             hook_config,
             messages,
             workspace=workspace,
+            profile=agent_profile,
         )
         # 轮后压缩屏障必须继续使用真正创建 Agent 时的配置，而不是重新读取
         # 此刻可能已经切换过的 default Agent 配置。
@@ -273,6 +273,7 @@ class TurnExecutor:
             hook_config,
             tuple(records),
             workspace=workspace,
+            profile=agent_profile,
         )
         context_msgs = [self._sessions.record_to_msg(r) for r in records]
         # 复用默认权限规则，注入历史 context
@@ -303,14 +304,14 @@ class TurnExecutor:
         state=None,
         reply_id: str | None = None,
     ) -> None:
-        """Create the Core Agent and its shared tool context for both Turn paths."""
+        """Create the Runtime Agent and its shared tool context for both Turn paths."""
         loop = self._loop
         inbound = turn.inbound
         metadata = dict(inbound.metadata or {})
         agent_id = agent_profile.agent_id if agent_profile is not None else str(
             metadata.get("agent_id") or "default"
         )
-        core_hooks, core_hook_context = self._core_hook_binding(turn)
+        agent_hooks, agent_hook_context = self._agent_hook_binding(turn)
         effective_llm_config = (
             agent_profile.llm if agent_profile is not None else config.llm
         )
@@ -343,23 +344,19 @@ class TurnExecutor:
                 turn_id=turn.turn_id,
                 cancellation=turn.cancellation,
             )
-        system_prompt = compose_system_prompt(
-            config,
-            agent_profile,
-            channel_id=inbound.channel_id,
-            session_id=turn.session_id,
-        )
+        system_prompt = config.system_prompt
         runtime_agent_id = str(metadata.get("agent_id") or "default")
         effective_config = turn.config if turn.config is not None else config
-        turn.agent = self._core_factory(
+        runtime_state = state or default_agent_state()
+        turn.agent = self._runtime_factory(
             config=config,
             profile_snapshot=agent_profile,
             tool_view=tool_view,
             system_prompt=system_prompt,
             tracer=loop.tracer,
-            hooks=core_hooks,
-            hook_context=core_hook_context,
-            state=state or default_agent_state(),
+            hooks=agent_hooks,
+            hook_context=agent_hook_context,
+            state=runtime_state,
             llm=service_adapter,
         )
         turn.runtime_context = {
@@ -375,6 +372,7 @@ class TurnExecutor:
             "attachments": self._attachments,
             "llm_config": effective_config.llm,
             "agent_profile": agent_profile,
+            "permission_context": runtime_state.permission_context,
             "workspace": self._workspaces.create_accessor(
                 turn.session_id,
                 loop._event_loop,
@@ -412,7 +410,7 @@ class TurnExecutor:
             await self._emit_step(turn, "TURN_START", start_trigger="user")
 
             # ── 遍历 Agent 产出的事件流 ──
-            # 恢复请求传 UserConfirmResultEvent 驱动 core 从挂起继续；
+            # 恢复请求传 UserConfirmResultEvent 驱动 Runtime 从挂起继续；
             # 普通请求传消息列表。
             run_input = (
                 turn.confirm_event if turn.confirm_event is not None else turn.messages
@@ -519,18 +517,18 @@ class TurnExecutor:
     # ─── 事件发布 ──────────────────────────────────────────
 
     async def _emit_step(self, turn: Turn, phase: str, **kwargs) -> None:
-        """构造 CustomEvent 并实时推送。
-
-        所有 Turn 边界事件（PIPELINE_START/END、
-        TURN_START/END）都走这里，用 CustomEvent 携带 phase 信息。
-        reply_id 关联到 turn.turn_id（通过 metadata 传递，CustomEvent 无 reply_id 字段）。
-        """
-        event = CustomEvent(
-            name=phase,
-            value=kwargs,
-            metadata={"reply_id": turn.turn_id},
+        """Emit a Host-owned pipeline event outside AgentStreamEvent."""
+        session_events = getattr(self._loop, "session_events", None)
+        if session_events is None:
+            raise RuntimeError("SessionEventService is not available")
+        await session_events.emit_pipeline(
+            turn.session_id,
+            turn.inbound.channel_id,
+            phase,
+            kwargs,
+            reply_id=turn.turn_id,
+            metadata=dict(turn.inbound.metadata or {}),
         )
-        await self.publish_agent_event(turn, event)
 
     async def publish_agent_event(self, turn: Turn, event) -> Msg | None:
         """实时派发 Event，并在 Reply 生命周期内管理 Msg 持久化。
@@ -538,7 +536,7 @@ class TurnExecutor:
         - REPLY_START: 创建 AssistantMsg + save_message + 注册 ActiveReplyRegistry
         - 其他 Event: append_event + checkpoint（节流/立即）
         - REPLY_END: append_event + update_message + 注销 registry
-        - CustomEvent(context_compact_done): 投影为 user/compact Msg 并落盘
+        - Host maintenance events are projected by SessionEventService
         """
         result = await self._loop.emit_session_event(
             turn.session_id,
@@ -568,6 +566,7 @@ class TurnExecutor:
         messages,
         *,
         workspace: str,
+        profile=None,
     ) -> AgentConfig:
         """Render structured sections, then run the typed assembly waterfall.
 
@@ -608,11 +607,13 @@ class TurnExecutor:
             scope_context=scope_context,
             event_loop=loop._event_loop,
             cancellation=turn.cancellation,
+            profile=profile,
+            channel_id=turn.inbound.channel_id,
         )
         updated.system_prompt = assembly.text
         return updated
 
-    def _core_hook_binding(self, turn: Turn):
+    def _agent_hook_binding(self, turn: Turn):
         """Return the host Dispatcher and Cordis scope for this Agent/Turn."""
         hooks = self._hooks
         registry = self._agent_registry

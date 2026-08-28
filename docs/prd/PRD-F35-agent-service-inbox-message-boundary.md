@@ -731,6 +731,7 @@ snapshot = await agent_profiles.resolve(
 | 2026-08-27 | F35.4 实施完成：Inbox `Msg[]`、AgentService RunReservation、durable lease `claim_lease/ack/release` 与 orphan recovery；新增 Inbox admitted/claimed/deferred/delivered/error Hook；全量 `693 passed`、专项 `217 passed`、ruff、diff 检查通过 | 在 Agent 调用前建立原子准入与可恢复投递，避免 busy/崩溃/取消丢失输入 |
 | 2026-08-27 | F35.5 实施完成：UserMessageEvent 携带 run/previous assistant 坐标；Projection 在用户消息前即时封口 Assistant，失败保留 active 可重试；Inbox before-reasoning 传递 turn_id；全量 `695 passed`、专项 `197 passed`、ruff、diff 检查通过 | 让 next-step 在实时流中形成真实用户消息和 Assistant 边界，刷新前后状态一致 |
 | 2026-08-27 | F35.6 实施完成：RuntimeInput 收口 Agent/Runtime 输入，删除 Agent InboundMessage 兼容路径；补齐 before-admit/failed/discarded Hook、失败结果 lease release、取消/重启恢复、clean wheel/import 与终局架构扫描；全量 `703 passed`、专项 `272 passed`、ruff、diff 检查通过 | 完成 F35 生命周期、恢复和旧 Owner/符号收尾，所有阶段按独立 commit 闭环交付 |
+| 2026-08-28 | F36 立项：在保留 F35 AgentService/Inbox/UserMessage 边界的基础上，继续迁移 Core ReAct、公共 Msg/Event/Hook 和 Runtime Tool 边界；F36.5 将修正真实 stream 与状态投影的最后耦合 | F35 固定了入口和消息边界，F36 负责移除独立 Core 发行边界，不回滚 F35 已验收语义 |
 
 ## 9. 术语、角色与责任矩阵
 

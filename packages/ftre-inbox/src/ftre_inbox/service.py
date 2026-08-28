@@ -271,7 +271,7 @@ class InboxService:
     async def wait(self, session_id: str, request_id: str):
         """等待本进程内 ``followup`` 交付的 Turn 结果。
 
-        ``steer``/``inject`` 可能在 active Turn 的 Core Hook 中直接变成上下文，
+        ``steer``/``inject`` 可能在 active Turn 的 Runtime Hook 中直接变成上下文，
         它们没有独立的 Turn 结果；因此不创建永不完成的 receipt，调用方应使用
         Session/Turn 状态或 ``wait_session_quiescent`` 观察整体完成。
         """
@@ -306,7 +306,7 @@ class InboxService:
 
         该入口只由 ``agent/before-reasoning`` Hook 调用。它复用同一套
         ``peek → before-claim → history upsert → claim`` 逻辑，但不会启动第二个
-        Agent Turn，因而运行中的 steer 会在下一次 LLM snapshot 前进入 Core Memory。
+        Agent Turn，因而运行中的 steer 会在下一次 LLM snapshot 前进入 Runtime Memory。
         ``session_events`` 存在时，正式 UserMessage 先幂等落库并广播，再从 Inbox
         claim；这样 claim 后崩溃也不会同时丢失 pending 和聊天历史。
         """
@@ -369,7 +369,7 @@ class InboxService:
             )
         for candidate in candidates:
             # Plugin inject 只贡献上下文，不伪造用户历史；真正的 role=user 才会
-            # 触发 Core 的 Assistant message_id 边界。
+            # 触发 Runtime 的 Assistant message_id 边界。
             if candidate.source != "user":
                 continue
             result = await self._session_events.emit_user_message_if_absent(
@@ -496,7 +496,7 @@ class InboxService:
             self._blocked.pop(message.session_id, None)
             await self._publish_status_event(message.session_id, "idle")
         # 只有 next-turn 会产生独立的 Agent Turn，因此才建立可等待 receipt。
-        # next-step 的 steer/inject 可能被 Core Hook 直接注入当前 Turn；为它们
+        # next-step 的 steer/inject 可能被 Runtime Hook 直接注入当前 Turn；为它们
         # 创建 Future 会永远没有完成者，形成隐蔽的长期内存泄漏。
         if target == "next-turn" and created:
             key = (message.session_id, message.request_id)

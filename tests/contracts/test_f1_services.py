@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import APIRouter
-from ftre_agent_core.tool import Tool, ToolRegistry
+from ftre_agent.tool import ToolDefinition
 
 from ftre.services.config.service import ConfigConflictError, ConfigService
 from ftre.services.filesystem.local import LocalFilesystemService
@@ -107,10 +108,56 @@ def test_prompt_receipt_matches_assembly() -> None:
     assert [item["name"] for item in receipt.sections] == ["base", "agent"]
 
 
+def test_system_prompt_service_owns_profile_and_runtime_sections() -> None:
+    service = SystemPromptService()
+    service.register_section(PromptSection(name="feature", content="feature"))
+    profile = SimpleNamespace(
+        soul_prompt="coding persona",
+        user_prompt_md="user preferences",
+        agent_dir="C:/agents/coder",
+    )
+    config = SimpleNamespace(llm=SimpleNamespace(vision=True))
+
+    assembly = service.assemble_result(
+        "coder",
+        "session-1",
+        workspace="repo",
+        base_prompt="base",
+        profile=profile,
+        channel_id="ws",
+        config=config,
+    )
+
+    names = [item.name for item in assembly.contributions]
+    assert names == [
+        "config-base",
+        "profile-soul",
+        "profile-user",
+        "runtime-facts",
+        "feature",
+    ]
+    assert assembly.text.count("coding persona") == 1
+    assert assembly.text.count("user preferences") == 1
+    assert assembly.text.count("<FTRE_SYSTEM_FACT>") == 1
+    assert "vision=true" in assembly.text
+    assert 'path="C:/agents/coder/SOUL.md"' in assembly.text
+
+    receipt = service.receipt(
+        "coder",
+        "session-1",
+        workspace="repo",
+        base_prompt="base",
+        profile=profile,
+        channel_id="ws",
+        config=config,
+    )
+    assert [item["name"] for item in receipt.sections] == names
+
+
 def test_tool_scope_shadow_and_restriction() -> None:
-    service = ToolService(ToolRegistry())
-    global_tool = Tool(name="echo", description="global", func=lambda: "global")
-    agent_tool = Tool(name="echo", description="agent", func=lambda: "agent")
+    service = ToolService()
+    global_tool = ToolDefinition(name="echo", description="global", func=lambda: "global")
+    agent_tool = ToolDefinition(name="echo", description="agent", func=lambda: "agent")
     global_dispose = service.register(global_tool, owner="global", source="builtin")
     agent_dispose = service.register(agent_tool, owner="agent", scope="agent:worker", source="external:worker")
     assert service.snapshot("worker")[0].owner == "agent"

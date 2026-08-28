@@ -10,7 +10,7 @@ from uuid import uuid4
 
 
 class _ThreadPool:
-    """LLM 原始日志的本地后台写入器，不依赖 Agent Core 的线程池。"""
+    """LLM 原始日志的本地后台写入器，不依赖全局线程池。"""
 
     def __init__(self) -> None:
         self.io = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ftre-llm-log")
@@ -88,5 +88,4 @@ class LLMLogger:
             filepath.write_text(content, encoding="utf-8")
         except Exception as e:  # noqa: BLE001 - logging must not affect streaming
             _logger.debug(f"写入 LLM 日志失败: {e}")
-
 
