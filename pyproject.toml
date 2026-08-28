@@ -25,6 +25,7 @@ dependencies = [
     "ftre-team>=0.1.0,<0.2.0",
     "ftre-llm-recovery>=0.1.0,<0.2.0",
     "ftre-llm-fallback>=0.1.0,<0.2.0",
+    "ftre-process>=0.1.0,<0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +46,7 @@ llm-recovery = ["ftre-llm-recovery>=0.1.0,<0.2.0"]
 llm-fallback = ["ftre-llm-fallback>=0.1.0,<0.2.0"]
 llm = ["ftre-llm>=0.1.0,<0.2.0"]
 compaction = ["ftre-compaction>=0.2.0,<0.3.0"]
+process = ["ftre-process>=0.1.0,<0.2.0"]
 full = [
     "ftre-llm>=0.1.0,<0.2.0",
     "ftre-inbox>=0.2.0,<0.3.0",
@@ -54,6 +56,7 @@ full = [
     "ftre-compaction>=0.2.0,<0.3.0",
     "ftre-llm-recovery>=0.1.0,<0.2.0",
     "ftre-llm-fallback>=0.1.0,<0.2.0",
+    "ftre-process>=0.1.0,<0.2.0",
 ]
 
 [build-system]
@@ -76,6 +79,7 @@ pythonpath = [
     "packages/ftre-llm-recovery/src",
     "packages/ftre-llm-fallback/src",
     "packages/ftre-llm/src",
+    "packages/ftre-process/src",
 ]
 
 [tool.setuptools.packages.find]

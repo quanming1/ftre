@@ -2,6 +2,15 @@
 
 ## [未发布]
 
+### F37 Process Service 与后端进程生命周期
+
+- 新增 `ftre-process` Package，统一外部进程的 argv/shell、stdout/stderr、超时、取消、进程组和
+  Windows 无控制台策略；Bash Tool 与 Gateway 后台管理迁移到该 Service。
+- 增加 `process` Provider、架构扫描和生命周期回归测试；MCP stdio 保留上游 transport 边界并验证
+  `CREATE_NO_WINDOW`/Job Object 策略。
+- 客户端由 `BackendSupervisor` 直接使用 bundled `pythonw.exe` 启动 Gateway，增加 health ready、
+  状态/日志 IPC 和优雅退出；Windows 原生无黑窗验收仍待目标机器完成。
+
 ### Tool 执行稳定性修复
 
 - 同步工具（包括 bash）改在线程中执行，避免慢速文件系统或子进程阻塞 Gateway 的 HTTP/WebSocket 事件循环；异步工具仍按原路径 await。

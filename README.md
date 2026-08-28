@@ -32,6 +32,7 @@ and owns the reversible shutdown path.
 | Concept | Location | Responsibility |
 | --- | --- | --- |
 | Service | `src/ftre/services/<name>/service.py` | Stateful capability with a stable public key, such as `sessions`, `tools`, `http` or `message_bus` |
+| Process Package | `packages/ftre-process/` | Cross-platform process execution policy; exposed to Host consumers as the `process` Service |
 | Provider Plugin | beside the Service in `plugin.py` | Declares `inject`/`provide`, creates or binds the Service, and registers cleanup effects |
 | Builtin Plugin | `src/ftre/plugins/builtin/<name>/` | Product behavior and concrete adapters such as Command, Skill, MCP, Channel or Schedule |
 | Kernel Runtime | `src/ftre/kernel/plugins/` | Manifest validation, installed entry point discovery, Cordis loading, status and failure diagnostics |

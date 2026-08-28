@@ -4,12 +4,12 @@ bash 工具 - 执行 shell 命令（cwd 来自 sessions 表的 workspace 字段�
 import os
 import re
 import shutil
-import subprocess
 import sys
 from functools import lru_cache
 from pathlib import Path
 
 from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
+from ftre_process import ProcessService, ProcessSpec, ProcessTimeoutError
 
 from ftre.services.workspace.accessor import WorkspaceAccessor
 
@@ -56,20 +56,6 @@ def _which_with_user_paths(name: str) -> str | None:
         if os.path.isfile(candidate):
             return candidate
     return None
-
-
-# ============== 原有功能 ==============
-
-def _decode(b: bytes) -> str:
-    """按系统常见编码解码 subprocess 输出"""
-    if sys.platform == "win32":
-        for enc in ("gbk", "utf-8"):
-            try:
-                return b.decode(enc)
-            except UnicodeDecodeError:
-                continue
-        return b.decode("utf-8", errors="replace")
-    return b.decode("utf-8", errors="replace")
 
 
 def _has_shell_operator(cmd: str) -> bool:
@@ -140,53 +126,6 @@ def _try_handle_cd(command: str, ws: WorkspaceAccessor) -> str | None:
     return f"已切换到 {new_dir}"
 
 
-def _shell_executable() -> str | None:
-    """返回执行命令时显式指定的 shell 可执行文件，None 表示用平台默认。
-
-    Windows: shell=True 走 cmd /c，无需显式 executable。
-    POSIX: 优先 /bin/bash（比 /bin/sh 功能多），不存在则回退默认 sh。
-
-    统一用 shell=True：避免 list2cmdline 把数组拼回命令行时，把命令里的
-    双引号转义成 shell 不认识的形式，导致 `git commit -m "msg"` 被拆词。
-    """
-    if sys.platform == "win32":
-        return None
-    bash = "/bin/bash"
-    return bash if Path(bash).exists() else None
-
-
-def _kill_process_tree(proc: subprocess.Popen) -> None:
-    """跨平台杀掉进程组（Unix）或进程树（Windows），避免子进程残留"""
-    if proc.poll() is not None:
-        return
-    try:
-        if sys.platform == "win32":
-            subprocess.run(  # noqa: PLW1510 legacy compatibility boundary reviewed in F1
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True,
-                timeout=5,
-            )
-        else:
-            import os as _os
-            import signal as _signal
-            try:
-                _os.killpg(proc.pid, _signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                try:
-                    _os.killpg(proc.pid, _signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-    except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
-        try:
-            proc.kill()
-        except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
-            pass
-
-
 def _platform_hints() -> str:
     """根据当前进程所在平台拼装一段提示，让 LLM 用对该平台的命令/路径/编码。"""
     if sys.platform == "win32":
@@ -219,31 +158,25 @@ def _platform_hints() -> str:
 
 @lru_cache(maxsize=1)
 def _find_semble() -> str | None:
-    """查找 semble 可执行文件路径，结果会被缓存。
-
-    优先在 PATH 中查找（含用户级目录 fallback）；找不到再看 uvx 是否可用，
-    尝试通过 `uvx --from "semble[mcp]" semble` 调用作为降级方案。
-    """
-    # 主路径：shutil.which + 用户级 PATH fallback
+    """查找 semble，必要时通过 ProcessService 探测 uvx fallback。"""
     path = _which_with_user_paths("semble")
     if path:
         return path
 
-    # 降级方案：尝试通过 uvx 调用
     uvx_path = _which_with_user_paths("uvx")
     if not uvx_path:
         return None
     try:
-        # 用 --help 快速检测 uvx 能否拉起 semble（不真正执行索引）
-        result = subprocess.run(  # noqa: PLW1510 legacy compatibility boundary reviewed in F1
-            [uvx_path, "--from", "semble[mcp]", "semble", "--help"],
-            capture_output=True,
-            timeout=15,
+        result = ProcessService().run_sync(
+            ProcessSpec(
+                argv=(uvx_path, "--from", "semble[mcp]", "semble", "--help"),
+                timeout=15,
+            )
         )
-    except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
+    except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F37
         return None
     if result.returncode == 0:
-        return f"{uvx_path} --from \"semble[mcp]\" semble"
+        return f'{uvx_path} --from "semble[mcp]" semble'
     return None
 
 
@@ -257,10 +190,8 @@ def _semble_hints() -> str:
     if not semble_path:
         return ""
 
-    # 判断是直接安装还是 uvx 降级调用
-    is_uvx = "uvx" in semble_path and "--from" in semble_path
+    is_uvx = " --from " in semble_path
     cmd_prefix = semble_path if is_uvx else "semble"
-
     install_hint = (
         f"（通过 uvx 调用：{cmd_prefix}）"
         if is_uvx
@@ -288,22 +219,25 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 3600) -> Tool
     """创建 bash 工具
 
     cwd 由当前会话的 workspace 字段承载（sessions 表）。纯 cd 命令会持久切换
-    DB 中的 workspace；其他命令交给底层 shell 执行（subprocess.cwd 从 DB 取）。
+    DB 中的 workspace；其他命令交给底层 shell 执行（ProcessSpec.cwd 从 DB 取）。
 
     Args:
         default_timeout: LLM 不传 timeout 时的默认值（秒）
         max_timeout: LLM 可指定的上限（防止"无限挂起"）
     """
 
-    def bash(
+    async def bash(
         command: str,
         timeout: int = 0,
         ws: WorkspaceAccessor = Injected("workspace"),  # noqa: B008 legacy compatibility boundary reviewed in F1
+        process: ProcessService = Injected("process"),  # noqa: B008 legacy compatibility boundary reviewed in F37
     ) -> str:
         if not command.strip():
             return "[error] 空命令"
         if not isinstance(ws, WorkspaceAccessor):
             return "[error] runtime_context.workspace 未注入"
+        if not isinstance(process, ProcessService):
+            return "[error] runtime_context.process 未注入"
 
         # timeout 处理：0/负数 → 用默认值；超过上限 → 钳位
         if timeout is None or timeout <= 0:
@@ -318,57 +252,39 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 3600) -> Tool
 
         # 2) 执行命令
         cwd = ws.get()
-        popen_kwargs: dict = {
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.PIPE,
-            "cwd": cwd,
-            "shell": True,
-        }
-        executable = _shell_executable()
-        if executable is not None:
-            popen_kwargs["executable"] = executable
-        if sys.platform == "win32":
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            popen_kwargs["start_new_session"] = True
-
         try:
-            proc = subprocess.Popen(command, **popen_kwargs)
-            try:
-                stdout_b, stderr_b = proc.communicate(timeout=effective_timeout)
-            except subprocess.TimeoutExpired:
-                _kill_process_tree(proc)
-                try:
-                    stdout_b, stderr_b = proc.communicate(timeout=2)
-                except Exception:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
-                    stdout_b, stderr_b = b"", b""
-                stdout = _decode(stdout_b)
-                stderr = _decode(stderr_b)
-                msg = (
-                    f"[error] 命令超时（{effective_timeout}s），进程已被强制结束。"
-                    f"如需运行长任务请拆分命令或调大 timeout 参数（最大 {max_timeout}s）。"
-                )
-                tail = []
-                if stdout.strip():
-                    tail.append(stdout.rstrip()[-2000:])
-                if stderr.strip():
-                    tail.append(f"[stderr]\n{stderr.rstrip()[-2000:]}")
-                return msg + ("\n" + "\n".join(tail) if tail else "")
-
-            stdout = _decode(stdout_b)
-            stderr = _decode(stderr_b)
-            output_lines = ["<FTRE_SYSTEM_FACT>", f"[cwd] {cwd}", "</FTRE_SYSTEM_FACT>"]
-            if stdout.strip():
-                output_lines.append(stdout.rstrip())
-            if stderr.strip():
-                output_lines.append(f"[stderr]\n{stderr.rstrip()}")
-            if proc.returncode != 0:
-                output_lines.append(f"[exit_code] {proc.returncode}")
-            return truncate_output("\n".join(output_lines))
+            result = await process.run_shell(
+                command,
+                cwd=cwd,
+                timeout=effective_timeout,
+                encoding=("gbk", "utf-8"),
+            )
+        except ProcessTimeoutError as exc:
+            tail = []
+            if exc.stdout.strip():
+                tail.append(exc.stdout.rstrip()[-2000:])
+            if exc.stderr.strip():
+                tail.append(f"[stderr]\n{exc.stderr.rstrip()[-2000:]}")
+            msg = (
+                f"[error] 命令超时（{effective_timeout}s），进程已被强制结束。"
+                f"如需运行长任务请拆分命令或调大 timeout 参数（最大 {max_timeout}s）。"
+            )
+            return msg + ("\n" + "\n".join(tail) if tail else "")
         except FileNotFoundError as e:
             return f"[error] 未找到 shell: {e}"
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] {type(e).__name__}: {e}"
+
+        stdout = result.stdout
+        stderr = result.stderr
+        output_lines = ["<FTRE_SYSTEM_FACT>", f"[cwd] {cwd}", "</FTRE_SYSTEM_FACT>"]
+        if stdout.strip():
+            output_lines.append(stdout.rstrip())
+        if stderr.strip():
+            output_lines.append(f"[stderr]\n{stderr.rstrip()}")
+        if result.returncode != 0:
+            output_lines.append(f"[exit_code] {result.returncode}")
+        return truncate_output("\n".join(output_lines))
 
     return ToolDefinition(
         name="bash",
