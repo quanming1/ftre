@@ -142,7 +142,9 @@ git diff --check
 - 已从 Core 历史源码迁入三个实现文件，并在根 `.gitignore` 增加精确例外，避免
   `_*.py` 规则再次漏掉它们。
 - wheel 内容检查确认三个文件均进入发行物；按 CI 同款忽略范围复跑结果为
-  `485 passed in 293.25s`。
+-  `485 passed in 293.25s`。
+- 随后洁净 CI 又暴露 `ftre-agent/event/_event.py` 被同一 `_*.py` 规则漏掉；已补齐
+  事件实现并加入精确例外。修复后 CI 同款测试再次通过：`485 passed in 305.68s`。
 
 ## 5. 交付门禁
 

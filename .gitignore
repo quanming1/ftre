@@ -10,6 +10,7 @@ data/
 _*.py
 !src/**/_*.py
 !packages/ftre-agent/src/ftre_agent/message/_*.py
+!packages/ftre-agent/src/ftre_agent/event/_*.py
 !packages/**/__init__.py
 tmp_*.py
 fetch_*.py
