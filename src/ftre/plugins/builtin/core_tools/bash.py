@@ -86,7 +86,7 @@ def _has_shell_operator(cmd: str) -> bool:
     return False
 
 
-def _try_handle_cd(command: str, ws: WorkspaceAccessor) -> str | None:
+async def _try_handle_cd(command: str, ws: WorkspaceAccessor) -> str | None:
     """
     检测纯 cd 命令并直接更新会话工作区。
     返回 None 表示不是纯 cd（继续走 subprocess）；返回字符串表示已处理。
@@ -103,7 +103,7 @@ def _try_handle_cd(command: str, ws: WorkspaceAccessor) -> str | None:
         return None
 
     target = m.group(1)
-    cwd = Path(ws.get())
+    cwd = Path(await ws.aget())
     if not target:
         new_dir = Path.home()
     else:
@@ -122,7 +122,7 @@ def _try_handle_cd(command: str, ws: WorkspaceAccessor) -> str | None:
     if not new_dir.is_dir():
         return f"[error] 不是目录: {new_dir}"
 
-    ws.set(str(new_dir))
+    await ws.aset(str(new_dir))
     return f"已切换到 {new_dir}"
 
 
@@ -246,12 +246,12 @@ def create_bash_tool(default_timeout: int = 60, max_timeout: int = 3600) -> Tool
             effective_timeout = min(int(timeout), max_timeout)
 
         # 1) 纯 cd → 持久切换（写 DB）
-        cd_result = _try_handle_cd(command, ws)
+        cd_result = await _try_handle_cd(command, ws)
         if cd_result is not None:
             return cd_result
 
         # 2) 执行命令
-        cwd = ws.get()
+        cwd = await ws.aget()
         try:
             result = await process.run_shell(
                 command,

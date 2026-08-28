@@ -180,7 +180,7 @@ if ($LASTEXITCODE -gt 1) { exit $LASTEXITCODE }
 **必须修改**：
 
 1. `QueueItem` 增加 `messages: tuple[Msg, ...]` 与 Agent profile 标识；旧 schema 仍可读取，写入升级为 schema 2。
-2. `InboxRepository` 增加 inflight lease、原子 `claim_lease/ack/release`；新进程加载时把旧 owner 的 inflight 项按原 target/sequence 重新排回 pending。
+2. `InboxRepository` 增加 inflight lease、原子 `claim_lease/ack/release`；新进程加载时丢弃旧 owner 的 inflight 项，禁止中断请求在启动阶段重复执行；未领取的 pending 仅保留为快照，等待新的 admission 或显式 `resume_pending()`。
 3. `AgentService` 增加短生命周期 `RunReservation`、`try_reserve`、`release_reservation`；执行开始时消费匹配 reservation，reservation 参与 busy 判断。
 4. Inbox 新版 AgentService 路径必须按 `ensure identity → reservation → history/claim lease → AgentRunRequest(Msg[]) → ack` 顺序执行；失败/取消统一 release，不得先永久 claim 再调用 Agent。
 5. 扩展 Inbox 观察 Hook：`inbox/admitted`、`inbox/claimed`、`inbox/deferred`、`inbox/delivered`、`inbox/error`；Hook 失败只记录，不改变队列事实。
@@ -245,7 +245,7 @@ git diff --check
 **必须修改**：
 
 1. AgentService、Runtime Factory、Inbox、Session Event/Projection 的 `start/stop/close/dispose` 必须幂等；启动中途失败按逆序撤销 Service、Factory、Hook、Worker 和 lease 引用。
-2. Runtime 停止必须取消 active Turn 并等待 completion；Inbox 停止不得丢失 pending/inflight，下一次启动必须恢复；AgentService reservation 在 stop/unregister 时全部清理。
+2. Runtime 停止必须取消 active Turn 并等待 completion；Inbox 停止保留未领取 pending，已领取 inflight 在下一次启动丢弃且不重投；AgentService reservation 在 stop/unregister 时全部清理。
 3. 完成全局静态扫描：`ftre-agent` 不出现 Inbox/Channel/Repository/`InboundMessage`；Runtime 不反向 import Host；旧 `src/ftre/services/agent` 源码、兼容导出、重复 Owner、临时脚本和无效注释全部退出。
 4. 补充 clean import、clean wheel/install、Composition reload、失败回滚、取消/重启恢复、重复 close 和跨 Session 隔离测试；不修改 `E:\ftre-agent-core` 或客户端。
 5. 对照本 PRD FR/AC/DoD 逐条勾选，更新 TODO/F35、CHANGELOG 和执行记录；只有所有门禁通过才将 F35 标为 done、PRD 标为“已验收”。
@@ -319,7 +319,7 @@ python -m pytest -q tests/architecture tests/contracts tests/lifecycle tests/sta
 - [x] **FR9：准入与 claim 必须可恢复**
   - `agent/before-run` 是运行策略 Hook，不是队列所有权转移点；它接收 `AgentRunRequest`，可返回 `AllowRun`、带原因的 `RejectRun` 或 `DeferRun`。
   - Inbox 在 claim 前必须完成 Agent 的原子 run reservation（或调用等价的 `try_accept`）；reservation 失败时项目仍归 Inbox。
-  - Hook 拒绝、Agent 启动失败、进程重启和取消都必须释放 reservation 并按策略 requeue/dead-letter，不能产生幽灵 UserMessage。
+  - Hook 拒绝、Agent 启动失败和取消都必须释放 reservation 并按策略 requeue/dead-letter；Gateway 重启不自动重投旧 inflight，未领取 pending 只保留快照等待显式唤醒，不能产生幽灵 UserMessage。
 
 - [x] **FR10：Agent Hook 生命周期**
   - `agent/before-run`：在一次 Run 建立前执行准入策略。
@@ -370,7 +370,7 @@ python -m pytest -q tests/architecture tests/contracts tests/lifecycle tests/sta
 
 - [x] **FR16：生命周期、取消和恢复**
   - `cancel` 必须传播到 LLM、Tool、Runtime 和 Inbox reservation；取消后不触发自然 stop continuation。
-  - `dispose`、插件卸载、Gateway 关闭和恢复必须幂等；pending Inbox 项目不得丢失，active Run 必须得到明确的 interrupted/failure 结果。
+  - `dispose`、插件卸载、Gateway 关闭和恢复必须幂等；未领取 pending Inbox 项目不得丢失，旧 inflight 不得在重启后再次执行，active Run 必须得到明确的 interrupted/failure 结果。
   - Agent Service、Runtime Plugin、Profile Service、Inbox 的启动顺序和关闭顺序必须由 Composition Root 明确编排。
 
 ### 2.2 非功能需求
@@ -1248,3 +1248,10 @@ F35 只有在以下条件全部满足时才能将 TODO 标记为 `done`：
 - [x] 8. 旧 `src/ftre/services/agent` Owner、桥接、兼容导出、临时脚本和空目录已删除；全局搜索和 clean install 无陈旧引用。
 - [x] 9. `python -m pytest -q`、`python -m ruff check src tests packages`、架构门禁和 `git diff --check` 全部通过。
 - [x] 10. 本 PRD 的 FR/AC 勾选项、TODO F35 子任务、迁移矩阵和变更记录与实际代码一致。
+
+## 24. 变更记录
+
+| 日期 | 变更 | 理由与受影响验收 |
+|---|---|---|
+| 2026-08-29 | 修正崩溃恢复语义：`InboxRepository` 不再把旧 owner 的 inflight lease 回排到 pending；`InboxService.start()` 只加载队列快照，不自动启动 worker，必须由新 admission 或显式 `resume_pending()` 唤醒。`AgentLoop` 依据 Session 中持久化的 Assistant `request_id/run_id` 做幂等短路；`SessionProjection` 拒绝向已终态 Assistant 追加重放事件。 | 电脑/客户端异常退出后，原请求已经产生 Assistant 输出时再次恢复会造成重复执行和重复 Resume 文本。FR9、FR16、AC13 重新核验：未领取 pending 保留但不自动发送，旧 inflight 不重投，同一 request 不创建新 Turn，终态消息不再追加。 |
+| 2026-08-29 | 增加暂停边界：`AgentRunResult.paused` 明确表示权限挂起而非自然完成；`AgentService` 将 Session 保持为 `paused`，`InboxService` 暂停消费后续队列，只有确认恢复并正常结束后才唤醒 worker。 | 修复权限确认暂停后队列被误消费。FR10、FR16、AC13 重新核验：paused 不消费队列，confirmation 完成后才恢复唯一的队列消费时机。 |

@@ -32,6 +32,14 @@ class WorkspaceAccessor:
             return workspace
         return self.fallback_cwd
 
+    async def aget(self) -> str:
+        """在异步 Tool 中读取工作区，不阻塞宿主事件循环。"""
+        session = await self.session_manager.get_session(self.session_id)
+        workspace = session.get("workspace") if session else ""
+        if workspace and os.path.isdir(workspace):
+            return workspace
+        return self.fallback_cwd
+
     def set(self, new_path: str) -> str:
         """同步等待 SessionService 持久化新目录，并返回旧目录。"""
         old = self.get()
@@ -40,6 +48,15 @@ class WorkspaceAccessor:
             workspace=new_path,
         )
         asyncio.run_coroutine_threadsafe(future, self.event_loop).result()
+        return old
+
+    async def aset(self, new_path: str) -> str:
+        """在异步 Tool 中持久化工作区，不阻塞宿主事件循环。"""
+        old = await self.aget()
+        await self.session_manager.update_session(
+            self.session_id,
+            workspace=new_path,
+        )
         return old
 
     def _read_db_workspace(self) -> str:

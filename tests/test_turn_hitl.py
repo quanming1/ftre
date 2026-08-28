@@ -145,6 +145,7 @@ def _make_executor(agent) -> TurnExecutor:
         create_accessor=Mock(return_value=SimpleNamespace(get=lambda: "/tmp", set=lambda value: value)),
         ensure_extension_layout=AsyncMock(),
     )
+    loop.process_service = object()
     loop.config_service = None
     loop.tracer = Mock()
 
@@ -176,6 +177,7 @@ def _make_executor(agent) -> TurnExecutor:
         tools=loop.tools,
         profiles=loop.profiles,
         workspaces=loop.workspaces,
+        process_service=loop.process_service,
         config_service=None,
         llm_service=None,
     )

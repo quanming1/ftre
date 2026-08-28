@@ -53,6 +53,48 @@ async def test_projection_owns_msg_snapshot_and_revision():
 
 
 @pytest.mark.asyncio
+async def test_reply_start_persists_request_and_run_identity():
+    sessions = AsyncMock()
+    projection = SessionProjection(sessions)
+
+    await projection.apply(
+        "ws_sess_test",
+        ReplyStartEvent(
+            session_id="ws_sess_test",
+            reply_id="reply-test",
+            name="assistant",
+            metadata={"request_id": "request-test", "run_id": "turn-test"},
+        ),
+    )
+
+    message = sessions.save_message.await_args.args[1]
+    assert message.metadata["request_id"] == "request-test"
+    assert message.metadata["run_id"] == "turn-test"
+
+
+@pytest.mark.asyncio
+async def test_session_request_state_reads_persisted_assistant_identity(tmp_path):
+    sessions = SessionService(sessions_dir=str(tmp_path / "sessions"))
+    await sessions.init()
+    session_id = await sessions.create_session("ws")
+    await sessions.save_message(
+        session_id,
+        AssistantMsg(
+            id="assistant-completed",
+            content="完成",
+            metadata={"request_id": "request-test", "run_id": "turn-test"},
+            finished_at="2026-08-29T00:00:00+00:00",
+            finished_reason=ReplyFinishedReason.COMPLETED,
+        ),
+    )
+
+    assert sessions.request_state(session_id, "request-test") == "completed"
+    assert sessions.request_state(session_id, "missing") is None
+    assert sessions.request_state(session_id, "other", "turn-test") == "completed"
+    await sessions.close()
+
+
+@pytest.mark.asyncio
 async def test_user_message_event_projects_complete_user_msg():
     sessions = AsyncMock()
     projection = SessionProjection(sessions)
@@ -184,6 +226,33 @@ async def test_reply_end_keeps_snapshot_when_final_persist_fails():
         error={"code": "persist_retry"},
     )
     assert [message.id for message in completed] == [reply_id]
+
+
+@pytest.mark.asyncio
+async def test_terminal_reply_ignores_replayed_events():
+    sessions = AsyncMock()
+    finished = AssistantMsg(
+        id="assistant-finished",
+        content=[{"type": "text", "text": "原始回复"}],
+        finished_at="2026-08-29T00:00:00+00:00",
+        finished_reason=ReplyFinishedReason.INTERRUPTED,
+    )
+    sessions.get_messages_by_session.return_value = [finished.model_dump(mode="json")]
+    projection = SessionProjection(sessions)
+
+    result = await projection.apply(
+        "ws_sess_test",
+        TextBlockDeltaEvent(
+            reply_id="old-reply",
+            message_id="assistant-finished",
+            block_id="text-1",
+            delta="重复 Resume",
+        ),
+    )
+
+    assert result == type(result)()
+    sessions.update_message.assert_not_awaited()
+    sessions.save_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

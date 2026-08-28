@@ -30,8 +30,8 @@
 ### F35 Agent Service / Profile / Inbox 边界收敛（已完成，未发布）
 
 - F35.4 将 Inbox 输入冻结为可持久化 `Msg[]`，新增 `AgentService` RunReservation 与 Inbox durable
-  lease（`claim_lease/ack/release`）；新进程会回收旧 owner 的 inflight 项，Agent 失败/取消会 release，
-  成功才 ack，避免忙时或崩溃丢消息。
+  lease（`claim_lease/ack/release`）；Agent 失败/取消会 release，成功才 ack；进程重启会丢弃旧 owner
+  的 inflight 项且不自动启动历史 pending，避免中断请求被重复投递。
 - 扩展 `inbox/before-admit` 决策 Hook 与 `inbox/admitted`、`inbox/claimed`、`inbox/deferred`、
   `inbox/delivered`、`inbox/failed`、`inbox/discarded`、`inbox/error` 观察 Hook；Agent 状态变化通过
   事件唤醒 worker，移除 quiescent 固定时间轮询；Agent 公共入口不再接受 InboundMessage。
@@ -41,6 +41,10 @@
   全量 pytest 695 passed，消息边界专项 197 passed。
 - F35.6 完成 RuntimeInput 收口、Agent InboundMessage 兼容路径删除、失败结果 lease release、取消/重启
   恢复、clean wheel/import 和终局架构扫描；全量 pytest 703 passed，架构/契约/生命周期专项 272 passed。
+- F35 后续修复：Agent Runtime 以持久化 Assistant 的 `request_id/run_id` 做幂等短路；Session Projection
+  拒绝向已终态 Assistant 追加重放事件；启动加载的 pending 需新 admission 或显式 `resume_pending()` 才会执行。
+- F35 后续修复：权限确认挂起通过 `AgentRunResult.paused` 明确标记，Inbox 在 paused 状态下不消费后续队列，
+  仅在确认恢复并正常结束后继续派发。
 
 - F35.3 将 Host 侧 Profile、配置、路由和 Team 成员 Profile 迁移至
   `src/ftre/services/agent_profile/`，由 `AgentProfileService` 统一持有；Profile 按项目、用户、Host

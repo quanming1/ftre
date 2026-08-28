@@ -169,6 +169,14 @@ class SessionProjection:
                         restored_message = _as_msg(record)
                         break
 
+        # 终态 Assistant 不能再接收恢复/重放事件；否则旧文本会被继续追加，
+        # 重启后的重复 Resume 就会污染原始消息。暂停中的未终态 Reply 仍允许
+        # confirmation 路径复用，这是唯一保留的跨进程恢复语义。
+        if restored_message is not None and restored_message.finished_at is not None:
+            return ProjectionResult()
+        if is_start and restored_message is not None:
+            return ProjectionResult()
+
         boundary_updates: list[Msg] = []
         async with self._lock:
             # 同一 session 的 Event 可能来自异步流与取消路径；锁只保护内存投影，
@@ -190,7 +198,7 @@ class SessionProjection:
                 if restored_message is not None:
                     message = restored_message
                 else:
-                    metadata = {}
+                    metadata = dict(getattr(event, "metadata", {}) or {})
                     if is_start and getattr(event, "name", ""):
                         # Msg.name 只表示消息语义；实际调用的模型属于可选元数据。
                         metadata["model"] = event.name

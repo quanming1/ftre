@@ -102,6 +102,7 @@ class InboxService:
         self._hook_runtime = hook_runtime
         self._session_events = session_events
         self._blocked: dict[str, str] = {}
+        self._paused_sessions: set[str] = set()
         self._agent_status_disposer = None
         subscribe = getattr(agent, "on_status_changed", None)
         if callable(subscribe):
@@ -109,8 +110,6 @@ class InboxService:
 
     async def start(self) -> None:
         await self.repository.load_all()
-        for session_id in self.repository.recoverable_sessions():
-            self._ensure_worker(session_id)
 
     async def close(self) -> None:
         """停止 worker 并解除所有宿主回调，保留磁盘 pending 供下次恢复。"""
@@ -123,6 +122,7 @@ class InboxService:
         self._workers.clear()
         self._wake.clear()
         self._blocked.clear()
+        self._paused_sessions.clear()
         self.repository.close()
         for future in self._receipts.values():
             if not future.done():
@@ -150,6 +150,17 @@ class InboxService:
     async def snapshot(self, session_id: str) -> InboxSnapshot:
         return await self.repository.snapshot(session_id)
 
+    async def resume_pending(self, session_id: str) -> bool:
+        """显式恢复启动时保留的 pending；启动本身不会自动派发它们。"""
+        if self._closed or session_id in self._paused_sessions:
+            return False
+        snapshot = await self.repository.snapshot(session_id)
+        if not snapshot.has_pending:
+            return False
+        self._ensure_worker(session_id)
+        self._wake_event(session_id).set()
+        return True
+
     async def delete_session(self, session_id: str) -> None:
         """删除会话时一并清理 Inbox；不触碰宿主 Session 历史。"""
         task = self._workers.pop(session_id, None)
@@ -158,6 +169,7 @@ class InboxService:
             await asyncio.gather(task, return_exceptions=True)
         self._wake.pop(session_id, None)
         self._blocked.pop(session_id, None)
+        self._paused_sessions.discard(session_id)
         for key, future in tuple(self._receipts.items()):
             if key[0] == session_id:
                 if not future.done():
@@ -518,7 +530,13 @@ class InboxService:
     def _on_agent_status(self, view: Any) -> None:
         session_id = getattr(view, "session_id", None) or getattr(view, "agent_id", None)
         if session_id:
-            self._wake_event(str(session_id)).set()
+            session_id = str(session_id)
+            state = str(getattr(view, "state", "") or "")
+            if state == "paused":
+                self._paused_sessions.add(session_id)
+            elif state in {"idle", "completed", "failed", "cancelled"}:
+                self._paused_sessions.discard(session_id)
+            self._wake_event(session_id).set()
 
     @staticmethod
     def _supports_reservation(agent: Any) -> bool:
@@ -545,6 +563,12 @@ class InboxService:
             reason = str(error or status)
             retryable = status != "failed"
         return status, reason, retryable
+
+    @staticmethod
+    def _result_paused(result: Any) -> bool:
+        if isinstance(result, dict):
+            return bool(result.get("paused", False))
+        return bool(getattr(result, "paused", False))
 
     async def _ensure_agent(self, item: QueueItem) -> str:
         """为一个 Session 建立 AgentService identity；Runtime profile 仍独立解析。"""
@@ -595,7 +619,7 @@ class InboxService:
                 if not candidates:
                     await event.wait()
                     continue
-                if session_id in self._blocked:
+                if session_id in self._blocked or session_id in self._paused_sessions:
                     await event.wait()
                     continue
                 if self._agent is None:
@@ -732,6 +756,29 @@ class InboxService:
                             if inspect.isawaitable(result):
                                 result = await result
                             status, reason, retryable = self._run_result_info(result)
+                            if self._result_paused(result):
+                                if reservation is not None:
+                                    self._agent.release_reservation(reservation)
+                                    reservation = None
+                                if lease_id is not None:
+                                    paused_lease_id = lease_id
+                                    await self.repository.ack(session_id, lease_id)
+                                    lease_id = None
+                                    await self._dispatch_observe(
+                                        INBOX_DELIVERED_SPEC,
+                                        InboxDeliveredPayload(
+                                            session_id=session_id,
+                                            request_id=item.request_id,
+                                            lease_id=paused_lease_id,
+                                            status="paused",
+                                        ),
+                                    )
+                                self._paused_sessions.add(session_id)
+                                await self._publish_status_event(session_id, "paused")
+                                future = self._receipts.pop((session_id, item.request_id), None)
+                                if future is not None and not future.done():
+                                    future.set_result(result)
+                                continue
                             if status in {"failed", "cancelled", "interrupted"}:
                                 if reservation is not None:
                                     self._agent.release_reservation(reservation)
@@ -823,7 +870,10 @@ class InboxService:
                         await self.repository.release(session_id, lease_id)
                         lease_id = None
                     await self._publish(session_id)
-                    if session_id not in self._blocked:
+                    if (
+                        session_id not in self._blocked
+                        and session_id not in self._paused_sessions
+                    ):
                         self._wake_event(session_id).set()
         except asyncio.CancelledError:
             return

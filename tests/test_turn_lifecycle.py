@@ -105,6 +105,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
         create_accessor=Mock(return_value=SimpleNamespace(get=lambda: "/tmp", set=lambda value: value)),
         ensure_extension_layout=AsyncMock(),
     )
+    loop.process_service = object()
     loop.config_service = None
     loop.tracer = Mock()
 
@@ -126,6 +127,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
         tools=loop.tools,
         profiles=loop.profiles,
         workspaces=loop.workspaces,
+        process_service=loop.process_service,
         config_service=None,
         llm_service=None,
     )
@@ -195,6 +197,16 @@ async def test_user_msg_is_persisted_before_agent_run():
     assert saved[0].role == "user"
     assert saved[0].get_text_content() == "hello"
     assert agent._captured_runtime_context["reply_id"].startswith("turn_")
+
+
+@pytest.mark.asyncio
+async def test_turn_context_exposes_injected_process_service_to_tools():
+    agent = FakeAgent()
+    executor = _make_executor(agent)
+
+    await _execute_admitted(executor)
+
+    assert agent._captured_runtime_context["process"] is executor._process_service
 
 
 @pytest.mark.asyncio
