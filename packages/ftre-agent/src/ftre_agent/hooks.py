@@ -12,6 +12,7 @@ from ftre_llm.contracts import LlmStreamPayload as LLMStreamPayload
 
 from .config import AgentConfig
 from .contracts import AgentRunRequest
+from .tool import ToolExecutionResult
 
 
 class HookMode(StrEnum):
@@ -137,26 +138,6 @@ class ToolCallIdentity:
     turn_id: str = ""
     agent_id: str = ""
     iteration: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class ToolExecutionResult:
-    """Tool Hook 之间传递的统一结果。
-
-    ``value`` 保留 Runtime 原始对象（例如 EventBase），``output``/``metadata``
-    是宿主和 UI 可安全消费的归一化视图；这样 Hook 不必识别每种 Tool 返回值。
-    """
-
-    output: str = ""
-    status: Literal["completed", "failed", "cancelled"] = "completed"
-    error: str | None = None
-    metadata: Mapping[str, Any] = MappingProxyType({})
-    value: Any = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "metadata", _readonly_mapping(self.metadata))
-        if self.status not in {"completed", "failed", "cancelled"}:
-            raise ValueError("ToolExecutionResult.status is invalid")
 
 
 @dataclass(frozen=True, slots=True)

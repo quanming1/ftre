@@ -20,6 +20,7 @@ from ftre_agent.hooks import (
     ToolCallIdentity,
     ToolExecutionResult,
 )
+from ftre_agent.tool import ToolExecutionResult as PublicToolExecutionResult
 from ftre_agent.types import ReplyFinishedReason
 from ftre_agent_runtime import ReActAgent, ToolCallScheduler
 from ftre_agent_runtime.executors.acting import ExitExecutor
@@ -52,6 +53,7 @@ async def test_ftre_hook_contracts_have_one_public_owner():
     assert FtreStopPayload is StopDecisionPayload
     assert FtreLlmPayload.__module__ == "ftre_llm.contracts"
     assert FtreToolPayload.__module__ == "ftre_agent.hooks"
+    assert ToolExecutionResult is PublicToolExecutionResult
 
 
 @pytest.mark.asyncio

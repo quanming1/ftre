@@ -20,9 +20,6 @@ from ftre_agent.hooks import (
     ToolCallIdentity,
     ToolDeny,
 )
-from ftre_agent.hooks import (
-    ToolExecutionResult as HookToolExecutionResult,
-)
 from ftre_agent.tool import (
     Injected,
     ToolContext,
@@ -385,14 +382,6 @@ class ToolService:
         )
         if isinstance(post, ToolExecutionResult):
             return post
-        if isinstance(post, HookToolExecutionResult):
-            return ToolExecutionResult(
-                output=post.output,
-                status=post.status,
-                error=post.error,
-                metadata=dict(post.metadata),
-                value=post.value,
-            )
         return result
 
     @staticmethod
