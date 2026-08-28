@@ -6,9 +6,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
+
 import pytest
 from cordis import Context
-from ftre_agent.tool import ToolDefinition
+from ftre_agent.tool import ToolContext, ToolDefinition
 
 from ftre.plugins.builtin.core_tools import (
     create_bash_tool,
@@ -79,6 +83,37 @@ def test_get_is_scope_aware_and_returns_none_for_unknown() -> None:
     restrict()
     dispose()
     assert tools.get("bash") is None
+
+
+@pytest.mark.asyncio
+async def test_sync_tool_execution_does_not_block_event_loop() -> None:
+    """同步工具必须在线程中执行，避免 subprocess 阻塞 Gateway 事件循环。"""
+    tools = ToolService()
+    started = threading.Event()
+
+    def blocking_tool(**kwargs) -> str:
+        del kwargs
+        started.set()
+        time.sleep(0.2)
+        return "done"
+
+    tools.register(
+        ToolDefinition(name="blocking", description="blocking", parameters=[], func=blocking_tool),
+        owner="test",
+    )
+    view = await tools.prepare_view("default", "session-1")
+    context = ToolContext(
+        call_id="call-1",
+        name="blocking",
+        arguments={},
+        cancellation=asyncio.Event(),
+    )
+    execution = asyncio.create_task(view.execute("blocking", {}, context))
+    await asyncio.to_thread(started.wait, 1)
+    await asyncio.sleep(0.02)
+    assert not execution.done()
+    result = await execution
+    assert result.output == "done"
 
 
 def _labeled_tool(name: str, label: str) -> ToolDefinition:
