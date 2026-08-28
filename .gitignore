@@ -9,6 +9,7 @@ data/
 # 临时调试脚本（避免误提交含密钥的本地脚本）
 _*.py
 !src/**/_*.py
+!packages/ftre-agent/src/ftre_agent/message/_*.py
 !packages/**/__init__.py
 tmp_*.py
 fetch_*.py
