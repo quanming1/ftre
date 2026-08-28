@@ -335,7 +335,10 @@ class ToolService:
             if context.cancellation is not None and context.cancellation.is_set():
                 result = ToolExecutionResult(status="cancelled", error="cancelled")
                 return await self._dispatch_after(call, arguments, result, context)
-            result = item.definition.execute(values)
+            if item.definition.is_async():
+                result = item.definition.execute(values)
+            else:
+                result = await asyncio.to_thread(item.definition.execute, values)
             if inspect.isawaitable(result):
                 result = await result
             normalized = _normalize_result(result)

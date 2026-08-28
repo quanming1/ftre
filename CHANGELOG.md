@@ -1,5 +1,11 @@
 # Changelog
 
+## [未发布]
+
+### Tool 执行稳定性修复
+
+- 同步工具（包括 bash）改在线程中执行，避免慢速文件系统或子进程阻塞 Gateway 的 HTTP/WebSocket 事件循环；异步工具仍按原路径 await。
+
 ### F36 Agent Core 合并与 Package 分层简化（已完成，未发布）
 
 - `ftre-agent`、`ftre-agent-runtime`、`ftre-llm` 和 Host `ToolService` 分别成为
