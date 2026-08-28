@@ -344,3 +344,5 @@ Renderer 只消费状态和日志 IPC，不获得 executable path、spawn 参数
 | 2026-08-28 | 在临时 resources/home 和独立端口上执行 BackendSupervisor 生命周期 smoke：首次 start ready、重复 start 复用 generation、restart generation+1、stop 后无监听进程 | 验证 Supervisor 的 ready、幂等和 generation 语义，避免使用现有 Gateway 做破坏性测试 |
 | 2026-08-28 | 将当前 `E:\\ftre` 源码复制到隔离 resources 后再次执行同一 Supervisor smoke；当前代码在 `pythonw.exe` 下 ready、restart、stop 全部通过，端口和子进程均已回收 | 排除仅验证旧业务 bundle 的间接证据 |
 | 2026-08-28 | 使用官方 PyPI 完成 Windows x64 依赖 bundle（78.4 MB），导入 `cordis`、`ftre`、`ftre_agent`、`ftre_agent_runtime`、`ftre_process` 通过，manifest 指向 `pythonw.exe`；unpacked 包构建通过后清理 `release/backend` 生成物 | 证明发布链路可构建且不携带旧 Core；最终 GUI/Process Explorer 交互仍需在可启动 Electron 的原生验收环境执行 |
+| 2026-08-28 | 修复 F37.2 接线遗漏：`process` Provider 通过 Agent Runtime 注入并进入每个 Turn 的 `runtime_context`，补充 Bash 实际消费回归测试 | Windows 包中 Bash 连续返回 `runtime_context.process 未注入`；Provider 已注册但 Runtime 上下文未转发，导致所有 shell 命令未执行 |
+| 2026-08-28 | 修复 Bash 异步工具调用同步 `WorkspaceAccessor.get/set` 造成的事件循环死锁；新增 `aget/aset` 异步入口并补充超时回归测试 | 工具执行期间 `/api/health` 与会话路由会同时无响应，根因是事件循环线程同步等待自身提交的协程 |

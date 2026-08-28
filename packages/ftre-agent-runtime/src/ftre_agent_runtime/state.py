@@ -78,6 +78,7 @@ class Turn:
     retry_tokens: set[str] = field(default_factory=set)
     continuation_count: int = 0
     max_continuations: int = 3
+    paused: bool = False
     # 每个 Turn 独占一个取消信号；控制型 Agent Hook 只能观察这一个实例。
     cancellation: asyncio.Event = field(default_factory=asyncio.Event)
 

@@ -50,6 +50,7 @@ def test_runtime_plugin_registers_private_loop_with_agent_service(monkeypatch) -
         message_bus = object()
         tools = object()
         workspaces = object()
+        process = object()
         agent_profiles = object()
         system_prompt = "prompt"
         hook_runtime = "hooks"
@@ -82,6 +83,7 @@ def test_runtime_plugin_registers_private_loop_with_agent_service(monkeypatch) -
         "sessions": context.sessions,
         "tools": context.tools,
         "workspaces": context.workspaces,
+        "process_service": context.process,
         "profiles": context.agent_profiles,
         "config_service": context.config,
         "agent_service": service,

@@ -144,6 +144,8 @@ class AgentRunResult:
 
     正常结束、取消和失败必须可区分；``status`` 只有三个稳定值
     （completed/cancelled/failed），Runtime 内部的中间状态不进入该契约。
+    ``paused`` 是成功建立权限挂起边界的正交标记；它不代表自然完成，
+    Inbox 不得在该标记下消费下一条输入。
     ``error`` 仅在失败时携带结构化上下文，不包含凭据或 Prompt 全文。
     """
 
@@ -155,6 +157,7 @@ class AgentRunResult:
     error: Mapping[str, Any] | None = None
     run_id: str = ""
     usage: Mapping[str, Any] | None = None
+    paused: bool = False
 
 
 AgentListener = Callable[[dict[str, Any]], Any]

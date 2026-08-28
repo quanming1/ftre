@@ -311,11 +311,21 @@ class ReActRunner:
         else:
             # 新回复路径：入口校验 + 初始化状态 + 写用户消息 + 产 ReplyStart。
             self._prepare_new_reply(message, runtime_context)
+            reply_metadata = {
+                "request_id": str(self.state.runtime_context.get("request_id") or ""),
+                "run_id": str(
+                    self.state.runtime_context.get("turn_id") or self.state.turn_id or ""
+                ),
+            }
+            reply_metadata = {
+                key: value for key, value in reply_metadata.items() if value
+            }
             yield ReplyStartEvent(
                 session_id=self.state.runtime_context.get("session_id", ""),
                 reply_id=self.state.reply_id,
                 message_id=self.state.message_id,
                 name=self.agent.model,
+                metadata=reply_metadata,
             )
 
         # ── 主循环 + 统一异常/收尾处理（新回复与恢复共用这一处）──

@@ -89,6 +89,24 @@ class FailedRuntimeFactory(RuntimeFactory):
         return FailedRuntimeHandle(self.calls)
 
 
+class PauseThenCompleteHandle(RuntimeHandle):
+    async def run(self, request):
+        self.calls.append(request)
+        paused = len(self.calls) == 1
+        return AgentRunResult(
+            session_id=request.session_id,
+            turn_id=request.request_id,
+            status="completed",
+            paused=paused,
+        )
+
+
+class PauseThenCompleteFactory(RuntimeFactory):
+    async def create(self, spec):
+        del spec
+        return PauseThenCompleteHandle(self.calls)
+
+
 class RejectAdmissionHook:
     async def dispatch(self, spec, payload):
         assert spec is INBOX_BEFORE_ADMIT_SPEC
@@ -115,7 +133,7 @@ async def test_lease_release_and_ack_are_durable(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_orphaned_lease_is_requeued_by_new_repository(tmp_path):
+async def test_orphaned_lease_is_discarded_by_new_repository(tmp_path):
     first = InboxRepository(tmp_path)
     await first.admit(QueueItem("r1", 0, "s1", "ws", "hello"), "next-turn")
     await first.claim_lease("s1", ("r1",))
@@ -123,7 +141,7 @@ async def test_orphaned_lease_is_requeued_by_new_repository(tmp_path):
     replacement = InboxRepository(tmp_path)
     await replacement.load_all()
     snapshot = await replacement.snapshot("s1")
-    assert [item.request_id for item in snapshot.pending] == ["r1"]
+    assert snapshot.pending == ()
     assert snapshot.inflight_count == 0
 
 
@@ -148,6 +166,33 @@ async def test_structured_agent_path_uses_msg_request_and_reservation(tmp_path):
     assert request.messages[0].get_text_content() == "hello"
     assert request.agent_id == "s1:default"
     assert agents._reservations == {}
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_paused_run_does_not_consume_queue_until_confirmation_completes(tmp_path):
+    from ftre_agent import AgentService
+
+    agents = AgentService()
+    factory = PauseThenCompleteFactory()
+    agents.register_factory(factory)
+    service = InboxService(InboxRepository(tmp_path), agents)
+    await service.start()
+
+    first = await service.followup(InboundMessage("s1", "r1", "ws", "first"))
+    await asyncio.wait_for(service.wait("s1", first.request_id), timeout=1)
+    await service.followup(InboundMessage("s1", "r2", "ws", "queued"))
+    await asyncio.sleep(0.05)
+
+    assert [request.request_id for request in factory.calls] == ["r1"]
+
+    await agents.resume_confirmation("s1", "ws", [], {})
+    for _ in range(100):
+        if [request.request_id for request in factory.calls] == ["r1", "r2"]:
+            break
+        await asyncio.sleep(0.01)
+    assert [request.request_id for request in factory.calls] == ["r1", "r2"]
+    assert not (await service.snapshot("s1")).has_pending
     await service.close()
 
 

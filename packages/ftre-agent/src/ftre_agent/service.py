@@ -201,6 +201,8 @@ class AgentService:
 
     @staticmethod
     def _state_from_result(result: AgentRunResult) -> str:
+        if getattr(result, "paused", False):
+            return "paused"
         if result.status == "cancelled":
             return "cancelled"
         if result.status == "failed":
@@ -290,6 +292,8 @@ class AgentService:
             raise InvalidRunRequestError("agent_id must be a string")
         entry = self._entry_or_raise(agent_id)
         self._expire_reservations()
+        if entry.state == "paused":
+            raise AgentBusyError(f"Agent is awaiting confirmation: {agent_id}")
         if agent_id in self._inflight_admissions:
             raise AgentBusyError(f"Agent is busy: {agent_id}")
         if self._control_or_raise().is_active_session(entry.spec.session_id or agent_id):
@@ -380,6 +384,8 @@ class AgentService:
         entry = self._entries.get(session_id)
         if entry is not None:
             session_id = entry.spec.session_id or session_id
+            if entry.state == "paused":
+                return "paused"
         if self._control is None:
             return "idle"
         return str(self._control.get_session_status(session_id))
@@ -387,7 +393,7 @@ class AgentService:
     def is_busy(self, session_id: str) -> bool:
         """判断 Session 是否仍有活动 Turn 或维护任务。"""
         self._expire_reservations()
-        return self.status(session_id) in {"running", "processing", "compacting"} or any(
+        return self.status(session_id) in {"running", "processing", "compacting", "paused"} or any(
             item.session_id == session_id for item in self._reservations.values()
         )
 
@@ -471,7 +477,7 @@ class AgentService:
         metadata: Any,
     ) -> Any:
         """Apply existing confirmation events and resume the paused Agent turn."""
-        return await self._await(
+        result = await self._await(
             self._control_or_raise().resume_confirmation(
                 session_id,
                 channel_id,
@@ -479,6 +485,17 @@ class AgentService:
                 metadata,
             )
         )
+        for agent_id, entry in tuple(self._entries.items()):
+            if entry.spec.session_id != session_id:
+                continue
+            entry.state = (
+                self._state_from_result(result)
+                if isinstance(result, AgentRunResult)
+                else "idle"
+            )
+            self.registry.set_state(agent_id, entry.state)
+            await self._notify("status-changed", self.view(agent_id))
+        return result
 
     async def dispose(self, agent_id: str) -> None:
         """释放一个 Agent Handle 及其 Runtime 句柄。"""

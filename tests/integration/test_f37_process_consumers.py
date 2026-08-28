@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import sys
 
@@ -23,6 +24,25 @@ class _Workspace(WorkspaceAccessor):
         self.path = new_path
         return previous
 
+    async def aget(self) -> str:
+        return self.path
+
+    async def aset(self, new_path: str) -> str:
+        previous = self.path
+        self.path = new_path
+        return previous
+
+
+class _SessionService:
+    def __init__(self, workspace: str) -> None:
+        self.workspace = workspace
+
+    async def get_session(self, _session_id: str):
+        return {"workspace": self.workspace}
+
+    async def update_session(self, _session_id: str, *, workspace: str):
+        self.workspace = workspace
+
 
 @pytest.mark.asyncio
 async def test_bash_executes_through_injected_process_service(tmp_path) -> None:
@@ -40,6 +60,34 @@ async def test_bash_executes_through_injected_process_service(tmp_path) -> None:
         await service.close()
 
     assert "process-service-ok" in result
+    assert f"[cwd] {tmp_path}" in result
+
+
+@pytest.mark.asyncio
+async def test_async_bash_reads_workspace_without_blocking_event_loop(tmp_path) -> None:
+    service = ProcessService()
+    session_service = _SessionService(str(tmp_path))
+    workspace = WorkspaceAccessor(
+        session_id="session-1",
+        session_manager=session_service,
+        event_loop=asyncio.get_running_loop(),
+        fallback_cwd=str(tmp_path),
+    )
+    try:
+        result = await asyncio.wait_for(
+            create_bash_tool().execute(
+                {
+                    "command": "echo async-workspace-ok",
+                    "ws": workspace,
+                    "process": service,
+                }
+            ),
+            timeout=5,
+        )
+    finally:
+        await service.close()
+
+    assert "async-workspace-ok" in result
     assert f"[cwd] {tmp_path}" in result
 
 

@@ -196,7 +196,7 @@ class _MutableInbox:
 
 @dataclass(frozen=True, slots=True)
 class LeaseRecord:
-    """一次持久化 claim 的所有权记录，崩溃后可重新投递。"""
+    """一次持久化 claim 的所有权记录，正常失败可释放，重启时不重投。"""
 
     lease_id: str
     owner_id: str

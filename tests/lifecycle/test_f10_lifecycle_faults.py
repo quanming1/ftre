@@ -68,18 +68,23 @@ async def test_before_claim_keep_preserves_pending_and_remove_is_explicit(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_restart_recovers_unclaimed_item_without_duplicate(tmp_path):
+async def test_restart_loads_unclaimed_item_without_auto_dispatch(tmp_path):
     root = tmp_path / "inbox"
     first = InboxService(InboxRepository(root))
     await first.followup(InboundMessage("s1", "r1", "ws", "hello"))
     await first.close()
 
-    second_repo = InboxRepository(root)
-    await second_repo.load_all()
-    snapshot = await second_repo.snapshot("s1")
-    assert [item.request_id for item in snapshot.pending] == ["r1"]
-    await second_repo.load_all()
-    assert [item.request_id for item in (await second_repo.snapshot("s1")).pending] == ["r1"]
+    agent = _Agent()
+    second = InboxService(InboxRepository(root), agent)
+    await second.start()
+    await asyncio.sleep(0.05)
+    assert agent.calls == []
+    assert [item.request_id for item in (await second.snapshot("s1")).pending] == ["r1"]
+
+    await second.resume_pending("s1")
+    await agent.started.wait()
+    agent.release.set()
+    await second.close()
 
 
 @pytest.mark.asyncio

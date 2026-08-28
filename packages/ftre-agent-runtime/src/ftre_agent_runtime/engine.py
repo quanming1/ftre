@@ -55,6 +55,7 @@ class AgentLoop:
         tools,
         workspaces,
         profiles,
+        process_service=None,
         config_service=None,
         agent_service=None,
         attachments=None,
@@ -69,6 +70,7 @@ class AgentLoop:
         self.sessions = sessions
         self.tools = tools
         self.workspaces = workspaces
+        self.process_service = process_service
         self.profiles = profiles
         if agent_service is None or not hasattr(agent_service, "registry"):
             raise TypeError("Agent Runtime requires the public AgentService")
@@ -114,6 +116,7 @@ class AgentLoop:
             tools=tools,
             profiles=profiles,
             workspaces=workspaces,
+            process_service=process_service,
             config_service=config_service,
             llm_service=llm_service,
         )
@@ -225,6 +228,26 @@ class AgentLoop:
         这个入口只执行已交付的 ``RuntimeInput``；Inbox Package 决定消息何时到达这里。
         """
         session_id = message.session_id
+        duplicate = await self._request_state(message)
+        if duplicate is not None:
+            if duplicate == "completed":
+                return AgentRunResult(
+                    session_id=session_id,
+                    turn_id="",
+                    status="completed",
+                    run_id=message.request_id,
+                )
+            return AgentRunResult(
+                session_id=session_id,
+                turn_id="",
+                status="failed",
+                run_id=message.request_id,
+                error={
+                    "code": "request-already-processed",
+                    "message": f"request_id 已处理，跳过重复执行（state={duplicate}）",
+                    "retryable": False,
+                },
+            )
         if self.is_active_session(session_id):
             return AgentRunResult(
                 session_id=session_id,
@@ -382,6 +405,20 @@ class AgentLoop:
             queue = getattr(self, "_stream_queues", {}).get(session_id)
             if queue is not None:
                 await queue.put(None)
+
+    async def _request_state(self, message: RuntimeInput) -> str | None:
+        """在新 Turn 前阻止已产生 Assistant 结果的 request 重复执行。"""
+        try:
+            inspect.getattr_static(self.sessions, "request_state")
+        except AttributeError:
+            return None
+        checker = getattr(self.sessions, "request_state", None)
+        if not callable(checker) or not message.request_id:
+            return None
+        metadata = dict(message.metadata or {})
+        run_id = str(metadata.get("run_id") or "") or None
+        result = checker(message.session_id, message.request_id, run_id)
+        return await result if inspect.isawaitable(result) else result
 
     async def stream_input(self, message: RuntimeInput):
         """Stream the real Runtime/Session events for one delivered input."""

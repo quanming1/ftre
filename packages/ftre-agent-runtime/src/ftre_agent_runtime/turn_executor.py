@@ -72,6 +72,7 @@ class TurnExecutor:
         tools=None,
         profiles=None,
         workspaces=None,
+        process_service=None,
         config_service=None,
         llm_service=None,
     ) -> None:
@@ -87,6 +88,7 @@ class TurnExecutor:
         self._tools = tools
         self._profiles = profiles
         self._workspaces = workspaces
+        self._process_service = process_service
         self._config_service = config_service
         self._llm_service = llm_service
         # 测试可替换这一处纯构造函数；生产路径始终使用 Runtime 唯一工厂。
@@ -169,6 +171,7 @@ class TurnExecutor:
                 if turn.status == TurnStatus.ERROR
                 else None
             ),
+            paused=turn.paused,
         )
 
     async def _advance(self, turn: Turn) -> TurnStatus:
@@ -362,12 +365,14 @@ class TurnExecutor:
         turn.runtime_context = {
             "session_id": turn.session_id,
             "request_id": inbound.request_id,
+            "turn_id": turn.turn_id,
             "agent_id": runtime_agent_id,
             "agent_subject": loop.agent_subject(runtime_agent_id),
             "channel_id": inbound.channel_id,
             "event_loop": loop._event_loop,
             "sessions": self._sessions,
             "bus": loop.message_bus,
+            "process": self._process_service,
             "agent": self._agents,
             "attachments": self._attachments,
             "llm_config": effective_config.llm,
@@ -434,6 +439,7 @@ class TurnExecutor:
             # 不 finish open replies；发一条 success 的 TURN_END(reason=paused) 让客户端
             # 退出 busy，Turn 正常收尾、agent 实例销毁。用户确认后由新 Turn 恢复。
             if run_state.status == RunStatus.PAUSED:
+                turn.paused = True
                 await self._emit_step(
                     turn,
                     "TURN_END",

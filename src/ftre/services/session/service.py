@@ -180,6 +180,12 @@ class SessionService:
         """同步只读幂等查询，供 Inbox 避免重复接纳已提交输入。"""
         return self._repo.has_request_id(session_id, request_id)
 
+    def request_state(
+        self, session_id: str, request_id: str, run_id: str | None = None
+    ) -> str | None:
+        """同步查询请求是否已经产生过 Assistant 执行结果。"""
+        return self._repo.request_state(session_id, request_id, run_id)
+
     async def update_session(
         self,
         session_id: str,

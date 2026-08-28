@@ -27,6 +27,22 @@ def test_core_tools_declares_process_injection() -> None:
     assert "subprocess.run" not in bash
 
 
+def test_agent_runtime_declares_and_forwards_process_injection() -> None:
+    plugin = (ROOT / "packages/ftre-agent-runtime/src/ftre_agent_runtime/plugin.py").read_text(
+        encoding="utf-8"
+    )
+    engine = (ROOT / "packages/ftre-agent-runtime/src/ftre_agent_runtime/engine.py").read_text(
+        encoding="utf-8"
+    )
+    turn_executor = (ROOT / "packages/ftre-agent-runtime/src/ftre_agent_runtime/turn_executor.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"process",' in plugin
+    assert "process_service=ctx.process" in plugin
+    assert "process_service=None" in engine
+    assert '"process": self._process_service' in turn_executor
+
+
 def test_host_production_has_no_direct_process_creation() -> None:
     forbidden = {"run", "Popen", "call", "check_call", "check_output", "check_run"}
     for path in (ROOT / "src/ftre").rglob("*.py"):

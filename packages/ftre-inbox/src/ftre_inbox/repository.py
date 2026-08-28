@@ -58,7 +58,7 @@ class InboxRepository:
                 path.rename(path.with_name(f"inbox.json.corrupt-{uuid.uuid4().hex[:8]}"))
                 continue
             if state.inflight:
-                self._requeue_orphaned_leases(state)
+                self._discard_orphaned_leases(state)
                 await self._commit(state)
             self._states[state.session_id] = state
 
@@ -363,15 +363,16 @@ class InboxRepository:
         return None
 
     @staticmethod
-    def _requeue_orphaned_leases(state: _MutableInbox) -> None:
-        """新进程加载时，上一进程留下的 inflight 一律回到 pending。"""
+    def _discard_orphaned_leases(state: _MutableInbox) -> None:
+        """进程重启后丢弃上一进程已领取的输入，禁止重复执行。"""
         records = tuple(state.inflight.values())
         state.inflight.clear()
-        for record in records:
-            target_items = state.next_step if record.target == "next-step" else state.next_turn
-            target_items.append(record.item)
-        state.next_turn.sort(key=lambda item: item.sequence)
-        state.next_step.sort(key=lambda item: item.sequence)
+        if records:
+            logger.warning(
+                "[ftre-inbox] discarded %d orphaned lease(s) after restart: %s",
+                len(records),
+                ",".join(record.item.request_id for record in records),
+            )
 
     async def _commit(self, state: _MutableInbox) -> None:
         path = self.path_for(state.session_id)
