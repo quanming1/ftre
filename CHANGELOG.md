@@ -5,6 +5,7 @@
 ### Tool 执行稳定性修复
 
 - 同步工具（包括 bash）改在线程中执行，避免慢速文件系统或子进程阻塞 Gateway 的 HTTP/WebSocket 事件循环；异步工具仍按原路径 await。
+- Tool Hook 与 Tool Service 共用同一个 `ToolExecutionResult` 公共类型，修复透明 `tool/after` 审计导致工具结果被误判失败的问题。
 
 ### F36 Agent Core 合并与 Package 分层简化（已完成，未发布）
 
