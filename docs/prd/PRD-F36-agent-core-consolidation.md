@@ -1521,3 +1521,5 @@ merge。
 | 2026-08-28 | F36.8 完成：执行跨仓残留/唯一 Owner/协议扫描，`node --check scripts/bundle-backend.js`、Ftre `ruff`、Desktop `pnpm test` 与 `git diff --check` 均通过；运行中的 Gateway 未被 kill 或重启；执行证据见 `docs/execution/EXECUTION-F36-agent-core-consolidation.md` | 形成可审计交付门禁，F36 与 Core C8 的 PR 边界保持独立 |
 | 2026-08-28 | 收尾审计移除 `ToolService` 旧 `registry` 构造参数、`filter_tools(registry, ...)` 兼容入口及其旧 Registry 测试；allow/deny 统一由 `prepare_view()` 投影并通过 34 项 Agent/Tool 专项验证 | 清除最后一处重复可变 Registry Owner，避免以兼容入口掩盖职责重叠 |
 | 2026-08-28 | Prompt 组装收口：Profile 的 SOUL/USER 与运行环境事实迁移到 `SystemPromptService`；删除 Runtime `factory.compose_system_prompt()`，Agent 创建只消费单次 `PromptAssembly.text`；补充 Profile、环境、vision 和 receipt 回归测试，全量 pytest 710 passed | 消除 Runtime 与 SystemPromptService 的双重组装，确保 Hook/Receipt 覆盖最终 system prompt 且不重复注入 |
+| 2026-08-28 | 合并后 CI 修复：补齐 `ftre-agent` 的 `message/_block.py`、`_convert.py`、`_msg.py`，增加 `.gitignore` 精确例外；wheel 与 CI 同款测试（485 passed）通过 | 修复洁净安装缺少消息实现、导致全量测试收集失败的问题 |
+| 2026-08-28 | 合并后 CI 第二次修复：补齐 `ftre-agent/event/_event.py` 并增加事件目录的 `.gitignore` 精确例外；wheel 与 CI 同款测试再次通过（485 passed） | 修复洁净安装缺少事件实现、导致事件包收集失败的问题 |

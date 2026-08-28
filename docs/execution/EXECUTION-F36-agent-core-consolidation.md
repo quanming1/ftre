@@ -135,6 +135,17 @@ git diff --check
 - 本次审计未创建提交；工作区仍保留各仓库既有未提交变更，Desktop 的
   `packages/renderer/src/app/Workbench.tsx` 为审计前已有改动且未触碰。
 
+### 合并后 CI 修复
+
+- PR #67 的洁净 CI 首次暴露 `ftre-agent` 缺少 `message/_block.py`、`_convert.py`、
+  `_msg.py`；本机旧 editable 安装曾掩盖该问题。
+- 已从 Core 历史源码迁入三个实现文件，并在根 `.gitignore` 增加精确例外，避免
+  `_*.py` 规则再次漏掉它们。
+- wheel 内容检查确认三个文件均进入发行物；按 CI 同款忽略范围复跑结果为
+-  `485 passed in 293.25s`。
+- 随后洁净 CI 又暴露 `ftre-agent/event/_event.py` 被同一 `_*.py` 规则漏掉；已补齐
+  事件实现并加入精确例外。修复后 CI 同款测试再次通过：`485 passed in 305.68s`。
+
 ## 5. 交付门禁
 
 - PRD：`docs/prd/PRD-F36-agent-core-consolidation.md` 已将 FR1–FR15、AC1–AC15 勾选，
