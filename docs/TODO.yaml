@@ -1653,3 +1653,32 @@ stages:
             title: 重构收尾审计与跨仓库交付门禁
             status: done
             completion_date: 2026-08-28
+      - id: F37
+        title: Process Service 与 Electron 后端启动收口
+        status: in_progress
+        date: 2026-08-28
+        prd: docs/prd/PRD-F37-process-service-and-hidden-startup.md
+        prd_status: 开发中
+        depends_on:
+          - F36
+        implementation_boundary: 跨 E:\\ftre 与 E:\\binn\\ftre-desktop 协同实施；只处理本地外部进程策略、Electron 内置 Gateway 启动和生命周期，不修改 Agent、LLM、Tool 业务协议，不 kill 或重启正在运行的 Gateway
+        modules:
+          - packages/ftre-process/
+          - src/ftre/plugins/builtin/process/
+          - src/ftre/services/tools/
+          - src/ftre/plugins/builtin/mcp/
+          - src/ftre/plugins/builtin/core_tools/
+          - src/ftre/app/gateway/
+          - 配对 E:\\binn\\ftre-desktop/packages/electron/src/
+          - 配对 E:\\binn\\ftre-desktop/scripts/tests/
+        acceptance: 三阶段全部完成；Windows 正式客户端启动、后端工具/MCP/Git/浏览器子进程、重启和退出均无可见控制台；日志、ready/health、崩溃恢复和进程树清理可验证；无正式链路 bat/cmd/PowerShell 中间层；无裸 subprocess 漏网；客户端与后端测试、架构扫描和 Windows 安装包验收通过
+        tasks:
+          - id: F37.1
+            title: Electron BackendSupervisor 启动无黑窗
+            status: done
+          - id: F37.2
+            title: ftre-process Package 与后端子进程策略
+            status: done
+          - id: F37.3
+            title: 生命周期收口、跨平台验收与发布门禁
+            status: in_progress

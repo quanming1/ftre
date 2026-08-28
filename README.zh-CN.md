@@ -29,6 +29,7 @@ CLI（ftre.main）
 | 概念 | 位置 | 责任 |
 | --- | --- | --- |
 | Service | `src/ftre/services/<name>/service.py` | 带状态的公共能力，拥有稳定 key，例如 `sessions`、`tools`、`http`、`message_bus` |
+| Process Package | `packages/ftre-process/` | 跨平台外部进程策略，由 Host 以 `process` Service key 注入消费者 |
 | Provider Plugin | Service 目录旁的 `plugin.py` | 声明 `inject`/`provide`，创建或绑定 Service，并登记清理 Effect |
 | Builtin Plugin | `src/ftre/plugins/builtin/<name>/` | Skill、MCP、Plan、Team、Schedule、上下文治理等可选产品行为 |
 | Kernel Runtime | `src/ftre/kernel/plugins/` | Manifest 校验、entry point 发现、Cordis 加载、状态与失败诊断 |

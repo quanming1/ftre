@@ -6,7 +6,7 @@ ftre gateway 后台进程管理。
   │  ftre gateway --background                                       │
   │     │                                                            │
   │     ▼  GatewayRuntime.start()                                    │
-  │  subprocess.Popen([                                              │
+  │  ProcessService.spawn_sync(ProcessSpec(...))                    │
   │     "python", "-m", "ftre", "gateway",                           │
   │     "--foreground",          ← 子进程跑前台模式                   │
   │     "--port", "8000",                                            │
@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from ftre_process import ProcessService, ProcessSpec
 
 
 def _ftre_home() -> Path:
@@ -127,6 +129,7 @@ class GatewayRuntime:
         data_dir: Path | None = None,
         platform_name: str | None = None,
         python_executable: str | None = None,
+        process_service: ProcessService | None = None,
     ) -> None:
         """初始化运行时，确定文件路径和平台参数。
 
@@ -145,6 +148,7 @@ class GatewayRuntime:
         self.platform_name = platform_name or _platform_name()
         # 子进程用哪个 Python 解释器启动
         self.python_executable = python_executable or sys.executable
+        self.process_service = process_service or ProcessService()
 
     # ── 启动 ──────────────────────────────────────────────────
 
@@ -194,13 +198,15 @@ class GatewayRuntime:
         child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["PYTHONUTF8"] = "1"
         with self.log_path.open("a", encoding="utf-8") as log_handle:
-            process = subprocess.Popen(
-                command,
+            process = self.process_service.spawn_sync(
+                ProcessSpec(
+                    argv=command,
+                    env=child_env,
+                    mode="detached",
+                ),
                 stdin=subprocess.DEVNULL,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
-                env=child_env,
-                **self._popen_kwargs(),
             )
 
         # 5. 等 0.3 秒确认子进程没崩溃
@@ -446,99 +452,35 @@ class GatewayRuntime:
         ]
         return command
 
-    def _popen_kwargs(self) -> dict[str, Any]:
-        """返回平台特定的 Popen 参数，让子进程脱离当前终端。
-
-        Windows:
-            CREATE_NEW_PROCESS_GROUP — 子进程创建独立进程组，
-                Ctrl+C 不会传递到子进程（避免前台 Ctrl+C 杀死后台进程）
-            CREATE_NO_WINDOW — 不弹出新的控制台窗口
-
-        Linux/macOS:
-            start_new_session=True — 调用 setsid()，子进程创建新会话，
-                脱离当前控制终端。关 SSH/关终端时子进程不会收到 SIGHUP。
-        """
-        if self.platform_name == "Windows":
-            flags = 0
-            flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            return {"creationflags": flags}
-        return {"start_new_session": True}
-
     def _terminate(self, pid: int, *, timeout_s: int) -> bool:
         """终止进程，分平台调用不同实现。
 
         策略：先发优雅终止信号（SIGTERM / CTRL_BREAK），
         等待 timeout_s 秒，如果还没退出就强制 kill（SIGKILL / taskkill /F）。
         """
+        return self._terminate_process_service(pid, timeout_s=timeout_s)
+
+    def _terminate_process_service(self, pid: int, *, timeout_s: int) -> bool:
+        """通过 ProcessService 隐藏执行平台终止命令，避免本模块再拥有 spawn 策略。"""
         if self.platform_name == "Windows":
-            return self._terminate_windows(pid, timeout_s=timeout_s)
-        return self._terminate_posix(pid, timeout_s=timeout_s)
+            self.process_service.run_sync(
+                ProcessSpec(argv=("taskkill", "/PID", str(pid), "/T"), timeout=5)
+            )
+            if self._wait_for_exit(pid, 2):
+                return True
+            self.process_service.run_sync(
+                ProcessSpec(argv=("taskkill", "/PID", str(pid), "/T", "/F"), timeout=5)
+            )
+            return self._wait_for_exit(pid, 2)
 
-    def _terminate_posix(self, pid: int, *, timeout_s: int) -> bool:
-        """Linux/macOS 下的进程终止。
-
-        1. 尝试获取进程组 ID（pgid），如果后台子进程是用 start_new_session 启动的，
-           它有独立的进程组，用 killpg 可以杀掉它和它的所有子进程
-        2. 发 SIGTERM（优雅终止，进程可以清理后退出）
-        3. 等 timeout_s 秒
-        4. 如果还没退出，发 SIGKILL（不可忽略，内核直接回收）
-        5. 再等 2 秒确认
-        """
-        # 获取进程组 ID
         try:
-            pgid = os.getpgid(pid)
-        except OSError:
-            pgid = None
-
-        # 第一轮：SIGTERM 优雅终止
-        try:
-            if pgid is not None:
-                os.killpg(pgid, signal.SIGTERM)  # 杀整个进程组
-            else:
-                os.kill(pid, signal.SIGTERM)      # 只杀单个进程
-        except ProcessLookupError:
-            # 进程已经不存在了
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, OSError):
             return True
-
-        # 等待优雅退出
         if self._wait_for_exit(pid, timeout_s):
             return True
-
-        # 第二轮：SIGKILL 强制终止
-        with suppress(ProcessLookupError):
-            if pgid is not None:
-                os.killpg(pgid, signal.SIGKILL)
-            else:
-                os.kill(pid, signal.SIGKILL)
-        return self._wait_for_exit(pid, 2)
-
-    def _terminate_windows(self, pid: int, *, timeout_s: int) -> bool:
-        """Windows 下的进程终止（三段式）。
-
-        Windows 没有 SIGTERM/SIGKILL，用以下方式：
-        1. CTRL_BREAK_EVENT — 相当于 Ctrl+Break，子进程可以捕获并优雅退出
-           （前提是子进程在 CREATE_NEW_PROCESS_GROUP 里，否则会报错）
-        2. taskkill /PID N /T — 终止进程及其所有子进程（/T = tree）
-        3. taskkill /PID N /T /F — 强制终止（/F = force，相当于 SIGKILL）
-        """
-        # 第一轮：CTRL_BREAK（优雅）
-        # Windows 上 os.kill(pid, CTRL_BREAK_EVENT) 可能报 SystemError/OSError，
-        # 失败了就跳过，直接用 taskkill
-        ctrl_break = getattr(signal, "CTRL_BREAK_EVENT", None)
-        if ctrl_break is not None:
-            with suppress(ProcessLookupError, OSError, SystemError):
-                os.kill(pid, ctrl_break)
-            if self._wait_for_exit(pid, timeout_s):
-                return True
-
-        # 第二轮：taskkill /T（终止进程树）
-        subprocess.run(["taskkill", "/PID", str(pid), "/T"], check=False)
-        if self._wait_for_exit(pid, 2):
-            return True
-
-        # 第三轮：taskkill /T /F（强制终止进程树）
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
+        with suppress(ProcessLookupError, OSError):
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
         return self._wait_for_exit(pid, 2)
 
     def _wait_for_exit(self, pid: int, timeout_s: float) -> bool:

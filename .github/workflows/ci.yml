@@ -42,6 +42,7 @@ jobs:
           pip install -e ./packages/ftre-team --no-deps
           pip install -e ./packages/ftre-llm-recovery --no-deps
           pip install -e ./packages/ftre-llm-fallback --no-deps
+          pip install -e ./packages/ftre-process --no-deps
           pip install -e ./packages/ftre-agent --no-deps
           pip install -e ./packages/ftre-agent-runtime --no-deps
           pip install -e .
