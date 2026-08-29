@@ -1684,10 +1684,10 @@ stages:
             status: in_progress
       - id: F38
         title: Inbox 重复投递与恢复幂等修复
-        status: in_progress
+        status: done
         date: 2026-08-29
         prd: docs/prd/PRD-F38-inbox-request-ledger-and-recovery.md
-        prd_status: 开发中
+        prd_status: 已验收
         depends_on:
           - F35
           - F36

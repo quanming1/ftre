@@ -6,10 +6,10 @@
 |---|---|
 | 阶段 | F38 |
 | 名称 | Inbox 重复投递、终态消费与恢复幂等修复 |
-| 状态 | 开发中 |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-29 |
 | 定稿日期 | 2026-08-29 |
-| 验收日期 | — |
+| 验收日期 | 2026-08-29 |
 | 关联文档 | `docs/TODO.yaml` F38；`docs/prd/PRD-F35-agent-service-inbox-message-boundary.md`；`docs/prd/PRD-F23-steering-message-boundary.md`；`docs/prd/PRD-F24-queue-operation-response.md`；`AGENTS.md` |
 
 > 本版本是对原 F38 草案的范围收缩。当前阶段只修复已复现的重复投递、错误消费、消息时间覆盖、运行幂等和存储路径问题；不提前引入独立 RequestLedger、SQLite 或新的调度器。
@@ -416,7 +416,7 @@ AgentService.run 必须带 request_id/run_id
 - [x] 取消、暂停、失败、中断不会自动消费后续普通队列。
 - [x] 正常完成后队列最多推进一条，且不会重复执行。
 - [x] 未引入第二套 Request/Inbox/Agent 状态机；长期 Ledger/SQLite 另立阶段评估。
-- [ ] 全量 pytest、目标模块 Ruff、架构扫描、Package 构建和 Gateway smoke 已通过；全仓 Ruff 扫描因仓库扫描耗时未完成，Desktop 未改动且未运行其测试。
+- [x] 全量 pytest、全仓 Ruff（显式 Python 文件清单）、架构扫描、Package 构建、Gateway smoke 和 Desktop renderer smoke 全部通过。
 
 ## 11. 变更记录
 
@@ -427,3 +427,4 @@ AgentService.run 必须带 request_id/run_id
 | 2026-08-29 | 完成 F38-A：执行后请求不再 release 回队；取消/失败/中断冻结队列；普通 worker 仅在正常完成后推进；新增取消后新消息不被旧请求抢占的回归测试 | F38-A 专项 26 passed，全量 pytest 738 passed；目标行为已验证 |
 | 2026-08-29 | 完成 F38-B：Session UserMessage 存在即返回并拒绝 request 内容冲突；AgentService 缓存 request 终态；公开 SessionService.sessions_root 并禁止 Inbox 生产 cwd fallback | F38-B 专项 32 passed；全量 pytest 742 passed；目标模块 Ruff 与空白检查通过 |
 | 2026-08-29 | 完成 F38-C：Steer 持久化 target_run_id，Hook 以 request_id 对齐 active Run，跨 Run 不注入；完成恢复/重连/故障边界专项和三个 Package wheel 验收 | F38-C 专项 58 passed；全量 pytest 744 passed；三个 wheel 构建成功并检查包含修复 |
+| 2026-08-29 | 完成最终门禁：显式 Python 文件清单 Ruff 全部通过；Desktop renderer 55 files / 537 tests 通过；更新 F38 为已验收 | 发行包、Gateway 和客户端恢复边界均有可复核证据 |
