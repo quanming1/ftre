@@ -17,6 +17,7 @@ from ftre_agent import (
     AgentStreamEnvelope,
     AgentView,
     FactoryRegistration,
+    InvalidRunRequestError,
 )
 from ftre_agent.message import UserMsg
 
@@ -25,8 +26,10 @@ class _Handle:
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
+        self.run_calls = 0
 
     async def run(self, request: AgentRunRequest) -> AgentRunResult:
+        self.run_calls += 1
         self.started.set()
         await self.release.wait()
         return AgentRunResult(
@@ -133,6 +136,32 @@ async def test_busy_and_unknown_agent_are_typed_errors() -> None:
         await service.run("missing", _request("request-3"))
     await service.cancel("agent-1", reason="test")
     assert (await task).status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_completed_request_is_idempotent_and_content_conflicts_are_rejected() -> None:
+    service = AgentService()
+    factory = _Factory()
+    service.start()
+    service.register_factory(factory)
+    handle = await service.create(
+        AgentCreateSpec(agent_id="agent-1", config=AgentConfig(), session_id="session-1")
+    )
+    factory.handles[0].release.set()
+
+    first = await handle.run(_request("request-idempotent"))
+    second = await handle.run(_request("request-idempotent"))
+
+    assert second is first
+    assert factory.handles[0].run_calls == 1
+    with pytest.raises(InvalidRunRequestError, match="request_id 已绑定不同内容"):
+        await handle.run(
+            AgentRunRequest(
+                session_id="session-1",
+                request_id="request-idempotent",
+                messages=(UserMsg(content="different"),),
+            )
+        )
 
 
 @pytest.mark.asyncio

@@ -116,6 +116,29 @@ class SessionProjection:
         Reply 事件都会推进内存快照的 revision。
         """
         if isinstance(event, UserMessageEvent):
+            message = UserMsg(
+                name=MsgName.DEFAULT,
+                content=event.content,
+                id=event.id,
+                created_at=event.created_at,
+                metadata=event.message_metadata,
+            )
+            get_state_message = getattr(self._session_manager, "get_state_message", None)
+            if callable(get_state_message):
+                existing_raw = await get_state_message(session_id, event.id)
+                if isinstance(existing_raw, dict):
+                    from ftre.services.session.message.converter import _as_msg
+
+                    existing = _as_msg(existing_raw)
+                    existing_metadata = existing.metadata or {}
+                    incoming_fingerprint = message.metadata.get("request_fingerprint")
+                    existing_fingerprint = existing_metadata.get("request_fingerprint")
+                    if existing_fingerprint and incoming_fingerprint:
+                        if existing_fingerprint != incoming_fingerprint:
+                            raise ValueError("request_id 已绑定不同内容")
+                    elif existing.get_text_content() != message.get_text_content():
+                        raise ValueError("request_id 已绑定不同内容")
+                    return ProjectionResult(persisted_messages=[existing])
             previous_id = str(
                 event.message_metadata.get("previous_assistant_message_id")
                 or event.data.get("previous_assistant_message_id")
@@ -127,13 +150,6 @@ class SessionProjection:
                     previous_id,
                     finished_at=event.created_at,
                 )
-            message = UserMsg(
-                name=MsgName.DEFAULT,
-                content=event.content,
-                id=event.id,
-                created_at=event.created_at,
-                metadata=event.message_metadata,
-            )
             await self._session_manager.upsert_message(session_id, message)
             return ProjectionResult(persisted_messages=[message])
 

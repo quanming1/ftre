@@ -38,16 +38,22 @@ async def apply(ctx: Context, config=None):
     )
     sessions = ctx.sessions
     root = options.get("inbox_dir")
-    if root is None and sessions is not None and hasattr(sessions, "sessions_root"):
-        root = Path(sessions.sessions_root()) / "_inbox"
-    root = root or (Path.cwd() / ".ftre-inbox")
+    if root is None:
+        sessions_root = getattr(sessions, "sessions_root", None)
+        if callable(sessions_root):
+            root = Path(sessions_root()) / "_inbox"
+        else:
+            raise RuntimeError(
+                "Inbox Plugin requires an explicit inbox_dir or SessionService.sessions_root()"
+            )
     exists = None
     request_seen = None
     if sessions is not None and hasattr(sessions, "has_session"):
         exists = sessions.has_session
     if sessions is not None and hasattr(sessions, "has_request_id"):
         request_seen = sessions.has_request_id
-    legacy_root = sessions.sessions_root() if sessions is not None and hasattr(sessions, "sessions_root") else None
+    sessions_root = getattr(sessions, "sessions_root", None)
+    legacy_root = sessions_root() if callable(sessions_root) else None
     try:
         capacity = max(
             1,

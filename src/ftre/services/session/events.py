@@ -7,6 +7,7 @@ AgentLoop implementation.
 # 中文说明：Session 维护事件命名和 emit sink：可选 Feature 通过它通知 Projection，不持有 AgentLoop 引用。
 
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -42,6 +43,27 @@ def _event_id() -> str:
 
 def _event_time() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _request_fingerprint(content: Any, attachments: tuple[dict[str, Any], ...]) -> str:
+    payload = {
+        "content": content,
+        "attachments": [dict(item) for item in attachments],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+
+
+def _content_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(
+            str(part.get("text", ""))
+            for part in value
+            if isinstance(part, dict) and part.get("type", "text") == "text"
+        )
+    return str(value or "")
 
 
 class HostEventBase(BaseModel):
@@ -207,6 +229,7 @@ class SessionEventService:
         ).hexdigest()[:24]
         event_id = f"user_{digest}"
         stored_content = normalize_stored_user_content(content)
+        request_fingerprint = _request_fingerprint(stored_content, attachments)
         persisted_content = build_user_content(
             stored_content,
             [dict(item) for item in attachments],
@@ -216,6 +239,7 @@ class SessionEventService:
             "hide": False,
             "request_id": request_id,
             "source": source,
+            "request_fingerprint": request_fingerprint,
         }
         if agent_id:
             message_metadata["agent_id"] = agent_id
@@ -238,6 +262,27 @@ class SessionEventService:
                 "previous_assistant_message_id": previous_assistant_message_id,
             },
         )
+        get_state_message = getattr(self._sessions, "get_state_message", None)
+        if callable(get_state_message):
+            existing_raw = await get_state_message(session_id, event_id)
+            if isinstance(existing_raw, dict):
+                from ftre.services.session.message.converter import _as_msg
+                from ftre.services.session.projection import ProjectionResult
+
+                existing = _as_msg(existing_raw)
+                existing_metadata = existing.metadata or {}
+                existing_fingerprint = existing_metadata.get("request_fingerprint")
+                if existing_fingerprint and existing_fingerprint != request_fingerprint:
+                    raise ValueError(
+                        f"request_id 已绑定不同内容: {request_id}"
+                    )
+                if not existing_fingerprint and existing.get_text_content() != _content_text(
+                    stored_content
+                ):
+                    raise ValueError(
+                        f"request_id 已绑定不同内容: {request_id}"
+                    )
+                return ProjectionResult(persisted_messages=[existing])
         return await self.emit(
             session_id,
             channel_id,

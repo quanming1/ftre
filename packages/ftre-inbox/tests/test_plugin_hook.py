@@ -17,6 +17,17 @@ class BusyAgent:
         return True
 
 
+class SessionRoot:
+    def __init__(self, root):
+        self.root = root
+
+    def sessions_root(self):
+        return self.root
+
+    def has_session(self, _session_id: str) -> bool:
+        return True
+
+
 def _provide_plugin_dependencies(context: Context) -> None:
     """为 Inbox Plugin 提供它真正声明的公开 Service 依赖。
 
@@ -58,6 +69,23 @@ async def test_plugin_consumes_next_step_through_core_hook(tmp_path):
 
     assert [message["content"] for message in result.messages] == ["请改用中文"]
     assert not (await inbox.snapshot("s1")).has_pending
+    cleanup = context.dispose()
+    if cleanup is not None:
+        await cleanup
+
+
+@pytest.mark.asyncio
+async def test_plugin_uses_session_root_when_inbox_dir_is_not_configured(tmp_path):
+    context = Context()
+    runtime = HookRuntime(context)
+    context.provide("hook_runtime", runtime)
+    context.provide("sessions", SessionRoot(tmp_path / "sessions"))
+    context.provide("agents", BusyAgent())
+    _provide_plugin_dependencies(context)
+
+    await apply(context)
+    inbox = context.get("inbox", strict=False)
+    assert inbox.repository.root == tmp_path / "sessions" / "_inbox"
     cleanup = context.dispose()
     if cleanup is not None:
         await cleanup

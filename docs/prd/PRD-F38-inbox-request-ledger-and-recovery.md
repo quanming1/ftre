@@ -303,6 +303,8 @@ A paused/failed/interrupted -> B 保持 pending
 
 **Commit**：`fix(F38): 收口请求幂等与 Inbox 存储根`
 
+**状态**：已实现并通过专项测试与全量后端测试（742 passed）；目标模块 Ruff 与空白检查通过。
+
 ### F38-C：故障注入、Steer 边界与跨仓验收
 
 **目标**：验证修复在实际生命周期和发行包中生效。
@@ -406,8 +408,8 @@ AgentService.run 必须带 request_id/run_id
 
 ## 10. 完成定义
 
-- [ ] F38-A 重复回队和错误消费已修复。
-- [ ] F38-B UserMessage、Assistant request/run metadata 和 Inbox root 已收口。
+- [x] F38-A 重复回队和错误消费已修复。
+- [x] F38-B UserMessage、Assistant request/run metadata 和 Inbox root 已收口。
 - [ ] F38-C 故障注入、Steer、重连、发行包和跨仓测试通过。
 - [ ] 取消、暂停、失败、中断不会自动消费后续普通队列。
 - [ ] 正常完成后队列最多推进一条，且不会重复执行。
@@ -421,3 +423,4 @@ AgentService.run 必须带 request_id/run_id
 | 2026-08-29 | 初始版本 | 记录 Inbox 重复投递、idle 误消费、消息时间覆盖、运行幂等和安装目录持久化问题 |
 | 2026-08-29 | 收缩为 F38-A/F38-B/F38-C；移除本阶段独立 RequestLedger、SQLite、TurnCoordinator 目标 | 当前 Bug 可由现有 Owner 和状态模型修复，避免过度设计；长期账本作为后续阶段候选 |
 | 2026-08-29 | 完成 F38-A：执行后请求不再 release 回队；取消/失败/中断冻结队列；普通 worker 仅在正常完成后推进；新增取消后新消息不被旧请求抢占的回归测试 | F38-A 专项 26 passed，全量 pytest 738 passed；目标行为已验证 |
+| 2026-08-29 | 完成 F38-B：Session UserMessage 存在即返回并拒绝 request 内容冲突；AgentService 缓存 request 终态；公开 SessionService.sessions_root 并禁止 Inbox 生产 cwd fallback | F38-B 专项 32 passed；全量 pytest 742 passed；目标模块 Ruff 与空白检查通过 |

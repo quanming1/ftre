@@ -6,6 +6,7 @@ import pytest
 from ftre.services.messaging.bus import EventBus, MessageBusService
 from ftre.services.session.events import SessionEventService
 from ftre.services.session.projection import SessionProjection
+from ftre.services.session.service import SessionService
 
 
 @pytest.mark.asyncio
@@ -64,6 +65,63 @@ async def test_steering_retry_reuses_stable_message_id():
     second = sessions.upsert_message.await_args_list[1].args[1]
     assert first.id == second.id
     assert first.id.startswith("user_")
+
+
+@pytest.mark.asyncio
+async def test_existing_user_message_keeps_identity_and_skips_rebroadcast(tmp_path):
+    sessions = SessionService(sessions_dir=str(tmp_path / "sessions"))
+    await sessions.init()
+    session_id = await sessions.create_session("ws")
+    bus = AsyncMock(spec=EventBus)
+    service = SessionEventService(sessions, MessageBusService(bus=bus))
+
+    first = await service.emit_user_message_if_absent(
+        session_id,
+        "ws",
+        request_id="request-stable",
+        content="同一条",
+    )
+    persisted = first.persisted_messages[0]
+    second = await service.emit_user_message_if_absent(
+        session_id,
+        "ws",
+        request_id="request-stable",
+        content="同一条",
+    )
+
+    assert second.persisted_messages[0].id == persisted.id
+    assert second.persisted_messages[0].created_at == persisted.created_at
+    assert bus.publish_outbound.await_count == 1
+    messages = await sessions.get_messages_by_session(session_id)
+    assert len(messages) == 1
+    assert messages[0]["created_at"] == persisted.created_at
+    await sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_existing_user_message_rejects_request_content_conflict(tmp_path):
+    sessions = SessionService(sessions_dir=str(tmp_path / "sessions"))
+    await sessions.init()
+    session_id = await sessions.create_session("ws")
+    service = SessionEventService(
+        sessions,
+        MessageBusService(bus=AsyncMock(spec=EventBus)),
+    )
+
+    await service.emit_user_message_if_absent(
+        session_id,
+        "ws",
+        request_id="request-conflict",
+        content="原始内容",
+    )
+    with pytest.raises(ValueError, match="request_id 已绑定不同内容"):
+        await service.emit_user_message_if_absent(
+            session_id,
+            "ws",
+            request_id="request-conflict",
+            content="篡改内容",
+        )
+    await sessions.close()
 
 
 @pytest.mark.asyncio

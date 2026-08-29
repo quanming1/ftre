@@ -38,11 +38,16 @@ from ftre.services.tools import ToolService
 @pytest.mark.asyncio
 async def test_default_composition_has_required_public_services(tmp_path) -> None:
     config = ConfigService(tmp_path / "config.json", {})
+
+    class SessionStub:
+        def sessions_root(self):
+            return tmp_path / "sessions"
+
     composition = await build_composition(
         {},
         initial_services={
             "config": config,
-            "sessions": object(),
+            "sessions": SessionStub(),
             "message_bus": MessageBusService(),
             "channels": ChannelService(ChannelManager(EventBus())),
             "tools": ToolService(),

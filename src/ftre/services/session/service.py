@@ -176,6 +176,10 @@ class SessionService:
         """同步只读存在性查询，供 Inbox Plugin 做 admission 校验。"""
         return self._repo.get_state(session_id) is not None
 
+    def sessions_root(self) -> Path:
+        """返回 Host 用户数据根，供需要持久化同一生命周期数据的 Package 使用。"""
+        return self._repo.sessions_root()
+
     def has_request_id(self, session_id: str, request_id: str) -> bool:
         """同步只读幂等查询，供 Inbox 避免重复接纳已提交输入。"""
         return self._repo.has_request_id(session_id, request_id)
