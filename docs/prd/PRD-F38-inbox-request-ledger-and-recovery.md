@@ -428,3 +428,4 @@ AgentService.run 必须带 request_id/run_id
 | 2026-08-29 | 完成 F38-B：Session UserMessage 存在即返回并拒绝 request 内容冲突；AgentService 缓存 request 终态；公开 SessionService.sessions_root 并禁止 Inbox 生产 cwd fallback | F38-B 专项 32 passed；全量 pytest 742 passed；目标模块 Ruff 与空白检查通过 |
 | 2026-08-29 | 完成 F38-C：Steer 持久化 target_run_id，Hook 以 request_id 对齐 active Run，跨 Run 不注入；完成恢复/重连/故障边界专项和三个 Package wheel 验收 | F38-C 专项 58 passed；全量 pytest 744 passed；三个 wheel 构建成功并检查包含修复 |
 | 2026-08-29 | 完成最终门禁：显式 Python 文件清单 Ruff 全部通过；Desktop renderer 55 files / 537 tests 通过；更新 F38 为已验收 | 发行包、Gateway 和客户端恢复边界均有可复核证据 |
+| 2026-08-29 | 完成审计修复：未提供运行身份时不再消费已绑定 Steer；SessionProjection 增加 UserMessage 并发单写保护；最终全量 pytest 745 passed，三个 wheel 重新构建并清理 | 补齐跨 Run 与并发重放的真实边界 |

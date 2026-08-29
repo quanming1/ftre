@@ -350,7 +350,8 @@ class InboxService:
         candidates = tuple(
             item
             for item in snapshot.next_step
-            if not turn_id or not item.target_run_id or item.target_run_id == turn_id
+            if item.target_run_id is None
+            or (bool(turn_id) and item.target_run_id == turn_id)
         )
         if not candidates or self._closed:
             return ()

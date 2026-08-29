@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -121,6 +122,30 @@ async def test_existing_user_message_rejects_request_content_conflict(tmp_path):
             request_id="request-conflict",
             content="篡改内容",
         )
+    await sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_user_message_replay_is_single_write_and_broadcast(tmp_path):
+    sessions = SessionService(sessions_dir=str(tmp_path / "sessions"))
+    await sessions.init()
+    session_id = await sessions.create_session("ws")
+    bus = AsyncMock(spec=EventBus)
+    service = SessionEventService(sessions, MessageBusService(bus=bus))
+
+    results = await asyncio.gather(*(
+        service.emit_user_message_if_absent(
+            session_id,
+            "ws",
+            request_id="request-concurrent",
+            content="同一条",
+        )
+        for _ in range(2)
+    ))
+
+    assert results[0].persisted_messages[0].id == results[1].persisted_messages[0].id
+    assert bus.publish_outbound.await_count == 1
+    assert len(await sessions.get_messages_by_session(session_id)) == 1
     await sessions.close()
 
 
