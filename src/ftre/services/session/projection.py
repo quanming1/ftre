@@ -142,7 +142,7 @@ class SessionProjection:
                         if existing_fingerprint and incoming_fingerprint:
                             if existing_fingerprint != incoming_fingerprint:
                                 raise ValueError("request_id 已绑定不同内容")
-                        elif existing.get_text_content() != message.get_text_content():
+                        elif existing.content != message.content:
                             raise ValueError("request_id 已绑定不同内容")
                         return ProjectionResult(persisted_messages=[existing])
                 previous_id = str(

@@ -54,18 +54,6 @@ def _request_fingerprint(content: Any, attachments: tuple[dict[str, Any], ...]) 
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
 
 
-def _content_text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return "".join(
-            str(part.get("text", ""))
-            for part in value
-            if isinstance(part, dict) and part.get("type", "text") == "text"
-        )
-    return str(value or "")
-
-
 class HostEventBase(BaseModel):
     """Host-owned event envelope; it never enters AgentStreamEvent."""
 
@@ -276,9 +264,7 @@ class SessionEventService:
                     raise ValueError(
                         f"request_id 已绑定不同内容: {request_id}"
                     )
-                if not existing_fingerprint and existing.get_text_content() != _content_text(
-                    stored_content
-                ):
+                if not existing_fingerprint and existing.content != event.content:
                     raise ValueError(
                         f"request_id 已绑定不同内容: {request_id}"
                     )
