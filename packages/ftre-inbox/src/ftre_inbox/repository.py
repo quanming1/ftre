@@ -165,6 +165,7 @@ class InboxRepository:
                     history_message_id=queued.history_message_id,
                     messages=queued.messages,
                     agent_id=queued.agent_id,
+                    target_run_id=queued.target_run_id,
                 )
             state.next_sequence = max(state.next_sequence, queued.sequence + 1)
             (state.next_turn if target == "next-turn" else state.next_step).append(queued)
@@ -297,12 +298,19 @@ class InboxRepository:
                 history_message_id=old.history_message_id,
                 messages=(),
                 agent_id=old.agent_id,
+                target_run_id=old.target_run_id,
             )
             state.revision += 1
             await self._commit(state)
             return items[index]
 
-    async def promote(self, session_id: str, request_id: str) -> QueueItem | None:
+    async def promote(
+        self,
+        session_id: str,
+        request_id: str,
+        *,
+        target_run_id: str | None = None,
+    ) -> QueueItem | None:
         """将一条普通排队输入提升为用户主动接管的 next-step 输入。
 
         ``promote`` 只由 WebSocket 的“调整方向”操作调用。即使原消息来自
@@ -317,12 +325,18 @@ class InboxRepository:
                 return None
             items, index = hit
             if items is state.next_step:
+                if target_run_id and items[index].target_run_id is None:
+                    items[index] = replace(items[index], target_run_id=target_run_id)
+                    state.revision += 1
+                    await self._commit(state)
                 return items[index]
             item = items.pop(index)
             # 用户操作改变的是交付语义，而不是原始来源：被用户主动提升的
             # Plugin/cron 输入必须走 DB-first UserMessage 持久化路径。
             if item.source != "user":
                 item = replace(item, source="user")
+            if target_run_id:
+                item = replace(item, target_run_id=target_run_id)
             state.next_step.append(item)
             state.next_step.sort(key=lambda value: value.sequence)
             state.revision += 1

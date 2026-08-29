@@ -119,7 +119,7 @@ async def apply(ctx: Context, config=None):
             result = await next_()
             claimed = await service.deliver_next_step_for_reasoning(
                 payload.session_id,
-                turn_id=payload.turn_id,
+                turn_id=payload.request_id or payload.turn_id,
             )
             if not claimed:
                 return result

@@ -35,6 +35,8 @@ class QueueItem:
     messages: tuple[Msg, ...] = ()
     # Inbox 的 Agent identity 与 Runtime 内部 profile agent_id 可以不同。
     agent_id: str = "default"
+    # Steering 可绑定发起它的 Agent Run；为空表示 idle fallback 的普通输入。
+    target_run_id: str | None = None
 
     def normalized_messages(self) -> tuple[Msg, ...]:
         """返回至少包含一条消息的执行输入。"""
@@ -54,6 +56,7 @@ class QueueItem:
             "attachments": [dict(item) for item in self.attachments],
             "source": self.source,
             "agent_id": self.agent_id,
+            "target_run_id": self.target_run_id,
             "messages": [message.model_dump(mode="json") for message in self.messages],
             "target": target,
         }
@@ -87,6 +90,11 @@ class QueueItem:
             ),
             messages=messages,
             agent_id=str(value.get("agent_id") or "default"),
+            target_run_id=(
+                str(value["target_run_id"])
+                if value.get("target_run_id")
+                else None
+            ),
         ), target
 
 

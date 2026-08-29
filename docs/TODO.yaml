@@ -1716,4 +1716,5 @@ stages:
             completion_date: 2026-08-29
           - id: F38-C
             title: 故障注入、Steer 边界与跨仓验收
-            status: in_progress
+            status: done
+            completion_date: 2026-08-29

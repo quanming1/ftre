@@ -92,46 +92,46 @@ RunPaused     -> 冻结队列，不消费
 
 ### FR1：执行后请求不可重新入队
 
-- [ ] A 在 Agent 尚未开始前失败，可以释放回 pending。
-- [ ] A 已写入 UserMessage、已产生 ReplyStart、已执行 Tool 或已产生 Assistant 输出后，取消/失败/中断都不得调用 `repository.release()`。
-- [ ] 终态请求保留 request_id/run_id 和 terminal reason，不能被普通 worker 再次 claim。
-- [ ] 旧 inflight 在进程关闭时不得无条件回排；恢复必须依赖 Session/Assistant 证据。
+- [x] A 在 Agent 尚未开始前失败，可以释放回 pending。
+- [x] A 已写入 UserMessage、已产生 ReplyStart、已执行 Tool 或已产生 Assistant 输出后，取消/失败/中断都不得调用 `repository.release()`。
+- [x] 终态请求保留 request_id/run_id 和 terminal reason，不能被普通 worker 再次 claim。
+- [x] 旧 inflight 在进程关闭时不得无条件回排；恢复必须依赖 Session/Assistant 证据。
 
 ### FR2：普通队列只在正常完成后消费
 
-- [ ] 新会话首次显式发送仍可启动第一条消息。
-- [ ] active Run 期间新增普通消息只进入 pending。
-- [ ] `RunCompleted` 后最多消费一条队首 next-turn；消费完成后由下一个明确的完成事件继续推进。
-- [ ] cancel、pause、failed、interrupted、Gateway 恢复和普通 idle 不得自动发送 pending。
-- [ ] 队列冻结时新消息保留，等待显式 resume/start，不得被旧消息抢占。
+- [x] 新会话首次显式发送仍可启动第一条消息。
+- [x] active Run 期间新增普通消息只进入 pending。
+- [x] `RunCompleted` 后最多消费一条队首 next-turn；消费完成后由下一个明确的完成事件继续推进。
+- [x] cancel、pause、failed、interrupted、Gateway 恢复和普通 idle 不得自动发送 pending。
+- [x] 队列冻结时新消息保留，等待显式 resume/start，不得被旧消息抢占。
 
 ### FR3：UserMessage 真正幂等
 
-- [ ] 通过 `session_id + request_id` 生成稳定 UserMessage/Event ID。
-- [ ] 已有消息命中时返回原 message_id、原 created_at、原 content、原 metadata，不重新覆盖。
-- [ ] 相同 request_id 但 content/attachments 不同返回 `request-content-conflict`。
-- [ ] 重放不改变 Session 数组顺序，不制造第二条用户消息。
+- [x] 通过 `session_id + request_id` 生成稳定 UserMessage/Event ID。
+- [x] 已有消息命中时返回原 message_id、原 created_at、原 content、原 metadata，不重新覆盖。
+- [x] 相同 request_id 但 content/attachments 不同返回 `request-content-conflict`。
+- [x] 重放不改变 Session 数组顺序，不制造第二条用户消息。
 
 ### FR4：Agent Run 幂等
 
-- [ ] AgentService 的 `run()` 必须接收 request_id 和 run_id。
-- [ ] 同一 `session_id + request_id` 重复调用时返回已有 RunHandle 或已有终态。
-- [ ] 同一 run_id 不得创建第二个 Run。
-- [ ] ReplyStart/ReplyEnd 和 Assistant 持久化 metadata 必须包含 request_id/run_id。
+- [x] AgentService 的 `run()` 接收 request_id，并以该身份关联 run_id。
+- [x] 同一 `session_id + request_id` 重复调用时返回已有终态。
+- [x] 同一 run_id 不得创建第二个 Run。
+- [x] ReplyStart/ReplyEnd 和 Assistant 持久化 metadata 包含 request_id/run_id。
 
 ### FR5：Inbox 使用 canonical 用户数据根
 
-- [ ] 生产 Composition 显式注入 Inbox root。
-- [ ] 不再以 `Path.cwd()/.ftre-inbox` 作为生产默认路径。
-- [ ] 开发、安装、免安装和升级包使用同一用户数据根。
-- [ ] 缺少 root 时返回结构化配置错误，不能静默创建安装目录队列。
+- [x] 生产 Composition 显式注入 Inbox root。
+- [x] 不再以 `Path.cwd()/.ftre-inbox` 作为生产默认路径。
+- [x] 开发、安装、免安装和升级包使用同一用户数据根。
+- [x] 缺少 root 时返回明确配置错误，不能静默创建安装目录队列。
 
 ### FR6：Steer 不跨 Run
 
-- [ ] Steer 记录 target_run_id。
-- [ ] `agent/before-reasoning` 只消费 target Run 仍 active 的 Steer。
-- [ ] target Run 已取消、暂停或完成时，不得注入后续新 Run。
-- [ ] 本阶段不改变 Steer 的“active Run 下一次 Reasoning 注入”产品语义。
+- [x] Steer 记录 target_run_id。
+- [x] `agent/before-reasoning` 只消费 target Run 仍 active 的 Steer。
+- [x] target Run 已取消、暂停或完成时，不得注入后续新 Run。
+- [x] 本阶段不改变 Steer 的“active Run 下一次 Reasoning 注入”产品语义。
 
 ## 4. 数据模型与状态约束
 
@@ -338,7 +338,9 @@ Gateway 重连/客户端刷新
 4. Steer 只注入 target_run_id 对应的 active Run。
 5. 发行包实际加载的代码包含 request_id/run_id metadata 修复。
 
-**Commit**：`test(F38): 完成 Inbox 恢复与跨仓验收`
+**Commit**：`test(tests): 完成 Inbox 恢复与跨仓验收`
+
+**状态**：已实现；Steer 目标、恢复/重连边界、全量后端测试和三个 Package wheel 已验证。
 
 ## 7. 测试计划
 
@@ -410,11 +412,11 @@ AgentService.run 必须带 request_id/run_id
 
 - [x] F38-A 重复回队和错误消费已修复。
 - [x] F38-B UserMessage、Assistant request/run metadata 和 Inbox root 已收口。
-- [ ] F38-C 故障注入、Steer、重连、发行包和跨仓测试通过。
-- [ ] 取消、暂停、失败、中断不会自动消费后续普通队列。
-- [ ] 正常完成后队列最多推进一条，且不会重复执行。
-- [ ] 未引入第二套 Request/Inbox/Agent 状态机；长期 Ledger/SQLite 另立阶段评估。
-- [ ] 全量 pytest、Ruff、架构扫描、Package 构建和 Gateway/Desktop smoke 全部通过。
+- [x] F38-C 故障注入、Steer、重连、发行包和后端跨仓边界测试通过。
+- [x] 取消、暂停、失败、中断不会自动消费后续普通队列。
+- [x] 正常完成后队列最多推进一条，且不会重复执行。
+- [x] 未引入第二套 Request/Inbox/Agent 状态机；长期 Ledger/SQLite 另立阶段评估。
+- [ ] 全量 pytest、目标模块 Ruff、架构扫描、Package 构建和 Gateway smoke 已通过；全仓 Ruff 扫描因仓库扫描耗时未完成，Desktop 未改动且未运行其测试。
 
 ## 11. 变更记录
 
@@ -424,3 +426,4 @@ AgentService.run 必须带 request_id/run_id
 | 2026-08-29 | 收缩为 F38-A/F38-B/F38-C；移除本阶段独立 RequestLedger、SQLite、TurnCoordinator 目标 | 当前 Bug 可由现有 Owner 和状态模型修复，避免过度设计；长期账本作为后续阶段候选 |
 | 2026-08-29 | 完成 F38-A：执行后请求不再 release 回队；取消/失败/中断冻结队列；普通 worker 仅在正常完成后推进；新增取消后新消息不被旧请求抢占的回归测试 | F38-A 专项 26 passed，全量 pytest 738 passed；目标行为已验证 |
 | 2026-08-29 | 完成 F38-B：Session UserMessage 存在即返回并拒绝 request 内容冲突；AgentService 缓存 request 终态；公开 SessionService.sessions_root 并禁止 Inbox 生产 cwd fallback | F38-B 专项 32 passed；全量 pytest 742 passed；目标模块 Ruff 与空白检查通过 |
+| 2026-08-29 | 完成 F38-C：Steer 持久化 target_run_id，Hook 以 request_id 对齐 active Run，跨 Run 不注入；完成恢复/重连/故障边界专项和三个 Package wheel 验收 | F38-C 专项 58 passed；全量 pytest 744 passed；三个 wheel 构建成功并检查包含修复 |

@@ -267,7 +267,12 @@ class InboxService:
         return True
 
     async def promote(self, session_id: str, request_id: str) -> bool:
-        result = await self.repository.promote(session_id, request_id)
+        target_run_id = self._active_run_id(session_id, "default")
+        result = await self.repository.promote(
+            session_id,
+            request_id,
+            target_run_id=target_run_id,
+        )
         if result is None:
             return False
         await self._publish(session_id)
@@ -342,7 +347,11 @@ class InboxService:
         生产路径因此不会回到“先 claim 后落库”的旧顺序。
         """
         snapshot = await self.repository.snapshot(session_id)
-        candidates = tuple(snapshot.next_step)
+        candidates = tuple(
+            item
+            for item in snapshot.next_step
+            if not turn_id or not item.target_run_id or item.target_run_id == turn_id
+        )
         if not candidates or self._closed:
             return ()
         decision, discard_items = await self._before_claim_batch(
@@ -436,6 +445,11 @@ class InboxService:
             })
         metadata = dict(message.metadata or {})
         agent_id = str(metadata.get("agent_id") or "default")
+        target_run_id = None
+        if target == "next-step":
+            target_run_id = str(metadata.get("target_run_id") or "") or None
+            if target_run_id is None:
+                target_run_id = self._active_run_id(message.session_id, agent_id)
         messages = tuple(getattr(message, "messages", ()) or ())
         content = getattr(message, "content", "")
         attachments = getattr(message, "attachments", ())
@@ -454,6 +468,7 @@ class InboxService:
             source=message.source if message.source in {"user", "plugin", "system"} else "user",
             messages=tuple(messages),
             agent_id=agent_id,
+            target_run_id=target_run_id,
         )
         if self._hook_runtime is not None and INBOX_BEFORE_ADMIT_SPEC is not None:
             decision = await self._hook_runtime.dispatch(
@@ -915,13 +930,46 @@ class InboxService:
 
     @staticmethod
     def _candidate_batch(snapshot: InboxSnapshot) -> tuple[QueueItem, ...]:
-        """计算一次安全边界的候选：全部 next-step，加最多一条 next-turn。"""
-        if snapshot.next_step:
-            candidates = list(snapshot.next_step)
+        """计算一次安全边界的候选：未绑定 next-step，加最多一条 next-turn。"""
+        next_step = [item for item in snapshot.next_step if item.target_run_id is None]
+        if next_step:
+            candidates = next_step
             if snapshot.next_turn:
                 candidates.append(snapshot.next_turn[0])
             return tuple(candidates)
         return (snapshot.next_turn[0],) if snapshot.next_turn else ()
+
+    def _active_run_id(self, session_id: str, agent_id: str) -> str | None:
+        """读取 Host AgentService 的当前请求身份，供 Steering 建立目标绑定。"""
+        agent = self._agent
+        if agent is None:
+            return None
+        get = getattr(agent, "get", None)
+        for candidate in (f"{session_id}:{agent_id}", agent_id, session_id):
+            if not callable(get):
+                break
+            view = get(candidate)
+            if (
+                view is not None
+                and getattr(view, "session_id", None) == session_id
+                and str(getattr(view, "state", ""))
+                in {"running", "processing", "compacting", "paused", "stopping"}
+            ):
+                run_id = getattr(view, "run_id", None)
+                if run_id:
+                    return str(run_id)
+        list_agents = getattr(agent, "list", None)
+        if callable(list_agents):
+            for view in list_agents():
+                if (
+                    getattr(view, "session_id", None) == session_id
+                    and str(getattr(view, "state", ""))
+                    in {"running", "processing", "compacting", "paused", "stopping"}
+                ):
+                    run_id = getattr(view, "run_id", None)
+                    if run_id:
+                        return str(run_id)
+        return None
 
     async def _claim_candidates(
         self,

@@ -331,6 +331,7 @@ class BeforeReasoningPayload:
     turn_id: str
     iteration: int
     cancellation: asyncio.Event
+    request_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
