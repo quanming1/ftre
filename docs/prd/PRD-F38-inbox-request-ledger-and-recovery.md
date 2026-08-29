@@ -12,7 +12,7 @@
 | 验收日期 | 2026-08-29 |
 | 关联文档 | `docs/TODO.yaml` F38；`docs/prd/PRD-F35-agent-service-inbox-message-boundary.md`；`docs/prd/PRD-F23-steering-message-boundary.md`；`docs/prd/PRD-F24-queue-operation-response.md`；`AGENTS.md` |
 
-> 本版本是对原 F38 草案的范围收缩。当前阶段只修复已复现的重复投递、错误消费、消息时间覆盖、运行幂等和存储路径问题；不提前引入独立 RequestLedger、SQLite 或新的调度器。
+> 本版本是对原 F38 草案的范围收缩。当前阶段只修复已复现的重复投递、错误消费、消息时间覆盖、运行幂等和存储路径问题；不提前引入独立 RequestLedger、SQLite 或新的调度器。Inbox 的最终实现进一步收敛为“接纳、排队、claim、交给 AgentService”，不保留 delivery lease 或回退状态机。
 
 ## 1. 背景与目标
 
@@ -30,7 +30,7 @@
 
 ### 1.2 本阶段目标
 
-在不重写 Inbox 架构的前提下，建立以下不变量：
+在不引入第二套调度器的前提下，建立以下不变量：
 
 ```text
 Agent 已开始执行的请求永不自动回到 pending。
@@ -54,7 +54,7 @@ Inbox 不写入安装目录，工作区与发行包使用同一个用户数据�
 ### 2.1 当前 Owner 保持不变
 
 ```text
-InboxRepository  -> Inbox 持久化、claim、ack、release、snapshot
+InboxRepository  -> Inbox 持久化、claim、snapshot
 InboxService     -> admission、worker、AgentService 调用、队列 Hook
 AgentService     -> Agent Run、状态和 request/run 幂等
 SessionService   -> UserMessage/Assistant 持久化与 Projection
@@ -64,36 +64,34 @@ WebSocket        -> queue/status/event wire 协议
 
 本阶段不重新划分 Package，只修正这些 Owner 之间的状态交接。
 
-### 2.2 `release()` 的最小正确语义
+### 2.2 claim 的最小正确语义
 
 ```text
-PENDING --claim--> INFLIGHT
-INFLIGHT --Agent 未开始/准备阶段失败--> PENDING  (允许 release)
-INFLIGHT --UserMessage 已写入或 Agent 已开始--> TERMINAL/INTERRUPTED (禁止 release)
+PENDING --claim（持久化移除）--> REMOVED
+REMOVED --交给 AgentService--> completed/failed/cancelled/interrupted/paused
 ```
 
-`repository.release()` 不是“取消后重试” API，而是“尚未交付成功时归还队列” API。取消后的显式重试必须由上层产生新的 request/attempt，不能把原 QueueItem 静默放回队首。
+Inbox 不维护 REMOVED/Agent 运行状态，也不存在 `repository.release()`、lease timeout 或自动回退。claim 的持久化提交完成后，项目即不再属于队列；显式重试由上层生成新的 request。
 
 ### 2.3 不用 `idle` 作为消费触发器
 
-`idle` 是状态快照，可能来自正常完成、取消、异常和恢复。Inbox 继续接收 Agent 状态用于 UI，但普通 worker 只允许由明确的成功完成信号唤醒：
+Inbox 不把 `idle` 当作消费事件。worker 只在上一项 `AgentService.run()` 正常完成后继续取下一项；Agent 状态只作为交付前的接收门禁，不由 Inbox 持有或改变：
 
 ```text
-RunCompleted  -> 清除冻结 -> 消费下一条 next-turn
-RunCancelled  -> 冻结队列，不消费
-RunFailed     -> 冻结队列，不消费
-RunInterrupted-> 冻结队列，不消费
-RunPaused     -> 冻结队列，不消费
+RunCompleted  -> 消费下一条 next-turn
+RunCancelled  -> worker 停止，pending 保留
+RunFailed     -> worker 停止，pending 保留
+RunInterrupted-> worker 停止，pending 保留
+RunPaused     -> worker 停止，pending 保留
 ```
 
-如果当前 Agent API 只能提供 `idle`，必须同时提供 `idle_reason=completed|cancelled|failed|interrupted|paused`；没有原因的 idle 不得触发消费。
+暂停、失败、取消和中断都会让 worker 停止；它们不会触发自动回退或重投。需要继续时由上层显式调用 `resume_pending()` 或提交新的 request。
 
 ## 3. 功能需求
 
 ### FR1：执行后请求不可重新入队
 
-- [x] A 在 Agent 尚未开始前失败，可以释放回 pending。
-- [x] A 已写入 UserMessage、已产生 ReplyStart、已执行 Tool 或已产生 Assistant 输出后，取消/失败/中断都不得调用 `repository.release()`。
+- [x] A 被 claim 后，无论 Agent 尚未开始、已写入 UserMessage、已执行 Tool 还是已产生 Assistant 输出，都不回 pending。
 - [x] 终态请求保留 request_id/run_id 和 terminal reason，不能被普通 worker 再次 claim。
 - [x] 旧 inflight 在进程关闭时不得无条件回排；恢复必须依赖 Session/Assistant 证据。
 
@@ -103,7 +101,7 @@ RunPaused     -> 冻结队列，不消费
 - [x] active Run 期间新增普通消息只进入 pending。
 - [x] `RunCompleted` 后最多消费一条队首 next-turn；消费完成后由下一个明确的完成事件继续推进。
 - [x] cancel、pause、failed、interrupted、Gateway 恢复和普通 idle 不得自动发送 pending。
-- [x] 队列冻结时新消息保留，等待显式 resume/start，不得被旧消息抢占。
+- [x] Agent 终态后新消息保留；显式恢复或新 request 不得被旧消息抢占。
 
 ### FR3：UserMessage 真正幂等
 
@@ -135,7 +133,7 @@ RunPaused     -> 冻结队列，不消费
 
 ## 4. 数据模型与状态约束
 
-本阶段优先复用现有 `QueueItem`、lease、AgentView 和 Session metadata，仅增加缺失字段或状态原因，不创建第二套状态存储。
+本阶段复用现有 `QueueItem`、AgentView 和 Session metadata，仅保留队列本身需要的字段，不创建第二套状态存储。
 
 ### 4.1 QueueItem 必需身份
 
@@ -169,10 +167,9 @@ AgentRunResult(
 ### 4.3 状态规则
 
 ```text
-pending -> inflight -> completed
-pending -> inflight -> cancelled/failed/interrupted/paused
-inflight -> pending       仅 Agent 未开始且准备阶段失败
-completed/failed/cancelled/interrupted/paused -> pending  禁止
+pending --claim--> removed
+removed --AgentService.run--> completed/failed/cancelled/interrupted/paused
+completed/failed/cancelled/interrupted/paused 不回到 pending
 ```
 
 ## 5. 接口和事件调整
@@ -218,7 +215,7 @@ message = await session_events.emit_user_message_if_absent(
 
 ### 5.3 Queue Operation Response
 
-沿用 F24 的 `revision` 和完整快照；可增加冻结原因，但不得暴露内部 lease：
+沿用 F24 的 `revision` 和完整快照；队列快照只描述当前 pending 项，不暴露 Agent 终态或内部执行状态：
 
 ```json
 {
@@ -228,14 +225,12 @@ message = await session_events.emit_user_message_if_absent(
   "payload": {
     "session_id": "ws_sess_1",
     "revision": 12,
-    "items": [],
-    "frozen": true,
-    "frozen_reason": "cancelled"
+    "items": []
   }
 }
 ```
 
-客户端不能仅凭 `items=[]` 或 `state=idle` 判断“可以继续发送”。
+客户端不能仅凭 `items=[]` 或 `state=idle` 推断某个历史请求会被重新执行。
 
 ## 6. 三阶段实施计划
 
@@ -254,10 +249,10 @@ message = await session_events.emit_user_message_if_absent(
 
 **实现要求**：
 
-1. 区分“Agent 未开始”和“Agent 已开始”两个时间点。
-2. 已开始执行的 cancelled/failed/interrupted 不再 release。
-3. 删除基于普通 idle 的 worker 唤醒；仅 `completed` 触发 next-turn。
-4. 取消、暂停、失败、中断后设置队列冻结原因。
+1. claim 前只做 admission、Hook 和持久化校验。
+2. claim 后直接调用 AgentService，不再 release 或 ack。
+3. 删除基于普通 idle 的 worker 唤醒；仅正常完成后继续 next-turn。
+4. 取消、暂停、失败、中断后 worker 停止且 pending 不被改写。
 5. 同一请求重复进入 worker 时先查询已有 request/run 事实，禁止第二次 Agent.run。
 
 **验收**：
@@ -333,7 +328,7 @@ Gateway 重连/客户端刷新
 **验收**：
 
 1. 每个故障点都不产生重复 UserMessage。
-2. Agent 已接受的请求不回 pending。
+2. Agent 已接受或已 claim 的请求不回 pending。
 3. 普通队列只由 RunCompleted 推进。
 4. Steer 只注入 target_run_id 对应的 active Run。
 5. 发行包实际加载的代码包含 request_id/run_id metadata 修复。
@@ -346,9 +341,9 @@ Gateway 重连/客户端刷新
 
 ### 7.1 后端单元测试
 
-- `repository.release()` 在未开始/已开始两个阶段的差异。
+- claim 后项目永久离开 pending，Agent 失败时不回队。
 - Agent 终态原因到 Inbox worker 行为的映射。
-- completed 唤醒与其他终态冻结。
+- completed 后继续消费与其他终态停止 worker、保留 pending。
 - request_id/run_id 重复调用幂等。
 - UserMessage created_at/content/metadata 不可变。
 - canonical root 缺失、显式注入和升级路径。
@@ -367,24 +362,23 @@ Gateway 重连/客户端刷新
 - USER_MESSAGE 与 queue snapshot 乱序时最终一致。
 - 刷新后不自动触发旧请求。
 - 空队列不被解释为 completed。
-- frozen_reason 正确展示或保持不可见但不误发送。
+- Agent 终态只通过 status/event 展示，不改变队列快照，也不误发送 pending。
 
 ## 8. 观测和诊断
 
-所有状态迁移日志至少包含：
+所有 Inbox 领取/交付诊断至少包含：
 
 ```text
-session_id request_id run_id state_from state_to terminal_reason lease_action queue_revision
+session_id request_id run_id stage status queue_revision
 ```
 
 重点指标：
 
-- `inbox_requeue_total{reason}`：Agent 已开始后的 cancel 不应增加。
+- `inbox_claim_total`：每个 request 只能成功 claim 一次。
 - `request_duplicate_run_total`：必须为 0。
 - `request_transition_total{from,to}`。
-- `inbox_frozen_total{reason}`。
 - `user_message_conflict_total`。
-- `request_recovery_total{action}`。
+- `inbox_delivery_error_total{stage}`。
 
 日志不得记录 API Key、完整用户附件、完整 System Prompt 或完整 Tool 参数。
 
@@ -402,7 +396,7 @@ git diff --check
 
 ```text
 生产路径不使用 Path.cwd()/.ftre-inbox
-Agent 已开始后不存在 repository.release()
+生产路径不存在 Inbox release/requeue 分支
 普通 queue 消费不由无原因 idle 触发
 UserMessage 已存在时不会生成新的 created_at
 AgentService.run 必须带 request_id/run_id
@@ -424,8 +418,9 @@ AgentService.run 必须带 request_id/run_id
 |---|---|---|
 | 2026-08-29 | 初始版本 | 记录 Inbox 重复投递、idle 误消费、消息时间覆盖、运行幂等和安装目录持久化问题 |
 | 2026-08-29 | 收缩为 F38-A/F38-B/F38-C；移除本阶段独立 RequestLedger、SQLite、TurnCoordinator 目标 | 当前 Bug 可由现有 Owner 和状态模型修复，避免过度设计；长期账本作为后续阶段候选 |
-| 2026-08-29 | 完成 F38-A：执行后请求不再 release 回队；取消/失败/中断冻结队列；普通 worker 仅在正常完成后推进；新增取消后新消息不被旧请求抢占的回归测试 | F38-A 专项 26 passed，全量 pytest 738 passed；目标行为已验证 |
+| 2026-08-29 | 完成 F38-A：执行后请求不再 release 回队；取消/失败/中断停止 worker 但保留 pending；普通 worker 仅在正常完成后推进；新增取消后新消息不被旧请求抢占的回归测试 | F38-A 专项 26 passed，全量 pytest 738 passed；目标行为已验证 |
 | 2026-08-29 | 完成 F38-B：Session UserMessage 存在即返回并拒绝 request 内容冲突；AgentService 缓存 request 终态；公开 SessionService.sessions_root 并禁止 Inbox 生产 cwd fallback | F38-B 专项 32 passed；全量 pytest 742 passed；目标模块 Ruff 与空白检查通过 |
 | 2026-08-29 | 完成 F38-C：Steer 持久化 target_run_id，Hook 以 request_id 对齐 active Run，跨 Run 不注入；完成恢复/重连/故障边界专项和三个 Package wheel 验收 | F38-C 专项 58 passed；全量 pytest 744 passed；三个 wheel 构建成功并检查包含修复 |
 | 2026-08-29 | 完成最终门禁：显式 Python 文件清单 Ruff 全部通过；Desktop renderer 55 files / 537 tests 通过；更新 F38 为已验收 | 发行包、Gateway 和客户端恢复边界均有可复核证据 |
 | 2026-08-29 | 完成审计修复：未提供运行身份时不再消费已绑定 Steer；SessionProjection 增加 UserMessage 并发单写保护；最终全量 pytest 745 passed，三个 wheel 重新构建并清理 | 补齐跨 Run 与并发重放的真实边界 |
+| 2026-08-29 | 按最终职责重构 Inbox：删除 `LeaseRecord`、`claim_lease/ack/release` 和执行回退分支；Repository 只持久化 pending 与原子 claim，Service 只负责 `Inbound → QueueItem → FIFO → AgentService`；旧 schema 的 inflight 仅清理、不重投 | 消除 Inbox 与 Agent Runtime 的职责重叠，降低状态机复杂度 |

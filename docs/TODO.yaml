@@ -1704,7 +1704,7 @@ stages:
           - tests/integration/
           - tests/architecture/
           - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/stores/
-        acceptance: 已开始执行的请求不可 release 回 pending；普通队列仅由 RunCompleted 自动消费；cancelled/paused/failed/interrupted 冻结队列；request_id/run_id 与 UserMessage 幂等；Inbox 使用 canonical 用户数据根；Steer 不跨 Run；重启、重连、故障注入、发行包和全量质量门禁通过
+        acceptance: 已 claim 的请求不可回到 pending；普通队列仅由 RunCompleted 自动消费；cancelled/paused/failed/interrupted 只停止 worker 并保留未 claim pending；request_id/run_id 与 UserMessage 幂等；Inbox 使用 canonical 用户数据根；Steer 不跨 Run；重启、重连、故障注入、发行包和全量质量门禁通过
         tasks:
           - id: F38-A
             title: 错误回队与错误消费修复

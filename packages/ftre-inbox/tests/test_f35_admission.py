@@ -132,34 +132,25 @@ class RejectAdmissionHook:
 
 
 @pytest.mark.asyncio
-async def test_lease_release_and_ack_are_durable(tmp_path):
+async def test_claim_removes_item_durably(tmp_path):
     repository = InboxRepository(tmp_path)
     await repository.admit(QueueItem("r1", 0, "s1", "ws", "hello"), "next-turn")
 
-    leases = await repository.claim_lease("s1", ("r1",))
-    assert len(leases) == 1
-    assert (await repository.snapshot("s1")).inflight_count == 1
-    await repository.release("s1", leases[0].lease_id)
-    assert (await repository.snapshot("s1")).pending[0].request_id == "r1"
-
-    leases = await repository.claim_lease("s1", ("r1",))
-    await repository.ack("s1", leases[0].lease_id)
+    assert await repository.claim("s1", ("r1",))
     snapshot = await repository.snapshot("s1")
     assert snapshot.has_pending is False
-    assert snapshot.inflight_count == 0
 
 
 @pytest.mark.asyncio
-async def test_orphaned_lease_is_discarded_by_new_repository(tmp_path):
+async def test_claimed_item_is_not_restored_by_new_repository(tmp_path):
     first = InboxRepository(tmp_path)
     await first.admit(QueueItem("r1", 0, "s1", "ws", "hello"), "next-turn")
-    await first.claim_lease("s1", ("r1",))
+    await first.claim("s1", ("r1",))
 
     replacement = InboxRepository(tmp_path)
     await replacement.load_all()
     snapshot = await replacement.snapshot("s1")
     assert snapshot.pending == ()
-    assert snapshot.inflight_count == 0
 
 
 @pytest.mark.asyncio
@@ -214,7 +205,7 @@ async def test_paused_run_does_not_consume_queue_until_confirmation_completes(tm
 
 
 @pytest.mark.asyncio
-async def test_agent_failure_after_start_acknowledges_lease_and_freezes_queue(tmp_path):
+async def test_agent_failure_after_claim_freezes_queue(tmp_path):
     from ftre_agent import AgentService
 
     agents = AgentService()
@@ -228,13 +219,12 @@ async def test_agent_failure_after_start_acknowledges_lease_and_freezes_queue(tm
     assert result.status == "failed"
     snapshot = await service.snapshot("s1")
     assert snapshot.pending == ()
-    assert snapshot.inflight_count == 0
     assert service.status("s1") == "blocked"
     await service.close()
 
 
 @pytest.mark.asyncio
-async def test_cancelled_request_is_not_requeued_ahead_of_new_message(tmp_path):
+async def test_cancelled_request_is_terminal_before_new_message(tmp_path):
     from ftre_agent import AgentService
 
     agents = AgentService()

@@ -9,6 +9,8 @@
 - UserMessage 按 `session_id + request_id` 幂等落盘并保留原始身份/时间/内容；Agent Run 防止
   重复执行；Inbox 统一使用 Session canonical 用户数据根。
 - Steering 持久化 `target_run_id` 并限制在目标 Run 的 Reasoning 边界注入；并发重放有单写保护。
+- Inbox 进一步收敛为 `Inbound → QueueItem → FIFO claim → AgentService`，删除 delivery lease、
+  release/ack 回退分支；claim 后消息永久离开 pending，失败由 AgentService 返回终态。
 - 后端全量 pytest 745 passed、Ruff 与架构门禁通过；Desktop renderer 537 tests passed，三个
   Package wheel 构建验收通过。
 

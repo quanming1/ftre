@@ -94,7 +94,6 @@ class RejectAdmission:
 class InboxClaimedPayload:
     session_id: str
     request_ids: tuple[str, ...]
-    lease_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +107,6 @@ class InboxDeferredPayload:
 class InboxDeliveredPayload:
     session_id: str
     request_id: str
-    lease_id: str
     status: str
 
 

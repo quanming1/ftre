@@ -14,6 +14,10 @@
 
 > **当前执行状态：F35 全部完成。** F35.1～F35.6 均已按“实现 → 验证 → commit”闭环完成；最终提交为 `feat(F35): 完成 Agent 与 Inbox 边界收敛`。
 
+> **后续语义修订（2026-08-29）**：F38 已将 Inbox 收敛为一次性 `claim` 后直接交给
+> `AgentService`；本文中关于 delivery lease、reservation、requeue 的内容仅保留为 F35
+> 历史设计记录，当前运行契约以 `PRD-F38-inbox-request-ledger-and-recovery.md` 为准。
+
 ## 1. 背景与目标
 
 ### 1.1 背景

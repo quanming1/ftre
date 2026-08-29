@@ -14,7 +14,7 @@ from .service import InboxService
 # Inbox must be activated after Agent Runtime is available. Cordis may settle
 # independent Fibers in parallel; declaring this dependency prevents a race in
 # which Inbox becomes ACTIVE before it can bind its admission handler to the
-# AgentLoop, leaving the runtime on its ``inbox-unavailable`` fallback.
+# AgentLoop, leaving the runtime without its Inbox input path.
 #
 # send_message/task/team are deliberately not dependencies here. They are three
 # independent business Packages which consume ``inbox``; using Inbox does not
