@@ -1682,3 +1682,36 @@ stages:
           - id: F37.3
             title: 生命周期收口、跨平台验收与发布门禁
             status: in_progress
+      - id: F38
+        title: Inbox 重复投递与恢复幂等修复
+        status: in_progress
+        date: 2026-08-29
+        prd: docs/prd/PRD-F38-inbox-request-ledger-and-recovery.md
+        prd_status: approved
+        depends_on:
+          - F35
+          - F36
+        implementation_boundary: 只修改 E:\\ftre 的 RequestLedger、ftre-inbox、AgentService、Session Message Projection、Gateway Composition、测试和协议文档；配套 E:\\binn\\ftre-desktop 只做 queue/status/reconnect 回归；不修改 Agent ReAct 算法、LLM/Tool 业务协议或 Cordis Kernel
+        modules:
+          - packages/ftre-inbox/
+          - packages/ftre-agent/
+          - packages/ftre-agent-runtime/
+          - src/ftre/services/session/
+          - src/ftre/services/agent/
+          - src/ftre/app/gateway/
+          - tests/contracts/
+          - tests/lifecycle/
+          - tests/integration/
+          - tests/architecture/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/stores/
+        acceptance: 已开始执行的请求不可 release 回 pending；普通队列仅由 RunCompleted 自动消费；cancelled/paused/failed/interrupted 冻结队列；request_id/run_id 与 UserMessage 幂等；Inbox 使用 canonical 用户数据根；Steer 不跨 Run；重启、重连、故障注入、发行包和全量质量门禁通过
+        tasks:
+          - id: F38-A
+            title: 错误回队与错误消费修复
+            status: todo
+          - id: F38-B
+            title: 消息身份、Agent 幂等与存储根修复
+            status: todo
+          - id: F38-C
+            title: 故障注入、Steer 边界与跨仓验收
+            status: todo
