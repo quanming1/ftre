@@ -1691,7 +1691,7 @@ stages:
         depends_on:
           - F35
           - F36
-        implementation_boundary: 只修改 E:\\ftre 的 RequestLedger、ftre-inbox、AgentService、Session Message Projection、Gateway Composition、测试和协议文档；配套 E:\\binn\\ftre-desktop 只做 queue/status/reconnect 回归；不修改 Agent ReAct 算法、LLM/Tool 业务协议或 Cordis Kernel
+        implementation_boundary: 只修改 E:\\ftre 的现有 Inbox、AgentService、Session Message Projection、Gateway Composition、测试和协议文档；不新增第二套 RequestLedger/SQLite/调度器；配套 E:\\binn\\ftre-desktop 只做 queue/status/reconnect 回归；不修改 Agent ReAct 算法、LLM/Tool 业务协议或 Cordis Kernel
         modules:
           - packages/ftre-inbox/
           - packages/ftre-agent/
