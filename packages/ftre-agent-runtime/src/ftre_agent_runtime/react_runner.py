@@ -567,6 +567,7 @@ class ReActRunner:
             turn_id=self.state.turn_id,
             iteration=self.state.iteration,
             cancellation=cancellation,
+            request_id=str(self.state.runtime_context.get("request_id") or ""),
         )
         AGENT_BEFORE_REASONING_SPEC.validate_payload(payload)
         if self.agent.hooks is None:

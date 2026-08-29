@@ -77,7 +77,7 @@ async def test_followup_starts_worker_and_inject_does_not(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_idle_steer_falls_back_to_a_normal_agent_turn(tmp_path):
+async def test_idle_steer_is_delivered_as_normal_agent_turn(tmp_path):
     """没有 active Turn 时，steer 也必须被 worker 交付而不能卡在 next-step。"""
     agent = FakeAgent()
     service = InboxService(InboxRepository(tmp_path), agent)
@@ -250,7 +250,7 @@ async def test_claim_failure_blocks_worker_without_unhandled_task(tmp_path):
     assert service.status("s1") == "blocked"
     assert [item.request_id for item in (await service.snapshot("s1")).pending] == ["r1"]
     worker = service._workers.get("s1")
-    assert worker is not None and not worker.done()
+    assert worker is None or worker.done()
     await service.close()
 
 
@@ -281,7 +281,7 @@ async def test_bus_prompt_accepts_structured_text_content(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_close_releases_pending_memory_but_keeps_recovery_file(tmp_path):
+async def test_close_clears_pending_memory_but_keeps_recovery_file(tmp_path):
     repository = InboxRepository(tmp_path)
     service = InboxService(repository)
     await service.followup(InboundMessage("s1", "r1", "ws", "hello"))

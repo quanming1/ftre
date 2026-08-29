@@ -14,7 +14,7 @@ from .service import InboxService
 # Inbox must be activated after Agent Runtime is available. Cordis may settle
 # independent Fibers in parallel; declaring this dependency prevents a race in
 # which Inbox becomes ACTIVE before it can bind its admission handler to the
-# AgentLoop, leaving the runtime on its ``inbox-unavailable`` fallback.
+# AgentLoop, leaving the runtime without its Inbox input path.
 #
 # send_message/task/team are deliberately not dependencies here. They are three
 # independent business Packages which consume ``inbox``; using Inbox does not
@@ -38,16 +38,22 @@ async def apply(ctx: Context, config=None):
     )
     sessions = ctx.sessions
     root = options.get("inbox_dir")
-    if root is None and sessions is not None and hasattr(sessions, "sessions_root"):
-        root = Path(sessions.sessions_root()) / "_inbox"
-    root = root or (Path.cwd() / ".ftre-inbox")
+    if root is None:
+        sessions_root = getattr(sessions, "sessions_root", None)
+        if callable(sessions_root):
+            root = Path(sessions_root()) / "_inbox"
+        else:
+            raise RuntimeError(
+                "Inbox Plugin requires an explicit inbox_dir or SessionService.sessions_root()"
+            )
     exists = None
     request_seen = None
     if sessions is not None and hasattr(sessions, "has_session"):
         exists = sessions.has_session
     if sessions is not None and hasattr(sessions, "has_request_id"):
         request_seen = sessions.has_request_id
-    legacy_root = sessions.sessions_root() if sessions is not None and hasattr(sessions, "sessions_root") else None
+    sessions_root = getattr(sessions, "sessions_root", None)
+    legacy_root = sessions_root() if callable(sessions_root) else None
     try:
         capacity = max(
             1,
@@ -113,7 +119,7 @@ async def apply(ctx: Context, config=None):
             result = await next_()
             claimed = await service.deliver_next_step_for_reasoning(
                 payload.session_id,
-                turn_id=payload.turn_id,
+                turn_id=payload.request_id or payload.turn_id,
             )
             if not claimed:
                 return result

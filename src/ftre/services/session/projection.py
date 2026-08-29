@@ -92,6 +92,9 @@ class SessionProjection:
         self._active_session_events: dict[
             str, dict[SessionMaintenanceEvent, SessionMaintenanceRecord]
         ] = {}
+        # UserMessage 的稳定 ID 可能同时由恢复任务和实时 Event 投影提交；
+        # 该锁把“存在检查 + 首次写入”收成同一条 Session 内的临界区。
+        self._user_message_locks: dict[str, asyncio.Lock] = {}
         # 保护上述内存投影，避免 Event 流、attach snapshot 与取消路径并发修改同一 Msg。
         # 普通 Event 的磁盘 I/O 在锁外执行；UserMessage 已由 Inbox 在安全边界提交，
         # Projection 只按 message_id 更新对应 AssistantMsg。
@@ -102,6 +105,7 @@ class SessionProjection:
         async with self._lock:
             self._replies.clear()
             self._active_session_events.clear()
+            self._user_message_locks.clear()
 
     async def apply(self, session_id: str, event) -> ProjectionResult:
         """应用一个 Event，返回投影结果。
@@ -116,26 +120,44 @@ class SessionProjection:
         Reply 事件都会推进内存快照的 revision。
         """
         if isinstance(event, UserMessageEvent):
-            previous_id = str(
-                event.message_metadata.get("previous_assistant_message_id")
-                or event.data.get("previous_assistant_message_id")
-                or ""
-            )
-            if previous_id:
-                await self._close_assistant_at_user_boundary(
-                    session_id,
-                    previous_id,
-                    finished_at=event.created_at,
+            lock = self._user_message_locks.setdefault(session_id, asyncio.Lock())
+            async with lock:
+                message = UserMsg(
+                    name=MsgName.DEFAULT,
+                    content=event.content,
+                    id=event.id,
+                    created_at=event.created_at,
+                    metadata=event.message_metadata,
                 )
-            message = UserMsg(
-                name=MsgName.DEFAULT,
-                content=event.content,
-                id=event.id,
-                created_at=event.created_at,
-                metadata=event.message_metadata,
-            )
-            await self._session_manager.upsert_message(session_id, message)
-            return ProjectionResult(persisted_messages=[message])
+                get_state_message = getattr(self._session_manager, "get_state_message", None)
+                if callable(get_state_message):
+                    existing_raw = await get_state_message(session_id, event.id)
+                    if isinstance(existing_raw, dict):
+                        from ftre.services.session.message.converter import _as_msg
+
+                        existing = _as_msg(existing_raw)
+                        existing_metadata = existing.metadata or {}
+                        incoming_fingerprint = message.metadata.get("request_fingerprint")
+                        existing_fingerprint = existing_metadata.get("request_fingerprint")
+                        if existing_fingerprint and incoming_fingerprint:
+                            if existing_fingerprint != incoming_fingerprint:
+                                raise ValueError("request_id 已绑定不同内容")
+                        elif existing.content != message.content:
+                            raise ValueError("request_id 已绑定不同内容")
+                        return ProjectionResult(persisted_messages=[existing])
+                previous_id = str(
+                    event.message_metadata.get("previous_assistant_message_id")
+                    or event.data.get("previous_assistant_message_id")
+                    or ""
+                )
+                if previous_id:
+                    await self._close_assistant_at_user_boundary(
+                        session_id,
+                        previous_id,
+                        finished_at=event.created_at,
+                    )
+                await self._session_manager.upsert_message(session_id, message)
+                return ProjectionResult(persisted_messages=[message])
 
         reply_id = getattr(event, "reply_id", "") or ""
         if not reply_id:

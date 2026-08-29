@@ -1,29 +1,21 @@
-"""Inbox 的独立 JSON Repository。
-
-它不读写 SessionService 的 ``state.json``，每个 Session 的 pending 数据放在独立的
-``inbox.json``。这样删除或替换 Inbox Package 不会让 AgentService 携带队列模型。
-"""
+"""Inbox 的单一持久化 Owner。"""
 
 from __future__ import annotations
 
 import asyncio
 import copy
 import json
-import logging
 import os
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .models import InboxSnapshot, LeaseRecord, QueueItem, QueueTarget, _MutableInbox
-
-logger = logging.getLogger(__name__)
+from .models import InboxSnapshot, QueueItem, QueueTarget, _MutableInbox
 
 
 class InboxRepository:
-    """为每个 Session 提供原子 Inbox 快照和 mutation。"""
+    """按 Session 原子读写 pending 队列。claim 后项目永久离开队列。"""
 
     def __init__(
         self,
@@ -35,13 +27,12 @@ class InboxRepository:
         legacy_root: str | Path | None = None,
     ) -> None:
         self.root = Path(root)
-        self.legacy_root = Path(legacy_root) if legacy_root is not None else None
         self.capacity = capacity
         self._session_exists = session_exists
         self._request_seen = request_seen
+        self.legacy_root = Path(legacy_root) if legacy_root is not None else None
         self._states: dict[str, _MutableInbox] = {}
         self._locks: dict[str, asyncio.Lock] = {}
-        self._owner_id = uuid.uuid4().hex
 
     def lock_for(self, session_id: str) -> asyncio.Lock:
         return self._locks.setdefault(session_id, asyncio.Lock())
@@ -51,23 +42,16 @@ class InboxRepository:
         await self._migrate_legacy_mailboxes()
         for path in self.root.glob("*/inbox.json"):
             try:
-                payload = await asyncio.to_thread(path.read_text, encoding="utf-8")
-                state = _MutableInbox.from_json(json.loads(payload))
+                raw = json.loads(await asyncio.to_thread(path.read_text, encoding="utf-8"))
+                state = _MutableInbox.from_json(raw)
+                self._states[state.session_id] = state
+                if raw.get("schema_version") != 3 or raw.get("inflight"):
+                    await self._commit(state)
             except Exception:  # noqa: BLE001 - isolate one broken Inbox
-                # 不把一个损坏队列当成空队列；保留文件供诊断，跳过该 Session。
-                path.rename(path.with_name(f"inbox.json.corrupt-{uuid.uuid4().hex[:8]}"))
-                continue
-            if state.inflight:
-                self._discard_orphaned_leases(state)
-                await self._commit(state)
-            self._states[state.session_id] = state
+                corrupt = path.with_name(f"inbox.json.corrupt-{uuid.uuid4().hex[:8]}")
+                await asyncio.to_thread(path.rename, corrupt)
 
     async def _migrate_legacy_mailboxes(self) -> None:
-        """一次性把旧 state.json.mailbox 转成独立 inbox.json。
-
-        迁移成功后从 state.json 删除 mailbox 字段；旧 AgentLoop fallback 因而不会在
-        Inbox Package 已接管时重复执行同一批 pending。其它 Session 字段原样保留。
-        """
         if self.legacy_root is None or not self.legacy_root.exists():
             return
         for state_path in self.legacy_root.glob("*/state.json"):
@@ -78,7 +62,6 @@ class InboxRepository:
                 if not isinstance(mailbox, dict):
                     continue
                 session = raw.get("session") if isinstance(raw.get("session"), dict) else {}
-                channel_id = str(session.get("channel_id") or "")
                 state = _MutableInbox(
                     session_id=session_id,
                     revision=int(mailbox.get("revision", 0)),
@@ -90,19 +73,18 @@ class InboxRepository:
                 for value in pending:
                     if not isinstance(value, dict):
                         raise TypeError("mailbox.pending 项必须是对象")
-                    state.next_turn.append(QueueItem(
-                        request_id=str(value["request_id"]),
-                        sequence=int(value["sequence"]),
-                        session_id=session_id,
-                        channel_id=channel_id,
-                        content=str(value.get("content", "")),
-                        attachments=tuple(dict(item) for item in value.get("attachments", ())),
-                        source="user",
-                        agent_id=str(value.get("agent_id") or "default"),
-                    ))
+                    state.next_turn.append(
+                        QueueItem(
+                            request_id=str(value["request_id"]),
+                            sequence=int(value["sequence"]),
+                            session_id=session_id,
+                            channel_id=str(session.get("channel_id") or ""),
+                            content=str(value.get("content", "")),
+                            attachments=tuple(dict(item) for item in value.get("attachments", ())),
+                            agent_id=str(value.get("agent_id") or "default"),
+                        )
+                    )
                 state.validate()
-                # 同一个旧 state 在“新 Inbox 已写入、旧字段尚未删除”的崩溃窗口
-                # 中会再次经过这里；覆盖同一 session 的相同快照是幂等的。
                 await self._commit(state)
                 raw.pop("mailbox", None)
                 await asyncio.to_thread(
@@ -110,20 +92,13 @@ class InboxRepository:
                     state_path,
                     json.dumps(raw, ensure_ascii=False, indent=2),
                 )
-            except (OSError, TypeError, ValueError, KeyError) as exc:
-                # 迁移失败不删除旧 mailbox，下一次启动仍可重试并且不会丢数据。
-                logger.warning("[ftre-inbox] legacy migration skipped session=%s: %s", session_id, exc)
+            except (OSError, TypeError, ValueError, KeyError):
                 continue
 
     def recoverable_sessions(self) -> list[str]:
-        return [
-            sid
-            for sid, state in self._states.items()
-            if state.next_turn or state.next_step or state.inflight
-        ]
+        return [sid for sid, state in self._states.items() if state.next_turn or state.next_step]
 
     def close(self) -> None:
-        """丢弃进程内快照和锁，但保留磁盘文件供下次启用恢复。"""
         self._states.clear()
         self._locks.clear()
 
@@ -131,12 +106,7 @@ class InboxRepository:
         async with self.lock_for(session_id):
             return self._state(session_id).snapshot(self.capacity)
 
-    async def admit(
-        self,
-        item: QueueItem,
-        target: QueueTarget,
-    ) -> tuple[bool, int]:
-        """原子接纳；返回 (created, sequence-position)。"""
+    async def admit(self, item: QueueItem, target: QueueTarget) -> tuple[bool, int]:
         if self._session_exists is not None and not self._session_exists(item.session_id):
             raise ValueError(f"session 不存在: {item.session_id}")
         async with self.lock_for(item.session_id):
@@ -144,127 +114,40 @@ class InboxRepository:
             existing = self._find(state, item.request_id)
             if existing is not None:
                 return False, existing[1] + 1
-            if item.request_id in state.inflight:
+            if self._request_seen is not None and self._request_seen(item.session_id, item.request_id):
                 return False, 0
-            if self._request_seen is not None and self._request_seen(
-                item.session_id, item.request_id
-            ):
-                return False, 0
-            if len(state.next_turn) + len(state.next_step) + len(state.inflight) >= self.capacity:
+            if len(state.next_turn) + len(state.next_step) >= self.capacity:
                 raise OverflowError(f"Inbox 已满: {self.capacity}")
             queued = copy.deepcopy(item)
             if queued.sequence <= 0:
-                queued = QueueItem(
-                    request_id=queued.request_id,
-                    sequence=state.next_sequence,
-                    session_id=queued.session_id,
-                    channel_id=queued.channel_id,
-                    content=queued.content,
-                    attachments=queued.attachments,
-                    source=queued.source,
-                    history_message_id=queued.history_message_id,
-                    messages=queued.messages,
-                    agent_id=queued.agent_id,
-                )
+                queued = replace(queued, sequence=state.next_sequence)
             state.next_sequence = max(state.next_sequence, queued.sequence + 1)
-            (state.next_turn if target == "next-turn" else state.next_step).append(queued)
-            state.validate()
+            target_items = state.next_turn if target == "next-turn" else state.next_step
+            target_items.append(queued)
             state.revision += 1
+            state.validate()
             await self._commit(state)
             return True, len(state.next_turn) + len(state.next_step)
 
-    async def claim(
-        self,
-        session_id: str,
-        request_ids: tuple[str, ...],
-    ) -> tuple[QueueItem, ...]:
-        """按精确 ID 原子领取；任何 ID 不在队列中则整体失败。"""
+    async def claim(self, session_id: str, request_ids: tuple[str, ...]) -> tuple[QueueItem, ...]:
+        """原子移除指定项目；调用方拿到项目后直接交给 AgentService。"""
+        if not request_ids:
+            return ()
         async with self.lock_for(session_id):
             state = self._state(session_id)
-            found: list[QueueItem] = []
             locations: list[tuple[list[QueueItem], int]] = []
             for request_id in request_ids:
                 hit = self._find(state, request_id)
                 if hit is None:
                     return ()
                 locations.append(hit)
-                found.append(hit[0][hit[1]])
-            for items, index in sorted(locations, key=lambda pair: pair[1], reverse=True):
+            claimed = tuple(items[index] for items, index in locations)
+            for items, index in sorted(locations, key=lambda value: value[1], reverse=True):
                 items.pop(index)
             state.revision += 1
-            await self._commit(state)
-            return tuple(found)
-
-    async def claim_lease(
-        self,
-        session_id: str,
-        request_ids: tuple[str, ...],
-        *,
-        lease_seconds: float = 30.0,
-    ) -> tuple[LeaseRecord, ...]:
-        """原子领取并保留 durable lease；调用方必须随后 ack 或 release。"""
-        if not request_ids:
-            return ()
-        async with self.lock_for(session_id):
-            state = self._state(session_id)
-            found: list[tuple[list[QueueItem], int, QueueTarget]] = []
-            for request_id in request_ids:
-                hit = self._find_with_target(state, request_id)
-                if hit is None:
-                    return ()
-                found.append(hit)
-            lease_id = uuid.uuid4().hex
-            expires_at = datetime.now(UTC) + timedelta(seconds=max(0.1, lease_seconds))
-            records: list[LeaseRecord] = []
-            for items, index, target in sorted(found, key=lambda value: value[1], reverse=True):
-                item = items.pop(index)
-                record = LeaseRecord(
-                    lease_id=lease_id,
-                    owner_id=self._owner_id,
-                    target=target,
-                    item=item,
-                    expires_at=expires_at,
-                )
-                state.inflight[item.request_id] = record
-                records.append(record)
-            state.revision += 1
             state.validate()
             await self._commit(state)
-            return tuple(reversed(records))
-
-    async def ack(self, session_id: str, lease_id: str) -> tuple[QueueItem, ...]:
-        """确认 lease 已交付，永久移除其 inflight 记录。"""
-        async with self.lock_for(session_id):
-            state = self._state(session_id)
-            records = [
-                lease for lease in state.inflight.values() if lease.lease_id == lease_id
-            ]
-            if not records:
-                return ()
-            for record in records:
-                state.inflight.pop(record.item.request_id, None)
-            state.revision += 1
-            await self._commit(state)
-            return tuple(record.item for record in records)
-
-    async def release(self, session_id: str, lease_id: str) -> tuple[QueueItem, ...]:
-        """释放 lease 并按原 target/sequence 放回 pending，供失败或取消恢复。"""
-        async with self.lock_for(session_id):
-            state = self._state(session_id)
-            records = [
-                lease for lease in state.inflight.values() if lease.lease_id == lease_id
-            ]
-            if not records:
-                return ()
-            for record in records:
-                state.inflight.pop(record.item.request_id, None)
-                target_items = state.next_step if record.target == "next-step" else state.next_turn
-                target_items.append(record.item)
-                target_items.sort(key=lambda item: item.sequence)
-            state.revision += 1
-            state.validate()
-            await self._commit(state)
-            return tuple(record.item for record in records)
+            return claimed
 
     async def remove(self, session_id: str, request_id: str) -> QueueItem | None:
         async with self.lock_for(session_id):
@@ -278,54 +161,60 @@ class InboxRepository:
             await self._commit(state)
             return item
 
-    async def edit(self, session_id: str, request_id: str, content: str, attachments=None) -> QueueItem | None:
+    async def edit(
+        self,
+        session_id: str,
+        request_id: str,
+        content: str,
+        attachments=None,
+    ) -> QueueItem | None:
         async with self.lock_for(session_id):
             state = self._state(session_id)
             hit = self._find(state, request_id)
             if hit is None:
                 return None
             items, index = hit
-            old = items[index]
-            items[index] = QueueItem(
-                request_id=old.request_id,
-                sequence=old.sequence,
-                session_id=old.session_id,
-                channel_id=old.channel_id,
+            items[index] = replace(
+                items[index],
                 content=content,
                 attachments=tuple(dict(item) for item in (attachments or ())),
-                source=old.source,
-                history_message_id=old.history_message_id,
                 messages=(),
-                agent_id=old.agent_id,
             )
             state.revision += 1
             await self._commit(state)
             return items[index]
 
-    async def promote(self, session_id: str, request_id: str) -> QueueItem | None:
-        """将一条普通排队输入提升为用户主动接管的 next-step 输入。
-
-        ``promote`` 只由 WebSocket 的“调整方向”操作调用。即使原消息来自
-        cron 或其它 Plugin，用户明确点击这个动作后，它也必须按正式用户消息
-        进入 Session 历史；否则 Inbox claim 后消息会从队列消失，却没有任何
-        ``USER_MESSAGE`` 可供 MessageList 回显。
-        """
+    async def promote(
+        self,
+        session_id: str,
+        request_id: str,
+        *,
+        target_run_id: str | None = None,
+    ) -> QueueItem | None:
         async with self.lock_for(session_id):
             state = self._state(session_id)
             hit = self._find(state, request_id)
             if hit is None:
                 return None
             items, index = hit
+            item = items[index]
             if items is state.next_step:
-                return items[index]
-            item = items.pop(index)
-            # 用户操作改变的是交付语义，而不是原始来源：被用户主动提升的
-            # Plugin/cron 输入必须走 DB-first UserMessage 持久化路径。
-            if item.source != "user":
-                item = replace(item, source="user")
+                if target_run_id and item.target_run_id is None:
+                    item = replace(item, target_run_id=target_run_id)
+                    items[index] = item
+                    state.revision += 1
+                    await self._commit(state)
+                return item
+            items.pop(index)
+            item = replace(
+                item,
+                source="user" if item.source != "user" else item.source,
+                target_run_id=target_run_id or item.target_run_id,
+            )
             state.next_step.append(item)
             state.next_step.sort(key=lambda value: value.sequence)
             state.revision += 1
+            state.validate()
             await self._commit(state)
             return item
 
@@ -352,32 +241,12 @@ class InboxRepository:
                     return items, index
         return None
 
-    @classmethod
-    def _find_with_target(
-        cls, state: _MutableInbox, request_id: str
-    ) -> tuple[list[QueueItem], int, QueueTarget] | None:
-        for target, items in (("next-turn", state.next_turn), ("next-step", state.next_step)):
-            for index, item in enumerate(items):
-                if item.request_id == request_id:
-                    return items, index, target
-        return None
-
-    @staticmethod
-    def _discard_orphaned_leases(state: _MutableInbox) -> None:
-        """进程重启后丢弃上一进程已领取的输入，禁止重复执行。"""
-        records = tuple(state.inflight.values())
-        state.inflight.clear()
-        if records:
-            logger.warning(
-                "[ftre-inbox] discarded %d orphaned lease(s) after restart: %s",
-                len(records),
-                ",".join(record.item.request_id for record in records),
-            )
-
     async def _commit(self, state: _MutableInbox) -> None:
-        path = self.path_for(state.session_id)
-        payload = json.dumps(state.to_json(), ensure_ascii=False, indent=2)
-        await asyncio.to_thread(self._atomic_write, path, payload)
+        await asyncio.to_thread(
+            self._atomic_write,
+            self.path_for(state.session_id),
+            json.dumps(state.to_json(), ensure_ascii=False, indent=2),
+        )
 
     @staticmethod
     def _atomic_write(path: Path, payload: str) -> None:
@@ -388,3 +257,6 @@ class InboxRepository:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+
+
+__all__ = ["InboxRepository"]

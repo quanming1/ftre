@@ -2,6 +2,18 @@
 
 ## [未发布]
 
+### F38 Inbox 恢复幂等与队列生命周期（已完成，未发布）
+
+- 已执行请求在取消、失败或中断后不再回到 pending；普通队列只在正常 RunCompleted 后推进，
+  启动恢复不会自动发送历史队列。
+- UserMessage 按 `session_id + request_id` 幂等落盘并保留原始身份/时间/内容；Agent Run 防止
+  重复执行；Inbox 统一使用 Session canonical 用户数据根。
+- Steering 持久化 `target_run_id` 并限制在目标 Run 的 Reasoning 边界注入；并发重放有单写保护。
+- Inbox 进一步收敛为 `Inbound → QueueItem → FIFO claim → AgentService`，删除 delivery lease、
+  release/ack 回退分支；claim 后消息永久离开 pending，失败由 AgentService 返回终态。
+- 后端全量 pytest 745 passed、Ruff 与架构门禁通过；Desktop renderer 537 tests passed，三个
+  Package wheel 构建验收通过。
+
 ### F37 Process Service 与后端进程生命周期
 
 - 新增 `ftre-process` Package，统一外部进程的 argv/shell、stdout/stderr、超时、取消、进程组和

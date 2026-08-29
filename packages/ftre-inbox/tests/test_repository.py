@@ -61,6 +61,19 @@ async def test_snapshot_survives_repository_recreation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_repository_preserves_steering_target_run_id(tmp_path):
+    repo = InboxRepository(tmp_path)
+    await repo.admit(
+        QueueItem("r1", 0, "s1", "ws", "steer", target_run_id="run-1"),
+        "next-step",
+    )
+    replacement = InboxRepository(tmp_path)
+    await replacement.load_all()
+    snapshot = await replacement.snapshot("s1")
+    assert snapshot.next_step[0].target_run_id == "run-1"
+
+
+@pytest.mark.asyncio
 async def test_legacy_mailbox_is_migrated_once(tmp_path):
     legacy = tmp_path / "sessions"
     state_dir = legacy / "s1"

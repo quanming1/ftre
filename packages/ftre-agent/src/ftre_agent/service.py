@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -108,6 +109,8 @@ class AgentService:
         self.registry = AgentRegistry()
         self._entries: dict[str, _AgentEntry] = {}
         self._reservations: dict[str, RunReservation] = {}
+        self._completed_runs: dict[tuple[str, str], AgentRunResult] = {}
+        self._request_fingerprints: dict[tuple[str, str], str] = {}
         # 仅保护 run()/stream() 的入口竞态；RuntimeControlPort 仍是 active
         # Turn 的事实来源，Service 不保存 Runtime Task 或执行状态机。
         self._inflight_admissions: set[str] = set()
@@ -129,6 +132,8 @@ class AgentService:
         self._factory_registration = None
         self._entries.clear()
         self._reservations.clear()
+        self._completed_runs.clear()
+        self._request_fingerprints.clear()
         self._inflight_admissions.clear()
         for record in tuple(self.registry.list()):
             self.registry.dispose(record["id"])
@@ -175,6 +180,8 @@ class AgentService:
         self._factory_registration = None
         self._entries.clear()
         self._reservations.clear()
+        self._completed_runs.clear()
+        self._request_fingerprints.clear()
         self._inflight_admissions.clear()
         for record in tuple(self.registry.list()):
             self.registry.dispose(record["id"])
@@ -192,6 +199,35 @@ class AgentService:
     def _validate_agent_id(agent_id: str) -> None:
         if not isinstance(agent_id, str) or not agent_id.strip():
             raise InvalidRunRequestError("agent_id must be non-empty")
+
+    @staticmethod
+    def _request_key(request: AgentRunRequest) -> tuple[str, str]:
+        return request.session_id, request.request_id
+
+    @staticmethod
+    def _request_fingerprint(request: AgentRunRequest) -> str:
+        messages = [
+            {
+                "role": getattr(message, "role", ""),
+                "name": getattr(message, "name", ""),
+                "text": message.get_text_content()
+                if callable(getattr(message, "get_text_content", None))
+                else repr(message),
+            }
+            for message in request.messages
+        ]
+        return json.dumps(
+            {
+                "messages": messages,
+                "metadata": dict(request.metadata),
+                "agent_id": request.agent_id,
+                "channel_id": request.channel_id,
+                "source": request.source,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
 
     def _entry_or_raise(self, agent_id: str) -> _AgentEntry:
         entry = self._entries.get(agent_id)
@@ -291,6 +327,17 @@ class AgentService:
         if not isinstance(agent_id, str):
             raise InvalidRunRequestError("agent_id must be a string")
         entry = self._entry_or_raise(agent_id)
+        if request.session_id != (entry.spec.session_id or agent_id):
+            raise InvalidRunRequestError("request session does not belong to Agent")
+        request_key = self._request_key(request)
+        request_fingerprint = self._request_fingerprint(request)
+        existing_fingerprint = self._request_fingerprints.get(request_key)
+        if existing_fingerprint is not None and existing_fingerprint != request_fingerprint:
+            raise InvalidRunRequestError("request_id 已绑定不同内容")
+        cached = self._completed_runs.get(request_key)
+        if cached is not None:
+            return cached
+        self._request_fingerprints.setdefault(request_key, request_fingerprint)
         self._expire_reservations()
         if entry.state == "paused":
             raise AgentBusyError(f"Agent is awaiting confirmation: {agent_id}")
@@ -298,8 +345,6 @@ class AgentService:
             raise AgentBusyError(f"Agent is busy: {agent_id}")
         if self._control_or_raise().is_active_session(entry.spec.session_id or agent_id):
             raise AgentBusyError(f"Agent is busy: {agent_id}")
-        if request.session_id != (entry.spec.session_id or agent_id):
-            raise InvalidRunRequestError("request session does not belong to Agent")
         entry.state = "running"
         entry.run_id = request.request_id
         self._inflight_admissions.add(agent_id)
@@ -313,10 +358,28 @@ class AgentService:
         try:
             result = await self._await(entry.runtime.run(request))
             result = self._with_run_id(result, request.request_id)
+            self._completed_runs[request_key] = result
             entry.state = self._state_from_result(result)
             return result
         except asyncio.CancelledError:
+            self._completed_runs[request_key] = AgentRunResult(
+                session_id=request.session_id,
+                turn_id=request.request_id,
+                status="cancelled",
+                run_id=request.request_id,
+                error={"code": "cancelled", "message": "Agent run cancelled"},
+            )
             entry.state = "cancelled"
+            raise
+        except Exception as exc:
+            self._completed_runs[request_key] = AgentRunResult(
+                session_id=request.session_id,
+                turn_id=request.request_id,
+                status="failed",
+                run_id=request.request_id,
+                error={"code": "agent_run_error", "message": str(exc), "retryable": False},
+            )
+            entry.state = "failed"
             raise
         finally:
             self._inflight_admissions.discard(agent_id)
@@ -505,6 +568,11 @@ class AgentService:
             await self._await(dispose())
         self._entries.pop(agent_id, None)
         self.registry.dispose(agent_id)
+        session_id = entry.spec.session_id or agent_id
+        for key in tuple(self._completed_runs):
+            if key[0] == session_id:
+                self._completed_runs.pop(key, None)
+                self._request_fingerprints.pop(key, None)
         await self._notify("disposed", AgentView(agent_id=agent_id, state="disposed"))
 
     def list(self) -> tuple[AgentView, ...]:

@@ -4,7 +4,7 @@
 Gateway。运行时 Service/Plugin 通过显式子模块导入，宿主仍可使用同一个稳定包名。
 """
 
-from .models import InboxSnapshot, LeaseRecord, QueueItem, QueueTarget
+from .models import InboxSnapshot, QueueItem, QueueTarget
 from .protocol import InboundMessage
 
 __all__ = [
@@ -46,7 +46,6 @@ __all__ = [
     "InboxService",
     "InboxSnapshot",
     "InboxStatusPayload",
-    "LeaseRecord",
     "QueueItem",
     "QueueTarget",
     "RejectAdmission",
