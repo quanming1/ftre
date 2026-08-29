@@ -6,7 +6,7 @@
 |---|---|
 | 阶段 | F38 |
 | 名称 | Inbox 重复投递、终态消费与恢复幂等修复 |
-| 状态 | approved |
+| 状态 | 开发中 |
 | 创建日期 | 2026-08-29 |
 | 定稿日期 | 2026-08-29 |
 | 验收日期 | — |
@@ -269,6 +269,8 @@ A completed -> B 只执行一次
 A paused/failed/interrupted -> B 保持 pending
 ```
 
+**状态**：已实现并通过专项测试与全量后端测试。
+
 **Commit**：`fix(F38): 修复 Inbox 终态回队与错误消费`
 
 ### F38-B：消息身份、Agent 幂等与存储根修复
@@ -418,3 +420,4 @@ AgentService.run 必须带 request_id/run_id
 |---|---|---|
 | 2026-08-29 | 初始版本 | 记录 Inbox 重复投递、idle 误消费、消息时间覆盖、运行幂等和安装目录持久化问题 |
 | 2026-08-29 | 收缩为 F38-A/F38-B/F38-C；移除本阶段独立 RequestLedger、SQLite、TurnCoordinator 目标 | 当前 Bug 可由现有 Owner 和状态模型修复，避免过度设计；长期账本作为后续阶段候选 |
+| 2026-08-29 | 完成 F38-A：执行后请求不再 release 回队；取消/失败/中断冻结队列；普通 worker 仅在正常完成后推进；新增取消后新消息不被旧请求抢占的回归测试 | F38-A 专项 26 passed，全量 pytest 738 passed；目标行为已验证 |

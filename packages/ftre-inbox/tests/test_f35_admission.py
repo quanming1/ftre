@@ -89,6 +89,23 @@ class FailedRuntimeFactory(RuntimeFactory):
         return FailedRuntimeHandle(self.calls)
 
 
+class CancelledRuntimeHandle(RuntimeHandle):
+    async def run(self, request):
+        self.calls.append(request)
+        return AgentRunResult(
+            session_id=request.session_id,
+            turn_id=request.request_id,
+            status="cancelled",
+            error={"code": "cancelled", "message": "user cancelled", "retryable": False},
+        )
+
+
+class CancelledRuntimeFactory(RuntimeFactory):
+    async def create(self, spec):
+        del spec
+        return CancelledRuntimeHandle(self.calls)
+
+
 class PauseThenCompleteHandle(RuntimeHandle):
     async def run(self, request):
         self.calls.append(request)
@@ -197,7 +214,7 @@ async def test_paused_run_does_not_consume_queue_until_confirmation_completes(tm
 
 
 @pytest.mark.asyncio
-async def test_retryable_agent_result_releases_lease_and_keeps_pending(tmp_path):
+async def test_agent_failure_after_start_acknowledges_lease_and_freezes_queue(tmp_path):
     from ftre_agent import AgentService
 
     agents = AgentService()
@@ -210,8 +227,32 @@ async def test_retryable_agent_result_releases_lease_and_keeps_pending(tmp_path)
 
     assert result.status == "failed"
     snapshot = await service.snapshot("s1")
-    assert [item.request_id for item in snapshot.pending] == ["r1"]
+    assert snapshot.pending == ()
     assert snapshot.inflight_count == 0
+    assert service.status("s1") == "blocked"
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_request_is_not_requeued_ahead_of_new_message(tmp_path):
+    from ftre_agent import AgentService
+
+    agents = AgentService()
+    factory = CancelledRuntimeFactory()
+    agents.register_factory(factory)
+    service = InboxService(InboxRepository(tmp_path), agents)
+    await service.start()
+
+    first = await service.followup(InboundMessage("s1", "r1", "ws", "first"))
+    result = await asyncio.wait_for(service.wait("s1", first.request_id), timeout=1)
+    assert result.status == "cancelled"
+
+    await service.followup(InboundMessage("s1", "r2", "ws", "second"))
+    await asyncio.sleep(0.05)
+
+    assert [request.request_id for request in factory.calls] == ["r1"]
+    assert [item.request_id for item in (await service.snapshot("s1")).pending] == ["r2"]
+    assert service.status("s1") == "blocked"
     await service.close()
 
 

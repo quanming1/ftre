@@ -1687,7 +1687,7 @@ stages:
         status: in_progress
         date: 2026-08-29
         prd: docs/prd/PRD-F38-inbox-request-ledger-and-recovery.md
-        prd_status: approved
+        prd_status: 开发中
         depends_on:
           - F35
           - F36
@@ -1708,10 +1708,11 @@ stages:
         tasks:
           - id: F38-A
             title: 错误回队与错误消费修复
-            status: todo
+            status: done
+            completion_date: 2026-08-29
           - id: F38-B
             title: 消息身份、Agent 幂等与存储根修复
-            status: todo
+            status: in_progress
           - id: F38-C
             title: 故障注入、Steer 边界与跨仓验收
             status: todo

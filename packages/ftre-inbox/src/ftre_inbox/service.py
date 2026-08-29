@@ -102,6 +102,7 @@ class InboxService:
         self._hook_runtime = hook_runtime
         self._session_events = session_events
         self._blocked: dict[str, str] = {}
+        self._frozen: dict[str, str] = {}
         self._paused_sessions: set[str] = set()
         self._agent_status_disposer = None
         subscribe = getattr(agent, "on_status_changed", None)
@@ -122,6 +123,7 @@ class InboxService:
         self._workers.clear()
         self._wake.clear()
         self._blocked.clear()
+        self._frozen.clear()
         self._paused_sessions.clear()
         self.repository.close()
         for future in self._receipts.values():
@@ -157,6 +159,8 @@ class InboxService:
         snapshot = await self.repository.snapshot(session_id)
         if not snapshot.has_pending:
             return False
+        self._frozen.pop(session_id, None)
+        self._blocked.pop(session_id, None)
         self._ensure_worker(session_id)
         self._wake_event(session_id).set()
         return True
@@ -169,6 +173,7 @@ class InboxService:
             await asyncio.gather(task, return_exceptions=True)
         self._wake.pop(session_id, None)
         self._blocked.pop(session_id, None)
+        self._frozen.pop(session_id, None)
         self._paused_sessions.discard(session_id)
         for key, future in tuple(self._receipts.items()):
             if key[0] == session_id:
@@ -513,7 +518,12 @@ class InboxService:
         if target == "next-turn" and created:
             key = (message.session_id, message.request_id)
             self._receipts.setdefault(key, asyncio.get_running_loop().create_future())
-        if wake and (await self.repository.snapshot(message.session_id)).has_pending:
+        if (
+            wake
+            and message.session_id not in self._frozen
+            and message.session_id not in self._paused_sessions
+            and (await self.repository.snapshot(message.session_id)).has_pending
+        ):
             self._ensure_worker(message.session_id)
             self._wake_event(message.session_id).set()
         return IngressResult(True, message.session_id, message.request_id, created)
@@ -534,9 +544,14 @@ class InboxService:
             state = str(getattr(view, "state", "") or "")
             if state == "paused":
                 self._paused_sessions.add(session_id)
-            elif state in {"idle", "completed", "failed", "cancelled"}:
+                return
+            if state in {"failed", "cancelled", "interrupted"}:
                 self._paused_sessions.discard(session_id)
-            self._wake_event(session_id).set()
+                self._frozen.setdefault(session_id, state)
+                return
+            if state == "idle" and session_id in self._paused_sessions:
+                self._paused_sessions.discard(session_id)
+                self._wake_event(session_id).set()
 
     @staticmethod
     def _supports_reservation(agent: Any) -> bool:
@@ -622,6 +637,9 @@ class InboxService:
                 if session_id in self._blocked or session_id in self._paused_sessions:
                     await event.wait()
                     continue
+                if session_id in self._frozen:
+                    await event.wait()
+                    continue
                 if self._agent is None:
                     return
                 busy = self._agent.is_busy(session_id)
@@ -675,6 +693,8 @@ class InboxService:
                 reservation = None
                 lease_id = None
                 execution_agent_id = None
+                execution_started = False
+                completed_normally = False
                 try:
                     if structured:
                         candidate = candidates[0]
@@ -740,7 +760,10 @@ class InboxService:
                     # AgentService 仍逐条执行；批量 claim 只保证安全边界上的
                     # atomic ownership，避免 Hook 只放行半批后造成隐式重排。
                     for item in claimed:
+                        if session_id in self._frozen or session_id in self._paused_sessions:
+                            break
                         try:
+                            execution_started = True
                             if structured:
                                 result = self._agent.run(
                                     execution_agent_id,
@@ -784,10 +807,7 @@ class InboxService:
                                     self._agent.release_reservation(reservation)
                                     reservation = None
                                 if lease_id is not None:
-                                    if retryable or status != "failed":
-                                        await self.repository.release(session_id, lease_id)
-                                    else:
-                                        await self.repository.ack(session_id, lease_id)
+                                    await self.repository.ack(session_id, lease_id)
                                     lease_id = None
                                 await self._dispatch_observe(
                                     INBOX_ERROR_SPEC,
@@ -807,9 +827,8 @@ class InboxService:
                                         reason=reason,
                                     ),
                                 )
-                                if retryable or status != "failed":
-                                    self._blocked[session_id] = reason
-                                    await self._publish_status_event(session_id, "blocked")
+                                self._frozen[session_id] = reason or status
+                                await self._publish_status_event(session_id, "blocked")
                                 future = self._receipts.pop((session_id, item.request_id), None)
                                 if future is not None and not future.done():
                                     future.set_result(result)
@@ -818,7 +837,10 @@ class InboxService:
                             if reservation is not None:
                                 self._agent.release_reservation(reservation)
                             if lease_id is not None:
-                                await self.repository.release(session_id, lease_id)
+                                if execution_started:
+                                    await self.repository.ack(session_id, lease_id)
+                                else:
+                                    await self.repository.release(session_id, lease_id)
                                 lease_id = None
                             await self._dispatch_observe(
                                 INBOX_ERROR_SPEC,
@@ -845,7 +867,11 @@ class InboxService:
                                 session_id,
                                 item.request_id,
                             )
+                            if execution_started:
+                                self._frozen[session_id] = str(exc)
+                                await self._publish_status_event(session_id, "blocked")
                             continue
+                        completed_normally = True
                         if lease_id is not None:
                             await self.repository.ack(session_id, lease_id)
                             await self._dispatch_observe(
@@ -867,11 +893,16 @@ class InboxService:
                             future.set_result(result)
                 finally:
                     if lease_id is not None:
-                        await self.repository.release(session_id, lease_id)
+                        if execution_started:
+                            await self.repository.ack(session_id, lease_id)
+                        else:
+                            await self.repository.release(session_id, lease_id)
                         lease_id = None
                     await self._publish(session_id)
                     if (
-                        session_id not in self._blocked
+                        completed_normally
+                        and session_id not in self._frozen
+                        and session_id not in self._blocked
                         and session_id not in self._paused_sessions
                     ):
                         self._wake_event(session_id).set()
@@ -967,7 +998,7 @@ class InboxService:
 
     def status(self, session_id: str) -> str | None:
         """返回 Inbox 自己拥有的状态；``None`` 表示交给 AgentService。"""
-        return "blocked" if session_id in self._blocked else None
+        return "blocked" if session_id in self._blocked or session_id in self._frozen else None
 
     async def _publish_status_event(self, session_id: str, status: str) -> None:
         if self._hook_runtime is not None and INBOX_STATUS_CHANGED_SPEC is not None:
