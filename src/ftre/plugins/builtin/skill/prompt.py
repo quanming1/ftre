@@ -16,7 +16,7 @@ _SKILL_GUIDANCE = """# 使用技能
 
 ### 如何使用技能
 
-- 发现：只从本节列出的 Skill 中选择；Skill 的名称是稳定标识，描述用于判断是否匹配。不要把任意 README、设计文档、示例文件或普通 Markdown 文件当作 Skill。
+- 发现：只从本节列出的 Skill 中选择；Skill 的名称是稳定标识，描述用于判断是否匹配。文件名本身不能证明它是 Skill，只有通过合法 frontmatter 的候选才会列入本节。
 - 强制规则：在实际执行任务时，只要当前列表中存在与任务对应的可用 Skill，**MUST use it**；即使任务看起来可以直接完成，也不能跳过 Skill。用户点名 Skill 或任务明显匹配 Skill 描述时，都属于强制使用场景。
 - 触发规则：用户点名一个可用 Skill（例如 `$skill-name`、Skill 名称或消息中的 `ftre://v1/skill/...` 引用），或任务明显匹配某个可用 Skill 的描述时，必须使用它。除非用户再次提及，已使用的 Skill 不跨任务沿用。
 - 缺失/受阻：点名的 Skill 不存在、被禁用、不可由模型调用或无法加载时，简要说明原因，并用安全的最佳回退继续；不要猜测相近 Skill。
@@ -64,7 +64,7 @@ def _render_root_guidance(roots: list[dict[str, Any]]) -> str:
             "- 每个技能根只扫描第一层，不递归扫描子目录。",
             "- 目录形态：`<root>/<skill-name>/SKILL.md`；正文和 references/scripts/assets 只在激活后按需读取。",
             "- 平铺形态：`<root>/<skill-name>.md`。",
-            "- 根目录下的 `SKILL.md`、README、LICENSE、reference、references、scripts、assets 不是 Skill 入口。",
+            "- 根目录下的 `SKILL.md` 不作为入口；其它 root 直下 `.md`（包括 README）只有通过合法 frontmatter 才是 Skill，references/scripts/assets 内的文件不扫描。",
             "- 符号链接解析后必须仍位于对应根目录内；非法 frontmatter、越界路径和特殊文件会被忽略并进入诊断。",
         ]
     )

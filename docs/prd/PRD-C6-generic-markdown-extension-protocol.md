@@ -985,3 +985,4 @@ E:\binn\ftre-desktop\
 | 2026-08-30 | 借鉴 Codex GPT-5.6 的 Skill 使用规范：由 `skill` Plugin 注册动态 Prompt section，按当前 Agent/工作区只注入可由模型调用的 Skill 名称与描述；明确显式 `ftre://` 引用、`loadSkill` 激活、最小匹配集合、资源相对路径和安全回退规则 | 让模型了解可用 Skill 与激活边界，同时保持正文按需加载，不把 Skill 规则污染全局 system prompt 或把 README 等资源误当作 Skill |
 | 2026-08-30 | 增加 `scan_roots(agent_id, workspace)` 和模型可见的 `### 技能根`、`### 扫描范围`，公开当前请求的 workspace/agent/global 根、优先级及一层发现规则 | 对齐 Codex 的技能根协议，同时保持 FTRE 的作用域和 SkillService 唯一文件系统边界 |
 | 2026-08-30 | 新增 C6.6：以合法 YAML frontmatter 作为唯一 Skill 入口，移除文件名黑名单，frontmatter `name` 作为规范名称；修复用户 Skill 文件并让客户端按 Session/Agent 作用域刷新、展示来源和诊断 | 修复 Skill 文件存在但客户端不稳定显示、外部同名来源被误标 global、Agent 私有目录作用域丢失等问题 |
+| 2026-08-30 | 收尾审计补充模型提示与发现规则的一致性、`loadSkill` 当前 Agent/工作区注入和管理面板作用域提示；新增合法 README 与私有 Skill 工具回归 | 防止模型提示与真实解析规则分叉，避免模型加载私有 Skill 时错误回退到 default |
