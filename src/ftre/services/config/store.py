@@ -7,6 +7,7 @@ ConfigService 的业务代码。
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -20,12 +21,26 @@ class JsonConfigStore:
         self.path = Path(path)
 
     def read(self) -> dict[str, Any]:
+        value, _content_hash = self.read_with_hash()
+        return value
+
+    def read_with_hash(self) -> tuple[dict[str, Any], str]:
+        """读取同一份字节并返回 JSON 对象和内容指纹。"""
         if not self.path.exists():
-            return {}
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
+            return {}, ""
+        raw_bytes = self.path.read_bytes()
+        raw = json.loads(raw_bytes.decode("utf-8"))
         if not isinstance(raw, dict):
             raise TypeError("config root must be an object")
-        return raw
+        return raw, hashlib.sha256(raw_bytes).hexdigest()
+
+    def signature(self) -> tuple[int, int, int] | None:
+        """返回轻量文件指纹；文件不存在时返回 None。"""
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return None
+        return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
 
     def write_atomic(self, value: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

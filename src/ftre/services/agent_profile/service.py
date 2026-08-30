@@ -18,9 +18,10 @@ class AgentProfileService:
     """提供 profile CRUD/解析，但不向 Feature 暴露 Manager 的存储细节。"""
     key = "agent_profiles"
 
-    def __init__(self, manager: AgentManager, sessions=None) -> None:
+    def __init__(self, manager: AgentManager, sessions=None, config_service=None) -> None:
         self._manager = manager
         self._sessions = sessions
+        self._config_service = config_service
 
     def list(self) -> list[dict[str, Any]]:
         """列出可用 Agent profile 的摘要。"""
@@ -76,7 +77,10 @@ class AgentProfileService:
             manager = (
                 self._manager
                 if agents_dir.resolve() == self._manager._agents_dir.resolve()
-                else AgentManager(agents_dir=agents_dir)
+                else AgentManager(
+                    agents_dir=agents_dir,
+                    config_service=self._config_service,
+                )
             )
             profile = manager.load(query.name, strict=True)
             source_trace.append(str(candidate.resolve()))
@@ -119,6 +123,7 @@ class AgentProfileService:
                 self._sessions,
                 str(leader_session),
                 session_id,
+                config_service=self._config_service,
             )
 
         if profile is None:
@@ -131,6 +136,7 @@ class AgentProfileService:
                     self._sessions,
                     binding["leader_session"],
                     session_id,
+                    config_service=self._config_service,
                 )
 
         if profile is not None:

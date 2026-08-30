@@ -16,6 +16,11 @@ def build_router(service: ConfigService) -> APIRouter:
     async def get_config():
         return service.snapshot().value
 
+    @router.get("/config/models")
+    async def get_model_catalog():
+        """Return the current credential-free Provider/Model catalog."""
+        return service.model_catalog()
+
     @router.put("/config")
     async def replace_config(request: Request):
         body = await request.json()

@@ -2,6 +2,14 @@
 
 ## [未发布]
 
+### F39 ConfigService 外部变更热更新与模型目录
+
+- ConfigService 增加文件指纹、外部变更 reload、revision/hash 去重和可逆 watcher；非法外部
+  JSON 保留上一次有效快照。
+- 新增脱敏 `GET /api/config/models`；模型目录不返回 API key，客户端在打开模型面板时刷新，
+  失败时保留旧列表。
+- Agent Profile 与 Compaction 的生产配置读取改用注入的 ConfigService，减少根配置的重复 Owner。
+
 ### C6 通用 Markdown 扩展与 Skill UI
 
 - 新增 `ftre-inline-extension` 协议 Package，统一解析和规范化 `ftre://v1` 引用；Skill
