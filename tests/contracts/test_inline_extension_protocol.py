@@ -12,6 +12,7 @@ from ftre_agent import (
     BeforeReasoningPayload,
 )
 from ftre_agent.message import UserMsg
+from ftre_agent.tool import ToolContext
 from ftre_inline_extension import (
     ExtensionContext,
     ExtensionParser,
@@ -23,9 +24,11 @@ from ftre.kernel.hooks import HookRuntime
 from ftre.plugins.builtin.skill.extension_handler import SkillInlineExtensionHandler
 from ftre.plugins.builtin.skill.plugin import apply as apply_skill_plugin
 from ftre.plugins.builtin.skill.service import SkillService
+from ftre.plugins.builtin.skill.tool import build_load_skill_tool
 from ftre.plugins.builtin.skill.types import SkillRecord
 from ftre.services.config import ConfigService
 from ftre.services.system_prompt import SystemPromptService
+from ftre.services.tools import ToolService
 
 
 def test_parser_round_trips_markdown_like_reference() -> None:
@@ -187,7 +190,7 @@ def test_skill_detail_exposes_semantic_uri_and_validated_source_capabilities(tmp
     assert path_runtime_disposer() is True
 
 
-def test_skill_service_discovery_rejects_resources_and_invalid_candidates(tmp_path: Path) -> None:
+def test_skill_service_discovery_uses_frontmatter_name_and_rejects_invalid_candidates(tmp_path: Path) -> None:
     root = tmp_path / "global"
     root.mkdir()
     valid = root / "review-code"
@@ -203,6 +206,18 @@ def test_skill_service_discovery_rejects_resources_and_invalid_candidates(tmp_pa
     (valid / "scripts" / "check.py").write_text("print('no')\n", encoding="utf-8")
     (valid / "assets").mkdir()
     (valid / "assets" / "README.md").write_text("not a skill\n", encoding="utf-8")
+    aliased = root / "folder-alias"
+    aliased.mkdir()
+    (aliased / "SKILL.md").write_text(
+        "---\nname: canonical-folder-name\ndescription: Canonical YAML name\n---\nbody\n",
+        encoding="utf-8",
+    )
+    root_named_references = root / "references"
+    root_named_references.mkdir()
+    (root_named_references / "SKILL.md").write_text(
+        "---\nname: references-skill\ndescription: A normal folder Skill\n---\nbody\n",
+        encoding="utf-8",
+    )
     (root / "lint.md").write_text(
         "---\nname: lint\ndescription: Run lint\nuser-invocable: false\n"
         "disable-model-invocation: true\nwhenToUse: CI\nmetadata:\n  owner: qa\n"
@@ -238,26 +253,70 @@ def test_skill_service_discovery_rejects_resources_and_invalid_candidates(tmp_pa
     service = SkillService({"global": root, "agent": tmp_path / "agent"})
     rows = service.list()
 
-    assert {item["name"] for item in rows} == {"lint", "review-code"}
+    assert {item["name"] for item in rows} == {
+        "canonical-folder-name",
+        "lint",
+        "other-name",
+        "references-skill",
+        "review-code",
+    }
     assert service.get("review-code").content == "body\n"
+    assert service.get("canonical-folder-name").content == "body\n"
+    assert service.get("other-name").content == "body\n"
     assert service.get("lint").user_invocable is False
     assert service.get("lint").model_invocable is False
     assert service.get("lint").when_to_use == "CI"
     assert service.get("lint").metadata == {"owner": "qa"}
+    updated_alias = service.update("other-name", "changed alias\n")
+    assert updated_alias.name == "other-name"
+    assert service.get("other-name").content.strip() == "changed alias"
     assert service.get("lint").compatibility == "python 3.12"
     service.update("lint", "changed\n")
     assert service.get("lint").user_invocable is False
     assert service.get("lint").model_invocable is False
     assert service.get("lint").metadata == {"owner": "qa"}
     assert {Path(item["path"]).name for item in service.diagnostics} >= {
+        "README.md",
         "missing-frontmatter.md",
         "bad-name.md",
         "numeric-name.md",
-        "mismatch.md",
         "bad-bool.md",
         "bad-yaml.md",
     }
     assert all("reason" in item and "scope" in item for item in service.diagnostics)
+
+
+def test_root_readme_with_valid_frontmatter_is_a_flat_skill(tmp_path: Path) -> None:
+    root = tmp_path / "global"
+    root.mkdir()
+    (root / "README.md").write_text(
+        "---\nname: readme-skill\ndescription: A documented Skill\n---\nbody\n",
+        encoding="utf-8",
+    )
+    service = SkillService({"global": root, "agent": tmp_path / "agent"})
+
+    rows = service.list()
+
+    assert [item["name"] for item in rows] == ["readme-skill"]
+    assert service.diagnostics == ()
+
+
+def test_skill_service_crud_finds_global_skill_by_yaml_name(tmp_path: Path) -> None:
+    root = tmp_path / "global"
+    target = root / "storage-alias" / "SKILL.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "---\nname: canonical-name\ndescription: Canonical\n---\nbody\n",
+        encoding="utf-8",
+    )
+    service = SkillService({"global": root, "agent": tmp_path / "agent"})
+
+    updated = service.update("canonical-name", "updated\n")
+    assert updated.name == "canonical-name"
+    assert service.get("canonical-name").content.strip() == "updated"
+
+    service.delete("canonical-name")
+    assert service.get("canonical-name") is None
 
 
 def test_skill_service_scope_precedence_and_runtime_winner(tmp_path: Path) -> None:
@@ -337,8 +396,39 @@ def test_skill_service_supports_codex_and_agents_skill_roots(tmp_path: Path) -> 
 
     assert [item["alias"] for item in roots] == ["agent", "global", "r0", "r1"]
     assert {item["name"] for item in rows} == {"codex-skill", "agent-skill"}
+    codex_row = next(item for item in rows if item["name"] == "codex-skill")
+    assert codex_row["scope"] == "external"
+    assert codex_row["origin"] == "external"
+    assert codex_row["source"]["path"] == str((codex_root / "codex-skill" / "SKILL.md").resolve())
     assert service.get("codex-skill").content == "body\n"
     assert service.get("agent-skill").content == "body\n"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_tool_uses_the_active_agent_scope(tmp_path: Path) -> None:
+    agent_root = tmp_path / "agent"
+    agent_root.mkdir()
+    (agent_root / "private.md").write_text(
+        "---\nname: private\ndescription: agent-only\n---\nprivate body\n",
+        encoding="utf-8",
+    )
+    service = SkillService({"global": tmp_path / "global", "agent": agent_root})
+    tools = ToolService()
+    tools.register(build_load_skill_tool(service), owner="skill")
+    view = await tools.prepare_view("agent-1", "session-1")
+
+    result = await view.execute(
+        "loadSkill",
+        {"name": "private"},
+        ToolContext(
+            call_id="call-1",
+            name="loadSkill",
+            arguments={"name": "private"},
+            metadata={"agent_id": "agent-1", "workspace": ""},
+        ),
+    )
+
+    assert result.output == "private body\n"
 
 
 def test_skill_service_crud_rejects_invalid_shape(tmp_path: Path) -> None:
@@ -509,6 +599,8 @@ async def test_skill_plugin_parses_and_injects_once_at_first_reasoning(tmp_path:
     assert "# 使用技能" in prompt
     assert "### 技能根" in prompt
     assert "### 扫描范围" in prompt
+    assert "README）只有通过合法 frontmatter 才是 Skill" in prompt
+    assert "根目录下的 `SKILL.md` 不作为入口" in prompt
     assert str((tmp_path / "global").resolve()) in prompt
     assert f"`r0` = `{(tmp_path / 'codex-skills').resolve()}" in prompt
     assert f"`r1` = `{(tmp_path / 'agents-skills').resolve()}" in prompt

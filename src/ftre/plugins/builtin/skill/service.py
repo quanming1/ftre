@@ -26,8 +26,6 @@ _SAFE_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FRONTMATTER = re.compile(r"^---(?:\r?\n)(?P<body>.*?)(?:\r?\n)---(?:[ \t]*(?:\r?\n|$))", re.DOTALL)
 _FRONTMATTER_BOOL_TRUE = {"true", "yes", "on", "1"}
 _FRONTMATTER_BOOL_FALSE = {"false", "no", "off", "0"}
-_IGNORED_ROOT_ENTRIES = {".system", "assets", "reference", "references", "scripts"}
-_IGNORED_ROOT_FILES = {"readme", "license", "changelog", "reference"}
 _MAX_NAME_LENGTH = 64
 _MAX_DESCRIPTION_LENGTH = 1024
 _MAX_COMPATIBILITY_LENGTH = 500
@@ -283,7 +281,7 @@ class SkillService:
         root.mkdir(parents=True, exist_ok=True)
         target = root / f"{name}.md" if kind == "file" else root / name / "SKILL.md"
         self._assert_inside(root, target)
-        if (root / f"{name}.md").exists() or (root / name).exists():
+        if self._global_path(root, name) is not None or (root / f"{name}.md").exists() or (root / name).exists():
             raise FileExistsError(f"Skill 已存在: {name}")
         body = self._with_frontmatter(name, content, description)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -370,7 +368,7 @@ class SkillService:
                 self._diagnose(root, scope, root, f"cannot enumerate Skill root: {exc}")
                 continue
             for entry in entries:
-                if entry.name.lower() in _IGNORED_ROOT_ENTRIES or _is_ignored_root_file(entry.name):
+                if entry.name.lower() == ".system":
                     continue
                 if entry.is_symlink() and not self._inside(root, entry):
                     self._diagnose(root, scope, entry, "symbolic link escapes Skill root")
@@ -435,7 +433,6 @@ class SkillService:
         load_body: bool = False,
     ) -> SkillRecord | None:
         entry_name = path.name
-        declared_name = path.parent.name if entry_name == "SKILL.md" else path.stem
         kind = "dir" if entry_name == "SKILL.md" else "file"
         path = path.resolve()
         if root is not None and not self._inside(root, path):
@@ -449,10 +446,6 @@ class SkillService:
             return None
         try:
             name = self._validate_discovered_name(frontmatter.get("name"))
-            if declared_name != name:
-                raise _InvalidSkillFrontmatter(
-                    f"name must match enclosing directory/file basename: {declared_name!r} != {name!r}"
-                )
             description = _required_string(frontmatter, "description")
             if len(description) > _MAX_DESCRIPTION_LENGTH:
                 raise _InvalidSkillFrontmatter("description exceeds 1024 characters")
@@ -489,6 +482,14 @@ class SkillService:
         )
 
     def _summary(self, item: SkillRecord, disabled: set[str]) -> dict[str, Any]:
+        scope = (
+            "private"
+            if item.scope.startswith(("agent:", "workspace:"))
+            else "external"
+            if item.scope in {"codex-user", "agents-user"}
+            else "global"
+        )
+        source = _filesystem_source(item)
         return {
             "id": item.name,
             "name": item.name,
@@ -497,13 +498,17 @@ class SkillService:
             "kind": item.kind,
             "updated_at": item.updated_at,
             "disabled": item.disabled or item.name in disabled,
-            "scope": (
-                "private"
-                if item.scope.startswith(("agent:", "workspace:"))
+            "scope": scope,
+            "origin": (
+                "agent"
+                if item.scope.startswith("agent:")
+                else "project"
+                if item.scope.startswith("workspace:")
                 else "external"
-                if item.scope in {"codex-user", "agents-user"}
-                else "global"
+                if scope == "external"
+                else "system"
             ),
+            **({"source": source} if source is not None else {}),
             "user_invocable": item.user_invocable,
             "model_invocable": item.model_invocable,
         }
@@ -568,17 +573,20 @@ class SkillService:
         self._diagnostics.append(diagnostic)
         logger.warning("Skill candidate ignored: %s", diagnostic)
 
-    @staticmethod
-    def _global_path(root: Path, name: str) -> Path | None:
+    def _global_path(self, root: Path, name: str) -> Path | None:
+        """Find a global Skill by its YAML name, not by its storage basename."""
         file_path = root / f"{name}.md"
         dir_path = root / name / "SKILL.md"
-        if file_path.is_file() and dir_path.is_file():
+        conventional = [path for path in (file_path, dir_path) if path.is_file()]
+        if len(conventional) > 1:
             raise RuntimeError(f"Skill 存储冲突: {name}")
-        if file_path.is_file():
-            return file_path
-        if dir_path.is_file():
-            return dir_path
-        return None
+
+        # A valid Skill may intentionally use a different filename/directory name.
+        # Discovery is the source of truth for CRUD lookup in that case.
+        for item in self._all("default", None):
+            if item.owner == "filesystem" and item.scope == "global" and item.name == name and item.path:
+                return Path(item.path)
+        return conventional[0] if conventional else None
 
     @staticmethod
     def _validate_name(name: str) -> str:
@@ -688,13 +696,6 @@ def _read_skill_file(path: Path, *, load_body: bool) -> tuple[dict[str, Any], st
                 return _parse_frontmatter_mapping("".join(yaml_lines)), handle.read() if load_body else ""
             yaml_lines.append(line)
     raise _InvalidSkillFrontmatter("missing closing YAML frontmatter delimiter")
-
-
-def _is_ignored_root_file(name: str) -> bool:
-    if not name.lower().endswith(".md"):
-        return False
-    stem = name[:-3].lower().rstrip(".")
-    return stem.split(".", 1)[0] in _IGNORED_ROOT_FILES
 
 
 def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:

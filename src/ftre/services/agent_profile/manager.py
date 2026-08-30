@@ -54,13 +54,19 @@ class AgentProfile:
 class AgentManager:
     """加载和管理 ~/.ftre/agents/ 下的 agent 配置。"""
 
-    def __init__(self, agents_dir: Path, fallback_agents_dir: Path | None = None):
+    def __init__(
+        self,
+        agents_dir: Path,
+        fallback_agents_dir: Path | None = None,
+        config_service=None,
+    ):
         self._agents_dir = Path(agents_dir)
         # 本目录没有 default agent 时的兜底来源（如团队 sub_agents 目录
         # 回退到全局 ~/.ftre/agents/，让成员默认继承全局模型配置）
         self._fallback_agents_dir = (
             Path(fallback_agents_dir) if fallback_agents_dir else None
         )
+        self._config_service = config_service
 
     # agent_id 允许的字符集（与 session_id、create_agent_profile 校验同规则），
     # 防止 metadata 传入的 agent_id 携带路径分隔符/绝对路径/.. 造成目录穿越。
@@ -101,10 +107,18 @@ class AgentManager:
                 # default 也不存在——返回空 profile（走全局兜底）
                 return AgentProfile(agent_id="default")
 
-        # 每次加载 Agent 都读取最新的供应商模型配置，确保 vision 等模型属性不使用启动时快照。
-        global_data = load_config_file()
+        # 生产路径从 ConfigService 快照读取，独立构造 Manager 的测试仍可使用
+        # loader 作为显式兼容入口。
+        global_data = self._global_config()
         profile = self._load_and_merge(agent_id, agent_dir, global_data)
         return profile
+
+    def _global_config(self) -> dict:
+        if self._config_service is not None:
+            snapshot = self._config_service.snapshot()
+            value = snapshot.value if snapshot is not None else {}
+            return value if isinstance(value, dict) else {}
+        return load_config_file()
 
     def _load_and_merge(
         self, agent_id: str, agent_dir: Path, global_data: dict
@@ -514,7 +528,7 @@ class AgentManager:
             "name": "Ftre",
         }
 
-        providers = load_config_file().get("providers", {})
+        providers = self._global_config().get("providers", {})
         if isinstance(providers, dict) and providers:
             first_name = next(iter(providers))
             first_provider = providers[first_name]

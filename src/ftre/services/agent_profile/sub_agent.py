@@ -134,6 +134,8 @@ def load_member_profile(
     session_manager: SessionService,
     leader_session_id: str,
     member_session_id: str,
+    *,
+    config_service=None,
 ) -> AgentProfile | None:
     """加载成员 AgentProfile，走与全局 agent 相同的 AgentManager 管线。
 
@@ -153,7 +155,9 @@ def load_member_profile(
         from ftre.services.config.paths import AGENTS_DIR
 
         return AgentManager(
-            base_dir.parent, fallback_agents_dir=AGENTS_DIR
+            base_dir.parent,
+            fallback_agents_dir=AGENTS_DIR,
+            config_service=config_service,
         ).load(member_session_id, strict=True)
     except Exception:
         logger.exception(

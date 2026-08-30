@@ -211,6 +211,14 @@ stages:
             title: Skill 资源来源解析与文件预览收口
             status: done
             date: 2026-08-29
+          - id: C6.6
+            title: Skill 发现规则与作用域稳定性修复
+            status: done
+            date: 2026-08-30
+            completion_date: 2026-08-30
+            depends_on:
+              - C6.5
+            acceptance: 合法 YAML frontmatter 是 Skill 唯一入口；移除文件名黑名单；frontmatter.name 作为规范名称；Agent/Session 作用域查询稳定；后端与客户端回归测试和构建通过
 
   - id: D
     name: 收尾
@@ -1757,3 +1765,37 @@ stages:
             title: 故障注入、Steer 边界与跨仓验收
             status: done
             completion_date: 2026-08-29
+      - id: F39
+        title: ConfigService 外部变更热更新与模型目录
+        status: done
+        date: 2026-08-30
+        completion_date: 2026-08-30
+        prd: docs/prd/PRD-F39-config-runtime-reload-and-model-catalog.md
+        prd_status: 已验收
+        depends_on:
+          - F1
+          - F29
+        implementation_boundary: 只修改 E:\\ftre ConfigService、配置 Router/Plugin、Agent Profile 根配置读取、模型目录接口、配对客户端模型刷新和测试；不修改 Agent/LLM 业务协议、Inbox、Session wire、Cordis Kernel 或已退休的 ftre-agent-core
+        modules:
+          - src/ftre/services/config/
+          - src/ftre/services/agent_profile/
+          - packages/ftre-llm/
+          - tests/contracts/
+          - tests/lifecycle/
+          - tests/architecture/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/services/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/features/chat/
+        acceptance: 外部合法配置无需重启即可进入 ConfigService 快照；无效编辑保留旧快照；模型目录脱敏并带 revision；Agent/LLM/客户端读取一致；监听生命周期无泄漏；后端与客户端质量门禁通过
+        tasks:
+          - id: F39.1
+            title: ConfigSnapshot 指纹与外部 reload
+            status: done
+          - id: F39.2
+            title: Config Plugin 监听与安全错误处理
+            status: done
+          - id: F39.3
+            title: 脱敏模型目录与重复配置读取收口
+            status: done
+          - id: F39.4
+            title: 客户端模型刷新与跨仓回归验收
+            status: done

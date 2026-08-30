@@ -2,13 +2,21 @@
 
 ## [未发布]
 
+### F39 ConfigService 外部变更热更新与模型目录
+
+- ConfigService 增加文件指纹、外部变更 reload、revision/hash 去重和可逆 watcher；非法外部
+  JSON 保留上一次有效快照。
+- 新增脱敏 `GET /api/config/models`；模型目录不返回 API key，客户端在打开模型面板时刷新，
+  失败时保留旧列表。
+- Agent Profile 与 Compaction 的生产配置读取改用注入的 ConfigService，减少根配置的重复 Owner。
+
 ### C6 通用 Markdown 扩展与 Skill UI
 
 - 新增 `ftre-inline-extension` 协议 Package，统一解析和规范化 `ftre://v1` 引用；Skill
   通过 HTTP 目录、输入框 token、聊天/摘要/Inspector Renderer 全链路接入。
-- SkillService 现在只发现 root 直下的 `<name>/SKILL.md` 或 `<name>.md`，严格校验 YAML
-  frontmatter，并排除 README、LICENSE、reference、scripts、assets 和嵌套 Markdown；坏候选
-  通过 `GET /api/skills/diagnostics` 暴露结构化诊断。
+- SkillService 现在只发现 root 直下的 `<folder>/SKILL.md` 或 `.md` 候选，严格校验 YAML
+  frontmatter；没有合法 frontmatter 的普通 Markdown 只进入诊断，Skill 内部资源和嵌套 Markdown
+  不被扫描，坏候选通过 `GET /api/skills/diagnostics` 暴露结构化诊断。
 - Skill Handler 只在 `agent/pre-step` 处理用户消息，注入快照使用稳定 ID 幂等持久化，
   刷新、重连和 Hook 重试不会重复注入。
 - Skill 详情现在返回稳定 `ftre://v1/skill/<name>`、来源路径、revision 和预览能力；真实
@@ -17,6 +25,9 @@
   content source，避免把任意运行时路径暴露给客户端。
 - Skill Plugin 注入按当前 Agent/工作区生成的模型使用说明和可用 Skill 清单；正文仍通过显式
   `ftre://` 注入或 `loadSkill` 按需读取，避免模型把普通 Markdown 资源当作 Skill。
+- C6.6 以 YAML `name` 作为唯一规范名称，移除文件名黑名单；修复用户 Skill 的 frontmatter/编码，
+  列表增加来源摘要，输入框和管理面板按当前 Session/Agent 作用域刷新并提供诊断查看。
+- 审计补齐模型提示与发现规则的一致性，`loadSkill` 按当前 Agent/工作区解析，管理面板明确显示查询作用域。
 
 ### F38 Inbox 恢复幂等与队列生命周期（已完成，未发布）
 

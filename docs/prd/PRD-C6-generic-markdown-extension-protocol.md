@@ -169,7 +169,8 @@ Skill 的生命周期必须分为两层：
 1. **发现（catalog/discovery）**：只读取候选文件的路径和 YAML frontmatter，生成名称、描述、来源、作用域和调用策略等摘要；不得加载整篇正文，不得执行脚本或引用资料。
 2. **激活（load/resolve）**：用户或模型明确调用后，按 winner 读取 `SKILL.md`/平铺文件正文，并由 `SkillHandler` 生成结构化注入消息；脚本、`references/` 和 `assets/` 只有在正文明确引用且通过 Tool/Permission 流程后才能访问。
 
-这样可以保证 `/` 菜单和 `GET /skills` 足够快，也避免把仓库中的文档误当成可执行能力。
+这样可以保证 `/` 菜单和 `GET /skills` 足够快，也避免把仓库中的普通文档误当成可执行能力。
+根目录下的 Markdown 文件只是候选，只有通过完整 YAML frontmatter 校验的文件才会进入 Skill 目录。
 
 #### 2.5.2 两种且仅两种合法文件形态
 
@@ -188,9 +189,9 @@ Skill 的生命周期必须分为两层：
 
 必须满足以下发现规则：
 
-- 目录形态只接受 `<skill-root>/<name>/SKILL.md`；`<skill-root>/SKILL.md`、`<skill-root>/<name>/README.md`、`<skill-root>/<name>/reference/**/SKILL.md` 均不是候选。
-- 平铺形态只接受 `<skill-root>/<name>.md`，且文件必须直接位于 root；root 下的 `README.md`、`CHANGELOG.md`、`LICENSE.md`、`reference.md` 等必须忽略。
-- 不递归扫描 `**/*.md` 或 `**/SKILL.md`；`references/`、`scripts/`、`assets/` 内的任何 Markdown 都不能出现在 Skill 列表。
+- 目录形态只接受 `<skill-root>/<folder>/SKILL.md`；`<skill-root>/SKILL.md`、`<skill-root>/<folder>/README.md`、`<skill-root>/<folder>/reference/**/SKILL.md` 均不是候选。
+- 平铺形态接受直接位于 root 的 `.md` 文件（根目录 `SKILL.md` 除外）；每个候选都必须通过 YAML frontmatter 校验。`README.md`、`CHANGELOG.md`、`LICENSE.md`、`reference.md` 等没有合法 frontmatter 时进入诊断但不进入 Skill 列表，不通过文件名黑名单决定资格。
+- 不递归扫描 `**/*.md` 或 `**/SKILL.md`；Skill 目录内的 `references/`、`scripts/`、`assets/` 资源及其 Markdown 不进入 Skill 列表；root 直下目录只要有直接的 `SKILL.md` 仍按目录形态校验。
 - `SKILL.md` 大小写按规范固定为大写文件名；其他大小写变体（如 `skill.md`）不得作为目录入口。
 - 候选枚举必须排序后处理（路径或规范化名称的字典序），相同输入得到相同输出；坏文件不能阻断其它候选。
 - 符号链接必须解析后仍位于声明的 root 内；越界链接、特殊文件、FIFO 和目录遍历路径直接拒绝。
@@ -236,7 +237,7 @@ disable-model-invocation: false       # optional, default false
 
 - `name` 和 `description` 为必填；缺失、空值、非字符串或 YAML 解析失败时，整个候选无效并进入诊断，不得以路径名补全。
 - `name` 必须是 1–64 个字符的小写 kebab-case：`^[a-z0-9]+(?:-[a-z0-9]+)*$`；不能有前导/尾随短横线或连续短横线。
-- 目录形态的目录名必须与 frontmatter `name` 完全一致；平铺形态的文件 basename（去掉 `.md`）也必须与 `name` 一致，防止显示名和调用名漂移。
+- frontmatter 的 `name` 是 Skill 的唯一规范名称，目录名和独立文件 basename 只负责定位，不参与资格判定；二者不一致时仍以 YAML `name` 建立 URI、去重和 winner/shadowed 关系，不得拒绝候选。
 - `description` 必须为非空字符串，最多 1024 个字符；它用于目录摘要和选择器，不作为执行指令。
 - `compatibility` 若存在最多 500 个字符；`metadata` 必须是扁平字符串键值映射；未知字段可以保留在诊断数据中，但不能改变调用权限或执行行为。
 - `license`、`compatibility`、`metadata`、`allowed-tools`、`whenToUse` 是描述性/实验字段；真正的 Tool 权限仍由 ToolService/PermissionService 决定。
@@ -253,13 +254,14 @@ for entry in sorted(skill_root.iterdir(), key=lambda p: p.name):
     if entry.is_dir() and entry.name != ".system":
         candidate = entry / "SKILL.md"
         if candidate.is_file() and candidate.name == "SKILL.md":
-            inspect(candidate, kind="dir", declared_name=entry.name)
+            inspect(candidate, kind="dir")
     elif entry.is_file() and entry.suffix == ".md" and entry.name != "SKILL.md":
-        inspect(entry, kind="file", declared_name=entry.stem)
+        inspect(entry, kind="file")
 ```
 
-`inspect()` 的顺序固定为：路径 containment 检查 → UTF-8 读取 → 完整 YAML 解析 → 必填字段和名称校验 → 调用策略解析 → 生成摘要。
+`inspect()` 的顺序固定为：路径 containment 检查 → UTF-8 读取 → 完整 YAML 解析 → 必填字段和 YAML `name` 校验 → 调用策略解析 → 生成摘要。
 任何一步失败都返回结构化诊断（root、path、reason、line/column），并继续处理下一个 entry。发现阶段不得读取候选目录中的 README、references、scripts 或 assets。
+实现不得维护按 README、LICENSE 等文件名做资格判断的黑名单。`.system` 不是普通用户 root 的候选；若未来暴露其中的系统 Skill，必须作为独立 `system` scope 目录提供，不能混入普通用户 Skill。
 
 #### 2.5.5 SkillService 的公开语义
 
@@ -275,13 +277,14 @@ for entry in sorted(skill_root.iterdir(), key=lambda p: p.name):
 | `register(skill, owner, scope, priority)` | 幂等 disposer | runtime 贡献必须显式声明 owner/scope/priority |
 | `create/update/delete` | 全局 root 的 CRUD 结果 | 只能生成两种合法文件形态；原子写入并保留 frontmatter |
 
-`list()`、HTTP `GET /skills` 和输入框候选只能暴露 `name/description/scope/kind/updated_at/user_invocable/model_invocable/disabled` 等摘要字段。
+`list()`、HTTP `GET /skills` 和输入框候选只能暴露 `name/description/scope/origin/kind/updated_at/user_invocable/model_invocable/disabled`
+等摘要字段；可附带已验证的 `source.kind/path` 作为来源展示信息，但不得包含正文。
 只有明确的 `get()`/详情请求才允许读取正文；不能因 hover、补全或刷新 Session 自动把所有 Skill 正文注入 Agent。
 
 模型可见的 Skill 使用说明由 Skill Plugin 注册到 `SystemPromptService`，并按当前 Agent/工作区动态生成两部分：
 
 - `### 技能根`：列出 `workspace`、`agent`、`global`、`r0`、`r1` 等稳定 alias 对应的绝对路径、scope 和优先级；没有工作区时不生成 workspace root。`r0` 固定映射用户 `~/.codex/skills`，`r1` 固定映射用户 `~/.agents/skills`。
-- `### 扫描范围`：明确每个 root 只扫描一层，只接受 `<root>/<skill-name>/SKILL.md` 或 `<root>/<skill-name>.md`；root 级 `SKILL.md`、README、LICENSE、reference、references、scripts、assets 不属于 Skill 入口。
+- `### 扫描范围`：明确每个 root 只扫描一层，只接受 `<root>/<folder>/SKILL.md` 或 root 直下 `.md` 候选；root 级 `SKILL.md` 保留为特殊文件，其它 `.md` 只有通过合法 frontmatter 才进入 Skill 目录；`references`、`scripts`、`assets` 内的 Markdown 不扫描。
 
 这两个章节只是发现协议和定位提示，不授予模型直接读取文件或执行脚本的权限。正文仍必须通过 `loadSkill` 或宿主注入的 canonical `ftre://v1/skill/...` 内容激活。
 
@@ -313,8 +316,8 @@ Agent / ToolService
 
 #### 2.5.8 审查清单（每次新增或修改 Skill 必须逐项确认）
 
-1. **形态**：是否为 `<name>/SKILL.md` 或 root 直下 `<name>.md`，没有把 README/reference 当入口？
-2. **命名**：目录名、文件 basename 与 frontmatter `name` 是否一致且符合 kebab-case/长度限制？
+1. **形态**：是否为 `<folder>/SKILL.md` 或 root 直下 `.md`，没有递归读取 README/reference？
+2. **命名**：frontmatter `name` 是否存在、符合 kebab-case/长度限制，并作为唯一规范名称？
 3. **元数据**：是否有非空 `description`，YAML 是否可解析，布尔字段是否为合法类型？
 4. **正文**：是否说明何时使用、步骤、输入输出、失败处理和边界条件，且没有把权限声明伪装成正文指令？
 5. **资源**：references/scripts/assets 是否按相对路径组织，是否存在越界链接或发现阶段执行代码？
@@ -743,7 +746,7 @@ source.kind=content
 - 未知/禁用/无权限 Skill 保持普通文本；
 - 同一 message_id/span 的 Hook 重试不重复注入；
 - Skill Handler 只通过 SkillService 获取内容，不直接读取目录或操作 Agent 私有状态；
-- `GET /skills`、输入框候选不再出现 README、LICENSE、reference、scripts、assets 或嵌套 `SKILL.md`；
+- `GET /skills`、输入框候选只出现通过 frontmatter 的有效 Skill；没有 frontmatter 的 README、LICENSE 等候选只进入诊断，Skill 内部的 reference、scripts、assets 和嵌套 `SKILL.md` 不被扫描；
 - 缺失/非法 frontmatter 的候选只进入诊断，不会让列表接口失败或被路径名伪装成 Skill；
 - 后端 pytest、Ruff、架构扫描全部通过。
 
@@ -802,6 +805,33 @@ source.kind=content
 - 逐条记录 AC17-AC21 的自动化结果；
 - 不在本阶段引入第二种资源或通用资源基础设施。
 
+### 阶段 C6.6：Skill 发现规则与作用域稳定性修复
+
+范围：
+
+- 将 2.5 节的 Skill 资格判定收口为“合法 YAML frontmatter 是唯一入口”；删除按 README、LICENSE 等文件名判断资格的黑名单；
+- 目录形态只读取 `<folder>/SKILL.md`，平铺形态枚举 root 直下 `.md` 候选；根目录 `SKILL.md` 保留为特殊文件，Skill 目录内部的资源目录和嵌套文件继续不扫描；
+- 使用 YAML `name` 作为规范名称、URI、去重和 CRUD 主键；目录名与文件 basename 只负责定位，不再因不一致拒绝候选；
+- 修复现有用户 Skill 的 frontmatter/编码，使 `prompt-engineering`、`first-principles`、`firecrawl-lean`、`using-llm-wiki` 和默认 Agent 的 `meituan-travel` 符合契约；不通过放宽校验隐藏坏文件；
+- Skill 列表返回已验证来源摘要（`scope/origin/source`），详情仍按 winner 读取正文；外部 root Skill 在客户端只读；
+- 输入框和 Skill 管理面板使用当前 Session 的 `agent_id/workspace` 查询；作用域改变时取消旧请求并刷新；管理面板提供最近一次扫描诊断；
+- `.codex/skills` 与 `.agents/skills` 继续作为 `r0/r1` 外部 root 扫描；`.codex/skills/.system` 不混入普通用户目录，若未来展示必须使用独立 `system` scope。
+
+验证：
+
+- 根目录 README/普通 Markdown 没有合法 frontmatter 时只进入诊断，不出现在列表；带合法 frontmatter 的平铺文件按 YAML `name` 出现；
+- 目录/文件 basename 与 YAML `name` 不一致时仍可 `list/get/update/delete`，URI 和 winner/shadowed 使用 YAML name；
+- `r0/r1`、workspace、agent、global 的 winner/source/origin 可解释且排序确定；同名 global 不再让外部来源在客户端被错误显示为 global；
+- 切换 Session 或 Agent 后，输入框候选与详情请求使用新作用域，旧请求不会覆盖新列表；
+- diagnostics 能展示非法 YAML、缺少 frontmatter、编码错误和字段类型错误；任何坏文件都不会让列表接口 500；
+- 后端全量 pytest/Ruff、客户端全量 Vitest/TypeScript/build 和手工 Skill 矩阵全部通过。
+
+提交门槛：
+
+- 更新 C6.6 PRD、TODO、执行记录和变更记录；
+- 增加 frontmatter name、无黑名单、CRUD、外部来源和 Session/Agent 作用域回归测试；
+- 仅提交 C6.6 相关生产代码与测试，保留工作区其它阶段的未提交改动。
+
 ## 8. 测试计划
 
 ### 8.1 协议单元测试
@@ -816,8 +846,8 @@ source.kind=content
 
 - Registry 注册、冲突优先级和 disposer 幂等；
 - Skill Handler winner、user-invocable、工作区和权限校验；
-- Skill discovery 只识别 `<name>/SKILL.md` 和 root 直下 `<name>.md`，不会把 README、LICENSE、reference、scripts、assets 中的 Markdown 列入目录；
-- 目录名/文件 basename 与 frontmatter `name` 不一致、缺少 `description`、YAML 损坏或布尔字段类型非法时，候选被拒绝且其它 Skill 仍可正常发现；
+- Skill discovery 只识别 `<folder>/SKILL.md` 和 root 直下 `.md` 候选；没有合法 frontmatter 的 README、LICENSE 等不会列入目录，Skill 内部的 reference、scripts、assets 和嵌套 `SKILL.md` 不被扫描；
+- frontmatter `name` 与目录名/文件 basename 不一致时仍以 YAML name 识别；缺少 `name/description`、YAML 损坏或布尔字段类型非法时，候选被拒绝且其它 Skill 仍可正常发现；
 - `.ftre/skills`、agent、global 和 runtime scope 的优先级、winner/shadowed 诊断与确定性排序；
 - `list()` 只返回摘要，`get()` 才读取正文；资源变更不污染目录摘要；
 - Skill 详情返回 `uri/source/capabilities/revision`，filesystem source 能打开真实目录，content source 不触发 fs IPC；
@@ -852,19 +882,19 @@ source.kind=content
 ```text
 skills/
 ├─ review-code/SKILL.md             # 合法目录形态
-│  ├─ README.md                     # 忽略
+│  ├─ README.md                     # 资源文件，不扫描
 │  ├─ references/guide.md           # 忽略
 │  └─ scripts/check.py              # 忽略
 ├─ lint.md                          # 合法平铺形态
-├─ README.md                        # 忽略
-├─ reference/SKILL.md               # 忽略（嵌套目录）
+├─ README.md                        # 无 YAML，诊断但不列入
+├─ reference/SKILL.md               # 无 frontmatter，诊断但不列入
 ├─ nested/example/SKILL.md          # 忽略（超过一层）
 └─ malformed/SKILL.md               # 缺失/非法 frontmatter，忽略并记录诊断
 ```
 
 验收还必须覆盖：
 
-1. 目录名和 `name` 不一致时拒绝，不使用路径名兜底；
+1. 目录名或文件 basename 和 YAML `name` 不一致时仍使用 YAML `name`，不使用路径名兜底；
 2. `user-invocable: false` 不出现在输入框，但 `get()` 仍能返回受信任的详情；
 3. `disable-model-invocation: true` 不进入模型目录；
 4. 相同名称在 workspace/agent/global/runtime 同时存在时只显示 priority 最小的 winner；
@@ -883,9 +913,9 @@ skills/
 - [ ] AC7：`invocation_id` 保证重试、重连、刷新和历史重放幂等。
 - [ ] AC8：卸载 Skill Plugin 后，基础 Markdown 和普通 Agent 流程不受影响。
 - [ ] AC9：后端 pytest/Ruff/架构扫描和客户端 test/build 全部通过。
-- [ ] AC10：C6.1-C6.5 每阶段完成独立验证和提交，未完成阶段不得提前标记 done。
-- [ ] AC11：Skill 发现严格遵守一层规则，只接受 `<name>/SKILL.md` 或 root 直下 `<name>.md`；README、LICENSE、references、scripts、assets 和嵌套 `SKILL.md` 永不出现在目录。
-- [ ] AC12：每个候选都通过完整 frontmatter、name/description、目录名一致性和调用策略校验；坏候选只产生结构化诊断，不阻断其它候选。
+- [ ] AC10：C6.1-C6.6 每阶段完成独立验证和提交，未完成阶段不得提前标记 done。
+- [ ] AC11：Skill 发现严格遵守一层规则，只接受 `<folder>/SKILL.md` 或 root 直下 `.md` 候选；无合法 frontmatter 的 README、LICENSE 不出现在目录，Skill 内部的 references、scripts、assets 和嵌套 `SKILL.md` 永不被扫描；`.system` 作为独立 scope 处理。
+- [ ] AC12：每个候选都通过完整 frontmatter、YAML name/description 和调用策略校验；目录名/文件 basename 不参与资格判定，坏候选只产生结构化诊断，不阻断其它候选。
 - [ ] AC13：`list()`/HTTP/输入框只返回摘要，`get()`/激活才读取正文；发现阶段不执行脚本、不读取资源、不发起网络请求。
 - [ ] AC14：workspace、agent、global、runtime 的 winner/shadowed 结果确定且可解释，重名 Skill 不重复展示。
 - [ ] AC15：Skill 的调用权限与 Tool/Permission Service 分离；`allowed-tools` 等 frontmatter 描述字段不能自行授予权限。
@@ -895,6 +925,11 @@ skills/
 - [x] AC19：无 filesystem source 的 runtime Skill 使用 content source，只读预览不调用 fs IPC、git 查询或当前工作目录回退。
 - [x] AC20：旧后端详情缺少新资源字段时，客户端安全降级为 content source；新后端异常不会阻塞 Markdown 消息渲染。
 - [x] AC21：本阶段不新增通用 ResourceResolver、ResourceTab、Electron custom scheme 或完整 FileSystemProvider；现有 FileRenderer 仍是唯一文件预览 Owner。
+- [x] AC22：Skill 发现不使用按文件名排除的黑名单；root 直下 `.md` 只有通过完整 YAML frontmatter 才进入列表，根目录 `SKILL.md` 和嵌套资源不被扫描。
+- [x] AC23：frontmatter `name` 是唯一规范名称；目录名/文件 basename 不一致不拒绝，`list/get/update/delete` 与 winner/shadowed 均按 YAML name 工作。
+- [x] AC24：列表返回已验证 `scope/origin/source` 摘要，`r0/r1` 外部 Skill 不被客户端映射为 global；外部、workspace、agent Skill 在管理面板中只读。
+- [x] AC25：输入框和管理面板按当前 Session 的 `agent_id/workspace` 查询，作用域切换取消旧请求并刷新，私有 Skill 可在正确 Agent 下出现。
+- [x] AC26：Skill diagnostics 在客户端可查看，覆盖 frontmatter、编码和字段类型错误；坏候选不会阻断其它 Skill 或 HTTP 列表。
 
 ## 10. 目标文件结构
 
@@ -949,3 +984,5 @@ E:\binn\ftre-desktop\
 | 2026-08-29 | 收尾审计修复来源与预览边界：只有目录发现器确认的 `filesystem` Owner 才能暴露真实路径；运行时 Skill 即使携带 path 也保持 content source；虚拟 URI 缺少内容快照时直接显示错误，不再回退 `fs.readFile/stat`；新增两条回归测试 | 防止运行时路径越权和虚拟资源触发本地文件系统 IPC，落实 AC17-AC19 的来源安全约束 |
 | 2026-08-30 | 借鉴 Codex GPT-5.6 的 Skill 使用规范：由 `skill` Plugin 注册动态 Prompt section，按当前 Agent/工作区只注入可由模型调用的 Skill 名称与描述；明确显式 `ftre://` 引用、`loadSkill` 激活、最小匹配集合、资源相对路径和安全回退规则 | 让模型了解可用 Skill 与激活边界，同时保持正文按需加载，不把 Skill 规则污染全局 system prompt 或把 README 等资源误当作 Skill |
 | 2026-08-30 | 增加 `scan_roots(agent_id, workspace)` 和模型可见的 `### 技能根`、`### 扫描范围`，公开当前请求的 workspace/agent/global 根、优先级及一层发现规则 | 对齐 Codex 的技能根协议，同时保持 FTRE 的作用域和 SkillService 唯一文件系统边界 |
+| 2026-08-30 | 新增 C6.6：以合法 YAML frontmatter 作为唯一 Skill 入口，移除文件名黑名单，frontmatter `name` 作为规范名称；修复用户 Skill 文件并让客户端按 Session/Agent 作用域刷新、展示来源和诊断 | 修复 Skill 文件存在但客户端不稳定显示、外部同名来源被误标 global、Agent 私有目录作用域丢失等问题 |
+| 2026-08-30 | 收尾审计补充模型提示与发现规则的一致性、`loadSkill` 当前 Agent/工作区注入和管理面板作用域提示；新增合法 README 与私有 Skill 工具回归 | 防止模型提示与真实解析规则分叉，避免模型加载私有 Skill 时错误回退到 default |

@@ -13,7 +13,7 @@ from ftre.services.config.paths import AGENTS_DIR
 from .manager import AgentManager
 from .service import AgentProfileService
 
-inject = ("http", "sessions")
+inject = ("http", "sessions", "config")
 provide = ("agent_profiles",)
 
 
@@ -22,9 +22,16 @@ def apply(ctx: Context, config=None):
     service = ctx.get("agent_profiles", strict=False)
     if service is None:
         options = config if isinstance(config, dict) else {}
-        manager = AgentManager(agents_dir=options.get("agents_dir", AGENTS_DIR))
+        manager = AgentManager(
+            agents_dir=options.get("agents_dir", AGENTS_DIR),
+            config_service=ctx.config,
+        )
         manager.ensure_default()
-        service = AgentProfileService(manager, sessions=ctx.sessions)
+        service = AgentProfileService(
+            manager,
+            sessions=ctx.sessions,
+            config_service=ctx.config,
+        )
         ctx.provide("agent_profiles", service)
 
     from .router import build_router
