@@ -72,24 +72,25 @@ Kernel 只知道“如何调度一个合法的 HookSpec”，不应该出现 `co
 
 ## 最小使用示例
 
-下面的 Plugin 在 Agent Run 准入时拒绝不满足策略的输入。它不直接调用 AgentLoop，也
-不创建第二个事件总线，只通过公开的 HookSpec 和当前 Cordis Context 工作：
+下面的 Plugin 在每次 Reasoning 前追加一条受控上下文。它不直接调用 AgentLoop，也
+不创建第二个事件总线，只通过 `ftre-agent` 的公开 HookSpec 和当前 Cordis Context 工作：
 
 ```python
-import copy
-
-from ftre.services.agent.hooks import AGENT_BEFORE_RUN_SPEC, RejectRun
+from ftre_agent import AGENT_BEFORE_REASONING_SPEC, BeforeReasoningResult
 
 
 async def apply(ctx):
     async def policy(payload, next_):
-        # Waterfall listener 可以在 Run 创建前拒绝；允许时继续交给后续 listener。
-        if payload.context.get("maintenance"):
-            return RejectRun("Agent 正在维护")
-        return await next_()
+        # Waterfall listener 先交给后续 listener，再追加一条 Provider 无关消息。
+        result = await next_()
+        if payload.cancellation.is_set():
+            return result
+        return BeforeReasoningResult(
+            (*result.messages, {"role": "user", "content": "请遵守当前策略"})
+        )
 
     receipt = ctx.hook_runtime.register(
-        AGENT_BEFORE_RUN_SPEC,
+        AGENT_BEFORE_REASONING_SPEC,
         policy,
         owner="example-policy",
         context=ctx,

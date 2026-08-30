@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ftre-inline-extension"
+version = "0.1.0"
+description = "Versioned inline extension references shared by ftre message integrations"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]

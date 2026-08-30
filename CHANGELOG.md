@@ -2,6 +2,22 @@
 
 ## [未发布]
 
+### C6 通用 Markdown 扩展与 Skill UI
+
+- 新增 `ftre-inline-extension` 协议 Package，统一解析和规范化 `ftre://v1` 引用；Skill
+  通过 HTTP 目录、输入框 token、聊天/摘要/Inspector Renderer 全链路接入。
+- SkillService 现在只发现 root 直下的 `<name>/SKILL.md` 或 `<name>.md`，严格校验 YAML
+  frontmatter，并排除 README、LICENSE、reference、scripts、assets 和嵌套 Markdown；坏候选
+  通过 `GET /api/skills/diagnostics` 暴露结构化诊断。
+- Skill Handler 只在 `agent/pre-step` 处理用户消息，注入快照使用稳定 ID 幂等持久化，
+  刷新、重连和 Hook 重试不会重复注入。
+- Skill 详情现在返回稳定 `ftre://v1/skill/<name>`、来源路径、revision 和预览能力；真实
+  `.ftre` 文件复用现有目录预览，运行时内容快照不会触发文件系统 IPC。
+- 收尾审计限制 filesystem source 只能来自已验证的 Skill 目录记录；运行时 Skill 路径保持
+  content source，避免把任意运行时路径暴露给客户端。
+- Skill Plugin 注入按当前 Agent/工作区生成的模型使用说明和可用 Skill 清单；正文仍通过显式
+  `ftre://` 注入或 `loadSkill` 按需读取，避免模型把普通 Markdown 资源当作 Skill。
+
 ### F38 Inbox 恢复幂等与队列生命周期（已完成，未发布）
 
 - 已执行请求在取消、失败或中断后不再回到 pending；普通队列只在正常 RunCompleted 后推进，

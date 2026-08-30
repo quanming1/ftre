@@ -1,3 +1,4 @@
+
 """Runtime 内部的已归一化输入，不属于 AgentService 公共契约。"""
 
 from __future__ import annotations

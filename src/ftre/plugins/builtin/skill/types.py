@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -22,3 +23,15 @@ class SkillRecord:
     source: str
     priority: int
     scope: str
+    description: str = ""
+    kind: str = "file"
+    updated_at: float = 0.0
+    disabled: bool = False
+    user_invocable: bool = True
+    model_invocable: bool = True
+    path: str = ""
+    metadata: dict[str, Any] | None = None
+    when_to_use: str | None = None
+    license: str | None = None
+    compatibility: str | None = None
+    allowed_tools: str | None = None
