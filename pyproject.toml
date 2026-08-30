@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn[standard]>=0.20.0",
     "croniter>=2.0.0",
     "typer>=0.20.0,<1.0.0",
+    "PyYAML>=6.0,<7.0",
     "mcp>=1.0.0,<2.0",
     # ftre 的默认发行组合：packages/ 下的每个独立 Package 都随 Host 安装。
     # Package 仍保留独立 entry point 和生命周期，安装合并不等于 Owner 合并。
@@ -26,6 +27,7 @@ dependencies = [
     "ftre-llm-recovery>=0.1.0,<0.2.0",
     "ftre-llm-fallback>=0.1.0,<0.2.0",
     "ftre-process>=0.1.0,<0.2.0",
+    "ftre-inline-extension>=0.1.0,<0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +49,7 @@ llm-fallback = ["ftre-llm-fallback>=0.1.0,<0.2.0"]
 llm = ["ftre-llm>=0.1.0,<0.2.0"]
 compaction = ["ftre-compaction>=0.2.0,<0.3.0"]
 process = ["ftre-process>=0.1.0,<0.2.0"]
+inline-extension = ["ftre-inline-extension>=0.1.0,<0.2.0"]
 full = [
     "ftre-llm>=0.1.0,<0.2.0",
     "ftre-inbox>=0.2.0,<0.3.0",
@@ -57,6 +60,7 @@ full = [
     "ftre-llm-recovery>=0.1.0,<0.2.0",
     "ftre-llm-fallback>=0.1.0,<0.2.0",
     "ftre-process>=0.1.0,<0.2.0",
+    "ftre-inline-extension>=0.1.0,<0.2.0",
 ]
 
 [build-system]
@@ -80,6 +84,7 @@ pythonpath = [
     "packages/ftre-llm-fallback/src",
     "packages/ftre-llm/src",
     "packages/ftre-process/src",
+    "packages/ftre-inline-extension/src",
 ]
 
 [tool.setuptools.packages.find]

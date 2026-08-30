@@ -173,6 +173,45 @@ stages:
           - src/ftre/system_prompt.md
         acceptance: 系统提示词约定 file:// 绝对路径 markdown 链接格式（含行号语法），AI 输出的本地文件引用可被桌面端渲染为可点击链接并在右侧面板打开
 
+      - id: C6
+        title: 通用 Ftre Markdown 扩展协议与客户端渲染
+        status: in_progress
+        date: 2026-08-29
+        prd: docs/prd/PRD-C6-generic-markdown-extension-protocol.md
+        prd_status: 开发中
+        depends_on:
+          - C1
+          - C5
+          - F35
+        implementation_boundary: 跨 E:\ftre 与 E:\binn\ftre-desktop 协同实施；只增加通用 ftre://v1 Markdown 扩展解析、客户端 Renderer、后端 Handler 与消息投影；不修改 Agent ReAct、LLM、Tool、Inbox、Session 基础协议或 Cordis Kernel
+        modules:
+          - packages/ftre-inline-extension/
+          - src/ftre/plugins/builtin/skill/
+          - src/ftre/services/session/message/
+          - tests/contracts/
+          - tests/integration/
+          - tests/lifecycle/
+          - 配对 E:\binn\ftre-desktop/packages/renderer/src/lib/
+          - 配对 E:\binn\ftre-desktop/packages/renderer/src/features/chat/
+        acceptance: v1 扩展语法前后端一致；客户端 Markdown 统一渲染并安全处理 ftre://；Skill Handler 只在 agent/pre-step 处理用户消息；原文、扩展投影和隐藏注入快照独立持久化；刷新/重连/重放幂等；未知扩展安全降级；后端与客户端测试、构建和架构扫描通过
+        tasks:
+          - id: C6.1
+            title: 协议模型、解析器与前后端黄金测试
+            status: done
+          - id: C6.2
+            title: 客户端 Markdown AST 扩展与 Skill Renderer
+            status: done
+          - id: C6.3
+            title: 后端 InlineExtension Registry、Skill Handler 与 pre-step
+            status: done
+          - id: C6.4
+            title: 消息投影、恢复幂等与跨端收尾验收
+            status: done
+          - id: C6.5
+            title: Skill 资源来源解析与文件预览收口
+            status: done
+            date: 2026-08-29
+
   - id: D
     name: 收尾
     steps:

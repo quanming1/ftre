@@ -35,6 +35,7 @@ def test_host_default_distribution_contains_all_workspace_packages() -> None:
         "ftre-llm-recovery>=0.1.0,<0.2.0",
         "ftre-llm-fallback>=0.1.0,<0.2.0",
         "ftre-process>=0.1.0,<0.2.0",
+        "ftre-inline-extension>=0.1.0,<0.2.0",
     }.issubset(dependencies)
     extras = project["optional-dependencies"]
     assert extras["inbox"] == ["ftre-inbox>=0.2.0,<0.3.0"]
@@ -45,6 +46,7 @@ def test_host_default_distribution_contains_all_workspace_packages() -> None:
     assert extras["llm-recovery"] == ["ftre-llm-recovery>=0.1.0,<0.2.0"]
     assert extras["llm-fallback"] == ["ftre-llm-fallback>=0.1.0,<0.2.0"]
     assert extras["process"] == ["ftre-process>=0.1.0,<0.2.0"]
+    assert extras["inline-extension"] == ["ftre-inline-extension>=0.1.0,<0.2.0"]
     assert extras["full"] == [
         "ftre-llm>=0.1.0,<0.2.0",
         "ftre-inbox>=0.2.0,<0.3.0",
@@ -55,6 +57,7 @@ def test_host_default_distribution_contains_all_workspace_packages() -> None:
         "ftre-llm-recovery>=0.1.0,<0.2.0",
         "ftre-llm-fallback>=0.1.0,<0.2.0",
         "ftre-process>=0.1.0,<0.2.0",
+        "ftre-inline-extension>=0.1.0,<0.2.0",
     ]
 
 

@@ -13,6 +13,8 @@ def build_load_skill_tool(service):
         record = service.get(name)
         if record is None:
             return f"Skill not found: {name}"
+        if record.disabled or not record.model_invocable:
+            return f"Skill not available for model invocation: {name}"
         return record.content
 
     return ToolDefinition(name="loadSkill", description="Load a named Skill", parameters=[ToolParameter("name", "string", "Skill name")], func=load_skill)
