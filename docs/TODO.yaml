@@ -211,6 +211,14 @@ stages:
             title: Skill 资源来源解析与文件预览收口
             status: done
             date: 2026-08-29
+          - id: C6.6
+            title: Skill 发现规则与作用域稳定性修复
+            status: done
+            date: 2026-08-30
+            completion_date: 2026-08-30
+            depends_on:
+              - C6.5
+            acceptance: 合法 YAML frontmatter 是 Skill 唯一入口；移除文件名黑名单；frontmatter.name 作为规范名称；Agent/Session 作用域查询稳定；后端与客户端回归测试和构建通过
 
   - id: D
     name: 收尾
