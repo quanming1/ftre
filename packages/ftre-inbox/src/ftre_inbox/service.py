@@ -246,11 +246,7 @@ class InboxService:
         return True
 
     async def promote(self, session_id: str, request_id: str) -> bool:
-        item = await self.repository.promote(
-            session_id,
-            request_id,
-            target_run_id=self._active_run_id(session_id, "default"),
-        )
+        item = await self.repository.promote(session_id, request_id)
         if item is None:
             return False
         await self._publish(session_id)
@@ -293,18 +289,11 @@ class InboxService:
     async def deliver_next_step_for_reasoning(
         self,
         session_id: str,
-        *,
-        turn_id: str = "",
     ) -> tuple[QueueItem, ...]:
         if self._closed:
             return ()
         snapshot = await self.repository.snapshot(session_id)
-        candidates = tuple(
-            item
-            for item in snapshot.next_step
-            if item.target_run_id is None
-            or (bool(turn_id) and item.target_run_id == turn_id)
-        )
+        candidates = snapshot.next_step
         if not candidates:
             return ()
         decision, discarded = await self._before_claim_batch(session_id, snapshot, candidates)
@@ -313,7 +302,7 @@ class InboxService:
         if decision == "discard":
             await self._discard(session_id, discarded, "before-claim-discard")
             return ()
-        history_ids = await self._persist_user_messages(candidates, run_id=turn_id)
+        history_ids = await self._persist_user_messages(candidates)
         claimed = await self.repository.claim(
             session_id,
             tuple(item.request_id for item in candidates),
@@ -407,11 +396,6 @@ class InboxService:
     ) -> QueueItem:
         metadata = dict(message.metadata or {})
         agent_id = str(metadata.get("agent_id") or "default")
-        target_run_id = None
-        if target == "next-step":
-            target_run_id = str(metadata.get("target_run_id") or "") or None
-            if target_run_id is None:
-                target_run_id = self._active_run_id(message.session_id, agent_id)
         messages = tuple(getattr(message, "messages", ()) or ())
         content = getattr(message, "content", "")
         attachments = getattr(message, "attachments", ())
@@ -430,7 +414,6 @@ class InboxService:
             source=message.source if message.source in {"user", "plugin", "system"} else "user",
             messages=messages,
             agent_id=agent_id,
-            target_run_id=target_run_id,
         )
 
     def _state(self, session_id: str) -> _SessionState:
@@ -787,9 +770,8 @@ class InboxService:
 
     @staticmethod
     def _candidate_batch(snapshot: InboxSnapshot) -> tuple[QueueItem, ...]:
-        next_step = [item for item in snapshot.next_step if item.target_run_id is None]
-        if next_step:
-            return (*next_step, *snapshot.next_turn[:1])
+        if snapshot.next_step:
+            return (*snapshot.next_step, *snapshot.next_turn[:1])
         return snapshot.next_turn[:1]
 
     @staticmethod
@@ -853,32 +835,6 @@ class InboxService:
             channel_id=item.channel_id,
             source=item.source,
             metadata=metadata,
-        )
-
-    def _active_run_id(self, session_id: str, agent_id: str) -> str | None:
-        if self._agent is None:
-            return None
-        get = getattr(self._agent, "get", None)
-        if callable(get):
-            for candidate in (f"{session_id}:{agent_id}", agent_id, session_id):
-                view = get(candidate)
-                if self._active_view(view, session_id):
-                    return str(view.run_id)
-        list_agents = getattr(self._agent, "list", None)
-        if callable(list_agents):
-            for view in list_agents():
-                if self._active_view(view, session_id):
-                    return str(view.run_id)
-        return None
-
-    @staticmethod
-    def _active_view(view: Any, session_id: str) -> bool:
-        return (
-            view is not None
-            and getattr(view, "session_id", None) == session_id
-            and str(getattr(view, "state", ""))
-            in {"running", "processing", "compacting", "paused", "stopping"}
-            and bool(getattr(view, "run_id", None))
         )
 
     @staticmethod

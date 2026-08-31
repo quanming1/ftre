@@ -26,7 +26,6 @@ class QueueItem:
     history_message_id: str | None = None
     messages: tuple[Msg, ...] = ()
     agent_id: str = "default"
-    target_run_id: str | None = None
 
     def normalized_messages(self) -> tuple[Msg, ...]:
         if self.messages:
@@ -47,7 +46,6 @@ class QueueItem:
             "history_message_id": self.history_message_id,
             "messages": [message.model_dump(mode="json") for message in self.messages],
             "agent_id": self.agent_id,
-            "target_run_id": self.target_run_id,
             "target": target,
         }
 
@@ -79,11 +77,6 @@ class QueueItem:
             ),
             messages=tuple(Msg.model_validate(item) for item in raw_messages),
             agent_id=str(value.get("agent_id") or "default"),
-            target_run_id=(
-                str(value["target_run_id"])
-                if value.get("target_run_id")
-                else None
-            ),
         ), target
 
 

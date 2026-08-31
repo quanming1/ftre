@@ -3,6 +3,7 @@
 `ftre-inbox` 是 Gateway 的持久消息队列 Plugin/Package。它只做输入接纳和交付：
 
 - `next-turn` / `next-step` 双队列和共享容量；
+- `next-step` 只按 Session 排队，不绑定某一次 Run；同一 Session 的 reasoning 边界或正常完成后的 FIFO worker 都可以交付它；
 - `followup`、`steer`、`inject` 三种写入语义；
 - JSON 原子持久化、幂等 admission、`peek → Hook → claim` 和旧 `mailbox.pending` 一次性迁移；
 - 每 Session 一个 FIFO worker、队列编辑/删除/提升和 `session/queue` 权威投影。

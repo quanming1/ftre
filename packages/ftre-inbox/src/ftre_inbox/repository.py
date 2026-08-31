@@ -45,7 +45,12 @@ class InboxRepository:
                 raw = json.loads(await asyncio.to_thread(path.read_text, encoding="utf-8"))
                 state = _MutableInbox.from_json(raw)
                 self._states[state.session_id] = state
-                if raw.get("schema_version") != 3 or raw.get("inflight"):
+                has_run_targets = any(
+                    isinstance(item, dict) and "target_run_id" in item
+                    for target in ("next_turn", "next_step")
+                    for item in (raw.get(target) or ())
+                )
+                if raw.get("schema_version") != 3 or raw.get("inflight") or has_run_targets:
                     await self._commit(state)
             except Exception:  # noqa: BLE001 - isolate one broken Inbox
                 corrupt = path.with_name(f"inbox.json.corrupt-{uuid.uuid4().hex[:8]}")
@@ -188,8 +193,6 @@ class InboxRepository:
         self,
         session_id: str,
         request_id: str,
-        *,
-        target_run_id: str | None = None,
     ) -> QueueItem | None:
         async with self.lock_for(session_id):
             state = self._state(session_id)
@@ -199,17 +202,11 @@ class InboxRepository:
             items, index = hit
             item = items[index]
             if items is state.next_step:
-                if target_run_id and item.target_run_id is None:
-                    item = replace(item, target_run_id=target_run_id)
-                    items[index] = item
-                    state.revision += 1
-                    await self._commit(state)
                 return item
             items.pop(index)
             item = replace(
                 item,
                 source="user" if item.source != "user" else item.source,
-                target_run_id=target_run_id or item.target_run_id,
             )
             state.next_step.append(item)
             state.next_step.sort(key=lambda value: value.sequence)

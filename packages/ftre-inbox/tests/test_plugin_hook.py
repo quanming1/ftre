@@ -5,7 +5,10 @@ import asyncio
 import pytest
 from cordis import Context
 from ftre_agent import AgentRegistry
-from ftre_agent.hooks import AGENT_BEFORE_REASONING_SPEC, BeforeReasoningPayload
+from ftre_agent.hooks import (
+    AGENT_BEFORE_REASONING_SPEC,
+    BeforeReasoningPayload,
+)
 from ftre_inbox.plugin import apply
 from ftre_inbox.protocol import InboundMessage
 
