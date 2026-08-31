@@ -35,7 +35,8 @@
   启动恢复不会自动发送历史队列。
 - UserMessage 按 `session_id + request_id` 幂等落盘并保留原始身份/时间/内容；Agent Run 防止
   重复执行；Inbox 统一使用 Session canonical 用户数据根。
-- Steering 持久化 `target_run_id` 并限制在目标 Run 的 Reasoning 边界注入；并发重放有单写保护。
+- Steering 按 Session 持久化并在同一 Session 的 Reasoning 边界交付；未赶上当前 Run 的消息会由正常完成后的 FIFO worker 交给后续 Run，并发重放有单写保护。
+- 修复目标 Run 在最后一次推理前正常结束时 Next Step 永久滞留：`agent/after-run` 完成事件会解除目标绑定，交由现有 FIFO worker 进入下一轮；取消、失败、暂停和中断仍保留队列。
 - Inbox 进一步收敛为 `Inbound → QueueItem → FIFO claim → AgentService`，删除 delivery lease、
   release/ack 回退分支；claim 后消息永久离开 pending，失败由 AgentService 返回终态。
 - 后端全量 pytest 745 passed、Ruff 与架构门禁通过；Desktop renderer 537 tests passed，三个

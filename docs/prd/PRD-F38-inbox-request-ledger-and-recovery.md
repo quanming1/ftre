@@ -78,7 +78,7 @@ Inbox 不维护 REMOVED/Agent 运行状态，也不存在 `repository.release()`
 Inbox 不把 `idle` 当作消费事件。worker 只在上一项 `AgentService.run()` 正常完成后继续取下一项；Agent 状态只作为交付前的接收门禁，不由 Inbox 持有或改变：
 
 ```text
-RunCompleted  -> 消费下一条 next-turn
+RunCompleted  -> 唤醒 FIFO，消费 Session 队首 next-step/next-turn
 RunCancelled  -> worker 停止，pending 保留
 RunFailed     -> worker 停止，pending 保留
 RunInterrupted-> worker 停止，pending 保留
@@ -99,7 +99,8 @@ RunPaused     -> worker 停止，pending 保留
 
 - [x] 新会话首次显式发送仍可启动第一条消息。
 - [x] active Run 期间新增普通消息只进入 pending。
-- [x] `RunCompleted` 后最多消费一条队首 next-turn；消费完成后由下一个明确的完成事件继续推进。
+- [x] `RunCompleted` 后由现有 FIFO 消费 Session 队首；next-step 优先，next-turn 作为普通队列项继续推进。
+- [x] next-step 不绑定 Run；当前 Run 没有新的 reasoning 边界时，正常完成后的 FIFO worker 会把它交给后续 Run。
 - [x] cancel、pause、failed、interrupted、Gateway 恢复和普通 idle 不得自动发送 pending。
 - [x] Agent 终态后新消息保留；显式恢复或新 request 不得被旧消息抢占。
 
@@ -124,12 +125,12 @@ RunPaused     -> worker 停止，pending 保留
 - [x] 开发、安装、免安装和升级包使用同一用户数据根。
 - [x] 缺少 root 时返回明确配置错误，不能静默创建安装目录队列。
 
-### FR6：Steer 不跨 Run
+### FR6：Steer 按 Session 排队
 
-- [x] Steer 记录 target_run_id。
-- [x] `agent/before-reasoning` 只消费 target Run 仍 active 的 Steer。
-- [x] target Run 已取消、暂停或完成时，不得注入后续新 Run。
-- [x] 本阶段不改变 Steer 的“active Run 下一次 Reasoning 注入”产品语义。
+- [x] Steer 只绑定 `session_id + request_id`，不绑定某一次 Run。
+- [x] 同一 Session 的 `agent/before-reasoning` 边界可以消费该 Session 的 next-step 队列。
+- [x] 当前 Run 在 reasoning 边界前正常结束时，未消费的 next-step 由现有 FIFO worker 交给后续 Run。
+- [x] cancel、pause、failed、interrupted 不会单独触发消费；不同 Session 的队列始终隔离。
 
 ## 4. 数据模型与状态约束
 
@@ -143,7 +144,6 @@ QueueItem(
     request_id: str,
     content: str | list[dict],
     placement: Literal["next_turn", "next_step"],
-    target_run_id: str | None,
     sequence: int,
 )
 ```
@@ -306,7 +306,7 @@ A paused/failed/interrupted -> B 保持 pending
 
 **修改范围**：
 
-- `packages/ftre-inbox` Steer target_run_id 与 Hook 测试
+- `packages/ftre-inbox` Session 级 Steer 与 Hook 测试
 - `tests/contracts/`
 - `tests/lifecycle/`
 - `tests/integration/`
@@ -330,7 +330,7 @@ Gateway 重连/客户端刷新
 1. 每个故障点都不产生重复 UserMessage。
 2. Agent 已接受或已 claim 的请求不回 pending。
 3. 普通队列只由 RunCompleted 推进。
-4. Steer 只注入 target_run_id 对应的 active Run。
+4. Steer 只注入同一 Session 的 active reasoning，不跨 Session。
 5. 发行包实际加载的代码包含 request_id/run_id metadata 修复。
 
 **Commit**：`test(tests): 完成 Inbox 恢复与跨仓验收`
@@ -416,11 +416,12 @@ AgentService.run 必须带 request_id/run_id
 
 | 日期 | 变更内容 | 理由 |
 |---|---|---|
+| 2026-09-01 | 将 Next Step 收敛为 Session 级 pending：删除 QueueItem 与 Run 的绑定和完成后解除逻辑；同一 Session 的 reasoning 边界消费 next-step，若当前 Run 没有新的 reasoning 边界，正常完成后的现有 FIFO worker 直接交给后续 Run；取消/暂停/失败/中断仍不触发消费 | 用户输入的“调整方向”本质上属于 Session，而不是某个 Run；旧的 Run 绑定在最后一步完成后没有可匹配边界，造成消息永久卡住，且引入额外 after-run 监听没有必要 |
 | 2026-08-29 | 初始版本 | 记录 Inbox 重复投递、idle 误消费、消息时间覆盖、运行幂等和安装目录持久化问题 |
 | 2026-08-29 | 收缩为 F38-A/F38-B/F38-C；移除本阶段独立 RequestLedger、SQLite、TurnCoordinator 目标 | 当前 Bug 可由现有 Owner 和状态模型修复，避免过度设计；长期账本作为后续阶段候选 |
 | 2026-08-29 | 完成 F38-A：执行后请求不再 release 回队；取消/失败/中断停止 worker 但保留 pending；普通 worker 仅在正常完成后推进；新增取消后新消息不被旧请求抢占的回归测试 | F38-A 专项 26 passed，全量 pytest 738 passed；目标行为已验证 |
 | 2026-08-29 | 完成 F38-B：Session UserMessage 存在即返回并拒绝 request 内容冲突；AgentService 缓存 request 终态；公开 SessionService.sessions_root 并禁止 Inbox 生产 cwd fallback | F38-B 专项 32 passed；全量 pytest 742 passed；目标模块 Ruff 与空白检查通过 |
-| 2026-08-29 | 完成 F38-C：Steer 持久化 target_run_id，Hook 以 request_id 对齐 active Run，跨 Run 不注入；完成恢复/重连/故障边界专项和三个 Package wheel 验收 | F38-C 专项 58 passed；全量 pytest 744 passed；三个 wheel 构建成功并检查包含修复 |
+| 2026-08-29 | 完成 F38-C：Steer 的 Session/Reasoning 边界、恢复/重连与故障注入专项和三个 Package wheel 验收 | F38-C 专项 58 passed；全量 pytest 744 passed；三个 wheel 构建成功并检查包含修复 |
 | 2026-08-29 | 完成最终门禁：显式 Python 文件清单 Ruff 全部通过；Desktop renderer 55 files / 537 tests 通过；更新 F38 为已验收 | 发行包、Gateway 和客户端恢复边界均有可复核证据 |
-| 2026-08-29 | 完成审计修复：未提供运行身份时不再消费已绑定 Steer；SessionProjection 增加 UserMessage 并发单写保护；最终全量 pytest 745 passed，三个 wheel 重新构建并清理 | 补齐跨 Run 与并发重放的真实边界 |
+| 2026-08-29 | 完成审计修复：SessionProjection 增加 UserMessage 并发单写保护；最终全量 pytest 745 passed，三个 wheel 重新构建并清理 | 补齐 Session 消息与并发重放的真实边界 |
 | 2026-08-29 | 按最终职责重构 Inbox：删除 `LeaseRecord`、`claim_lease/ack/release` 和执行回退分支；Repository 只持久化 pending 与原子 claim，Service 只负责 `Inbound → QueueItem → FIFO → AgentService`；旧 schema 的 inflight 仅清理、不重投 | 消除 Inbox 与 Agent Runtime 的职责重叠，降低状态机复杂度 |

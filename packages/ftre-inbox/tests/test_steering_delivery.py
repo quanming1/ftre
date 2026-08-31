@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 from ftre_inbox.protocol import InboundMessage
 from ftre_inbox.repository import InboxRepository
@@ -186,27 +184,13 @@ async def test_promoted_plugin_message_becomes_persisted_user_input(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_steering_target_run_id_blocks_cross_run_delivery(tmp_path) -> None:
-    class ActiveAgent:
-        def is_busy(self, _session_id):
-            return True
-
-        def get(self, agent_id):
-            if agent_id == "s1:default":
-                return SimpleNamespace(
-                    session_id="s1",
-                    state="running",
-                    run_id="run-1",
-                )
-            return None
-
-    service = InboxService(InboxRepository(tmp_path), ActiveAgent())
+async def test_steering_is_session_scoped_not_run_bound(tmp_path) -> None:
+    service = InboxService(InboxRepository(tmp_path))
     await service.steer(InboundMessage("s1", "r1", "ws", "steer"))
+    await service.steer(InboundMessage("s2", "r2", "ws", "other session"))
 
-    snapshot = await service.snapshot("s1")
-    assert snapshot.next_step[0].target_run_id == "run-1"
-    assert await service.deliver_next_step_for_reasoning("s1", turn_id="run-2") == ()
-    assert (await service.snapshot("s1")).next_step[0].request_id == "r1"
-    claimed = await service.deliver_next_step_for_reasoning("s1", turn_id="run-1")
+    claimed = await service.deliver_next_step_for_reasoning("s1")
+
     assert [item.request_id for item in claimed] == ["r1"]
+    assert [item.request_id for item in (await service.snapshot("s2")).next_step] == ["r2"]
     await service.close()
