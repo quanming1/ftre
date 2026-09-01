@@ -232,6 +232,13 @@ def test_skill_service_discovery_uses_frontmatter_name_and_rejects_invalid_candi
     (root / "nested" / "example").mkdir(parents=True)
     (root / "nested" / "example" / "SKILL.md").write_text("not a skill\n", encoding="utf-8")
     (root / "missing-frontmatter.md").write_text("plain body\n", encoding="utf-8")
+    (root / "missing-description.md").write_text(
+        "---\nname: missing-description\n---\nbody\n", encoding="utf-8"
+    )
+    (root / "empty-description.md").write_text(
+        "---\nname: empty-description\ndescription: \"\"\n---\nbody\n", encoding="utf-8"
+    )
+    (root / "non-mapping.md").write_text("---\n- name\n- description\n---\nbody\n", encoding="utf-8")
     (root / "bad-name.md").write_text(
         "---\nname: Bad Name\ndescription: invalid\n---\nbody\n", encoding="utf-8"
     )
@@ -254,6 +261,7 @@ def test_skill_service_discovery_uses_frontmatter_name_and_rejects_invalid_candi
     rows = service.list()
 
     assert {item["name"] for item in rows} == {
+        "bad-bool",
         "canonical-folder-name",
         "lint",
         "other-name",
@@ -267,6 +275,7 @@ def test_skill_service_discovery_uses_frontmatter_name_and_rejects_invalid_candi
     assert service.get("lint").model_invocable is False
     assert service.get("lint").when_to_use == "CI"
     assert service.get("lint").metadata == {"owner": "qa"}
+    assert service.get("bad-bool").user_invocable is True
     updated_alias = service.update("other-name", "changed alias\n")
     assert updated_alias.name == "other-name"
     assert service.get("other-name").content.strip() == "changed alias"
@@ -278,12 +287,58 @@ def test_skill_service_discovery_uses_frontmatter_name_and_rejects_invalid_candi
     assert {Path(item["path"]).name for item in service.diagnostics} >= {
         "README.md",
         "missing-frontmatter.md",
+        "missing-description.md",
+        "empty-description.md",
+        "non-mapping.md",
         "bad-name.md",
         "numeric-name.md",
-        "bad-bool.md",
         "bad-yaml.md",
     }
     assert all("reason" in item and "scope" in item for item in service.diagnostics)
+
+
+def test_skill_discovery_accepts_bom_and_ignores_invalid_optional_frontmatter(tmp_path: Path) -> None:
+    root = tmp_path / "global"
+    skill = root / "windows-bom" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "\ufeff---\n"
+        "\ufeffname: \ufeffwindows-bom\n"
+        "description: \ufeffWindows compatible Skill\n"
+        "user-invocable: maybe\n"
+        "disable-model-invocation: []\n"
+        "metadata:\n  owner: \ufeffqa\n  invalid: [not-a-string]\n"
+        f"compatibility: {'x' * 501}\n"
+        "allowed-tools: [Read]\n"
+        "whenToUse: 42\n"
+        "userInvocable: false\n"
+        "42: ignored\n"
+        "---\nbody\n",
+        encoding="utf-8",
+    )
+    service = SkillService({"global": root, "agent": tmp_path / "agent"})
+
+    rows = service.list()
+    item = service.get("windows-bom")
+
+    assert [row["name"] for row in rows] == ["windows-bom"]
+    assert item is not None
+    assert item.description == "Windows compatible Skill"
+    assert item.content == "body\n"
+    assert item.user_invocable is True
+    assert item.model_invocable is True
+    assert item.metadata == {"owner": "qa"}
+    assert item.compatibility is None
+    assert item.allowed_tools is None
+    assert item.when_to_use is None
+    assert service.diagnostics == ()
+
+    updated = service.update(
+        "windows-bom",
+        "---\nname: windows-bom\ndescription: Updated\nmetadata: []\nuser-invocable: maybe\n---\nupdated\n",
+    )
+    assert updated.description == "Updated"
+    assert service.get("windows-bom").content == "updated\n"
 
 
 def test_root_readme_with_valid_frontmatter_is_a_flat_skill(tmp_path: Path) -> None:
