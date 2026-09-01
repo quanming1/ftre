@@ -26,6 +26,7 @@ _SAFE_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FRONTMATTER = re.compile(r"^---(?:\r?\n)(?P<body>.*?)(?:\r?\n)---(?:[ \t]*(?:\r?\n|$))", re.DOTALL)
 _FRONTMATTER_BOOL_TRUE = {"true", "yes", "on", "1"}
 _FRONTMATTER_BOOL_FALSE = {"false", "no", "off", "0"}
+_BOM = "\ufeff"
 _MAX_NAME_LENGTH = 64
 _MAX_DESCRIPTION_LENGTH = 1024
 _MAX_COMPATIBILITY_LENGTH = 500
@@ -456,7 +457,7 @@ class SkillService:
             license_name = _optional_string(frontmatter, "license")
             compatibility = _optional_string(frontmatter, "compatibility")
             if compatibility is not None and len(compatibility) > _MAX_COMPATIBILITY_LENGTH:
-                raise _InvalidSkillFrontmatter("compatibility exceeds 500 characters")
+                compatibility = None
             allowed_tools = _optional_string(frontmatter, "allowed-tools")
         except (YAMLError, _InvalidSkillFrontmatter, UnicodeError) as exc:
             self._diagnose(root, scope, path, str(exc), exc)
@@ -624,25 +625,16 @@ class SkillService:
         user_invocable: bool = True,
         model_invocable: bool = True,
     ) -> str:
-        body = str(content or "").strip()
+        body = str(content or "").lstrip(_BOM).strip()
         if _FRONTMATTER.match(body):
             existing, _ = _parse_frontmatter(body)
             if existing.get("name") != name:
                 raise ValueError("Skill content 的 frontmatter name 必须匹配目标 Skill")
             SkillService._validate_discovered_name(existing.get("name"))
             _required_string(existing, "description")
-            _frontmatter_bool(existing, "user-invocable", True)
-            _frontmatter_bool(existing, "disable-model-invocation", False)
-            _metadata(existing)
             description_value = _required_string(existing, "description")
             if len(description_value) > _MAX_DESCRIPTION_LENGTH:
                 raise ValueError("Skill description 不能超过 1024 个字符")
-            compatibility_value = _optional_string(existing, "compatibility")
-            if compatibility_value is not None and len(compatibility_value) > _MAX_COMPATIBILITY_LENGTH:
-                raise ValueError("Skill compatibility 不能超过 500 个字符")
-            _optional_string(existing, "license")
-            _optional_string(existing, "allowed-tools")
-            _optional_string(existing, "whenToUse")
             return body + "\n"
         values: dict[str, Any] = {"name": name, "description": str(description or "")}
         if license_name is not None:
@@ -685,8 +677,13 @@ class SkillService:
 
 
 def _read_skill_file(path: Path, *, load_body: bool) -> tuple[dict[str, Any], str]:
-    """Read frontmatter for discovery and read the body only for an active get()."""
-    with path.open("r", encoding="utf-8") as handle:
+    """Read one Skill with Windows UTF-8 BOM compatibility.
+
+    Discovery only needs frontmatter.  ``utf-8-sig`` removes a leading BOM that
+    Windows editors may add without changing the stored body or user-visible
+    Skill metadata.
+    """
+    with path.open("r", encoding="utf-8-sig") as handle:
         first_line = handle.readline()
         if first_line.rstrip("\r\n") != "---":
             raise _InvalidSkillFrontmatter("missing YAML frontmatter")
@@ -699,6 +696,7 @@ def _read_skill_file(path: Path, *, load_body: bool) -> tuple[dict[str, Any], st
 
 
 def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
+    content = content.lstrip(_BOM)
     match = _FRONTMATTER.match(content)
     if match is None:
         raise _InvalidSkillFrontmatter("missing YAML frontmatter")
@@ -711,15 +709,31 @@ def _parse_frontmatter_mapping(body: str) -> dict[str, Any]:
         raise _InvalidSkillFrontmatter("frontmatter must be a YAML mapping")
     values: dict[str, Any] = {}
     for key, value in parsed.items():
-        if not isinstance(key, str):
-            raise _InvalidSkillFrontmatter("frontmatter keys must be strings")
-        values[key] = value
-    for legacy in ("disableModelInvocation", "modelInvocable", "userInvocable"):
-        if legacy in values:
-            raise _InvalidSkillFrontmatter(
-                f'frontmatter field "{legacy}" is unsupported; use the hyphenated form'
-            )
+        # Only name/description decide whether a candidate is a Skill.  Unknown
+        # YAML keys (including non-string keys from copied documents) are not a
+        # reason to hide an otherwise valid Skill.
+        if isinstance(key, str):
+            values[key.lstrip(_BOM)] = _strip_bom(value)
     return values
+
+
+def _strip_bom(value: Any) -> Any:
+    """Remove accidental leading BOMs from YAML keys and scalar values.
+
+    A file-level BOM is handled by ``utf-8-sig``.  This recursive normalization
+    covers BOMs copied into a key or a quoted string without rewriting ordinary
+    text in the Skill body.
+    """
+    if isinstance(value, str):
+        return value.lstrip(_BOM)
+    if isinstance(value, list):
+        return [_strip_bom(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key.lstrip(_BOM) if isinstance(key, str) else key: _strip_bom(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 def _required_string(values: dict[str, Any], key: str) -> str:
@@ -734,7 +748,7 @@ def _optional_string(values: dict[str, Any], key: str) -> str | None:
         return None
     value = values[key]
     if not isinstance(value, str):
-        raise _InvalidSkillFrontmatter(f"frontmatter field {key} must be a string")
+        return None
     return value
 
 
@@ -743,10 +757,12 @@ def _metadata(values: dict[str, Any]) -> dict[str, Any]:
         return {}
     value = values["metadata"]
     if not isinstance(value, dict):
-        raise _InvalidSkillFrontmatter("metadata must be a mapping")
-    if any(not isinstance(key, str) or not isinstance(item, str) for key, item in value.items()):
-        raise _InvalidSkillFrontmatter("metadata must be a string-to-string mapping")
-    return dict(value)
+        return {}
+    return {
+        key: item
+        for key, item in value.items()
+        if isinstance(key, str) and isinstance(item, str)
+    }
 
 
 def _frontmatter_bool(values: dict[str, Any], key: str, default: bool) -> bool:
@@ -761,7 +777,7 @@ def _frontmatter_bool(values: dict[str, Any], key: str, default: bool) -> bool:
             return True
         if lowered in _FRONTMATTER_BOOL_FALSE:
             return False
-    raise _InvalidSkillFrontmatter(f"frontmatter field {key} must be a boolean")
+    return default
 
 
 __all__ = ["SkillService"]

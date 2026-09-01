@@ -28,6 +28,8 @@
 - C6.6 以 YAML `name` 作为唯一规范名称，移除文件名黑名单；修复用户 Skill 的 frontmatter/编码，
   列表增加来源摘要，输入框和管理面板按当前 Session/Agent 作用域刷新并提供诊断查看。
 - 审计补齐模型提示与发现规则的一致性，`loadSkill` 按当前 Agent/工作区解析，管理面板明确显示查询作用域。
+- Windows 编辑器写入的 UTF-8 BOM、以及 YAML key/value 前缀 BOM 不再导致 Skill 消失；只要 `name` 和
+  `description` 合法即可被发现，错误的可选 metadata/策略字段会回退默认或被忽略。
 
 ### F38 Inbox 恢复幂等与队列生命周期（已完成，未发布）
 
