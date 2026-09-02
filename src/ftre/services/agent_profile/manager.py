@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -335,7 +336,7 @@ class AgentManager:
         return result
 
     def update_agent(self, agent_id: str, patch: dict) -> dict:
-        """更新 agent.config.json 的字段（支持 llm、name、workspace）。
+        """更新 agent.config.json 的字段（支持 llm、name、workspace、mcp）。
 
         Args:
             agent_id: agent ID
@@ -343,6 +344,7 @@ class AgentManager:
                 - {"llm": {"provider": "...", "model": "..."}}
                 - {"name": "..."}
                 - {"workspace": "..."}
+                - {"mcp": {"server": {...}}}（替换 Agent 自己的 MCP 层）
 
         Returns:
             更新后的 agent.config.json 内容
@@ -373,6 +375,11 @@ class AgentManager:
             cfg["name"] = patch["name"]
         if "workspace" in patch and isinstance(patch["workspace"], str):
             cfg["workspace"] = patch["workspace"]
+        if "mcp" in patch:
+            mcp = patch["mcp"]
+            if not isinstance(mcp, dict):
+                raise TypeError("agent mcp must be an object")
+            cfg["mcp"] = deepcopy(mcp)
 
         # 写回
         config_path.write_text(
@@ -383,6 +390,30 @@ class AgentManager:
         # 清除缓存
         logger.info(f"[agent-manager] 已更新 agent '{agent_id}' 的配置: {patch}")
         return cfg
+
+    def read_mcp_source(self, agent_id: str) -> dict:
+        """Read only an Agent's own MCP layer, without merging global config.
+
+        MCP Feature code needs source ownership to resolve
+        ``project > agent > global`` correctly. Returning ``AgentProfile``'s
+        merged ``mcp_config`` here would erase that boundary and make inherited
+        global entries look like Agent-owned overrides.
+        """
+        try:
+            agent_dir = self._resolve_agent_dir(agent_id)
+        except ValueError:
+            return {}
+        path = agent_dir / "agent.config.json"
+        if not path.is_file():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        mcp = raw.get("mcp", {})
+        return deepcopy(mcp) if isinstance(mcp, dict) else {}
 
     def create_agent_profile(
         self,

@@ -23,7 +23,7 @@ MCP 配置解析
   }
 }
 
-当前仅实现 local（stdio）类型；remote 为预留。
+支持 local（stdio）和 remote（streamable HTTP）类型。
 """
 from __future__ import annotations
 
@@ -61,51 +61,98 @@ class McpServerConfig:
         Returns:
             McpServerConfig 或 None（disabled / 格式错误时）
         """
-        if not isinstance(raw, dict):
-            logger.warning(f"[mcp-config] 跳过无效配置: {name}（不是 dict）")
+        inspection = inspect_mcp_server(name, raw)
+        if inspection.error:
+            logger.warning("[mcp-config] 跳过 %s：%s", name, inspection.error)
             return None
+        return inspection.config
 
-        server_type = raw.get("type", "")
-        if server_type not in ("local", "remote"):
-            # 兼容简写：用户没写 type 但写了 command，就推断为 local
-            if "command" in raw:
-                server_type = "local"
-            else:
-                logger.warning(f"[mcp-config] 跳过 {name}：未知 type={server_type!r}，且无 command")
-                return None
 
-        # 同时支持 disabled: true 和 enabled: false 两种写法
-        disabled = raw.get("disabled", False) or raw.get("enabled", True) is False
-        if disabled:
-            logger.info(f"[mcp-config] 跳过已禁用: {name}")
-            return None
+@dataclass(frozen=True)
+class McpConfigInspection:
+    """One source entry's parse result used by runtime and catalog alike."""
 
-        if server_type == "local":
-            command = raw.get("command", [])
-            if not command or not isinstance(command, list):
-                logger.warning(f"[mcp-config] 跳过 {name}：command 缺失或非数组")
-                return None
-            return cls(
+    name: str
+    config: McpServerConfig | None
+    disabled: bool
+    error: str | None = None
+
+
+def inspect_mcp_server(name: str, raw: Any) -> McpConfigInspection:
+    """Validate one raw entry without silently dropping it from diagnostics.
+
+    ``parse_mcp_config`` still returns executable entries only; catalog code uses
+    this richer result to render disabled and invalid entries instead of making
+    them vanish from the management UI.
+    """
+    if not isinstance(name, str) or not name:
+        return McpConfigInspection(str(name), None, False, "服务器名称不能为空")
+    if not isinstance(raw, dict):
+        return McpConfigInspection(name, None, False, "配置必须是对象")
+
+    disabled = bool(raw.get("disabled", False) or raw.get("enabled", True) is False)
+    server_type = raw.get("type", "")
+    if server_type not in ("local", "remote"):
+        if "command" in raw:
+            server_type = "local"
+        else:
+            return McpConfigInspection(
+                name,
+                None,
+                disabled,
+                f"未知 type={server_type!r}，且未提供 command",
+            )
+
+    timeout = raw.get("timeout", 30_000)
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+        return McpConfigInspection(name, None, disabled, "timeout 必须是正整数毫秒")
+
+    if server_type == "local":
+        command = raw.get("command", [])
+        if not isinstance(command, list) or not command or not all(
+            isinstance(part, str) and part for part in command
+        ):
+            return McpConfigInspection(name, None, disabled, "local MCP 的 command 必须是非空字符串数组")
+        environment = raw.get("environment") or {}
+        if not isinstance(environment, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in environment.items()
+        ):
+            return McpConfigInspection(name, None, disabled, "environment 必须是字符串键值对象")
+        return McpConfigInspection(
+            name,
+            McpServerConfig(
                 name=name,
                 type="local",
-                command=command,
-                environment=raw.get("environment") or {},
-                timeout=int(raw.get("timeout", 30_000)),
-            )
-        elif server_type == "remote":
-            url = raw.get("url", "")
-            if not url:
-                logger.warning(f"[mcp-config] 跳过 {name}：remote 缺少 url")
-                return None
-            return cls(
-                name=name,
-                type="remote",
-                url=url,
-                headers=raw.get("headers") or {},
-                timeout=int(raw.get("timeout", 30_000)),
-            )
-        # 走到这里说明 server_type 既不是 local 也不是 remote，
-        # 但前面 L69-74 的守卫已确保 type 只会是这两个值之一，所以不会到达。
+                command=list(command),
+                environment=dict(environment),
+                disabled=disabled,
+                timeout=timeout,
+            ),
+            disabled,
+        )
+
+    url = raw.get("url", "")
+    if not isinstance(url, str) or not url:
+        return McpConfigInspection(name, None, disabled, "remote MCP 缺少 url")
+    headers = raw.get("headers") or {}
+    if not isinstance(headers, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in headers.items()
+    ):
+        return McpConfigInspection(name, None, disabled, "headers 必须是字符串键值对象")
+    return McpConfigInspection(
+        name,
+        McpServerConfig(
+            name=name,
+            type="remote",
+            url=url,
+            headers=dict(headers),
+            disabled=disabled,
+            timeout=timeout,
+        ),
+        disabled,
+    )
 
 
 def parse_mcp_config(raw: dict[str, Any]) -> list[McpServerConfig]:
@@ -122,9 +169,15 @@ def parse_mcp_config(raw: dict[str, Any]) -> list[McpServerConfig]:
 
     results: list[McpServerConfig] = []
     for name, cfg in raw.items():
-        config = McpServerConfig.from_raw(name, cfg)
-        if config:
-            results.append(config)
+        inspection = inspect_mcp_server(name, cfg)
+        if inspection.error:
+            logger.warning("[mcp-config] 跳过 %s：%s", name, inspection.error)
+            continue
+        if inspection.disabled:
+            logger.info("[mcp-config] 跳过已禁用: %s", name)
+            continue
+        if inspection.config is not None:
+            results.append(inspection.config)
 
     logger.info(f"[mcp-config] 解析到 {len(results)} 个 MCP 服务器")
     return results

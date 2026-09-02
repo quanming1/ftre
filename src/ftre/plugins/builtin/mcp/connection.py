@@ -1,8 +1,7 @@
-"""MCP 连接管理器：连接服务器、注册工具并监听配置热重载。"""
+"""MCP 连接管理器：连接服务器、注册工具并按配置快照重载。"""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
@@ -162,15 +161,14 @@ class McpConnection:
 
 
 class McpManager:
-    """MCP 连接管理器 — 管理所有 MCP 服务器连接、工具注册和配置热重载。
+    """MCP 连接管理器 — 管理一个配置集合的连接和工具贡献。
 
     使用方式：
         mcp_manager = McpManager(tool_service=tool_service)
         await mcp_manager.start_and_register(config_data.get("mcp", {}))
-        mcp_manager.start_config_watcher()  # 启动后台监听 config.json 变化
 
-    外部只需调 reload_and_register() 触发热重载（API 路由等场景），
-    config watcher 和 reload 共享同一个 asyncio.Lock，避免并发重复注册。
+    外部只需调 reload_and_register() 触发热重载；文件监听属于 ConfigService，
+    不能由 MCP 再维护一份私有 mtime watcher。
     """
 
     def __init__(
@@ -188,7 +186,6 @@ class McpManager:
         self._registered_tool_names: set[str] = set()
         self._attachments = attachment_service
         self._reload_lock = asyncio.Lock()
-        self._watcher_task: asyncio.Task | None = None
 
     async def start_and_register(self, raw_mcp: dict) -> None:
         """解析配置、连接服务器、注册工具 — 启动时调用一次。"""
@@ -196,12 +193,7 @@ class McpManager:
             await self._apply_config(raw_mcp, source="startup")
 
     async def stop(self) -> None:
-        """断开所有连接、停止 config watcher。"""
-        if self._watcher_task and not self._watcher_task.done():
-            self._watcher_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._watcher_task
-            self._watcher_task = None
+        """断开所有连接并撤销本 Manager 的工具贡献。"""
         await asyncio.gather(
             *(conn.disconnect() for conn in self._connections.values()),
             return_exceptions=True,
@@ -218,57 +210,6 @@ class McpManager:
         """
         async with self._reload_lock:
             await self._apply_config(raw_mcp, source=source)
-
-    def start_config_watcher(self) -> None:
-        """启动后台协程，每 3 秒轮询 config.json 的 mcp 段变化，自动热重载。"""
-        if self._watcher_task and not self._watcher_task.done():
-            return
-        self._watcher_task = asyncio.create_task(self._watch_config())
-
-    async def _watch_config(self) -> None:
-        """后台协程：轮询 config.json mtime，检测 mcp 段变化后热重连。
-
-        采用两步检测降低开销：
-        1. 先比 mtime——文件没动就跳过，几乎零成本
-        2. mtime 变了再比 mcp 段的 JSON 内容——避免 config.json 其他段落
-           的改动触发不必要的 MCP 重连
-        """
-        from ftre.services.config.paths import CONFIG_PATH
-        last_mtime: float = 0.0
-        last_mcp_json: str = ""
-
-        if CONFIG_PATH.exists():
-            last_mtime = CONFIG_PATH.stat().st_mtime
-            try:
-                raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                last_mcp_json = json.dumps(raw.get("mcp", {}), sort_keys=True)
-            except Exception:  # noqa: BLE001, S110 legacy compatibility boundary reviewed in F1
-                pass
-
-        while True:
-            await asyncio.sleep(3)
-            try:
-                if not CONFIG_PATH.exists():
-                    continue
-                mtime = CONFIG_PATH.stat().st_mtime
-                if mtime == last_mtime:
-                    continue
-                last_mtime = mtime
-
-                raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                mcp_json = json.dumps(raw.get("mcp", {}), sort_keys=True)
-                if mcp_json == last_mcp_json:
-                    continue
-                last_mcp_json = mcp_json
-
-                # mcp 段变了，通过统一入口热重载
-                logger.info("[mcp] 检测到 config.json mcp 段变化，开始热重载…")
-                await self.reload_and_register(raw.get("mcp", {}), source="watcher")
-
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
-                logger.warning(f"[mcp] config watcher 异常: {e}")
 
     async def reload(self, configs: list[McpServerConfig]) -> None:
         """热重载：对比新旧配置，断开新增/变更/删除的服务器，保留未变的连接。

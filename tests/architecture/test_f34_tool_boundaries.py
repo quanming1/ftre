@@ -97,11 +97,14 @@ def test_view_preparer_contract_is_general_not_mcp_specific() -> None:
         encoding="utf-8"
     )
     assert "mcp_config" not in service_source
-    # MCP Plugin 自己从 profile 片段读取 mcp_config，不再由 Service 预提取。
-    mcp_source = (SRC / "plugins" / "builtin" / "mcp" / "plugin.py").read_text(
-        encoding="utf-8"
+    # MCP Feature 包自己从 profile 片段读取 mcp_config，不再由通用 ToolService
+    # 预提取。F40 起该读取下沉到 MCP 包内部（plugin.py 装配 + service.py 解析），
+    # 因此只要求 MCP Feature 包内存在该提取逻辑，不再绑定具体文件。
+    mcp_dir = SRC / "plugins" / "builtin" / "mcp"
+    mcp_sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in mcp_dir.glob("*.py")
     )
-    assert "mcp_config" in mcp_source
+    assert "mcp_config" in mcp_sources
 
 
 def test_composition_manifests_include_core_tools_and_tool_audit() -> None:

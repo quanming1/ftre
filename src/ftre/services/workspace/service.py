@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,87 @@ class WorkspaceService:
         skills = root / ".ftre" / "skills"
         skills.mkdir(parents=True, exist_ok=True)
         return {"workspace": str(root), "skills": str(skills), "mcp": str(root / ".ftre" / "mcp.json")}
+
+    def mcp_source(self, workspace: str) -> dict[str, Any]:
+        """Read one workspace's MCP layer without exposing raw file ownership.
+
+        A missing file is an empty layer. Invalid JSON is intentionally reported
+        as an empty runtime layer here; the MCP Feature reads diagnostics through
+        ``mcp_source_error`` so a broken project file never blocks unrelated
+        sessions or causes the Workspace Service to leak parser details.
+        """
+        path = self._mcp_path(workspace)
+        if path is None or not path.is_file():
+            return {}
+        try:
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        raw = value.get("mcp", value)
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def mcp_source_error(self, workspace: str) -> str | None:
+        """Return a user-facing parsing error for a project MCP source, if any."""
+        path = self._mcp_path(workspace)
+        if path is None or not path.is_file():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            return f"无法读取项目 MCP 配置: {exc}"
+        if not isinstance(value, dict):
+            return "项目 MCP 配置根节点必须是对象"
+        raw = value.get("mcp", value)
+        if not isinstance(raw, dict):
+            return "项目 MCP 配置的 mcp 字段必须是对象"
+        return None
+
+    def replace_mcp_source(self, workspace: str, entries: dict[str, Any]) -> dict[str, Any]:
+        """Atomically replace only ``.ftre/mcp.json``'s MCP object.
+
+        The caller supplies a complete source layer. This method owns path
+        validation and atomic persistence so the MCP Plugin never writes a
+        workspace file directly.
+        """
+        if not isinstance(entries, dict):
+            raise TypeError("workspace MCP entries must be an object")
+        path = self._mcp_path(workspace, require_directory=True)
+        if path is None:
+            raise NotADirectoryError(workspace)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_json_atomic(path, {"mcp": entries})
+        return dict(entries)
+
+    @staticmethod
+    def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+        """Persist a workspace-owned JSON object using temp + replace."""
+        fd, temporary = tempfile.mkstemp(prefix=".mcp.", suffix=".tmp", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(value, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _mcp_path(workspace: str, *, require_directory: bool = False) -> Path | None:
+        """Resolve a workspace MCP path while rejecting non-directory inputs."""
+        if not isinstance(workspace, str) or not workspace.strip():
+            return None
+        root = Path(workspace).expanduser().resolve()
+        if require_directory and not root.is_dir():
+            return None
+        if not require_directory and not root.is_dir():
+            return None
+        return root / WORKSPACE_EXT_DIR / "mcp.json"
 
     def create_accessor(
         self,

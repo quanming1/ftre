@@ -39,6 +39,16 @@ class AgentProfileService:
         """更新指定 profile 的可编辑配置。"""
         return self._manager.update_agent(agent_id, payload)
 
+    def mcp_source(self, agent_id: str) -> dict[str, Any]:
+        """Return only the Agent-owned MCP layer, never the merged profile."""
+        return self._manager.read_mcp_source(agent_id)
+
+    def replace_mcp_source(self, agent_id: str, entries: dict[str, Any]) -> dict[str, Any]:
+        """Atomically replace an Agent's own MCP source through its owner."""
+        updated = self._manager.update_agent(agent_id, {"mcp": entries})
+        raw = updated.get("mcp", {}) if isinstance(updated, dict) else {}
+        return dict(raw) if isinstance(raw, dict) else {}
+
     def delete(self, agent_id: str) -> None:
         """删除 profile；不会由 Service 直接操作 profile 目录。"""
         self._manager.delete_agent(agent_id)
