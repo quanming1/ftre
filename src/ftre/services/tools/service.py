@@ -166,12 +166,19 @@ class ToolService:
         owner: str,
         allow: set[str] | None = None,
         deny: set[str] | None = None,
+        *,
+        session_id: str | None = None,
+        max_scope: str = "session",
     ) -> Callable[[], bool]:
+        if max_scope not in {"global", "agent", "session"}:
+            raise ValueError("max_scope must be global, agent, or session")
         restriction = ToolRestriction(
             agent_id,
             owner,
             frozenset(allow or ()),
             frozenset(deny or ()),
+            session_id,
+            max_scope,
         )
         self._restrictions.append(restriction)
         disposed = False
@@ -211,13 +218,30 @@ class ToolService:
 
         return dispose
 
-    def snapshot(self, agent_id: str | None = None) -> tuple[ToolContribution, ...]:
-        return tuple(self._visible(agent_id))
+    def snapshot(
+        self,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+    ) -> tuple[ToolContribution, ...]:
+        """Return the visible contribution snapshot for an Agent/Session context."""
+        return tuple(self._visible(agent_id, session_id))
 
-    def get(self, name: str, agent_id: str | None = None) -> ToolContribution | None:
-        return next((item for item in self._visible(agent_id) if item.name == name), None)
+    def get(
+        self,
+        name: str,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+    ) -> ToolContribution | None:
+        return next(
+            (item for item in self._visible(agent_id, session_id) if item.name == name),
+            None,
+        )
 
-    def schemas(self, agent_id: str | None = None) -> list[dict[str, Any]]:
+    def schemas(
+        self,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         return [
             {
                 **item.definition.to_openai_dict(),
@@ -225,7 +249,7 @@ class ToolService:
                 "source": item.source,
                 "scope": item.scope,
             }
-            for item in self._visible(agent_id)
+            for item in self._visible(agent_id, session_id)
         ]
 
     async def prepare_view(
@@ -240,7 +264,7 @@ class ToolService:
             result = preparer(agent_id, session_id, profile_config, llm_config)
             if inspect.isawaitable(result):
                 await result
-        visible = list(self._visible(agent_id))
+        visible = list(self._visible(agent_id, session_id))
         tools_config = _profile_value(profile_config, "tools_config")
         if tools_config:
             allow = set(coerce_tool_name_list(tools_config.get("allow"), "allow"))
@@ -258,8 +282,9 @@ class ToolService:
         arguments: Mapping[str, Any] | None = None,
         *,
         agent_id: str | None = None,
+        session_id: str | None = None,
     ) -> Any:
-        item = self.get(name, agent_id)
+        item = self.get(name, agent_id, session_id)
         if item is None:
             if agent_id is None:
                 raise ValueError(f"Tool {name!r} not found")
@@ -402,24 +427,60 @@ class ToolService:
             pass
         return values
 
-    def _visible(self, agent_id: str | None) -> list[ToolContribution]:
+    def _visible(
+        self,
+        agent_id: str | None,
+        session_id: str | None = None,
+    ) -> list[ToolContribution]:
+        """Resolve global → agent → session contributions and restrictions.
+
+        Session is intentionally the highest Tool scope: a workspace MCP can
+        override a same-name Agent or global MCP for one ToolView without
+        changing another Session using the same Agent.
+        """
         candidates = [
             item for item in self._items
-            if item.scope == "global" or item.scope == f"agent:{agent_id}"
+            if item.scope == "global"
+            or item.scope == f"agent:{agent_id}"
+            or (session_id is not None and item.scope == f"session:{session_id}")
         ]
+        rank = {"global": 0, "agent": 1, "session": 2}
+        for restriction in reversed(self._restrictions):
+            if restriction.agent_id != agent_id:
+                continue
+            if restriction.session_id is not None and restriction.session_id != session_id:
+                continue
+            max_rank = rank.get(restriction.max_scope, rank["session"])
+            if restriction.allow:
+                candidates = [
+                    item
+                    for item in candidates
+                    if item.name in restriction.allow
+                    or _scope_rank(item.scope) > max_rank
+                ]
+            if restriction.deny:
+                candidates = [
+                    item
+                    for item in candidates
+                    if item.name not in restriction.deny
+                    or _scope_rank(item.scope) > max_rank
+                ]
         by_name: dict[str, ToolContribution] = {}
         for item in candidates:
             by_name[item.name] = item
         items = list(by_name.values())
         if agent_id is None:
             return [item for item in items if item.scope == "global"]
-        for restriction in reversed(self._restrictions):
-            if restriction.agent_id != agent_id:
-                continue
-            if restriction.allow:
-                items = [item for item in items if item.name in restriction.allow]
-            items = [item for item in items if item.name not in restriction.deny]
         return items
+
+
+def _scope_rank(scope: str) -> int:
+    """Map internal contribution scopes to their visibility precedence."""
+    if scope.startswith("session:"):
+        return 2
+    if scope.startswith("agent:"):
+        return 1
+    return 0
 
 
 def _normalize_result(value: Any) -> ToolExecutionResult:

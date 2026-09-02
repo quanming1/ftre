@@ -114,13 +114,13 @@ DELETE /api/mcp/{name}?scope=...
 
 ## 5. 验收标准
 
-- [ ] AC1：全局、Agent、项目各配一个同名 MCP 时，`view=sources` 可看到三项，`view=effective` 只显示项目项。
-- [ ] AC2：无论 MCP 是否尚未连接，`GET /api/mcp` 都能看到已配置服务器；不能再返回空的死状态集合。
-- [ ] AC3：同 Agent 的两个 Session 绑定不同项目 MCP 时，两个 ToolView 分别包含各自项目工具，互不污染。
-- [ ] AC4：全局配置外部修改后由 ConfigService watcher 触发重载；不再启动 MCP 私有文件轮询任务。
-- [ ] AC5：POST/PATCH/DELETE 分别只改目标全局/Agent/项目文件；凭据在所有 HTTP 响应中被脱敏。
-- [ ] AC6：禁用、无效和连接失败配置均可见、状态正确，其他合法服务器照常工作。
-- [ ] AC7：后端 MCP、ToolService、Config/Workspace/AgentProfile 契约测试，`pytest -q`、`ruff check src tests` 和 `git diff --check` 通过。
+- [x] AC1：全局、Agent、项目各配一个同名 MCP 时，`view=sources` 可看到三项，`view=effective` 只显示项目项。
+- [x] AC2：无论 MCP 是否尚未连接，`GET /api/mcp` 都能看到已配置服务器；不能再返回空的死状态集合。
+- [x] AC3：同 Agent 的两个 Session 绑定不同项目 MCP 时，两个 ToolView 分别包含各自项目工具，互不污染。
+- [x] AC4：全局配置外部修改后由 ConfigService watcher 触发重载；不再启动 MCP 私有文件轮询任务。
+- [x] AC5：POST/PATCH/DELETE 分别只改目标全局/Agent/项目文件；凭据在所有 HTTP 响应中被脱敏。
+- [x] AC6：禁用、无效和连接失败配置均可见、状态正确，其他合法服务器照常工作。
+- [x] AC7：后端 MCP、ToolService、Config/Workspace/AgentProfile 契约测试，`pytest -q`、`ruff check src tests` 和 `git diff --check` 通过。
 
 ## 6. 测试计划
 
@@ -134,3 +134,4 @@ DELETE /api/mcp/{name}?scope=...
 | 日期 | 变更内容 | 理由 |
 |---|---|---|
 | 2026-09-02 | 初始定稿 | 旧 C2 的双层配置和诊断 API 已与现行 MCP/UI 架构脱节，需要独立阶段收口三层 Owner 与协议。 |
+| 2026-09-02 | 后端实现落地：McpService 三层配置解析（project > agent > global）+ 统一 Catalog + CRUD/查询 HTTP 契约 + ToolService session scope 隔离 + ConfigService watcher 重载；补契约测试 test_f40_mcp_catalog.py，修正 F34 tool-boundaries 断言随 mcp_config 下沉迁移，AC1–AC7 通过（592 passed / ruff / diff）。 | 完成 F40 后端收口，使浮窗可见三层配置且旧的空状态源被替换。 |
