@@ -1807,3 +1807,36 @@ stages:
           - id: F39.4
             title: 客户端模型刷新与跨仓回归验收
             status: done
+      - id: F40
+        title: MCP 三层配置、统一目录与运行时收口
+        status: in_progress
+        date: 2026-09-02
+        prd: docs/prd/PRD-F40-mcp-three-layer-catalog-and-runtime.md
+        prd_status: approved
+        depends_on:
+          - F34
+          - F39
+        paired_stage: E:\\binn\\ftre-desktop C2
+        implementation_boundary: 只修改 E:\\ftre 的 MCP Plugin、MCP HTTP 契约、Config/AgentProfile/Workspace 窄 API、ToolService session scope 和相关测试；配对客户端只修改 MCP API/展示/设置。不得修改 Agent ReAct、LLM、Inbox、Session wire 或 Cordis Kernel。
+        modules:
+          - src/ftre/plugins/builtin/mcp/
+          - src/ftre/services/config/
+          - src/ftre/services/agent_profile/
+          - src/ftre/services/workspace/
+          - src/ftre/services/tools/
+          - tests/contracts/、tests/integration/、tests/lifecycle/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/features/mcp/
+        acceptance: 全局/Agent/项目 MCP 使用统一 catalog 和 project>agent>global 优先级；API 不再读取死状态；ToolService 支持 session 隔离；CRUD 与配置热更新正确；敏感值脱敏；后端和客户端质量门禁通过。
+        tasks:
+          - id: F40.1
+            title: 三层 Source、Catalog 模型与 API 契约
+            status: todo
+          - id: F40.2
+            title: ToolService session scope 与 MCP ToolView 装配
+            status: todo
+          - id: F40.3
+            title: 配置写入、Config watcher 与状态收口
+            status: todo
+          - id: F40.4
+            title: 跨仓 UI、回归与生命周期验收
+            status: todo
