@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import tempfile
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -130,7 +132,7 @@ class AgentManager:
         config_path = agent_dir / "agent.config.json"
         if config_path.exists():
             try:
-                agent_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                agent_cfg = json.loads(config_path.read_text(encoding="utf-8-sig"))
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[agent-manager] 读取 {config_path} 失败: {e}")
 
@@ -297,7 +299,7 @@ class AgentManager:
             config_path = entry / "agent.config.json"
             if config_path.is_file():
                 try:
-                    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                    cfg = json.loads(config_path.read_text(encoding="utf-8-sig"))
                     llm_cfg = cfg.get("llm", {})
                     if isinstance(llm_cfg, dict):
                         provider = llm_cfg.get("provider", "")
@@ -359,7 +361,7 @@ class AgentManager:
         cfg: dict = {}
         if config_path.exists():
             try:
-                cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                cfg = json.loads(config_path.read_text(encoding="utf-8-sig"))
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[agent-manager] 读取 {config_path} 失败: {e}")
 
@@ -382,14 +384,32 @@ class AgentManager:
             cfg["mcp"] = deepcopy(mcp)
 
         # 写回
-        config_path.write_text(
-            json.dumps(cfg, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._write_json_atomic(config_path, cfg)
 
         # 清除缓存
         logger.info(f"[agent-manager] 已更新 agent '{agent_id}' 的配置: {patch}")
         return cfg
+
+    @staticmethod
+    def _write_json_atomic(path: Path, value: dict) -> None:
+        """Atomically replace an Agent config so a crash cannot leave partial JSON."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(value, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
 
     def read_mcp_source(self, agent_id: str) -> dict:
         """Read only an Agent's own MCP layer, without merging global config.

@@ -302,32 +302,51 @@ class McpService:
         inherited_limit = "global" if kind == "agent" else "agent"
         disabled_limit = "agent" if kind == "agent" else "session"
 
-        for name, raw in own_entries.items():
-            if not isinstance(name, str):
-                continue
-            lower = lower_entries.get(name, _MISSING)
-            if raw == lower:
-                continue
-            inspection = inspect_mcp_server(name, raw)
-            known_names = self._known_tool_names(name)
-            if inspection.config is not None and not inspection.disabled:
-                manager_key, manager = await self._manager_for_entry(name, raw)
-                if manager_key is not None:
-                    self._private_users.setdefault(manager_key, set()).add(f"{kind}:{key}")
-                    state.manager_refs[name] = (manager_key, manager)
-                tools = await build_mcp_tools_for_servers(manager, {name})
-                registered: list[str] = []
-                for tool in tools:
-                    state.disposers.append(
-                        self._tool_service.register(
-                            tool,
-                            owner=owner,
-                            scope=internal_scope,
-                            source="mcp",
+        # Publish the provisional state before doing any work so the same
+        # disposer path can roll back partial registrations on failure or
+        # cancellation.
+        states[key] = state
+        try:
+            for name, raw in own_entries.items():
+                if not isinstance(name, str):
+                    continue
+                lower = lower_entries.get(name, _MISSING)
+                if raw == lower:
+                    continue
+                inspection = inspect_mcp_server(name, raw)
+                known_names = self._known_tool_names(name)
+                if inspection.config is not None and not inspection.disabled:
+                    manager_key, manager = await self._manager_for_entry(name, raw)
+                    if manager_key is not None:
+                        self._private_users.setdefault(manager_key, set()).add(f"{kind}:{key}")
+                        state.manager_refs[name] = (manager_key, manager)
+                    tools = await build_mcp_tools_for_servers(manager, {name})
+                    registered: list[str] = []
+                    for tool in tools:
+                        state.disposers.append(
+                            self._tool_service.register(
+                                tool,
+                                owner=owner,
+                                scope=internal_scope,
+                                source="mcp",
+                            )
                         )
-                    )
-                    registered.append(tool.name)
-                state.tool_names[name] = tuple(registered)
+                        registered.append(tool.name)
+                    state.tool_names[name] = tuple(registered)
+                    if lower is not _MISSING and known_names:
+                        state.restrictions.append(
+                            self._tool_service.restrict(
+                                agent_id,
+                                owner=owner,
+                                deny=known_names,
+                                session_id=session_id,
+                                max_scope=inherited_limit,
+                            )
+                        )
+                    continue
+
+                # A disabled or invalid higher source intentionally blocks inherited
+                # tools; it is never a silent fallback to a lower source.
                 if lower is not _MISSING and known_names:
                     state.restrictions.append(
                         self._tool_service.restrict(
@@ -335,25 +354,12 @@ class McpService:
                             owner=owner,
                             deny=known_names,
                             session_id=session_id,
-                            max_scope=inherited_limit,
+                            max_scope=disabled_limit,
                         )
                     )
-                continue
-
-            # A disabled or invalid higher source intentionally blocks inherited
-            # tools; it is never a silent fallback to a lower source.
-            if lower is not _MISSING and known_names:
-                state.restrictions.append(
-                    self._tool_service.restrict(
-                        agent_id,
-                        owner=owner,
-                        deny=known_names,
-                        session_id=session_id,
-                        max_scope=disabled_limit,
-                    )
-                )
-
-        states[key] = state
+        except BaseException:
+            await self._dispose_scope_locked(kind, key)
+            raise
 
     async def _dispose_scope_locked(self, kind: Literal["agent", "session"], key: str) -> None:
         states = self._agent_states if kind == "agent" else self._session_states
@@ -395,7 +401,14 @@ class McpService:
                     else None
                 )
             )
-            await manager.start_and_register({name: raw})
+            try:
+                await manager.start_and_register({name: raw})
+            except BaseException:
+                try:
+                    await manager.stop()
+                except Exception:
+                    logger.debug("MCP private manager rollback failed", exc_info=True)
+                raise
             self._private_managers[manager_key] = manager
             self._private_users[manager_key] = set()
         return manager_key, manager

@@ -265,6 +265,53 @@ async def test_project_mcp_uses_session_scope_without_cross_session_leak(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_prepare_view_rolls_back_partial_scope_on_failure(monkeypatch, tmp_path) -> None:
+    tools = ToolService()
+    profiles = _Profiles({"coder": {"private": _local("private")}})
+    workspaces = _Workspaces()
+    manager = _ConnectionManager()
+
+    async def fake_start(private_manager, raw):
+        for name in raw:
+            private_manager._connections[name] = SimpleNamespace(
+                is_connected=True,
+                disconnect=lambda: _done(),
+            )
+
+    async def _done():
+        return None
+
+    async def fail_build(_manager, _names):
+        raise RuntimeError("tool discovery failed")
+
+    monkeypatch.setattr(
+        "ftre.plugins.builtin.mcp.connection.McpManager.start_and_register",
+        fake_start,
+    )
+    monkeypatch.setattr(
+        "ftre.plugins.builtin.mcp.service.build_mcp_tools_for_servers",
+        fail_build,
+    )
+
+    service = McpService(
+        manager,
+        tool_service=tools,
+        config_service=ConfigService(tmp_path / "config.json", {"mcp": {}}),
+        agent_profiles=profiles,
+        workspaces=workspaces,
+    )
+
+    with pytest.raises(RuntimeError, match="tool discovery failed"):
+        await service.prepare_view("coder", "session-1")
+
+    assert service._agent_states == {}
+    assert service._private_managers == {}
+    assert service._private_users == {}
+    assert tools.snapshot("coder", "session-1") == ()
+    await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_session_restriction_does_not_hide_another_session() -> None:
     tools = ToolService()
     global_dispose = tools.register(

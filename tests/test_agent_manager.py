@@ -731,3 +731,33 @@ def test_update_agent_name_and_workspace(tmp_path):
 
     assert cfg["name"] == "NewName"
     assert cfg["workspace"] == "/new/ws"
+
+
+def test_update_agent_preserves_bom_encoded_config(tmp_path):
+    """MCP writes must not discard fields from a Windows BOM config."""
+    from ftre.services.agent_profile.manager import AgentManager
+
+    agents_dir = tmp_path / "agents"
+    agent_dir = agents_dir / "coder"
+    agent_dir.mkdir(parents=True)
+    config_path = agent_dir / "agent.config.json"
+    config_path.write_text(
+        "\ufeff" + json.dumps(
+            {
+                "name": "Coder",
+                "llm": {"provider": "openai", "model": "gpt-test"},
+                "mcp": {"old": {"type": "local", "command": ["old"]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mgr = AgentManager(agents_dir=agents_dir)
+    updated = mgr.update_agent(
+        "coder",
+        {"mcp": {"new": {"type": "local", "command": ["new"]}}},
+    )
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    assert updated["llm"] == persisted["llm"]
+    assert persisted["mcp"]["new"]["command"] == ["new"]

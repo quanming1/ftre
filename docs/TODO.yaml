@@ -1809,10 +1809,11 @@ stages:
             status: done
       - id: F40
         title: MCP 三层配置、统一目录与运行时收口
-        status: in_progress
+        status: done
         date: 2026-09-02
+        completion_date: 2026-09-03
         prd: docs/prd/PRD-F40-mcp-three-layer-catalog-and-runtime.md
-        prd_status: approved
+        prd_status: 已验收
         depends_on:
           - F34
           - F39
@@ -1830,13 +1831,13 @@ stages:
         tasks:
           - id: F40.1
             title: 三层 Source、Catalog 模型与 API 契约
-            status: todo
+            status: done
           - id: F40.2
             title: ToolService session scope 与 MCP ToolView 装配
-            status: todo
+            status: done
           - id: F40.3
             title: 配置写入、Config watcher 与状态收口
-            status: todo
+            status: done
           - id: F40.4
             title: 跨仓 UI、回归与生命周期验收
-            status: todo
+            status: done
