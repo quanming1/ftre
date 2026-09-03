@@ -1,13 +1,16 @@
 # Changelog
 
-## [未发布]
+## [0.3.2] - 2026-09-03
 
 ### F40 MCP 三层配置与统一目录
 
 - MCP 目录统一解析 global/agent/project 三层配置，按 `project > agent > global` 返回 effective/source
   视图，HTTP CRUD 委托 Config、Agent Profile 和 Workspace Service，并对凭据字段脱敏。
 - ToolService 按 Agent/Session 隔离 MCP 工具；ConfigService watcher 负责全局热重载，ToolView 准备失败会
-  回滚工具、限制和私有连接，Agent MCP 配置使用原子写入。
+  回滚工具、限制和私有连接，Agent MCP 配置使用原子写入并兼容 UTF-8 BOM。
+- 后端全量 pytest 776 passed，Ruff、架构扫描和 MCP 回归通过。
+
+## [未发布]
 
 ### F39 ConfigService 外部变更热更新与模型目录
 
