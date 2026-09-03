@@ -8,10 +8,10 @@
 |---|---|
 | 阶段 | F40 |
 | 名称 | MCP 三层配置、统一目录与运行时收口 |
-| 状态 | approved |
+| 状态 | 已验收 |
 | 创建日期 | 2026-09-02 |
 | 定稿日期 | 2026-09-02 |
-| 验收日期 | — |
+| 验收日期 | 2026-09-03 |
 | 关联文档 | `docs/TODO.yaml` F40；配对桌面端 C2；历史 C2 MCP 双层配置 |
 
 ## 1. 背景与目标
@@ -24,15 +24,15 @@
 
 ### 2.1 功能需求
 
-- [ ] FR1：支持三层 MCP 来源：全局 `~/.ftre/config.json#mcp`、Agent `~/.ftre/agents/<agent>/agent.config.json#mcp`、项目 `<workspace>/.ftre/mcp.json#mcp`。
-- [ ] FR2：统一解析优先级为 `project > agent > global`；同名项只保留优先级最高的有效定义作为 effective 项，所有来源仍可在管理视图中展示并标注覆盖关系。
-- [ ] FR3：`McpService.catalog(agent_id, workspace, view)` 返回配置快照，不依赖连接是否已建立；状态至少区分 `configured`、`connecting`、`connected`、`failed`、`disabled`、`invalid`。
-- [ ] FR4：连接由 `McpManager` 保持；全局连接注册到 global ToolService scope，Agent 覆盖注册到 `agent:<agent_id>`，项目覆盖注册到 `session:<session_id>`。同名/同配置连接按配置指纹复用，不泄漏运行时前缀到 API/UI。
-- [ ] FR5：ToolService 增加 session 作用域投影，固定可见性顺序为 `global → agent → session`；会话级限制不能影响同 Agent 的其他 Session。
-- [ ] FR6：恢复 MCP HTTP API：`GET` 查询 effective/source 快照；`POST/PATCH/DELETE` 明确指定 `scope=global|agent|project`，Agent 操作必须带 `agent_id`，项目操作必须带 `workspace`。写入必须委托 ConfigService、AgentProfileService、WorkspaceService，不得在 MCP Plugin 中直接操作其文件。
-- [ ] FR7：全局配置变更订阅 ConfigService watcher 后重新加载连接和全局工具；Agent/项目配置变更在下一次对应 ToolView 创建时按新快照装配。运行中的 ToolView 保持不可变。
-- [ ] FR8：API 对环境变量和远程 headers 做脱敏；损坏/禁用配置可诊断、可展示，不能导致其他合法 MCP 消失。
-- [ ] FR9：删除无生产者的 `_servers`、伪 `connect/disconnect` 状态 API 与 `McpManager` 私有文件轮询 watcher，不保留兼容分支。
+- [x] FR1：支持三层 MCP 来源：全局 `~/.ftre/config.json#mcp`、Agent `~/.ftre/agents/<agent>/agent.config.json#mcp`、项目 `<workspace>/.ftre/mcp.json#mcp`。
+- [x] FR2：统一解析优先级为 `project > agent > global`；同名项只保留优先级最高的有效定义作为 effective 项，所有来源仍可在管理视图中展示并标注覆盖关系。
+- [x] FR3：`McpService.catalog(agent_id, workspace, view)` 返回配置快照，不依赖连接是否已建立；状态至少区分 `configured`、`connecting`、`connected`、`failed`、`disabled`、`invalid`。
+- [x] FR4：连接由 `McpManager` 保持；全局连接注册到 global ToolService scope，Agent 覆盖注册到 `agent:<agent_id>`，项目覆盖注册到 `session:<session_id>`。同名/同配置连接按配置指纹复用，不泄漏运行时前缀到 API/UI。
+- [x] FR5：ToolService 增加 session 作用域投影，固定可见性顺序为 `global → agent → session`；会话级限制不能影响同 Agent 的其他 Session。
+- [x] FR6：恢复 MCP HTTP API：`GET` 查询 effective/source 快照；`POST/PATCH/DELETE` 明确指定 `scope=global|agent|project`，Agent 操作必须带 `agent_id`，项目操作必须带 `workspace`。写入必须委托 ConfigService、AgentProfileService、WorkspaceService，不得在 MCP Plugin 中直接操作其文件。
+- [x] FR7：全局配置变更订阅 ConfigService watcher 后重新加载连接和全局工具；Agent/项目配置变更在下一次对应 ToolView 创建时按新快照装配。运行中的 ToolView 保持不可变。
+- [x] FR8：API 对环境变量和远程 headers 做脱敏；损坏/禁用配置可诊断、可展示，不能导致其他合法 MCP 消失。
+- [x] FR9：删除无生产者的 `_servers`、伪 `connect/disconnect` 状态 API 与 `McpManager` 私有文件轮询 watcher，不保留兼容分支。
 
 ### 2.2 非功能需求
 
@@ -135,3 +135,4 @@ DELETE /api/mcp/{name}?scope=...
 |---|---|---|
 | 2026-09-02 | 初始定稿 | 旧 C2 的双层配置和诊断 API 已与现行 MCP/UI 架构脱节，需要独立阶段收口三层 Owner 与协议。 |
 | 2026-09-02 | 后端实现落地：McpService 三层配置解析（project > agent > global）+ 统一 Catalog + CRUD/查询 HTTP 契约 + ToolService session scope 隔离 + ConfigService watcher 重载；补契约测试 test_f40_mcp_catalog.py，修正 F34 tool-boundaries 断言随 mcp_config 下沉迁移，AC1–AC7 通过（592 passed / ruff / diff）。 | 完成 F40 后端收口，使浮窗可见三层配置且旧的空状态源被替换。 |
+| 2026-09-03 | 收尾审计：MCP ToolView 准备失败时回滚已注册工具、权限限制和私有连接；Agent MCP 配置写入改为原子替换；后端全量 pytest 775 passed、Ruff、架构/生命周期/启动门禁和 diff check 通过。FR1–FR9、AC1–AC7 全部复核通过。 | 消除异常路径资源泄漏和崩溃时配置半写入风险，完成阶段验收。 |
