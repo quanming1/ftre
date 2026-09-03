@@ -10,6 +10,18 @@
   回滚工具、限制和私有连接，Agent MCP 配置使用原子写入并兼容 UTF-8 BOM。
 - 后端全量 pytest 776 passed，Ruff、架构扫描和 MCP 回归通过。
 
+## [0.3.1] - 2026-08-27
+
+### 修复
+
+- **responses reasoning 跨 Provider 重放 400**（F30）：历史 reasoning 组重放前按目标协议形状校验，
+  不兼容组自动降级重建路径，避免跨 Provider 请求被上游拒绝。
+- **CI 安装失败**（D1）：补齐 `ftre-agent` 与 `ftre-agent-runtime` 的本地发行物注册。
+
+### 测试
+
+- inbox hook 测试改用 `ftre_llm` 事件类型，解除对已退休 Core 私有 API 的依赖。
+
 ## [未发布]
 
 ### F39 ConfigService 外部变更热更新与模型目录
