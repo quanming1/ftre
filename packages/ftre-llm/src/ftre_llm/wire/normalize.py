@@ -115,7 +115,7 @@ def _normalize_chat_messages(
 
 
 def normalize_usage(usage: Any) -> dict | None:
-    """把 SDK usage 对象规范化成 core 统一的 token 字段。
+    """把 SDK usage 对象规范化成统一的 token 字段。
 
     Chat Completions 使用 ``prompt_tokens`` / ``completion_tokens``，而
     Responses API 的标准字段是 ``input_tokens`` / ``output_tokens``。
@@ -145,5 +145,4 @@ def normalize_usage(usage: Any) -> dict | None:
         if canonical not in normalized and responses_field in normalized:
             normalized[canonical] = normalized[responses_field]
     return normalized
-
 

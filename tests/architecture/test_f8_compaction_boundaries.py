@@ -36,7 +36,7 @@ def test_optional_package_is_single_compaction_owner():
 
 
 def test_core_agent_config_does_not_own_compaction_settings():
-    source = (SRC / "services" / "agent" / "config.py").read_text(encoding="utf-8")
+    source = (SRC / "services" / "agent_profile" / "config.py").read_text(encoding="utf-8")
     for field in (
         "precompact_threshold",
         "compact_threshold",

@@ -1,89 +1,520 @@
-"""Agent 公共 Service：身份注册 + 显式数据面 Runtime。
+"""Agent 公共 Service：身份、状态和 Runtime Factory 调度。
 
-这里是 HTTP、WebSocket、Inbox 和 Feature 看到的 Agent 边界。它只保存 Agent
-的公开身份/状态，并把执行请求交给已绑定的 Runtime；真正的 AgentLoop 由
-``ftre-agent-runtime`` 的 Provider Plugin 在 Composition 阶段组装，业务调用方
-反向依赖不到 Loop 的私有实现。
-
-Runtime 绑定约定（唯一调用契约，无独立 Port 类型）：被绑定对象实现
-``run_inbound`` / ``cancel_session`` / ``get_session_status`` /
-``is_active_session`` / ``delete_session`` / ``resume_confirmation``。
-PRD-F33 删除了旧的 Driver 适配层过渡接线；没有第二个
-Runtime 实现之前不引入 Protocol 层。
+``ftre-agent`` 是公开的 Service Owner。具体 AgentLoop 由 Runtime Provider
+注册到这里，但不会反过来创建或发布 ``agents`` Service。这样 Gateway、Inbox、
+HTTP 和 Channel 只依赖本模块，不会看到 Runtime 的具体实现。
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import json
+import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
-from .contracts import AgentListener, AgentRunResult, InboundMessage
+from .contracts import (
+    AgentCreateSpec,
+    AgentListener,
+    AgentResumeSpec,
+    AgentRunRequest,
+    AgentRunResult,
+    AgentRuntimeFactory,
+    AgentView,
+    RunReservation,
+    RuntimeControlPort,
+)
+from .errors import (
+    AgentAlreadyExistsError,
+    AgentBusyError,
+    AgentNotFoundError,
+    FactoryAlreadyRegisteredError,
+    FactoryNotRegisteredError,
+    FactoryRegistrationMismatchError,
+    InvalidFactoryError,
+    InvalidRunRequestError,
+    ServiceClosedError,
+)
 from .registry import AgentRegistry, HookScopeCarrier
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class FactoryRegistration:
+    """一次 Runtime Factory 注册的不可变句柄。"""
+
+    token: object
+    name: str
+
+
+def _factory_name(factory: Any) -> str:
+    return str(getattr(factory, "name", None) or factory.__class__.__name__)
+
+
+@dataclass(slots=True)
+class _AgentEntry:
+    spec: AgentCreateSpec | AgentResumeSpec
+    runtime: Any
+    state: str = "idle"
+    run_id: str | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+class AgentHandle:
+    """AgentService 返回的操作句柄；不持有第二份运行状态。"""
+
+    def __init__(self, service: AgentService, agent_id: str) -> None:
+        self._service = service
+        self._agent_id = agent_id
+
+    @property
+    def id(self) -> str:
+        return self._agent_id
+
+    def view(self) -> AgentView:
+        return self._service.view(self._agent_id)
+
+    def status(self) -> str:
+        return self._service.status(self._agent_id)
+
+    async def run(self, request: AgentRunRequest) -> AgentRunResult:
+        return await self._service.run(self._agent_id, request)
+
+    async def stream(self, request: AgentRunRequest):
+        async for event in self._service.stream(self._agent_id, request):
+            yield event
+
+    async def cancel(self, reason: str = "") -> Any:
+        return await self._service.cancel(self._agent_id, reason=reason)
+
+    async def dispose(self) -> None:
+        await self._service.dispose(self._agent_id)
 
 
 class AgentService:
-    """对外稳定的 Agent 合约。
-
-    ``registry`` 管理可见的 Agent 身份，``_runtime`` 只在 Runtime Provider
-    完成组装后绑定。因此 Service 可以先被路由注册，再由 Runtime Plugin 完成
-    数据面绑定；未绑定时查询方法仍可安全返回 idle，但执行方法会明确报
-    "未就绪"。
-    """
+    """对外稳定的 Agent 合约和唯一 ``agents`` Service Owner。"""
 
     key = "agents"
 
     def __init__(self) -> None:
-        self._runtime: Any = None
+        self._factory: Any = None
+        self._control: RuntimeControlPort | None = None
+        self._factory_registration: FactoryRegistration | None = None
+        self._closed = False
         self.registry = AgentRegistry()
+        self._entries: dict[str, _AgentEntry] = {}
+        self._reservations: dict[str, RunReservation] = {}
+        self._completed_runs: dict[tuple[str, str], AgentRunResult] = {}
+        self._request_fingerprints: dict[tuple[str, str], str] = {}
+        # 仅保护 run()/stream() 的入口竞态；RuntimeControlPort 仍是 active
+        # Turn 的事实来源，Service 不保存 Runtime Task 或执行状态机。
+        self._inflight_admissions: set[str] = set()
         self._listeners: dict[str, list[AgentListener]] = {
             "created": [],
             "disposed": [],
+            "status-changed": [],
         }
 
-    @property
-    def runtime(self) -> Any:
-        """Return the attached runtime instance, never a wrapper port."""
-        if self._runtime is None:
-            raise RuntimeError("AgentService runtime is not ready")
-        return self._runtime
+    def start(self) -> None:
+        """允许 Composition 在提供 Service 后显式启动它。"""
+        self._closed = False
 
-    def attach_runtime(self, runtime) -> None:
-        """Bind the concrete runtime after Provider composition."""
-        if self._runtime is not None and self._runtime is not runtime:
-            raise RuntimeError("AgentService already has an attached runtime")
-        self._runtime = runtime
-        if self.registry.get("default") is None:
-            self.registry.register("default", state="ready")
-
-    def detach_runtime(self) -> None:
-        """Detach the runtime during Gateway shutdown; safe to repeat."""
-        self._runtime = None
+    def close(self) -> None:
+        """关闭 Service；Runtime Factory 的生命周期由其 Provider 管理。"""
+        self._closed = True
+        self._factory = None
+        self._control = None
+        self._factory_registration = None
+        self._entries.clear()
+        self._reservations.clear()
+        self._completed_runs.clear()
+        self._request_fingerprints.clear()
+        self._inflight_admissions.clear()
         for record in tuple(self.registry.list()):
             self.registry.dispose(record["id"])
 
-    async def run(self, message: InboundMessage) -> AgentRunResult:
-        """执行一条已经由上游交付的 InboundMessage。
+    def register_factory(self, factory: AgentRuntimeFactory) -> FactoryRegistration:
+        """注册唯一 Runtime Factory，不暴露第二个 Context Service。"""
+        if self._closed:
+            raise ServiceClosedError("AgentService is closed")
+        if self._factory is not None:
+            raise FactoryAlreadyRegisteredError(
+                "AgentService already has a registered factory"
+            )
+        control = getattr(factory, "control", None)
+        required = (
+            "cancel_session",
+            "get_session_status",
+            "is_active_session",
+            "delete_session",
+            "resume_confirmation",
+        )
+        missing = [name for name in required if not callable(getattr(control, name, None))]
+        if missing:
+            raise InvalidFactoryError(
+                f"invalid Agent Runtime Factory; missing: {', '.join(missing)}"
+            )
+        registration = FactoryRegistration(token=object(), name=_factory_name(factory))
+        self._factory = factory
+        self._control = control
+        self._factory_registration = registration
+        if self.registry.get("default") is None:
+            self.registry.register("default", state="ready")
+        return registration
 
-        Inbox Package 负责 admission 和 worker；AgentService 只接收这一条
-        已交付输入。直接调用时若同一 Session 正在运行，由 Runtime 返回 busy
-        错误，而不是在这里隐式创建第二个队列。
-        """
-        return await self._await(self.runtime.run_inbound(message))
+    def unregister_factory(self, registration: FactoryRegistration) -> bool:
+        """按注册句柄摘除 Runtime Factory；重复摘除安全。"""
+        if self._factory_registration is None:
+            return False
+        if registration.token is not self._factory_registration.token:
+            raise FactoryRegistrationMismatchError(
+                "Agent Runtime Factory registration does not match"
+            )
+        self._factory = None
+        self._control = None
+        self._factory_registration = None
+        self._entries.clear()
+        self._reservations.clear()
+        self._completed_runs.clear()
+        self._request_fingerprints.clear()
+        self._inflight_admissions.clear()
+        for record in tuple(self.registry.list()):
+            self.registry.dispose(record["id"])
+        return True
 
-    async def cancel(self, *args: Any, **kwargs: Any) -> Any:
+    @property
+    def factory_name(self) -> str | None:
+        """只提供诊断名称，不暴露 Runtime 对象。"""
+        return self._factory_registration.name if self._factory_registration else None
+
+    def is_ready(self) -> bool:
+        return not self._closed and self._factory is not None
+
+    @staticmethod
+    def _validate_agent_id(agent_id: str) -> None:
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            raise InvalidRunRequestError("agent_id must be non-empty")
+
+    @staticmethod
+    def _request_key(request: AgentRunRequest) -> tuple[str, str]:
+        return request.session_id, request.request_id
+
+    @staticmethod
+    def _request_fingerprint(request: AgentRunRequest) -> str:
+        messages = [
+            {
+                "role": getattr(message, "role", ""),
+                "name": getattr(message, "name", ""),
+                "text": message.get_text_content()
+                if callable(getattr(message, "get_text_content", None))
+                else repr(message),
+            }
+            for message in request.messages
+        ]
+        return json.dumps(
+            {
+                "messages": messages,
+                "metadata": dict(request.metadata),
+                "agent_id": request.agent_id,
+                "channel_id": request.channel_id,
+                "source": request.source,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+    def _entry_or_raise(self, agent_id: str) -> _AgentEntry:
+        entry = self._entries.get(agent_id)
+        if entry is None:
+            raise AgentNotFoundError(f"Agent not found: {agent_id}")
+        return entry
+
+    @staticmethod
+    def _state_from_result(result: AgentRunResult) -> str:
+        if getattr(result, "paused", False):
+            return "paused"
+        if result.status == "cancelled":
+            return "cancelled"
+        if result.status == "failed":
+            return "failed"
+        return "idle"
+
+    @staticmethod
+    def _with_run_id(result: AgentRunResult, run_id: str) -> AgentRunResult:
+        if result.run_id:
+            return result
+        return replace(result, run_id=run_id)
+
+    async def _notify(self, event: str, view: AgentView) -> None:
+        for callback in tuple(self._listeners.get(event, ())):
+            try:
+                result = callback(view)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("AgentService observer failed event=%s agent=%s", event, view.agent_id)
+
+    def _factory_or_raise(self) -> Any:
+        if self._closed:
+            raise ServiceClosedError("AgentService is closed")
+        if self._factory is None:
+            raise FactoryNotRegisteredError("AgentService Runtime Factory is not ready")
+        return self._factory
+
+    def _control_or_raise(self) -> RuntimeControlPort:
+        self._factory_or_raise()
+        if self._control is None:
+            raise InvalidFactoryError("Runtime Factory control port is not ready")
+        return self._control
+
+    async def create(self, spec: AgentCreateSpec) -> AgentHandle:
+        """创建一个 Agent identity，并委托 Runtime Factory 建立运行句柄。"""
+        factory = self._factory_or_raise()
+        self._validate_agent_id(spec.agent_id)
+        if spec.agent_id in self._entries:
+            raise AgentAlreadyExistsError(f"Agent already exists: {spec.agent_id}")
+        create = getattr(factory, "create", None)
+        if not callable(create):
+            raise InvalidFactoryError("Runtime Factory does not implement create")
+        runtime = await self._await(create(spec))
+        self.registry.register(spec.agent_id, state="idle")
+        self._entries[spec.agent_id] = _AgentEntry(spec=spec, runtime=runtime)
+        await self._notify("created", self.view(spec.agent_id))
+        return AgentHandle(self, spec.agent_id)
+
+    async def resume(self, spec: AgentResumeSpec) -> AgentHandle:
+        """恢复已有 Agent identity；配置校验由 Runtime/Session Service 完成。"""
+        factory = self._factory_or_raise()
+        self._validate_agent_id(spec.agent_id)
+        if spec.agent_id in self._entries:
+            raise AgentAlreadyExistsError(f"Agent already exists: {spec.agent_id}")
+        resume = getattr(factory, "resume", None)
+        if not callable(resume):
+            raise InvalidFactoryError("Runtime Factory does not implement resume")
+        runtime = await self._await(resume(spec))
+        self.registry.register(spec.agent_id, state="idle")
+        self._entries[spec.agent_id] = _AgentEntry(spec=spec, runtime=runtime)
+        await self._notify("created", self.view(spec.agent_id))
+        return AgentHandle(self, spec.agent_id)
+
+    def view(self, agent_id: str) -> AgentView:
+        entry = self._entries.get(agent_id)
+        if entry is None:
+            raise AgentNotFoundError(f"Agent not found: {agent_id}")
+        config_hash = getattr(entry.spec.config, "snapshot_hash", None)
+        return AgentView(
+            agent_id=agent_id,
+            state=self.status(agent_id),
+            session_id=entry.spec.session_id,
+            run_id=entry.run_id,
+            created_at=entry.created_at,
+            config_snapshot_hash=config_hash,
+        )
+
+    async def run(
+        self,
+        agent_id: str,
+        request: AgentRunRequest,
+    ) -> AgentRunResult:
+        """执行一轮 AgentRun。"""
+        self._factory_or_raise()
+        if not isinstance(agent_id, str):
+            raise InvalidRunRequestError("agent_id must be a string")
+        entry = self._entry_or_raise(agent_id)
+        if request.session_id != (entry.spec.session_id or agent_id):
+            raise InvalidRunRequestError("request session does not belong to Agent")
+        request_key = self._request_key(request)
+        request_fingerprint = self._request_fingerprint(request)
+        existing_fingerprint = self._request_fingerprints.get(request_key)
+        if existing_fingerprint is not None and existing_fingerprint != request_fingerprint:
+            raise InvalidRunRequestError("request_id 已绑定不同内容")
+        cached = self._completed_runs.get(request_key)
+        if cached is not None:
+            return cached
+        self._request_fingerprints.setdefault(request_key, request_fingerprint)
+        self._expire_reservations()
+        if entry.state == "paused":
+            raise AgentBusyError(f"Agent is awaiting confirmation: {agent_id}")
+        if agent_id in self._inflight_admissions:
+            raise AgentBusyError(f"Agent is busy: {agent_id}")
+        if self._control_or_raise().is_active_session(entry.spec.session_id or agent_id):
+            raise AgentBusyError(f"Agent is busy: {agent_id}")
+        entry.state = "running"
+        entry.run_id = request.request_id
+        self._inflight_admissions.add(agent_id)
+        self._consume_reservation(
+            agent_id,
+            request.session_id,
+            request.request_id,
+        )
+        self.registry.set_state(agent_id, "running")
+        await self._notify("status-changed", self.view(agent_id))
+        try:
+            result = await self._await(entry.runtime.run(request))
+            result = self._with_run_id(result, request.request_id)
+            self._completed_runs[request_key] = result
+            entry.state = self._state_from_result(result)
+            return result
+        except asyncio.CancelledError:
+            self._completed_runs[request_key] = AgentRunResult(
+                session_id=request.session_id,
+                turn_id=request.request_id,
+                status="cancelled",
+                run_id=request.request_id,
+                error={"code": "cancelled", "message": "Agent run cancelled"},
+            )
+            entry.state = "cancelled"
+            raise
+        except Exception as exc:
+            self._completed_runs[request_key] = AgentRunResult(
+                session_id=request.session_id,
+                turn_id=request.request_id,
+                status="failed",
+                run_id=request.request_id,
+                error={"code": "agent_run_error", "message": str(exc), "retryable": False},
+            )
+            entry.state = "failed"
+            raise
+        finally:
+            self._inflight_admissions.discard(agent_id)
+            if entry.state == "running":
+                entry.state = "idle"
+            self.registry.set_state(agent_id, entry.state)
+            await self._notify("status-changed", self.view(agent_id))
+
+    async def stream(self, agent_id: str, request: AgentRunRequest):
+        """转发 Runtime 事件流，并在流结束时更新 Agent 状态。"""
+        self._factory_or_raise()
+        entry = self._entry_or_raise(agent_id)
+        self._expire_reservations()
+        if agent_id in self._inflight_admissions:
+            raise AgentBusyError(f"Agent is busy: {agent_id}")
+        if self._control_or_raise().is_active_session(entry.spec.session_id or agent_id):
+            raise AgentBusyError(f"Agent is busy: {agent_id}")
+        if request.session_id != (entry.spec.session_id or agent_id):
+            raise InvalidRunRequestError("request session does not belong to Agent")
+        stream = getattr(entry.runtime, "stream", None)
+        if not callable(stream):
+            raise InvalidFactoryError("Runtime handle does not implement stream")
+        entry.state = "running"
+        entry.run_id = request.request_id
+        self._inflight_admissions.add(agent_id)
+        self._consume_reservation(agent_id, request.session_id, request.request_id)
+        self.registry.set_state(agent_id, "running")
+        await self._notify("status-changed", self.view(agent_id))
+        try:
+            async for event in stream(request):
+                yield event
+            entry.state = "idle"
+        finally:
+            self._inflight_admissions.discard(agent_id)
+            if entry.state == "running":
+                entry.state = "idle"
+            self.registry.set_state(agent_id, entry.state)
+            await self._notify("status-changed", self.view(agent_id))
+
+    async def cancel(self, agent_id: str, reason: str = "", **kwargs: Any) -> Any:
         """请求 Runtime 取消会话中的 active Turn；未交付输入由 InboxService 负责。"""
-        return await self._await(self.runtime.cancel_session(*args, **kwargs))
+        entry = self._entries.get(agent_id)
+        if entry is not None:
+            entry.state = "stopping"
+            self.registry.set_state(agent_id, "stopping")
+            cancel = getattr(entry.runtime, "cancel", None)
+            if callable(cancel):
+                result = await self._await(cancel(reason))
+            else:
+                result = await self._await(
+                    self._control_or_raise().cancel_session(
+                        entry.spec.session_id or agent_id, **kwargs
+                    )
+                )
+            entry.state = "cancelled" if result else "idle"
+            self.registry.set_state(agent_id, entry.state)
+            await self._notify("status-changed", self.view(agent_id))
+            return result
+        return await self._await(
+            self._control_or_raise().cancel_session(agent_id, **kwargs)
+        )
 
     def status(self, session_id: str) -> str:
         """查询 Session 当前状态；Runtime 未绑定时返回 idle。"""
-        if self._runtime is None:
+        entry = self._entries.get(session_id)
+        if entry is not None:
+            session_id = entry.spec.session_id or session_id
+            if entry.state == "paused":
+                return "paused"
+        if self._control is None:
             return "idle"
-        return self._runtime.get_session_status(session_id)
+        return str(self._control.get_session_status(session_id))
 
     def is_busy(self, session_id: str) -> bool:
         """判断 Session 是否仍有活动 Turn 或维护任务。"""
-        return self.status(session_id) in {"running", "processing", "compacting"}
+        self._expire_reservations()
+        return self.status(session_id) in {"running", "processing", "compacting", "paused"} or any(
+            item.session_id == session_id for item in self._reservations.values()
+        )
+
+    def try_reserve(
+        self,
+        agent_id: str,
+        session_id: str,
+        request_id: str,
+        *,
+        lease_seconds: float = 30.0,
+    ) -> RunReservation | None:
+        """原子保留一次 Run；Inbox 在 durable claim 前调用。"""
+        self._factory_or_raise()
+        self._validate_agent_id(agent_id)
+        if not session_id or not request_id:
+            raise InvalidRunRequestError("session_id and request_id must be non-empty")
+        entry = self._entries.get(agent_id)
+        if entry is None:
+            raise AgentNotFoundError(f"Agent not found: {agent_id}")
+        self._expire_reservations()
+        if agent_id in self._inflight_admissions:
+            return None
+        if self._control_or_raise().is_active_session(session_id):
+            return None
+        if any(item.agent_id == agent_id for item in self._reservations.values()):
+            return None
+        reservation = RunReservation(
+            reservation_id=uuid4().hex,
+            agent_id=agent_id,
+            session_id=session_id,
+            request_id=request_id,
+            expires_at=datetime.now(UTC) + timedelta(seconds=max(0.1, lease_seconds)),
+        )
+        self._reservations[reservation.reservation_id] = reservation
+        return reservation
+
+    def release_reservation(self, reservation: RunReservation | str) -> bool:
+        """释放一次尚未消费的 Run 保留；重复释放安全。"""
+        reservation_id = (
+            reservation.reservation_id if isinstance(reservation, RunReservation) else reservation
+        )
+        return self._reservations.pop(reservation_id, None) is not None
+
+    def _consume_reservation(self, agent_id: str, session_id: str, request_id: str) -> None:
+        for reservation_id, reservation in tuple(self._reservations.items()):
+            if (
+                reservation.agent_id == agent_id
+                and reservation.session_id == session_id
+                and reservation.request_id == request_id
+            ):
+                self._reservations.pop(reservation_id, None)
+                return
+
+    def _expire_reservations(self) -> None:
+        now = datetime.now(UTC)
+        for reservation_id, reservation in tuple(self._reservations.items()):
+            if reservation.expires_at <= now:
+                self._reservations.pop(reservation_id, None)
 
     def get_session_status(self, session_id: str) -> str:
         """公开状态查询命名，与 Runtime 的 ``get_session_status`` 对齐。"""
@@ -95,7 +526,11 @@ class AgentService:
 
     async def delete_session(self, session_id: str) -> Any:
         """请求 Runtime 关闭并删除一个 Session。"""
-        return await self._await(self.runtime.delete_session(session_id))
+        result = await self._await(self._control_or_raise().delete_session(session_id))
+        for agent_id, entry in tuple(self._entries.items()):
+            if entry.spec.session_id == session_id:
+                await self.dispose(agent_id)
+        return result
 
     async def resume_confirmation(
         self,
@@ -105,22 +540,48 @@ class AgentService:
         metadata: Any,
     ) -> Any:
         """Apply existing confirmation events and resume the paused Agent turn."""
-        return await self._await(
-            self.runtime.resume_confirmation(
+        result = await self._await(
+            self._control_or_raise().resume_confirmation(
                 session_id,
                 channel_id,
                 events,
                 metadata,
             )
         )
+        for agent_id, entry in tuple(self._entries.items()):
+            if entry.spec.session_id != session_id:
+                continue
+            entry.state = (
+                self._state_from_result(result)
+                if isinstance(result, AgentRunResult)
+                else "idle"
+            )
+            self.registry.set_state(agent_id, entry.state)
+            await self._notify("status-changed", self.view(agent_id))
+        return result
 
-    def list(self) -> list[dict[str, Any]]:
-        """返回 Agent registry 的诊断摘要。"""
-        return self.registry.list()
+    async def dispose(self, agent_id: str) -> None:
+        """释放一个 Agent Handle 及其 Runtime 句柄。"""
+        entry = self._entry_or_raise(agent_id)
+        dispose = getattr(entry.runtime, "dispose", None)
+        if callable(dispose):
+            await self._await(dispose())
+        self._entries.pop(agent_id, None)
+        self.registry.dispose(agent_id)
+        session_id = entry.spec.session_id or agent_id
+        for key in tuple(self._completed_runs):
+            if key[0] == session_id:
+                self._completed_runs.pop(key, None)
+                self._request_fingerprints.pop(key, None)
+        await self._notify("disposed", AgentView(agent_id=agent_id, state="disposed"))
 
-    def get(self, agent_id: str) -> dict[str, Any] | None:
+    def list(self) -> tuple[AgentView, ...]:
+        """返回只读 Agent 视图，不暴露 Runtime 或 Registry。"""
+        return tuple(self.view(agent_id) for agent_id in self._entries)
+
+    def get(self, agent_id: str) -> AgentView | None:
         """读取一个 Agent 的公开状态摘要。"""
-        return self.registry.get(agent_id)
+        return self.view(agent_id) if agent_id in self._entries else None
 
     def tool_scope(self, agent_id: str) -> str:
         """返回该 Agent 的 scoped tool key。"""
@@ -144,6 +605,10 @@ class AgentService:
         """订阅 Agent 销毁事件，并返回幂等取消函数。"""
         return self._listen("disposed", callback)
 
+    def on_status_changed(self, callback: AgentListener) -> Callable[[], bool]:
+        """订阅 Agent 状态变化；观察回调失败不影响状态提交。"""
+        return self._listen("status-changed", callback)
+
     @staticmethod
     async def _await(result: Any) -> Any:
         return await result if inspect.isawaitable(result) else result
@@ -166,4 +631,4 @@ class AgentService:
         return dispose
 
 
-__all__ = ["AgentService"]
+__all__ = ["AgentHandle", "AgentService", "FactoryRegistration"]

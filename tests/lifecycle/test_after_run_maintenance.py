@@ -13,9 +13,9 @@ from ftre_agent import (
     AgentRegistry,
     AgentRunResult,
     AllowRun,
-    InboundMessage,
 )
 from ftre_agent_runtime import AgentLoop
+from ftre_agent_runtime.protocol import RuntimeInput
 
 
 @pytest.mark.asyncio
@@ -67,8 +67,8 @@ async def test_after_run_wires_config_and_maintenance_barrier() -> None:
     # 直接覆盖 AgentLoop 到公开 AfterRunPayload 的接线。
     loop._dispatch_agent_hook = dispatch
 
-    await loop.run_inbound(
-        InboundMessage(
+    await loop.run_input(
+        RuntimeInput(
             session_id="session-1",
             request_id="request-1",
             channel_id="ws",
@@ -81,3 +81,28 @@ async def test_after_run_wires_config_and_maintenance_barrier() -> None:
     loop._publish_session_status_async.assert_has_calls(
         [call("session-1", "running"), call("session-1", "compacting"), call("session-1", "idle")]
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_skips_request_with_persisted_assistant_result() -> None:
+    """重启后再次投递同一 request_id 不能重新创建 Agent Turn。"""
+    loop = object.__new__(AgentLoop)
+    loop.sessions = SimpleNamespace(
+        request_state=lambda session_id, request_id, run_id=None: (
+            "completed"
+            if (session_id, request_id, run_id) == ("session-1", "request-1", None)
+            else None
+        )
+    )
+
+    result = await loop.run_input(
+        RuntimeInput(
+            session_id="session-1",
+            request_id="request-1",
+            channel_id="ws",
+            content="重复输入",
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.run_id == "request-1"

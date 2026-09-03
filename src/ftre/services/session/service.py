@@ -20,8 +20,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ftre_agent_core.message import Msg, MsgName
-from ftre_agent_core.types import ReplyFinishedReason
+from ftre_agent.message import Msg, MsgName
+from ftre_agent.types import ReplyFinishedReason
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.services.session.entity.models import (
@@ -176,9 +176,19 @@ class SessionService:
         """同步只读存在性查询，供 Inbox Plugin 做 admission 校验。"""
         return self._repo.get_state(session_id) is not None
 
+    def sessions_root(self) -> Path:
+        """返回 Host 用户数据根，供需要持久化同一生命周期数据的 Package 使用。"""
+        return self._repo.sessions_root()
+
     def has_request_id(self, session_id: str, request_id: str) -> bool:
         """同步只读幂等查询，供 Inbox 避免重复接纳已提交输入。"""
         return self._repo.has_request_id(session_id, request_id)
+
+    def request_state(
+        self, session_id: str, request_id: str, run_id: str | None = None
+    ) -> str | None:
+        """同步查询请求是否已经产生过 Assistant 执行结果。"""
+        return self._repo.request_state(session_id, request_id, run_id)
 
     async def update_session(
         self,
@@ -237,7 +247,7 @@ class SessionService:
         若是 team leader：级联取消并删除全部成员 session 与 sub_agents profile 树。
         若是 team 成员（被单独删除）：反向从 leader 的 teams 摘除并删其 profile。
         """
-        from ftre.services.agent.profile import (
+        from ftre.services.agent_profile import (
             sub_agent as sub_agent_profile,  # 惰性导入避免包间循环
         )
 
@@ -769,7 +779,7 @@ class SessionService:
 
 
 def _gen_msg_id() -> str:
-    """与 ftre_agent_core Msg 的 id 生成规则保持一致（uuid4 hex 前 16 位）。"""
+    """与 ftre_agent Msg 的 id 生成规则保持一致（uuid4 hex 前 16 位）。"""
     return uuid.uuid4().hex[:16]
 
 

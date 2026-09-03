@@ -6,8 +6,8 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-from ftre_agent import InboundMessage
 from ftre_agent_runtime import AgentLoop
+from ftre_inbox.protocol import InboundMessage
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
 
@@ -68,18 +68,23 @@ async def test_before_claim_keep_preserves_pending_and_remove_is_explicit(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_restart_recovers_unclaimed_item_without_duplicate(tmp_path):
+async def test_restart_loads_unclaimed_item_without_auto_dispatch(tmp_path):
     root = tmp_path / "inbox"
     first = InboxService(InboxRepository(root))
     await first.followup(InboundMessage("s1", "r1", "ws", "hello"))
     await first.close()
 
-    second_repo = InboxRepository(root)
-    await second_repo.load_all()
-    snapshot = await second_repo.snapshot("s1")
-    assert [item.request_id for item in snapshot.pending] == ["r1"]
-    await second_repo.load_all()
-    assert [item.request_id for item in (await second_repo.snapshot("s1")).pending] == ["r1"]
+    agent = _Agent()
+    second = InboxService(InboxRepository(root), agent)
+    await second.start()
+    await asyncio.sleep(0.05)
+    assert agent.calls == []
+    assert [item.request_id for item in (await second.snapshot("s1")).pending] == ["r1"]
+
+    await second.resume_pending("s1")
+    await agent.started.wait()
+    agent.release.set()
+    await second.close()
 
 
 @pytest.mark.asyncio
@@ -88,7 +93,7 @@ async def test_inbox_plugin_restart_replaces_closed_service_without_duplicate_li
     try:
         first = composition.context.get("inbox")
         assert first is not None and first._closed is False
-        assert composition.context.get("agents").runtime is not None
+        assert composition.context.get("agents").is_ready() is True
         # Inbox 是多个业务 Package 的 Provider；先撤销消费者，再重启 Provider，
         # 避免依赖图在同一事件循环中同时做 provider 替换和 consumer 重载。
         for plugin_id in ("compaction", "team", "task", "messaging"):

@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from cordis import Context
 
+from .permission import PermissionEngine
 from .service import ToolService
 
-inject = ()
+inject = ("hook_runtime",)
 provide = ("tools",)
 
 
@@ -18,4 +19,10 @@ def apply(ctx: Context, config=None):
     """发布供内置/外部 Feature 使用的 ToolService。"""
     if ctx.get("tools", strict=False) is not None:
         return
-    ctx.provide("tools", ToolService())
+    ctx.provide(
+        "tools",
+        ToolService(
+            hook_runtime=ctx.hook_runtime,
+            permission_engine=PermissionEngine(),
+        ),
+    )

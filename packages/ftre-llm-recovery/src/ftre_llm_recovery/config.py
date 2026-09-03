@@ -17,9 +17,9 @@ from typing import Any
 class RetryRule:
     """某一种错误码对应的恢复建议。
 
-    ``action`` 只允许 ``retry`` 或 ``stop``。``delay`` 是建议 Core 在下一次尝试前
+    ``action`` 只允许 ``retry`` 或 ``stop``。``delay`` 是建议 Runtime 在下一次尝试前
     等待的秒数；它不是超时时间。这里没有 ``max_retries``，因为最大尝试次数属于
-    Core 状态机，Plugin 无权突破那个硬上限。
+    Runtime 状态机，Plugin 无权突破那个硬上限。
     """
 
     action: str
@@ -31,8 +31,8 @@ class RecoveryConfig:
     """一个 Plugin Fiber 生命周期内共享的只读配置快照。
 
     ``rules`` 按已经归一化的错误码索引规则；``exclude_codes`` 是明确交还其他
-    Plugin/Core 处理的错误集合。无法识别的配置不会让 Plugin 启动失败，而是被忽略，
-    最终表现为“不覆盖 Core 默认策略”。
+    Plugin/Runtime 处理的错误集合。无法识别的配置不会让 Plugin 启动失败，而是被忽略，
+    最终表现为“不覆盖 Runtime 默认策略”。
     """
 
     rules: Mapping[str, RetryRule]
@@ -44,18 +44,18 @@ def parse_config(raw: Mapping[str, Any] | None) -> RecoveryConfig:
 
     这里采用宽容解析：单条规则格式错误时只忽略该规则，避免一个拼写错误导致整个
     Gateway 无法启动。策略没有命中时，Hook listener 会调用 ``next_()``，继续使用
-    后续监听器或 Core 默认决定。
+    后续监听器或 Runtime 默认决定。
     """
 
     root = raw if isinstance(raw, Mapping) else {}
-    # rules 的键就是 Core 归一化后的 LLMError.code，例如 timeout/rate_limit。
+            # rules 的键就是 Runtime 归一化后的 LLMError.code，例如 timeout/rate_limit。
     raw_rules = root.get("rules", {})
     rules: dict[str, RetryRule] = {}
     if isinstance(raw_rules, Mapping):
         for code, value in raw_rules.items():
             if not isinstance(code, str) or not isinstance(value, Mapping):
                 continue
-            # 非法 action 不做猜测；忽略后由 Core 的默认错误策略兜底。
+            # 非法 action 不做猜测；忽略后由 Runtime 的默认错误策略兜底。
             action = value.get("action")
             if action not in {"retry", "stop"}:
                 continue

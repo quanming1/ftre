@@ -23,7 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ftre_agent_core.message import Msg, MsgName
+from ftre_agent.message import Msg, MsgName
+from ftre_agent.types import ReplyFinishedReason
 
 from ftre.services.config.paths import CONFIG_PATH
 from ftre.services.session.entity.models import (
@@ -39,6 +40,17 @@ from ftre.services.session.entity.state import (
 from .json_store import JsonStateStore, validate_session_id
 
 logger = logging.getLogger(__name__)
+
+
+def _assistant_request_state(message: Msg) -> str:
+    if message.finished_at is None:
+        return "running"
+    reason = str(message.finished_reason or ReplyFinishedReason.COMPLETED)
+    if reason == ReplyFinishedReason.ERROR:
+        return "failed"
+    if reason == ReplyFinishedReason.INTERRUPTED:
+        return "interrupted"
+    return "completed"
 
 
 # 该参数保留为构造函数的目录锚点；实际持久化始终使用 sessions/ JSON 文件。
@@ -143,6 +155,25 @@ class SessionRepository:
             message.metadata.get("request_id") == request_id
             for message in state.messages
         )
+
+    def request_state(
+        self, session_id: str, request_id: str, run_id: str | None = None
+    ) -> str | None:
+        """返回已持久化请求对应的 Assistant 终态，未开始则返回 None。"""
+        if not request_id and not run_id:
+            return None
+        state = self._states.get(session_id)
+        if state is None:
+            return None
+        for message in reversed(state.messages):
+            if message.role != "assistant":
+                continue
+            metadata = message.metadata or {}
+            if request_id and metadata.get("request_id") == request_id:
+                return _assistant_request_state(message)
+            if run_id and metadata.get("run_id") == run_id:
+                return _assistant_request_state(message)
+        return None
 
     def all_states(self) -> list[tuple[str, AgentStateFile]]:
         """全部 (session_id, 状态) 快照列表，供启动期全量扫描类业务使用。"""

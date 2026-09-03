@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import tempfile
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,13 +57,19 @@ class AgentProfile:
 class AgentManager:
     """加载和管理 ~/.ftre/agents/ 下的 agent 配置。"""
 
-    def __init__(self, agents_dir: Path, fallback_agents_dir: Path | None = None):
+    def __init__(
+        self,
+        agents_dir: Path,
+        fallback_agents_dir: Path | None = None,
+        config_service=None,
+    ):
         self._agents_dir = Path(agents_dir)
         # 本目录没有 default agent 时的兜底来源（如团队 sub_agents 目录
         # 回退到全局 ~/.ftre/agents/，让成员默认继承全局模型配置）
         self._fallback_agents_dir = (
             Path(fallback_agents_dir) if fallback_agents_dir else None
         )
+        self._config_service = config_service
 
     # agent_id 允许的字符集（与 session_id、create_agent_profile 校验同规则），
     # 防止 metadata 传入的 agent_id 携带路径分隔符/绝对路径/.. 造成目录穿越。
@@ -101,10 +110,18 @@ class AgentManager:
                 # default 也不存在——返回空 profile（走全局兜底）
                 return AgentProfile(agent_id="default")
 
-        # 每次加载 Agent 都读取最新的供应商模型配置，确保 vision 等模型属性不使用启动时快照。
-        global_data = load_config_file()
+        # 生产路径从 ConfigService 快照读取，独立构造 Manager 的测试仍可使用
+        # loader 作为显式兼容入口。
+        global_data = self._global_config()
         profile = self._load_and_merge(agent_id, agent_dir, global_data)
         return profile
+
+    def _global_config(self) -> dict:
+        if self._config_service is not None:
+            snapshot = self._config_service.snapshot()
+            value = snapshot.value if snapshot is not None else {}
+            return value if isinstance(value, dict) else {}
+        return load_config_file()
 
     def _load_and_merge(
         self, agent_id: str, agent_dir: Path, global_data: dict
@@ -115,7 +132,7 @@ class AgentManager:
         config_path = agent_dir / "agent.config.json"
         if config_path.exists():
             try:
-                agent_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                agent_cfg = json.loads(config_path.read_text(encoding="utf-8-sig"))
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[agent-manager] 读取 {config_path} 失败: {e}")
 
@@ -157,7 +174,7 @@ class AgentManager:
             tools_config = None
         if isinstance(tools_config, dict):
             # 宽容降级：手工/LLM 配置出错不应让整个 agent 起不来；
-            # 真正的强校验在 filter_tools（执行期严抛，绝不静默清空工具）。
+            # 真正的强校验在 ToolService.prepare_view（执行期严抛，绝不静默清空工具）。
             from ftre.services.tools import coerce_tool_name_list
             try:
                 for _field in ("allow", "deny"):
@@ -282,7 +299,7 @@ class AgentManager:
             config_path = entry / "agent.config.json"
             if config_path.is_file():
                 try:
-                    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                    cfg = json.loads(config_path.read_text(encoding="utf-8-sig"))
                     llm_cfg = cfg.get("llm", {})
                     if isinstance(llm_cfg, dict):
                         provider = llm_cfg.get("provider", "")
@@ -321,7 +338,7 @@ class AgentManager:
         return result
 
     def update_agent(self, agent_id: str, patch: dict) -> dict:
-        """更新 agent.config.json 的字段（支持 llm、name、workspace）。
+        """更新 agent.config.json 的字段（支持 llm、name、workspace、mcp）。
 
         Args:
             agent_id: agent ID
@@ -329,6 +346,7 @@ class AgentManager:
                 - {"llm": {"provider": "...", "model": "..."}}
                 - {"name": "..."}
                 - {"workspace": "..."}
+                - {"mcp": {"server": {...}}}（替换 Agent 自己的 MCP 层）
 
         Returns:
             更新后的 agent.config.json 内容
@@ -343,7 +361,7 @@ class AgentManager:
         cfg: dict = {}
         if config_path.exists():
             try:
-                cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                cfg = json.loads(config_path.read_text(encoding="utf-8-sig"))
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[agent-manager] 读取 {config_path} 失败: {e}")
 
@@ -359,16 +377,63 @@ class AgentManager:
             cfg["name"] = patch["name"]
         if "workspace" in patch and isinstance(patch["workspace"], str):
             cfg["workspace"] = patch["workspace"]
+        if "mcp" in patch:
+            mcp = patch["mcp"]
+            if not isinstance(mcp, dict):
+                raise TypeError("agent mcp must be an object")
+            cfg["mcp"] = deepcopy(mcp)
 
         # 写回
-        config_path.write_text(
-            json.dumps(cfg, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._write_json_atomic(config_path, cfg)
 
         # 清除缓存
         logger.info(f"[agent-manager] 已更新 agent '{agent_id}' 的配置: {patch}")
         return cfg
+
+    @staticmethod
+    def _write_json_atomic(path: Path, value: dict) -> None:
+        """Atomically replace an Agent config so a crash cannot leave partial JSON."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(value, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+
+    def read_mcp_source(self, agent_id: str) -> dict:
+        """Read only an Agent's own MCP layer, without merging global config.
+
+        MCP Feature code needs source ownership to resolve
+        ``project > agent > global`` correctly. Returning ``AgentProfile``'s
+        merged ``mcp_config`` here would erase that boundary and make inherited
+        global entries look like Agent-owned overrides.
+        """
+        try:
+            agent_dir = self._resolve_agent_dir(agent_id)
+        except ValueError:
+            return {}
+        path = agent_dir / "agent.config.json"
+        if not path.is_file():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        mcp = raw.get("mcp", {})
+        return deepcopy(mcp) if isinstance(mcp, dict) else {}
 
     def create_agent_profile(
         self,
@@ -514,7 +579,7 @@ class AgentManager:
             "name": "Ftre",
         }
 
-        providers = load_config_file().get("providers", {})
+        providers = self._global_config().get("providers", {})
         if isinstance(providers, dict) and providers:
             first_name = next(iter(providers))
             first_provider = providers[first_name]

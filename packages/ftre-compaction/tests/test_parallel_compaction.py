@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from ftre_agent_core.message import AssistantMsg, MsgName, UserMsg
+from ftre_agent.message import AssistantMsg, MsgName, UserMsg
 from ftre_compaction.config import CompactionConfig
 from ftre_compaction.service import (
     CompactionService,

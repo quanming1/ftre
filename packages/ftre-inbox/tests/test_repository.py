@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 from ftre_inbox.models import QueueItem
@@ -58,6 +59,45 @@ async def test_snapshot_survives_repository_recreation(tmp_path):
     await replacement.load_all()
     snapshot = await replacement.snapshot("s1")
     assert snapshot.next_turn[0].content == "first"
+
+
+@pytest.mark.asyncio
+async def test_repository_migrates_legacy_run_binding_from_disk(tmp_path):
+    path = tmp_path / "s1" / "inbox.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "session_id": "s1",
+                "revision": 1,
+                "next_sequence": 2,
+                "next_turn": [],
+                "next_step": [
+                    {
+                        "request_id": "r1",
+                        "sequence": 1,
+                        "session_id": "s1",
+                        "channel_id": "ws",
+                        "content": "继续",
+                        "source": "user",
+                        "messages": [],
+                        "agent_id": "default",
+                        "target_run_id": "old-run",
+                        "target": "next-step",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    repo = InboxRepository(tmp_path)
+    await repo.load_all()
+
+    assert (await repo.snapshot("s1")).next_step[0].request_id == "r1"
+    assert "target_run_id" not in path.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

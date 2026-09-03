@@ -11,7 +11,7 @@ import json
 
 import pytest
 import pytest_asyncio
-from ftre_agent_core.message import MsgName, UserMsg
+from ftre_agent.message import MsgName, UserMsg
 
 from ftre.services.session.service import SessionService as SessionManager
 

@@ -91,7 +91,7 @@ _last_config: AgentConfig | None = None
 _last_sig: str = ""
 
 
-def load_config() -> AgentConfig:
+def load_config(config_service=None) -> AgentConfig:
     """从配置文件加载 AgentConfig（带缓存，文件变更时才重新解析并 INFO 日志）。
 
     配置来源：
@@ -100,7 +100,26 @@ def load_config() -> AgentConfig:
     - Inbox 容量由 ftre-inbox 包自行解析
     - system_prompt → system_prompt.md 文件
     """
-    global _last_config, _last_sig
+    # 生产路径使用 ConfigService 的 revision/hash；独立调用时才回退到
+    # mtime 检测，避免同一份根配置出现第二个运行时 Owner。
+    if config_service is not None:
+        snapshot = config_service.snapshot()
+        data = snapshot.value if snapshot is not None else {}
+        if not isinstance(data, dict):
+            data = {}
+        try:
+            agent_mtime = (AGENTS_DIR / "default" / "agent.config.json").stat().st_mtime_ns
+        except OSError:
+            agent_mtime = 0
+        current_sig = (
+            f"service:{getattr(snapshot, 'revision', 0)}:{getattr(snapshot, 'content_hash', '')}"
+            f"|agent:{agent_mtime}"
+            if snapshot is not None
+            else f"service:0:|agent:{agent_mtime}"
+        )
+        if _last_config is not None and current_sig == _last_sig:
+            return _last_config
+        return _build_agent_config(data, current_sig)
 
     # mtime 检测：config.json + default agent config
     try:
@@ -122,30 +141,23 @@ def load_config() -> AgentConfig:
 
     # ─── 重新解析 ──────────────────────────────────────────────
     data = load_config_file()
-    if not data:
-        # 文件不存在/空时返回默认配置（不缓存，下次文件出现会重新加载）
-        return AgentConfig()
+    # 文件不存在/空时返回默认配置（不缓存，下次文件出现会重新加载）。
+    return _build_agent_config(data, current_sig)
 
+
+def _build_agent_config(data: dict, current_sig: str) -> AgentConfig:
+    """Build and cache AgentConfig from a ConfigService-owned root snapshot."""
+    global _last_config, _last_sig
+    if not data:
+        return AgentConfig()
     agents_cfg = data.get("agents", {})
     if not isinstance(agents_cfg, dict):
         agents_cfg = {}
-
-    # ─── model / provider：从 default agent 读取 ───
     da_provider, da_model, _ = _read_default_agent_llm()
-    provider_name = da_provider
-    model_id = da_model
-
-    # ─── workspace：从 config.json 的 default_workspace 读取 ───
-    workspace = data.get("default_workspace", "") or ""
-    if not isinstance(workspace, str):
-        workspace = ""
-
-    llm = build_llm_config(data, provider_name, model_id)
+    llm = build_llm_config(data, da_provider, da_model)
     default_effort = _read_default_agent_reasoning_effort()
     if default_effort is not None:
         llm.reasoning_effort = sanitize_agent_effort(default_effort, llm)
-
-    # 标题生成模型（可选）。沿用同一份 providers 配置，但允许指向不同 provider/model。
     title_llm: LLMConfig | None = None
     title_cfg = agents_cfg.get("title_generation") or {}
     if isinstance(title_cfg, dict):
@@ -153,33 +165,27 @@ def load_config() -> AgentConfig:
         t_model = title_cfg.get("model", "") or ""
         if t_provider and t_model:
             built = build_llm_config(data, t_provider, t_model)
-            # 没找到 model 条目时 built.model 为空 —— 此时不启用，回到主 llm 兜底
             if built.model:
                 title_llm = built
-
-    # 系统提示词：从 system_prompt.md 文件加载
     system_prompt = _load_system_prompt()
-
-    # 配置日志统一降为 DEBUG，避免每次重新加载刷屏
-    is_first_load = _last_config is None
-    config_changed = not is_first_load and current_sig != _last_sig
+    workspace = data.get("default_workspace", "") or ""
+    if not isinstance(workspace, str):
+        workspace = ""
     logger.debug(
-        f"[config] model={llm.model}, provider={provider_name}, "
-        f"context_window={llm.context_window}, max_output={llm.max_output}, "
-        f"workspace={workspace or '(default)'}, "
-        f"title_llm={title_llm.model if title_llm else '(fallback to main)'}, "
-        + (" (重新加载)" if config_changed else "")
+        "[config] model=%s, provider=%s, context_window=%s, max_output=%s, workspace=%s, title_llm=%s",
+        llm.model,
+        da_provider,
+        llm.context_window,
+        llm.max_output,
+        workspace or "(default)",
+        title_llm.model if title_llm else "(fallback to main)",
     )
-
     result = AgentConfig(
         llm=llm,
         system_prompt=system_prompt,
         workspace=workspace,
         title_llm=title_llm,
     )
-
-    # 更新缓存
     _last_config = result
     _last_sig = current_sig
-
     return result

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ftre.services.agent.config import (
+from ftre.services.agent_profile.config import (
     AgentConfig,
     LLMConfig,
     load_config,
@@ -17,7 +17,7 @@ def test_agent_config_has_no_queue_owner() -> None:
 
 
 def test_load_config_ignores_package_owned_context_fields(monkeypatch) -> None:
-    from ftre.services.agent import config as module
+    from ftre.services.agent_profile import config as module
 
     monkeypatch.setattr(module, "load_config_file", lambda: {"agents": {"context": {"mailboxCapacity": 42}}})
     monkeypatch.setattr(module, "_last_config", None)

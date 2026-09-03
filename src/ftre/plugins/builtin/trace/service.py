@@ -1,6 +1,6 @@
 """Trace Service：Agent 执行轨迹的只读查询门面。
 
-写入由 Agent Core/Trace exporter 负责，Service 不参与每个 stream 事件的采集；它
+写入由 Agent Runtime/Trace exporter 负责，Service 不参与每个 stream 事件的采集；它
 只把查询统一指向当前 exporter 的数据库路径，避免 API 直接依赖 SQLite schema。
 """
 
@@ -22,13 +22,13 @@ class TraceService:
         self.store = store or SQLiteTraceExporter()
 
     def build_tracer(self):
-        """Return the Core tracer bound to this Service's single exporter.
+        """Return the tracer bound to this Service's single exporter.
 
         Agent Runtime must not construct another SQLite exporter or import the
         persistence adapter.  The Trace Service owns both the query path and
         the write sink, so all runtime traces share one lifecycle boundary.
         """
-        from ftre_agent_core import Tracer
+        from ftre_agent.tracing import Tracer
 
         return Tracer([self.store])
 

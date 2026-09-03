@@ -3,7 +3,7 @@ edit 工具 - 修改已有文件，支持精确字符串替换与按行号替换
 """
 import threading
 
-from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
 
 from ftre.services.workspace.accessor import WorkspaceAccessor
 
@@ -168,7 +168,7 @@ def _edit_by_line(p, content: str, new_norm: str, start_line: int, end_line: int
     return result, diff_meta
 
 
-def create_edit_tool() -> Tool:
+def create_edit_tool() -> ToolDefinition:
     """创建 edit 工具
 
     两种模式：
@@ -220,7 +220,7 @@ def create_edit_tool() -> Tool:
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] {type(e).__name__}: {e}"
 
-    return Tool(
+    return ToolDefinition(
         name="edit",
         description=(
             "修改已有文件，支持两种模式。相对路径基于当前会话的工作区目录。\n"

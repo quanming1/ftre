@@ -27,7 +27,14 @@ async def apply(ctx: Context, config: dict[str, Any] | None = None):
         ctx.provide("config", service)
     else:
         service = existing
+    options = config if isinstance(config, dict) else {}
+    start_watcher = getattr(service, "start_watcher", None)
+    if callable(start_watcher):
+        start_watcher(float(options.get("watch_interval", 1.0)))
     from .router import build_router
 
     disposer = ctx.http.register_router(build_router(service), owner="config")
     ctx.effect(lambda: disposer, label="http:config")
+    close = getattr(service, "close", None)
+    if callable(close):
+        ctx.effect(lambda: close, label="config:close")

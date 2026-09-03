@@ -17,7 +17,7 @@ from . import (
     create_write_tool,
 )
 
-inject = ("tools",)
+inject = ("tools", "process")
 provide = ()
 
 

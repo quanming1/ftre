@@ -173,6 +173,61 @@ stages:
           - src/ftre/system_prompt.md
         acceptance: 系统提示词约定 file:// 绝对路径 markdown 链接格式（含行号语法），AI 输出的本地文件引用可被桌面端渲染为可点击链接并在右侧面板打开
 
+      - id: C6
+        title: 通用 Ftre Markdown 扩展协议与客户端渲染
+        status: in_progress
+        date: 2026-08-29
+        prd: docs/prd/PRD-C6-generic-markdown-extension-protocol.md
+        prd_status: 开发中
+        depends_on:
+          - C1
+          - C5
+          - F35
+        implementation_boundary: 跨 E:\ftre 与 E:\binn\ftre-desktop 协同实施；只增加通用 ftre://v1 Markdown 扩展解析、客户端 Renderer、后端 Handler 与消息投影；不修改 Agent ReAct、LLM、Tool、Inbox、Session 基础协议或 Cordis Kernel
+        modules:
+          - packages/ftre-inline-extension/
+          - src/ftre/plugins/builtin/skill/
+          - src/ftre/services/session/message/
+          - tests/contracts/
+          - tests/integration/
+          - tests/lifecycle/
+          - 配对 E:\binn\ftre-desktop/packages/renderer/src/lib/
+          - 配对 E:\binn\ftre-desktop/packages/renderer/src/features/chat/
+        acceptance: v1 扩展语法前后端一致；客户端 Markdown 统一渲染并安全处理 ftre://；Skill Handler 只在 agent/pre-step 处理用户消息；原文、扩展投影和隐藏注入快照独立持久化；刷新/重连/重放幂等；未知扩展安全降级；后端与客户端测试、构建和架构扫描通过
+        tasks:
+          - id: C6.1
+            title: 协议模型、解析器与前后端黄金测试
+            status: done
+          - id: C6.2
+            title: 客户端 Markdown AST 扩展与 Skill Renderer
+            status: done
+          - id: C6.3
+            title: 后端 InlineExtension Registry、Skill Handler 与 pre-step
+            status: done
+          - id: C6.4
+            title: 消息投影、恢复幂等与跨端收尾验收
+            status: done
+          - id: C6.5
+            title: Skill 资源来源解析与文件预览收口
+            status: done
+            date: 2026-08-29
+          - id: C6.6
+            title: Skill 发现规则与作用域稳定性修复
+            status: done
+            date: 2026-08-30
+            completion_date: 2026-08-30
+            depends_on:
+              - C6.5
+            acceptance: 合法 YAML frontmatter 是 Skill 唯一入口；移除文件名黑名单；frontmatter.name 作为规范名称；Agent/Session 作用域查询稳定；后端与客户端回归测试和构建通过
+          - id: C6.7
+            title: Windows BOM 与可选 frontmatter 容错
+            status: done
+            date: 2026-09-01
+            completion_date: 2026-09-01
+            depends_on:
+              - C6.6
+            acceptance: UTF-8 BOM 不影响 Skill 发现；只有合法 name/description 决定候选资格；可选 YAML 字段独立尽力解析、失败时回退默认；损坏 YAML 与非法必填字段仍诊断拒绝；后端回归测试、Ruff 和 diff check 通过
+
   - id: D
     name: 收尾
     steps:
@@ -1549,4 +1604,240 @@ stages:
             status: done
           - id: F34.7
             title: 取消并发生命周期和发行验收
+            status: done
+      - id: F35
+        title: Agent Service Inbox UserMessage Boundary
+        status: done
+        date: 2026-08-27
+        prd: docs/prd/PRD-F35-agent-service-inbox-message-boundary.md
+        prd_status: 已验收
+        depends_on:
+          - F33
+          - F34
+        implementation_boundary: 只修改 E:\\ftre 的 Agent Service、Agent Runtime Provider、Agent Profile、Inbox Hook、UserMessageEvent 投影和架构/集成测试；不修改 E:\\ftre-agent-core 的 ReAct、Hook 或 Tool 协议，不修改客户端布局
+        modules:
+          - packages/ftre-agent/
+          - packages/ftre-agent-runtime/
+          - packages/ftre-inbox/
+          - src/ftre/services/agent_profile/
+          - src/ftre/services/session/
+          - src/ftre/app/gateway/composition.py
+          - tests/architecture/
+          - tests/contracts/
+          - tests/integration/
+          - tests/lifecycle/
+        acceptance: AgentService 是唯一 agents Owner；Runtime 只注册 Factory；Agent 不依赖 InboundMessage；Profile、Inbox 和 Tool/LLM Service 边界清晰；next-step 在 before-reasoning 产生一次真实 UserMessageEvent，立即关闭旧 Assistant 并轮换 message_id；busy、取消、错误、恢复和全量测试通过
+        tasks:
+          - id: F35.1
+            title: AgentService Owner 与 Runtime Factory 分离
+            status: done
+          - id: F35.2
+            title: 冻结 Agent API、状态、事件和 Hook 契约
+            status: done
+          - id: F35.3
+            title: Agent Profile 配置解析与旧 agent 目录清理
+            status: done
+          - id: F35.4
+            title: Inbox Msg 队列、原子 reservation 与 Hook 接入
+            status: done
+          - id: F35.5
+            title: UserMessageEvent 注入、Assistant 边界与投影顺序
+            status: done
+          - id: F35.6
+            title: 生命周期、恢复、架构扫描和全量验收
+            status: done
+      - id: F36
+        title: Agent Core 合并与 Package 分层简化
+        status: done
+        date: 2026-08-28
+        completion_date: 2026-08-28
+        prd: docs/prd/PRD-F36-agent-core-consolidation.md
+        prd_status: 已验收
+        depends_on:
+          - F33
+          - F34
+          - F35
+        implementation_boundary: 只在 E:\\ftre 与配对 E:\\ftre-agent-core、E:\\binn\\ftre-desktop 的协同 PR 中迁移；不重启或 kill 运行中的 Gateway，不在本地直接合并 develop
+        modules:
+          - packages/ftre-agent/
+          - packages/ftre-agent-runtime/
+          - packages/ftre-llm/
+          - src/ftre/services/tools/
+          - src/ftre/services/session/
+          - packages/ftre-inbox/
+          - packages/ftre-compaction/
+          - packages/ftre-llm-recovery/
+          - packages/ftre-llm-fallback/
+          - packages/ftre-messaging/
+          - packages/ftre-task/
+          - packages/ftre-team/
+          - tests/
+          - 配对 E:\\ftre-agent-core（仅 C8 Core Package Retire）
+          - 配对 E:\\binn\\ftre-desktop（仅 F36.6 事件协议清理）
+        acceptance: F36.1-F36.8 全部完成；ftre 生产代码与活动测试不再依赖 ftre-agent-core；ftre-agent、ftre-agent-runtime、ftre-llm 各有唯一 Owner；AgentService.stream 输出真实事件；ToolService 只通过 ToolView 向 Runtime 提供工具；Retry/Fallback/Confirmation/Steer/Compaction/取消/恢复回归通过；无兼容壳、无第二套 Registry、无第二套 ReAct 状态机；洁净环境安装不需要 Core；运行中的 Gateway 未被 kill 或重启
+        tasks:
+          - id: F36.1
+            title: 基线、Owner 和事件矩阵冻结
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.2
+            title: LLM Owner 收敛
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.3
+            title: 公共契约迁移到 ftre-agent
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.4
+            title: ToolService 与 Tool Runtime 解耦
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.5
+            title: Agent Runtime 迁移与唯一状态机 Owner
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.6
+            title: 事件面简化与 Host 事件分离
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.7
+            title: 移除 Core 依赖、发行和仓库退休
+            status: done
+            completion_date: 2026-08-28
+          - id: F36.8
+            title: 重构收尾审计与跨仓库交付门禁
+            status: done
+            completion_date: 2026-08-28
+      - id: F37
+        title: Process Service 与 Electron 后端启动收口
+        status: in_progress
+        date: 2026-08-28
+        prd: docs/prd/PRD-F37-process-service-and-hidden-startup.md
+        prd_status: 开发中
+        depends_on:
+          - F36
+        implementation_boundary: 跨 E:\\ftre 与 E:\\binn\\ftre-desktop 协同实施；只处理本地外部进程策略、Electron 内置 Gateway 启动和生命周期，不修改 Agent、LLM、Tool 业务协议，不 kill 或重启正在运行的 Gateway
+        modules:
+          - packages/ftre-process/
+          - src/ftre/plugins/builtin/process/
+          - src/ftre/services/tools/
+          - src/ftre/plugins/builtin/mcp/
+          - src/ftre/plugins/builtin/core_tools/
+          - src/ftre/app/gateway/
+          - 配对 E:\\binn\\ftre-desktop/packages/electron/src/
+          - 配对 E:\\binn\\ftre-desktop/scripts/tests/
+        acceptance: 三阶段全部完成；Windows 正式客户端启动、后端工具/MCP/Git/浏览器子进程、重启和退出均无可见控制台；日志、ready/health、崩溃恢复和进程树清理可验证；无正式链路 bat/cmd/PowerShell 中间层；无裸 subprocess 漏网；客户端与后端测试、架构扫描和 Windows 安装包验收通过
+        tasks:
+          - id: F37.1
+            title: Electron BackendSupervisor 启动无黑窗
+            status: done
+          - id: F37.2
+            title: ftre-process Package 与后端子进程策略
+            status: done
+          - id: F37.3
+            title: 生命周期收口、跨平台验收与发布门禁
+            status: in_progress
+      - id: F38
+        title: Inbox 重复投递与恢复幂等修复
+        status: done
+        date: 2026-08-29
+        prd: docs/prd/PRD-F38-inbox-request-ledger-and-recovery.md
+        prd_status: 已验收
+        depends_on:
+          - F35
+          - F36
+        implementation_boundary: 只修改 E:\\ftre 的现有 Inbox、AgentService、Session Message Projection、Gateway Composition、测试和协议文档；不新增第二套 RequestLedger/SQLite/调度器；配套 E:\\binn\\ftre-desktop 只做 queue/status/reconnect 回归；不修改 Agent ReAct 算法、LLM/Tool 业务协议或 Cordis Kernel
+        modules:
+          - packages/ftre-inbox/
+          - packages/ftre-agent/
+          - packages/ftre-agent-runtime/
+          - src/ftre/services/session/
+          - src/ftre/services/agent/
+          - src/ftre/app/gateway/
+          - tests/contracts/
+          - tests/lifecycle/
+          - tests/integration/
+          - tests/architecture/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/stores/
+        acceptance: 已 claim 的请求不可回到 pending；普通队列仅由 RunCompleted 自动消费；cancelled/paused/failed/interrupted 只停止 worker 并保留未 claim pending；request_id/run_id 与 UserMessage 幂等；Inbox 使用 canonical 用户数据根；Steer 按 Session 排队且不跨 Session；重启、重连、故障注入、发行包和全量质量门禁通过
+        tasks:
+          - id: F38-A
+            title: 错误回队与错误消费修复
+            status: done
+            completion_date: 2026-08-29
+          - id: F38-B
+            title: 消息身份、Agent 幂等与存储根修复
+            status: done
+            completion_date: 2026-08-29
+          - id: F38-C
+            title: 故障注入、Steer 边界与跨仓验收
+            status: done
+            completion_date: 2026-08-29
+      - id: F39
+        title: ConfigService 外部变更热更新与模型目录
+        status: done
+        date: 2026-08-30
+        completion_date: 2026-08-30
+        prd: docs/prd/PRD-F39-config-runtime-reload-and-model-catalog.md
+        prd_status: 已验收
+        depends_on:
+          - F1
+          - F29
+        implementation_boundary: 只修改 E:\\ftre ConfigService、配置 Router/Plugin、Agent Profile 根配置读取、模型目录接口、配对客户端模型刷新和测试；不修改 Agent/LLM 业务协议、Inbox、Session wire、Cordis Kernel 或已退休的 ftre-agent-core
+        modules:
+          - src/ftre/services/config/
+          - src/ftre/services/agent_profile/
+          - packages/ftre-llm/
+          - tests/contracts/
+          - tests/lifecycle/
+          - tests/architecture/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/services/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/features/chat/
+        acceptance: 外部合法配置无需重启即可进入 ConfigService 快照；无效编辑保留旧快照；模型目录脱敏并带 revision；Agent/LLM/客户端读取一致；监听生命周期无泄漏；后端与客户端质量门禁通过
+        tasks:
+          - id: F39.1
+            title: ConfigSnapshot 指纹与外部 reload
+            status: done
+          - id: F39.2
+            title: Config Plugin 监听与安全错误处理
+            status: done
+          - id: F39.3
+            title: 脱敏模型目录与重复配置读取收口
+            status: done
+          - id: F39.4
+            title: 客户端模型刷新与跨仓回归验收
+            status: done
+      - id: F40
+        title: MCP 三层配置、统一目录与运行时收口
+        status: done
+        date: 2026-09-02
+        completion_date: 2026-09-03
+        prd: docs/prd/PRD-F40-mcp-three-layer-catalog-and-runtime.md
+        prd_status: 已验收
+        depends_on:
+          - F34
+          - F39
+        paired_stage: E:\\binn\\ftre-desktop C2
+        implementation_boundary: 只修改 E:\\ftre 的 MCP Plugin、MCP HTTP 契约、Config/AgentProfile/Workspace 窄 API、ToolService session scope 和相关测试；配对客户端只修改 MCP API/展示/设置。不得修改 Agent ReAct、LLM、Inbox、Session wire 或 Cordis Kernel。
+        modules:
+          - src/ftre/plugins/builtin/mcp/
+          - src/ftre/services/config/
+          - src/ftre/services/agent_profile/
+          - src/ftre/services/workspace/
+          - src/ftre/services/tools/
+          - tests/contracts/、tests/integration/、tests/lifecycle/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/features/mcp/
+        acceptance: 全局/Agent/项目 MCP 使用统一 catalog 和 project>agent>global 优先级；API 不再读取死状态；ToolService 支持 session 隔离；CRUD 与配置热更新正确；敏感值脱敏；后端和客户端质量门禁通过。
+        tasks:
+          - id: F40.1
+            title: 三层 Source、Catalog 模型与 API 契约
+            status: done
+          - id: F40.2
+            title: ToolService session scope 与 MCP ToolView 装配
+            status: done
+          - id: F40.3
+            title: 配置写入、Config watcher 与状态收口
+            status: done
+          - id: F40.4
+            title: 跨仓 UI、回归与生命周期验收
             status: done

@@ -5,8 +5,8 @@
 FTRE 是本地优先的 AI 编程助手。本仓库是它的有状态 Python Gateway：负责组合运行时
 Service 与 Plugin，管理会话和 Agent 执行，并通过 HTTP/WebSocket 为桌面端提供接口。
 
-无状态的 ReAct/LLM/Tool 算法位于独立的 `ftre-agent-core` 仓库；桌面端和文档站也都是
-独立仓库，本仓库不修改它们。
+无状态的 Agent 契约与 ReAct Runtime 位于本仓库的 `packages/ftre-agent` 和
+`packages/ftre-agent-runtime`；原独立 `ftre-agent-core` 仓库已退休，不再是运行时依赖。
 
 ## 一眼看懂架构
 
@@ -29,6 +29,7 @@ CLI（ftre.main）
 | 概念 | 位置 | 责任 |
 | --- | --- | --- |
 | Service | `src/ftre/services/<name>/service.py` | 带状态的公共能力，拥有稳定 key，例如 `sessions`、`tools`、`http`、`message_bus` |
+| Process Package | `packages/ftre-process/` | 跨平台外部进程策略，由 Host 以 `process` Service key 注入消费者 |
 | Provider Plugin | Service 目录旁的 `plugin.py` | 声明 `inject`/`provide`，创建或绑定 Service，并登记清理 Effect |
 | Builtin Plugin | `src/ftre/plugins/builtin/<name>/` | Skill、MCP、Plan、Team、Schedule、上下文治理等可选产品行为 |
 | Kernel Runtime | `src/ftre/kernel/plugins/` | Manifest 校验、entry point 发现、Cordis 加载、状态与失败诊断 |
@@ -56,8 +57,8 @@ ftre/
 │     ├─ services/                 # 公共稳定 Service 和 Service Provider
 │     │  ├─ config/ filesystem/ http/
 │     │  ├─ messaging/{bus,channel}/
-│     │  ├─ session/ agent/ tools/ workspace/
-│     │  ├─ attachment/ agent/runtime/
+│     │  ├─ session/ tools/ workspace/
+│     │  ├─ agent_profile/ attachment/
 │     │  └─ system_prompt/
 │     └─ plugins/builtin/          # 可逆产品行为和 concrete Channel Plugin
 │        ├─ command/ trace/ session_title/
@@ -108,7 +109,7 @@ Host Service 只提供稳定能力，Plugin 负责行为和生命周期；能独
 Channel → MessageBus → messaging/inbound Hook
                          ├─ Command Plugin（控制面，直接返回 CommandResult）
                          ├─ Inbox Package（可选：pending → claim）
-                         └─ AgentService.run(InboundMessage) → Agent Runtime → Session/LLM/Tool Hook
+                         └─ AgentService.run(RuntimeInput) → ftre-agent-runtime → Session/LLM/Tool Hook
 ```
 
 不同 Session 可以并行；同一 Session 同时最多一个 active turn；turn 与 compaction 不并发；
@@ -136,7 +137,7 @@ ftre gateway
 
 ## 关联仓库
 
-- [ftre-agent-core](https://github.com/quanming1/ftre-agent-core) —— 无状态 Agent/LLM/Tool 核心
+- `packages/ftre-agent` + `packages/ftre-agent-runtime` —— 无状态 Agent 契约与 Runtime
 - [ftre-desktop](https://github.com/quanming1/ftre-desktop) —— Electron + React 客户端
 - [ftre-docs](https://github.com/quanming1/ftre-docs) —— 文档站
 

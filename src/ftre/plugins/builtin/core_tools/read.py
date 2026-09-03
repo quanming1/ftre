@@ -7,8 +7,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from ftre_agent_core.event import HintBlockEvent
-from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_agent.event import HintBlockEvent
+from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
 
 from ftre.services.workspace.accessor import WorkspaceAccessor
 
@@ -159,7 +159,7 @@ def _image_to_event(path: str, cwd: str, attachments) -> HintBlockEvent | str:
     )
 
 
-def create_read_tool(max_bytes: int = 256 * 1024) -> Tool:
+def create_read_tool(max_bytes: int = 256 * 1024) -> ToolDefinition:
     """创建 read 工具
 
     Args:
@@ -247,7 +247,7 @@ def create_read_tool(max_bytes: int = 256 * 1024) -> Tool:
 
     # 描述采用中性文案（F34）：工具静态注册，不随模型 vision 能力改写；
     # 纯文本模型误读图时会得到一行明确报错，引导切换模型而不是误导。
-    return Tool(
+    return ToolDefinition(
         name="read",
         description=(
             "读取文件内容；文本返回带行号内容，图片返回 LLM 可识别的视觉输入"

@@ -6,9 +6,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
+
 import pytest
 from cordis import Context
-from ftre_agent_core.tool import Tool, ToolRegistry
+from ftre_agent.tool import ToolContext, ToolDefinition
 
 from ftre.plugins.builtin.core_tools import (
     create_bash_tool,
@@ -18,7 +22,7 @@ from ftre.plugins.builtin.core_tools import (
     create_write_tool,
 )
 from ftre.plugins.builtin.core_tools.plugin import apply as core_tools_apply
-from ftre.services.tools import ToolService, filter_tools
+from ftre.services.tools import ToolService
 
 CORE_TOOL_NAMES = {"bash", "read", "write", "edit", "set_workspace"}
 
@@ -31,18 +35,18 @@ _core_tools_plugin.inject = ("tools",)
 _core_tools_plugin.provide = ()
 
 
-def _echo_tool(name: str) -> Tool:
+def _echo_tool(name: str) -> ToolDefinition:
     def echo(**kwargs) -> str:
         return f"echo:{name}"
 
-    return Tool(name=name, description="echo", parameters=[], func=echo)
+    return ToolDefinition(name=name, description="echo", parameters=[], func=echo)
 
 
 @pytest.mark.asyncio
 async def test_core_tools_plugin_contributes_five_builtin_tools() -> None:
     """core-tools 是五个内置工具的唯一 Owner，贡献可逆。"""
     root = Context()
-    tools = ToolService(ToolRegistry())
+    tools = ToolService()
     root.provide("tools", tools)
     fiber = root.plugin(_core_tools_plugin)
     await fiber
@@ -81,13 +85,44 @@ def test_get_is_scope_aware_and_returns_none_for_unknown() -> None:
     assert tools.get("bash") is None
 
 
-def _labeled_tool(name: str, label: str) -> Tool:
+@pytest.mark.asyncio
+async def test_sync_tool_execution_does_not_block_event_loop() -> None:
+    """同步工具必须在线程中执行，避免 subprocess 阻塞 Gateway 事件循环。"""
+    tools = ToolService()
+    started = threading.Event()
+
+    def blocking_tool(**kwargs) -> str:
+        del kwargs
+        started.set()
+        time.sleep(0.2)
+        return "done"
+
+    tools.register(
+        ToolDefinition(name="blocking", description="blocking", parameters=[], func=blocking_tool),
+        owner="test",
+    )
+    view = await tools.prepare_view("default", "session-1")
+    context = ToolContext(
+        call_id="call-1",
+        name="blocking",
+        arguments={},
+        cancellation=asyncio.Event(),
+    )
+    execution = asyncio.create_task(view.execute("blocking", {}, context))
+    await asyncio.to_thread(started.wait, 1)
+    await asyncio.sleep(0.02)
+    assert not execution.done()
+    result = await execution
+    assert result.output == "done"
+
+
+def _labeled_tool(name: str, label: str) -> ToolDefinition:
     """返回值可区分的测试工具，用于验证 execute 到底执行了哪个版本。"""
 
     def run(**kwargs) -> str:
         return label
 
-    return Tool(name=name, description="labeled", parameters=[], func=run)
+    return ToolDefinition(name=name, description="labeled", parameters=[], func=run)
 
 
 def test_execute_agent_id_runs_scoped_shadow_not_global() -> None:
@@ -117,7 +152,7 @@ def test_execute_agent_id_supports_scoped_only_tools() -> None:
 
     assert tools.get("only") is None
     assert tools.execute("only", agent_id="a") == "scoped"
-    # 全局路径不认识 scoped-only 工具（Core registry 缺名抛 ValueError）。
+    # 全局路径不认识 scoped-only 工具（ToolService 可见性索引缺名抛 ValueError）。
     with pytest.raises(ValueError, match="not found"):
         tools.execute("only")
     dispose()
@@ -193,7 +228,7 @@ async def test_view_preparer_receives_general_profile_contract() -> None:
 async def test_prepare_view_contains_builtin_tools_and_profile_filter_applies() -> None:
     """view 合并内置工具；profile allow/deny 不豁免内置工具（F34 冻结语义）。"""
     root = Context()
-    tools = ToolService(ToolRegistry())
+    tools = ToolService()
     root.provide("tools", tools)
     fiber = root.plugin(_core_tools_plugin)
     await fiber
@@ -223,16 +258,6 @@ async def test_prepare_view_contains_builtin_tools_and_profile_filter_applies() 
     cleanup = root.dispose()
     if cleanup is not None:
         await cleanup
-
-
-def test_filter_tools_treats_builtin_and_plugin_tools_equally() -> None:
-    """filter_tools 的 allow/deny 语义与工具来源无关（不豁免内置工具）。"""
-    registry = ToolRegistry()
-    for name in ["bash", "read", "cron"]:
-        registry.register(_echo_tool(name))
-
-    filter_tools(registry, {"allow": ["bash"]})
-    assert registry.names == ["bash"]
 
 
 def test_read_tool_description_is_model_neutral() -> None:

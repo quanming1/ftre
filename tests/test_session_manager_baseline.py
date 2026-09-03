@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 import pytest_asyncio
-from ftre_agent_core.message import (
+from ftre_agent.message import (
     AssistantMsg,
     Msg,
     MsgToken,

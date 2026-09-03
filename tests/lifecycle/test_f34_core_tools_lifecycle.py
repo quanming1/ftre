@@ -12,12 +12,11 @@ import logging
 import pytest
 from cordis import Context, FiberState
 from ftre_agent import AgentRegistry
-from ftre_agent_core.hooks import (
+from ftre_agent.hooks import (
     ToolAfterPayload,
     ToolCallIdentity,
     ToolExecutionResult,
 )
-from ftre_agent_core.tool import ToolRegistry
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.plugins.builtin.core_tools.plugin import apply as core_tools_apply
@@ -65,7 +64,7 @@ def _agent_dispatch_context(runtime: HookRuntime) -> Context:
 async def test_core_tools_unload_removes_builtin_tools_from_future_views() -> None:
     """卸载 core-tools 后贡献与 view 中的内置工具一起消失（可逆、幂等）。"""
     root = Context()
-    tools = ToolService(ToolRegistry())
+    tools = ToolService()
     root.provide("tools", tools)
     fiber = root.plugin(_core_tools_plugin)
     await fiber
@@ -91,7 +90,7 @@ async def test_core_tools_unload_removes_builtin_tools_from_future_views() -> No
 async def test_core_tools_failure_rolls_back_contributions() -> None:
     """Plugin 失败时已注册的贡献随 Fiber 回滚，不泄漏内置工具。"""
     root = Context()
-    tools = ToolService(ToolRegistry())
+    tools = ToolService()
     root.provide("tools", tools)
 
     def failing_plugin(ctx, _config=None):

@@ -1,13 +1,12 @@
-"""Inbox 的最小持久化模型。
-
-``next_turn`` 和 ``next_step`` 是 Inbox 内部概念，不能泄漏到 AgentService。
-客户端只接收由 Package 计算出的 placement 视图。
-"""
+"""Inbox 的持久模型。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from ftre_agent.message import Msg
 
 QueueTarget = Literal["next-turn", "next-step"]
 QueueSource = Literal["user", "plugin", "system"]
@@ -15,7 +14,7 @@ QueueSource = Literal["user", "plugin", "system"]
 
 @dataclass(frozen=True, slots=True)
 class QueueItem:
-    """一条仍在 Inbox 中、尚未交付给 AgentService 的输入。"""
+    """一条已接纳、尚未交给 AgentService 的输入。"""
 
     request_id: str
     sequence: int
@@ -24,9 +23,16 @@ class QueueItem:
     content: str = ""
     attachments: tuple[dict[str, Any], ...] = ()
     source: QueueSource = "user"
-    # Steering 在 Hook 前已由 SessionProjection 持久化时，保存同一 UserMsg id，
-    # 让 idle fallback 进入独立 Turn 时不重复写历史。该字段不改变 Queue 协议。
     history_message_id: str | None = None
+    messages: tuple[Msg, ...] = ()
+    agent_id: str = "default"
+
+    def normalized_messages(self) -> tuple[Msg, ...]:
+        if self.messages:
+            return self.messages
+        from ftre_agent.message import UserMsg
+
+        return (UserMsg(content=self.content, metadata={"request_id": self.request_id}),)
 
     def to_json(self, target: QueueTarget) -> dict[str, Any]:
         return {
@@ -37,6 +43,9 @@ class QueueItem:
             "content": self.content,
             "attachments": [dict(item) for item in self.attachments],
             "source": self.source,
+            "history_message_id": self.history_message_id,
+            "messages": [message.model_dump(mode="json") for message in self.messages],
+            "agent_id": self.agent_id,
             "target": target,
         }
 
@@ -48,6 +57,11 @@ class QueueItem:
         source = value.get("source", "user")
         if source not in {"user", "plugin", "system"}:
             raise ValueError(f"未知 Inbox source: {source!r}")
+        raw_messages = value.get("messages", ())
+        if not isinstance(raw_messages, list):
+            raise TypeError("messages 必须是数组")
+        from ftre_agent.message import Msg
+
         return cls(
             request_id=str(value["request_id"]),
             sequence=int(value["sequence"]),
@@ -61,12 +75,14 @@ class QueueItem:
                 if value.get("history_message_id")
                 else None
             ),
+            messages=tuple(Msg.model_validate(item) for item in raw_messages),
+            agent_id=str(value.get("agent_id") or "default"),
         ), target
 
 
 @dataclass(frozen=True, slots=True)
 class InboxSnapshot:
-    """某个 Session 的完整 pending 快照。"""
+    """某个 Session 的 pending 快照。"""
 
     session_id: str
     revision: int
@@ -77,18 +93,14 @@ class InboxSnapshot:
 
     @property
     def pending(self) -> tuple[QueueItem, ...]:
-        """返回按 sequence 合并的只读视图。"""
         return tuple(sorted((*self.next_turn, *self.next_step), key=lambda item: item.sequence))
 
     @property
     def has_pending(self) -> bool:
         return bool(self.next_turn or self.next_step)
 
-
 @dataclass(slots=True)
 class _MutableInbox:
-    """Repository 内部可变状态；不从 Service API 暴露。"""
-
     session_id: str
     revision: int = 0
     next_sequence: int = 1
@@ -107,7 +119,7 @@ class _MutableInbox:
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 3,
             "session_id": self.session_id,
             "revision": self.revision,
             "next_sequence": self.next_sequence,
@@ -117,7 +129,7 @@ class _MutableInbox:
 
     @classmethod
     def from_json(cls, value: dict[str, Any]) -> _MutableInbox:
-        if value.get("schema_version") != 1:
+        if value.get("schema_version") not in {1, 2, 3}:
             raise ValueError(f"不支持的 Inbox schema_version: {value.get('schema_version')!r}")
         state = cls(
             session_id=str(value["session_id"]),
@@ -142,9 +154,11 @@ class _MutableInbox:
         ids = [item.request_id for item in all_items]
         if len(ids) != len(set(ids)):
             raise ValueError("Inbox 中 request_id 重复")
-        for items in (self.next_turn, self.next_step):
-            sequences = [item.sequence for item in items]
-            if sequences != sorted(sequences):
-                raise ValueError("Inbox 每条队列必须按 sequence 有序")
         if len({item.sequence for item in all_items}) != len(all_items):
             raise ValueError("Inbox sequence 重复")
+        for items in (self.next_turn, self.next_step):
+            if [item.sequence for item in items] != sorted(item.sequence for item in items):
+                raise ValueError("Inbox 每条队列必须按 sequence 有序")
+
+
+__all__ = ["InboxSnapshot", "QueueItem", "QueueSource", "QueueTarget"]

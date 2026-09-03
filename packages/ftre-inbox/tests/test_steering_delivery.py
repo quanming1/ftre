@@ -181,3 +181,16 @@ async def test_promoted_plugin_message_becomes_persisted_user_input(tmp_path) ->
     assert order == ["persist"]
     assert not (await service.snapshot("s1")).has_pending
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_steering_is_session_scoped_not_run_bound(tmp_path) -> None:
+    service = InboxService(InboxRepository(tmp_path))
+    await service.steer(InboundMessage("s1", "r1", "ws", "steer"))
+    await service.steer(InboundMessage("s2", "r2", "ws", "other session"))
+
+    claimed = await service.deliver_next_step_for_reasoning("s1")
+
+    assert [item.request_id for item in claimed] == ["r1"]
+    assert [item.request_id for item in (await service.snapshot("s2")).next_step] == ["r2"]
+    await service.close()

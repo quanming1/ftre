@@ -10,7 +10,7 @@ def test_public_entry_and_factory() -> None:
 
 def test_task_rejects_empty_prompt_without_touching_services() -> None:
     tool = create_task_tool(object(), object())
-    result = tool.func(
+    result = tool.execute_callable(
         "",
         event_loop=object(),
         session_manager=object(),

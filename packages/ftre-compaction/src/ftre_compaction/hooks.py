@@ -33,7 +33,7 @@ from ftre_agent import (
 )
 from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, EnterClaim, RejectClaim
 
-from ftre.services.agent.config import load_config
+from ftre.services.agent_profile.config import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,8 @@ def register_hooks(ctx, service) -> list[object]:
             return await next_()
         try:
             # payload 可能没带 config（错误发生在配置解析前），用全局配置兜底
-            config_value = payload.config or load_config()
+            config_service = getattr(service, "_config_service", None)
+            config_value = payload.config or load_config(config_service)
             # channel_id 缺失时从 session 元数据补取（压缩事件需要落 channel）
             session = await ctx.sessions.get_session(payload.session_id)
             channel_id = payload.channel_id or str((session or {}).get("channel_id", ""))
@@ -168,7 +169,7 @@ def register_hooks(ctx, service) -> list[object]:
     # 绝不丢弃用户消息。
     async def on_inbox_before_claim(payload, _next_):
         """Inbox Package 的领取前门控；失败时保留 pending。"""
-        config_value = load_config()
+        config_value = load_config(getattr(service, "_config_service", None))
         try:
             # 领取前用强制阈值（compact_threshold，默认 0.8）+ 队首消息估算：
             # 即使上一轮没触发预压缩，这条新消息也可能越过安全线

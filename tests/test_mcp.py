@@ -11,7 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from ftre_agent_core.tool import Tool
+from ftre_agent.tool import ToolDefinition
 
 from ftre.plugins.builtin.mcp.adapter import (
     _convert_parameters,
@@ -253,9 +253,9 @@ class TestConvertParameters:
 
 
 @pytest.mark.asyncio
-async def test_private_agent_mcp_is_loaded_into_agent_scope(monkeypatch):
-    """Merged profile config must activate private MCP and expose scoped tools."""
-    global_tool = Tool(name="mcp__global__search", description="search", func=lambda: "ok")
+async def test_agent_mcp_is_prepared_in_agent_scope_and_reuses_connection(monkeypatch):
+    """Agent-owned MCP contributes to its ToolView and reuses its manager."""
+    global_tool = ToolDefinition(name="mcp__global__search", description="search", func=lambda: "ok")
 
     class _GlobalManager:
         attachment_service = None
@@ -270,55 +270,79 @@ async def test_private_agent_mcp_is_loaded_into_agent_scope(monkeypatch):
         async def stop(self):
             return None
 
-        async def list_tools_for_servers(self, _names):
-            return []
+        def get_connected_servers(self):
+            return ["global"]
 
-    global_manager = _GlobalManager()
-    tools = ToolService()
-    tools.register(global_tool, owner="mcp", source="mcp")
-    service = McpService(global_manager, tool_service=tools)
-    await service.start_and_register({
-        "global": {"type": "local", "command": ["global-server"]},
-    })
+    class _Profiles:
+        def mcp_source(self, _agent_id):
+            return {"private": {"type": "local", "command": ["private-server"]}}
+
+    class _Workspaces:
+        async def get(self, _session_id):
+            return ""
+
+        def mcp_source(self, _workspace):
+            return {}
 
     private_calls = []
 
     async def fake_private_start(manager, raw):
         private_calls.append(raw)
-        manager._connections["private"] = SimpleNamespace(
-            is_connected=True,
-            disconnect=lambda: _done(),
-        )
+        for name in raw:
+            manager._connections[name] = SimpleNamespace(
+                is_connected=True,
+                disconnect=lambda: _done(),
+            )
 
     async def _done():
         return None
 
-    async def no_global_tools(*_args):
-        return []
+    async def fake_build(_manager, names):
+        return [
+            ToolDefinition(
+                name=f"mcp__{name}__search",
+                description="search",
+                func=lambda: "ok",
+            )
+            for name in names
+        ]
 
-    monkeypatch.setattr("ftre.plugins.builtin.mcp.service.build_mcp_tools_for_servers", no_global_tools)
-    monkeypatch.setattr("ftre.plugins.builtin.mcp.connection.McpManager.start_and_register", fake_private_start)
+    monkeypatch.setattr(
+        "ftre.plugins.builtin.mcp.connection.McpManager.start_and_register",
+        fake_private_start,
+    )
+    monkeypatch.setattr(
+        "ftre.plugins.builtin.mcp.service.build_mcp_tools_for_servers",
+        fake_build,
+    )
+    tools = ToolService()
+    tools.register(global_tool, owner="mcp", source="mcp")
+    service = McpService(
+        _GlobalManager(),
+        tool_service=tools,
+        agent_profiles=_Profiles(),
+        workspaces=_Workspaces(),
+    )
+    await service.start_and_register(
+        {"global": {"type": "local", "command": ["global-server"]}}
+    )
 
-    await service.prepare_agent("worker", {
-        "global": {"type": "local", "command": ["global-server"]},
-        "private": {"type": "local", "command": ["private-server"]},
-    })
-
+    await service.prepare_view("worker", "session-a")
+    assert {item.name for item in tools.snapshot("worker", "session-a")} == {
+        "mcp__global__search",
+        "mcp__private__search",
+    }
+    await service.prepare_view("worker-2", "session-b")
     assert private_calls == [
         {"private": {"type": "local", "command": ["private-server"]}}
     ]
-    assert tools.snapshot("worker")
-    await service.prepare_agent("worker-2", {
-        "global": {"type": "local", "command": ["global-server"]},
-        "private": {"type": "local", "command": ["private-server"]},
-    })
-    assert len(private_calls) == 1
     await service.stop()
 
 
 @pytest.mark.asyncio
-async def test_agent_mcp_scope_can_hide_disabled_global_server():
-    global_tool = Tool(name="mcp__global__search", description="search", func=lambda: "ok")
+async def test_agent_disabled_override_hides_only_its_inherited_global_tool():
+    """A disabled Agent source hides global MCP without affecting other Agents."""
+    global_tool = ToolDefinition(name="mcp__global__search", description="search", func=lambda: "ok")
 
     class _GlobalManager:
         attachment_service = None
@@ -330,26 +354,50 @@ async def test_agent_mcp_scope_can_hide_disabled_global_server():
         async def stop(self):
             return None
 
-        async def list_tools_for_servers(self, _names):
-            return []
+        def get_connected_servers(self):
+            return ["global"]
+
+    class _Profiles:
+        def mcp_source(self, agent_id):
+            if agent_id == "worker":
+                return {
+                    "global": {
+                        "type": "local",
+                        "command": ["global-server"],
+                        "disabled": True,
+                    }
+                }
+            return {}
+
+    class _Workspaces:
+        async def get(self, _session_id):
+            return ""
+
+        def mcp_source(self, _workspace):
+            return {}
 
     tools = ToolService()
     tools.register(global_tool, owner="mcp", source="mcp")
-    service = McpService(_GlobalManager(), tool_service=tools)
-    await service.start_and_register({
-        "global": {"type": "local", "command": ["global-server"]},
-    })
-    await service.prepare_agent("worker", {
-        "global": {"type": "local", "command": ["global-server"], "disabled": True},
-    })
+    service = McpService(
+        _GlobalManager(),
+        tool_service=tools,
+        agent_profiles=_Profiles(),
+        workspaces=_Workspaces(),
+    )
+    await service.start_and_register(
+        {"global": {"type": "local", "command": ["global-server"]}}
+    )
+    await service.prepare_view("worker", "session-a")
+    await service.prepare_view("other", "session-b")
 
-    assert global_tool.name not in {item.name for item in tools.snapshot("worker")}
+    assert global_tool.name not in {item.name for item in tools.snapshot("worker", "session-a")}
+    assert global_tool.name in {item.name for item in tools.snapshot("other", "session-b")}
     await service.stop()
 
 
 @pytest.mark.asyncio
 async def test_mcp_manager_registers_and_disposes_scoped_tools(monkeypatch):
-    tool = Tool(name="mcp__private__search", description="search", func=lambda: "ok")
+    tool = ToolDefinition(name="mcp__private__search", description="search", func=lambda: "ok")
     tools = ToolService()
     manager = McpManager(
         tool_service=tools,

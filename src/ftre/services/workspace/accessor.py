@@ -1,6 +1,6 @@
 """同步工具使用的工作区访问器。
 
-文件工具运行在 Core 的同步调用边界，而 WorkspaceService 的公开 API 是异步的。
+文件工具运行在同步调用边界，而 WorkspaceService 的公开 API 是异步的。
 这个小型适配对象属于 Workspace Owner；Agent Runtime 只向 Service 请求它，
 不再 import 工具目录里的私有实现。
 """
@@ -32,6 +32,14 @@ class WorkspaceAccessor:
             return workspace
         return self.fallback_cwd
 
+    async def aget(self) -> str:
+        """在异步 Tool 中读取工作区，不阻塞宿主事件循环。"""
+        session = await self.session_manager.get_session(self.session_id)
+        workspace = session.get("workspace") if session else ""
+        if workspace and os.path.isdir(workspace):
+            return workspace
+        return self.fallback_cwd
+
     def set(self, new_path: str) -> str:
         """同步等待 SessionService 持久化新目录，并返回旧目录。"""
         old = self.get()
@@ -40,6 +48,15 @@ class WorkspaceAccessor:
             workspace=new_path,
         )
         asyncio.run_coroutine_threadsafe(future, self.event_loop).result()
+        return old
+
+    async def aset(self, new_path: str) -> str:
+        """在异步 Tool 中持久化工作区，不阻塞宿主事件循环。"""
+        old = await self.aget()
+        await self.session_manager.update_session(
+            self.session_id,
+            workspace=new_path,
+        )
         return old
 
     def _read_db_workspace(self) -> str:

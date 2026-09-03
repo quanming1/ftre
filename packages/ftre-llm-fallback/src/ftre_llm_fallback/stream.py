@@ -1,11 +1,11 @@
 """安全地把“一次主模型流”包装成“必要时切一次备用模型”的流。
 
-这里最重要的不变量是：只要主模型已经向 Core 提交过正文、思考、Tool Call 或块边界，
+这里最重要的不变量是：只要主模型已经向 Runtime 提交过正文、思考、Tool Call 或块边界，
 就绝不能无感切换模型。否则两个模型的输出会被拼成同一条 Assistant 消息，甚至产生重复
 Tool Call。Fallback 因此只发生在最后一次 attempt、主模型零输出失败、错误白名单命中时。
 
 本模块没有 Retry Loop。备用模型只调用一次，且 Adapter 的 ``max_retries`` 固定为 0；
-备用模型也失败时，把最初的主模型错误交还 Core，保留最有意义的失败原因。
+备用模型也失败时，把最初的主模型错误交还 Runtime，保留最有意义的失败原因。
 """
 
 from __future__ import annotations
@@ -50,11 +50,11 @@ async def stream_with_fallback(
 ) -> AsyncIterator[Any]:
     """先消费主模型流；满足严格条件时改为产出一次备用模型流。
 
-    函数本身是异步生成器。调用它不会立即访问网络，直到 Core 对返回值执行
-    ``async for`` 才开始消费 ``primary``。这保证流的背压、取消和异常仍由 Core 驱动。
+函数本身是异步生成器。调用它不会立即访问网络，直到 Runtime 对返回值执行
+``async for`` 才开始消费 ``primary``。这保证流的背压、取消和异常仍由 Runtime 驱动。
     """
 
-    # 暂存主错误而不立刻 yield：一旦 yield 给 Core，Core 会把它转换成 LLMError，
+    # 暂存主错误而不立刻 yield：一旦 yield 给 Runtime，Runtime 会把它转换成 LLMError，
     # 当前异步流随即结束，Plugin 就再也没有机会无缝提供备用流。
     primary_error: FinishChunk | None = None
 
@@ -73,10 +73,10 @@ async def stream_with_fallback(
                     primary_error = chunk
                     code, message = _failure_details(chunk)
                     if committed or not _can_fallback(payload, config, code, message):
-                        # 不满足接管条件时保持原协议，让 Core 正常决定 Retry/Stop。
+                        # 不满足接管条件时保持原协议，让 Runtime 正常决定 Retry/Stop。
                         yield chunk
                         return
-                    # 先不把主模型的 error finish 交给 Core，等备用流结果。
+                    # 先不把主模型的 error finish 交给 Runtime，等备用流结果。
                     break
 
                 # stop/tool_calls 等正常结束必须原样转发；正常完成没有 fallback 的理由。
@@ -90,7 +90,7 @@ async def stream_with_fallback(
         raise
     except Exception as exc:
         # 适配器既可能返回 FinishChunk(error)，也可能直接抛异常。两条路径统一成同一套
-        # 白名单判断，但已提交输出后的异常必须原样抛回 Core。
+        # 白名单判断，但已提交输出后的异常必须原样抛回 Runtime。
         if committed:
             raise
         error = exc if isinstance(exc, LLMError) else LLMError.classify(exc)
@@ -114,7 +114,7 @@ async def stream_with_fallback(
             yield primary_error
             return
         prepared = await _prepare_backup_call(llm_service, payload, resolved)
-    except Exception as exc:  # noqa: BLE001 - optional fallback must not break Core
+    except Exception as exc:  # noqa: BLE001 - optional fallback must not break Runtime
         logger.warning(
             "[llm-fallback] backup adapter unavailable provider=%s model=%s error=%s",
             config.provider,
@@ -124,7 +124,7 @@ async def stream_with_fallback(
         yield primary_error
         return
 
-    # 备用失败期间不把它的 partial/error finish 交给 Core。最终统一回传主模型错误，
+    # 备用失败期间不把它的 partial/error finish 交给 Runtime。最终统一回传主模型错误，
     # 防止一次 attempt 同时暴露两个 Provider 的失败协议。
     backup_failed = False
     try:
@@ -150,13 +150,13 @@ async def stream_with_fallback(
                 return
         backup_failed = True
     except asyncio.CancelledError:
-        # Core 取消备用请求时，同时通知 Adapter 中止底层 HTTP 流，再把取消继续向上抛。
+    # Runtime 取消备用请求时，同时通知 Adapter 中止底层 HTTP 流，再把取消继续向上抛。
         prepared.cancel()
         raise
     except Exception:  # noqa: BLE001 - backup failure returns the primary error
         backup_failed = True
     if backup_failed:
-        # 备用调用失败不递归 fallback；Core 看到的是最初主模型错误。
+    # 备用调用失败不递归 fallback；Runtime 看到的是最初主模型错误。
         yield primary_error
 
 
@@ -169,10 +169,10 @@ def _can_fallback(
     """判断当前主错误是否允许被备用模型接管。
 
     条件采用全量 AND：必须是最后一次 attempt、未取消、Plugin 配置完整、错误未被
-    exclude/overflow 排除并且命中白名单。任意条件不满足都保留 Core 原行为。
+    exclude/overflow 排除并且命中白名单。任意条件不满足都保留 Runtime 原行为。
     """
 
-    # 前 N-1 次 attempt 必须先让 Core Retry；否则会变成“每次失败都切备用模型”。
+    # 前 N-1 次 attempt 必须先让 Runtime Retry；否则会变成“每次失败都切备用模型”。
     if payload.attempt != payload.max_attempts or payload.cancellation.is_set() or not config.enabled:
         return False
     value = f"{code} {message}".strip().lower()
@@ -182,7 +182,7 @@ def _can_fallback(
 
 
 def _commits_output(chunk: Any) -> bool:
-    """判断 chunk 是否已经让 Core 的消息/块协议进入不可回滚状态。
+    """判断 chunk 是否已经让 Runtime 的消息/块协议进入不可回滚状态。
 
     Usage 只是计量信息，不影响消息结构；空文本/空参数 delta 也不算。BlockStart 即使没有
     可见文本也必须算已提交，因为切模型后新的 BlockEnd 无法与旧模型的 BlockStart 配对。

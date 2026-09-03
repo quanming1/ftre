@@ -2,7 +2,7 @@
 
 覆盖 PRD-F33 的架构验收：契约包独立导入（AC1）、旧 Owner 退出（AC3）、
 Package 元数据与 entry point（AC15）、Runtime 无 Host 反向依赖（AC21）、
-DSH 对照项（AC22：不复制 Inbox/队列模型，不复制 Core Hook）。
+DSH 对照项（AC22：不复制 Inbox/队列模型，不复制 Agent Hook）。
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def test_ac1_agent_contract_package_imports_without_host() -> None:
     code = (
         "import sys; sys.path.insert(0, r'"
         + str(AGENT_PKG / "src")
-        + "'); import ftre_agent; assert ftre_agent.AgentService and ftre_agent.InboundMessage; "
+        + "'); import ftre_agent; assert ftre_agent.AgentService; assert not hasattr(ftre_agent, 'InboundMessage'); "
         "assert 'ftre.services' not in sys.modules and 'ftre' not in sys.modules; "
         "print('agent contract ok')"
     )
@@ -68,7 +68,7 @@ def test_ac3_legacy_host_agent_owner_is_fully_removed() -> None:
 
 
 def test_ac15_package_metadata_and_entry_points_are_declared() -> None:
-    """AC15：两个 Package 有完整元数据；只有 Runtime 暴露 ftre.plugins entry point。"""
+    """AC15：两个 Package 有完整元数据，分别暴露 Service/Runtime entry point。"""
     agent_pyproject = (AGENT_PKG / "pyproject.toml").read_text(encoding="utf-8")
     runtime_pyproject = (RUNTIME_PKG / "pyproject.toml").read_text(encoding="utf-8")
     assert 'name = "ftre-agent"' in agent_pyproject
@@ -78,7 +78,7 @@ def test_ac15_package_metadata_and_entry_points_are_declared() -> None:
     assert (RUNTIME_PKG / "README.md").exists()
     assert (RUNTIME_PKG / "README.zh.md").exists()
 
-    assert "ftre.plugins" not in agent_pyproject
+    assert 'agent-service = "ftre_agent.plugin:apply"' in agent_pyproject
     assert 'agent-runtime = "ftre_agent_runtime.plugin:apply"' in runtime_pyproject
 
 
@@ -89,7 +89,7 @@ def test_ac21_runtime_never_imports_host_services() -> None:
         host = {m for m in modules if m == "ftre" or m.startswith("ftre.")}
         assert host == set(), (path, sorted(host))
 
-        allowed_roots = {"ftre_agent", "ftre_agent_core", "ftre_llm"}
+        allowed_roots = {"ftre_agent", "ftre_llm"}
         for module in modules:
             if "." in module:
                 root, _, _ = module.partition(".")
@@ -112,7 +112,7 @@ def test_ac21_agent_contract_package_depends_on_nothing_ftre() -> None:
 
 
 def test_ac22_no_dsh_inbox_or_duplicated_core_hooks() -> None:
-    """AC22：不复制 DSH 的 Agent 内置 Inbox，也不复制 Core Hook。"""
+    """AC22：不复制 DSH 的 Agent 内置 Inbox，也不复制 Agent Hook。"""
     inbox_words = ("QueueItem", "next-turn", "next-step", "mailbox", "queue worker")
     for path in [*AGENT_SRC.rglob("*.py"), *RUNTIME_SRC.rglob("*.py")]:
         source = path.read_text(encoding="utf-8")
@@ -120,10 +120,9 @@ def test_ac22_no_dsh_inbox_or_duplicated_core_hooks() -> None:
             assert word not in source, (path, word)
 
     import ftre_agent
-    from ftre_agent_core import hooks as core_hooks
 
-    assert ftre_agent.AGENT_BEFORE_REASONING_SPEC is core_hooks.AGENT_BEFORE_REASONING_SPEC
-    assert ftre_agent.AGENT_STOP_DECISION_SPEC is core_hooks.AGENT_STOP_DECISION_SPEC
+    assert ftre_agent.AGENT_BEFORE_REASONING_SPEC.name == "agent/before-reasoning"
+    assert ftre_agent.AGENT_STOP_DECISION_SPEC.name == "agent/stop-decision"
 
 
 def test_run_result_contract_has_stable_status_values() -> None:
@@ -132,15 +131,16 @@ def test_run_result_contract_has_stable_status_values() -> None:
 
     result = ftre_agent.AgentRunResult(session_id="s", turn_id="t", status="completed")
     assert result.status == "completed"
-    assert ftre_agent.InboundMessage("r", "ws", "user").source == "user"
+    assert not hasattr(ftre_agent, "InboundMessage")
 
 
-def test_composition_loads_runtime_entry_point_only() -> None:
-    """AC4：Host Composition 只通过 Runtime entry point 装载，不手工构造。"""
+def test_composition_loads_agent_service_then_runtime_entry_point() -> None:
+    """AC4：Host Composition 先装载 AgentService，再装载 Runtime Provider。"""
     composition = (ROOT / "src" / "ftre" / "app" / "gateway" / "composition.py").read_text(
         encoding="utf-8"
     )
     assert "ftre_agent_runtime.plugin:apply" in composition
+    assert "ftre_agent.plugin:apply" in composition
     assert "ftre.services.agent.plugin" not in composition
     assert "AgentLoop(" not in composition
     bootstrap = (ROOT / "src" / "ftre" / "app" / "gateway" / "bootstrap.py").read_text(

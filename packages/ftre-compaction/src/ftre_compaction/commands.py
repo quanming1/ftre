@@ -13,7 +13,7 @@ from collections.abc import Callable
 from ftre_agent import AgentConfig
 
 from ftre.plugins.builtin.command import CommandContext, CommandResult, CommandService
-from ftre.services.agent.config import load_config
+from ftre.services.agent_profile.config import load_config
 
 logger = logging.getLogger(__name__)
 

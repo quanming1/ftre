@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from cordis import FiberState
-from ftre_agent_core.tool import ToolRegistry
+from ftre_agent import AgentService
 
 from ftre.app.gateway.bootstrap import start_gateway
 from ftre.app.gateway.composition import build_composition, default_manifests
@@ -38,17 +38,22 @@ from ftre.services.tools import ToolService
 @pytest.mark.asyncio
 async def test_default_composition_has_required_public_services(tmp_path) -> None:
     config = ConfigService(tmp_path / "config.json", {})
+
+    class SessionStub:
+        def sessions_root(self):
+            return tmp_path / "sessions"
+
     composition = await build_composition(
         {},
         initial_services={
             "config": config,
-            "sessions": object(),
+            "sessions": SessionStub(),
             "message_bus": MessageBusService(),
             "channels": ChannelService(ChannelManager(EventBus())),
-            "tools": ToolService(ToolRegistry()),
+            "tools": ToolService(),
             "commands": CommandService(),
             "agent_profiles": object(),
-            "agents": object(),
+            "agents": AgentService(),
             "traces": object(),
         },
     )
@@ -56,7 +61,7 @@ async def test_default_composition_has_required_public_services(tmp_path) -> Non
         required = {item.id: item for item in composition.plugins.statuses() if item.required}
         assert required
         assert all(item.state is FiberState.ACTIVE for item in required.values())
-        assert {"config", "filesystem", "http", "message_bus", "tools", "llm"}.issubset(
+        assert {"config", "filesystem", "http", "message_bus", "tools", "process", "llm"}.issubset(
             composition.context.reflect.store
         )
         assert {item.api_type for item in composition.context.get("llm").list_providers()} == {

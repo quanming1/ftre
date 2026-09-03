@@ -3,9 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from ftre_agent import AgentConfig, AgentRegistry, InboundMessage, LLMConfig
-from ftre_agent_core.agent.runner import RunState, RunStatus
-from ftre_agent_core.event import (
+from ftre_agent import AgentConfig, AgentRegistry, LLMConfig
+from ftre_agent.event import (
     ReplyEndEvent,
     ReplyFinishedReason,
     ReplyStartEvent,
@@ -13,8 +12,10 @@ from ftre_agent_core.event import (
     TextBlockEndEvent,
     TextBlockStartEvent,
 )
-from ftre_agent_core.message import Msg
+from ftre_agent.message import Msg
 from ftre_agent_runtime import AgentLoop, TurnExecutor
+from ftre_agent_runtime.protocol import RuntimeInput
+from ftre_agent_runtime.run_state import RunState, RunStatus
 
 from ftre.services.messaging.bus import EventBus, MessageBusService
 from ftre.services.session.events import SessionEventService
@@ -104,6 +105,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
         create_accessor=Mock(return_value=SimpleNamespace(get=lambda: "/tmp", set=lambda value: value)),
         ensure_extension_layout=AsyncMock(),
     )
+    loop.process_service = object()
     loop.config_service = None
     loop.tracer = Mock()
 
@@ -125,10 +127,11 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
         tools=loop.tools,
         profiles=loop.profiles,
         workspaces=loop.workspaces,
+        process_service=loop.process_service,
         config_service=None,
         llm_service=None,
     )
-    executor._core_factory = Mock(return_value=agent)
+    executor._runtime_factory = Mock(return_value=agent)
     executor._build_messages = AsyncMock(
         return_value=([{"role": "user", "content": "hi"}], config)
     )
@@ -138,7 +141,7 @@ def _make_executor(agent: FakeAgent) -> TurnExecutor:
 
 
 def _inbound():
-    return InboundMessage(
+    return RuntimeInput(
         session_id="test-session",
         request_id="request-test",
         channel_id="ws",
@@ -197,6 +200,16 @@ async def test_user_msg_is_persisted_before_agent_run():
 
 
 @pytest.mark.asyncio
+async def test_turn_context_exposes_injected_process_service_to_tools():
+    agent = FakeAgent()
+    executor = _make_executor(agent)
+
+    await _execute_admitted(executor)
+
+    assert agent._captured_runtime_context["process"] is executor._process_service
+
+
+@pytest.mark.asyncio
 async def test_turn_executor_does_not_drop_message_when_maintenance_is_external(caplog):
     agent = FakeAgent()
     executor = _make_executor(agent)
@@ -218,7 +231,12 @@ async def test_user_message_is_projected_before_frontend_echo():
         order.append("persist")
 
     async def record_publish(message):
-        if message.data.get("type") == "USER_MESSAGE":
+        payload = (
+            message.data.model_dump(mode="json")
+            if hasattr(message.data, "model_dump")
+            else message.data
+        )
+        if payload.get("type") == "USER_MESSAGE":
             order.append("broadcast")
 
     executor._loop.sessions.upsert_message.side_effect = record_upsert
@@ -233,7 +251,7 @@ async def test_user_message_is_projected_before_frontend_echo():
 async def test_claimed_request_identity_is_persisted_on_user_message():
     executor = _make_executor(FakeAgent())
     inbound = _inbound()
-    inbound = InboundMessage(
+    inbound = RuntimeInput(
         session_id="test-session",
         request_id="request-a",
         channel_id="ws",
@@ -252,7 +270,7 @@ async def test_channel_mismatch_is_failed_instead_of_false_completed():
     """防串台拒绝必须成为失败的 Turn 结果，不能伪装成 completed。"""
     executor = _make_executor(FakeAgent())
     inbound = _inbound()
-    inbound = InboundMessage(
+    inbound = RuntimeInput(
         session_id="test-session",
         request_id="request-channel",
         channel_id="cron",
@@ -260,7 +278,7 @@ async def test_channel_mismatch_is_failed_instead_of_false_completed():
     )
 
     error = await executor._loop._validate_inbound(
-        InboundMessage(
+        RuntimeInput(
             session_id="test-session",
             request_id="request-channel",
             channel_id=inbound.channel_id,
@@ -270,7 +288,7 @@ async def test_channel_mismatch_is_failed_instead_of_false_completed():
 
     assert error is not None
     assert error["code"] == "channel_mismatch"
-    executor._core_factory.assert_not_called()
+    executor._runtime_factory.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -298,7 +316,7 @@ async def test_compact_decisions_use_selected_agent_context_window():
         soul_prompt="",
         user_prompt_md="",
     ))
-    inbound = InboundMessage(
+    inbound = RuntimeInput(
         session_id="test-session",
         request_id="request-coder",
         channel_id="ws",
@@ -330,16 +348,17 @@ async def test_delta_is_live_only_and_reply_persists_as_one_msg():
     assert assistant_final.get_text_content() == "hello"
     assert assistant_final.finished_reason == ReplyFinishedReason.COMPLETED
 
-    outbound = [
-        call.args[0].data
-        for call in executor._loop.message_bus.publish_outbound.call_args_list
-        if call.args and getattr(call.args[0], "type", "") == "agent_event"
-    ]
+    outbound = []
+    for call in executor._loop.message_bus.publish_outbound.call_args_list:
+        if not call.args or getattr(call.args[0], "type", "") not in {"agent_event", "session_event"}:
+            continue
+        payload = call.args[0].data
+        outbound.append(payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload)
     assert any(frame.get("type") == "TEXT_BLOCK_DELTA" for frame in outbound)
     turn_end = next(
         frame
         for frame in outbound
-        if frame.get("type") == "CUSTOM" and frame.get("name") == "TURN_END"
+        if frame.get("type") == "PIPELINE_EVENT" and frame.get("name") == "TURN_END"
     )
     assert turn_end["value"]["success"] is True
     assert turn_end["value"]["reason"] == "completed"
@@ -349,7 +368,7 @@ async def test_delta_is_live_only_and_reply_persists_as_one_msg():
     pipeline_end = next(
         frame
         for frame in outbound
-        if frame.get("type") == "CUSTOM" and frame.get("name") == "PIPELINE_END"
+        if frame.get("type") == "PIPELINE_EVENT" and frame.get("name") == "PIPELINE_END"
     )
     assert pipeline_end["value"]["success"] is True
 

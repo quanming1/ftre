@@ -1,8 +1,8 @@
-"""独立 Inbox 与宿主 Agent 之间的最小输入协议。
+"""外部输入进入 Inbox 前的最小消息信封。
 
-这个 DTO 刻意只描述“已经准备交付的一条输入”。它不携带 QueueItem、队列目标或
-持久化 revision，因此 Inbox 可以在没有安装完整 ftre Gateway 时被导入和测试。
-Gateway 中的 ``AgentService`` 接受同形状的输入对象；两边不需要互相 import。
+这个 DTO 刻意只描述一条待接纳的输入，不携带 QueueItem、队列目标或持久化
+revision。Inbox 会在自己的边界内把它转换为 AgentRunRequest；它不是 Agent
+Service 的公共输入类型。
 """
 
 from __future__ import annotations

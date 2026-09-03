@@ -13,14 +13,13 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from cordis import Context
-from ftre_agent import AgentConfig, AgentRegistry, InboundMessage, LLMConfig
-from ftre_agent_core.agent.runner import RunState, RunStatus
-from ftre_agent_core.event import (
+from ftre_agent import AgentConfig, AgentRegistry, LLMConfig
+from ftre_agent.event import (
     ReplyFinishedReason,
     RequireUserConfirmEvent,
     UserConfirmResultEvent,
 )
-from ftre_agent_core.message import (
+from ftre_agent.message import (
     AssistantMsg,
     Msg,
     TextBlock,
@@ -28,6 +27,8 @@ from ftre_agent_core.message import (
     ToolCallState,
 )
 from ftre_agent_runtime import AgentLoop, TurnExecutor
+from ftre_agent_runtime.protocol import RuntimeInput
+from ftre_agent_runtime.run_state import RunState, RunStatus
 
 from ftre.kernel.hooks import HookRuntime
 from ftre.plugins.builtin.command import CommandService
@@ -144,6 +145,7 @@ def _make_executor(agent) -> TurnExecutor:
         create_accessor=Mock(return_value=SimpleNamespace(get=lambda: "/tmp", set=lambda value: value)),
         ensure_extension_layout=AsyncMock(),
     )
+    loop.process_service = object()
     loop.config_service = None
     loop.tracer = Mock()
 
@@ -175,10 +177,11 @@ def _make_executor(agent) -> TurnExecutor:
         tools=loop.tools,
         profiles=loop.profiles,
         workspaces=loop.workspaces,
+        process_service=loop.process_service,
         config_service=None,
         llm_service=None,
     )
-    executor._core_factory = Mock(return_value=agent)
+    executor._runtime_factory = Mock(return_value=agent)
     executor._build_messages = AsyncMock(
         return_value=([{"role": "user", "content": "hi"}], config)
     )
@@ -195,7 +198,7 @@ class _FakeState:
 
 
 def _user_inbound():
-    return InboundMessage(
+    return RuntimeInput(
         session_id="test-session",
         request_id="request-test",
         channel_id="ws",
@@ -206,7 +209,7 @@ def _user_inbound():
 
 def _confirm_inbound(*, approved=True, tool_call_id="call-1"):
     # Command Plane 仍从 BusMessage 解析 slash command；handler 再把确认恢复
-    # 转为 Agent Runtime 的 InboundMessage。这不是第二套 Agent 输入协议，
+    # 转为 Agent Runtime 的 RuntimeInput。这不是第二套 Agent 输入协议，
     # 而是接入信封到公开运行输入的单向归一化边界。
     return BusMessage(
         type="user_message",
@@ -234,7 +237,7 @@ def _enable_builtin_commands(executor):
             if hasattr(metadata, "model_dump")
             else dict(metadata or {})
         )
-        inbound = InboundMessage(
+        inbound = RuntimeInput(
             session_id=session_id,
             request_id=str(metadata_values.get("request_id") or "request-confirm"),
             channel_id=channel_id,
@@ -278,11 +281,13 @@ def _saved_messages(executor):
 
 
 def _outbound_frames(executor):
-    return [
-        call.args[0].data
-        for call in executor._loop.message_bus.publish_outbound.call_args_list
-        if call.args and getattr(call.args[0], "type", "") == "agent_event"
-    ]
+    frames = []
+    for call in executor._loop.message_bus.publish_outbound.call_args_list:
+        if not call.args or getattr(call.args[0], "type", "") not in {"agent_event", "session_event"}:
+            continue
+        payload = call.args[0].data
+        frames.append(payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload)
+    return frames
 
 
 @pytest.mark.asyncio
@@ -311,7 +316,7 @@ async def test_tool_ask_pauses_turn_with_success_turn_end():
 
     # TURN_END 是 success 且 reason=paused，不是 error
     turn_end = next(
-        f for f in frames if f.get("type") == "CUSTOM" and f.get("name") == "TURN_END"
+        f for f in frames if f.get("type") == "PIPELINE_EVENT" and f.get("name") == "TURN_END"
     )
     assert turn_end["value"]["success"] is True
     assert turn_end["value"]["reason"] == "paused"
@@ -320,7 +325,7 @@ async def test_tool_ask_pauses_turn_with_success_turn_end():
     pipeline_end = next(
         f
         for f in frames
-        if f.get("type") == "CUSTOM" and f.get("name") == "PIPELINE_END"
+        if f.get("type") == "PIPELINE_EVENT" and f.get("name") == "PIPELINE_END"
     )
     assert pipeline_end["value"]["success"] is True
 
@@ -390,7 +395,7 @@ async def test_confirm_result_injects_history_and_drives_resume():
     await _execute_command(executor, _confirm_inbound(approved=True, tool_call_id="call-1"))
 
     # create_agent 收到注入了历史 context 的 state
-    create_kwargs = executor._core_factory.call_args.kwargs
+    create_kwargs = executor._runtime_factory.call_args.kwargs
     injected_state = create_kwargs["state"]
     assert injected_state is not None
     assert injected_state.context == history
@@ -497,7 +502,7 @@ async def test_confirm_resume_uses_structured_prompt_hook():
 
     await _execute_command(executor, _confirm_inbound(approved=True))
 
-    create_kwargs = executor._core_factory.call_args.kwargs
+    create_kwargs = executor._runtime_factory.call_args.kwargs
     assert create_kwargs["config"].system_prompt.endswith("private tools ready")
 
 

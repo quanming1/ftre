@@ -1,7 +1,7 @@
 """F33 Runtime Package 生命周期测试。
 
 验证 Runtime Plugin 在真实 Composition 中的装配与卸载（AC4/AC12/AC14 的
-生命周期侧面）：agents Service 由 entry point 装载、关闭后 Runtime 解绑、
+生命周期侧面）：agents Service 与 Runtime Factory 由各自 entry point 装载、关闭后解绑、
 重复关闭安全，以及洁净环境导入（AC16 的导入侧面）。
 """
 
@@ -25,15 +25,14 @@ async def test_runtime_plugin_composes_binds_and_detaches(tmp_path) -> None:
     )
     agents = composition.context.get("agents")
     assert agents is not None
-    runtime = agents.runtime
-    assert runtime is not None
-    # Runtime 未绑定时查询安全；绑定后状态查询可用。
-    assert runtime.get_session_status("nope") == "idle"
+    assert agents.is_ready()
+    assert agents.factory_name == "ftre-agent-runtime"
+    # Runtime 通过 Service 转发状态；具体 Loop 不从 Service 公共面暴露。
+    assert agents.get_session_status("nope") == "idle"
 
     await composition.close()
 
-    with pytest.raises(RuntimeError, match="runtime is not ready"):
-        _ = agents.runtime
+    assert not agents.is_ready()
     # 关闭后未绑定状态：查询回 idle、不抛异常。
     assert agents.status("nope") == "idle"
 
@@ -54,7 +53,7 @@ async def test_composition_close_is_idempotent_for_runtime(tmp_path) -> None:
 def test_runtime_package_imports_in_clean_interpreter() -> None:
     """AC16 导入侧面：Runtime 包可在不挂载 ftre Host 源码的解释器中导入。
 
-    依赖（ftre_agent、ftre_agent_core、ftre_llm、cordis）以独立安装后的
+    依赖（ftre_agent、ftre_llm、cordis）以独立安装后的
     位置解析：契约包 src 与 Runtime src 同时可见，ftre Host 源码不可见。
     """
     agent_src = ROOT / "packages" / "ftre-agent" / "src"

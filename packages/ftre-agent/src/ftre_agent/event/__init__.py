@@ -1,0 +1,57 @@
+"""Agent 事件包（纯 AgentScope 对齐协议）。
+
+旧 ftre 事件已删除，不再兼容。所有事件继承 EventBase（pydantic，model_dump 扁平）。
+"""
+from ..types import ReplyFinishedReason
+from ._event import (
+    AgentStreamEvent,
+    EventBase,
+    HintBlockEvent,
+    ModelCallEndEvent,
+    ModelCallStartEvent,
+    ReplyEndEvent,
+    ReplyStartEvent,
+    RequireUserConfirmEvent,
+    RetryEvent,
+    TextBlockDeltaEvent,
+    TextBlockEndEvent,
+    TextBlockStartEvent,
+    ThinkingBlockDeltaEvent,
+    ThinkingBlockEndEvent,
+    ThinkingBlockStartEvent,
+    ToolCallDeltaEvent,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
+    ToolResultEndEvent,
+    ToolResultStartEvent,
+    ToolResultTextDeltaEvent,
+    UserConfirmResultEvent,
+    UserMessageEvent,
+)
+
+__all__ = [
+    "AgentStreamEvent",
+    "EventBase",
+    "HintBlockEvent",
+    "ModelCallEndEvent",
+    "ModelCallStartEvent",
+    "ReplyEndEvent",
+    "ReplyFinishedReason",
+    "ReplyStartEvent",
+    "RequireUserConfirmEvent",
+    "RetryEvent",
+    "TextBlockDeltaEvent",
+    "TextBlockEndEvent",
+    "TextBlockStartEvent",
+    "ThinkingBlockDeltaEvent",
+    "ThinkingBlockEndEvent",
+    "ThinkingBlockStartEvent",
+    "ToolCallDeltaEvent",
+    "ToolCallEndEvent",
+    "ToolCallStartEvent",
+    "ToolResultEndEvent",
+    "ToolResultStartEvent",
+    "ToolResultTextDeltaEvent",
+    "UserConfirmResultEvent",
+    "UserMessageEvent",
+]

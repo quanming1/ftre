@@ -9,10 +9,17 @@ from __future__ import annotations
 import asyncio
 import inspect
 
-from ftre_agent import AgentService, InboundMessage
+from ftre_agent import (
+    AgentConfig,
+    AgentCreateSpec,
+    AgentRunRequest,
+    AgentRunResult,
+    AgentService,
+)
+from ftre_agent.message import UserMsg
 
-from ftre.services.agent.profile.models import EffectiveProfile
-from ftre.services.agent.profile.service import AgentProfileService
+from ftre.services.agent_profile.models import EffectiveProfile
+from ftre.services.agent_profile.service import AgentProfileService
 from ftre.services.config.service import ConfigService
 from ftre.services.messaging.bus.service import MessageBusService
 from ftre.services.session.service import SessionService
@@ -27,11 +34,24 @@ class _FakeAgentRuntime:
     def is_active_session(self, session_id: str) -> bool:
         return session_id == "busy"
 
+    @property
+    def control(self):
+        return self
+
     def get_session_status(self, session_id: str) -> str:
         return "running" if session_id == "busy" else "idle"
 
-    async def run_inbound(self, message: InboundMessage) -> InboundMessage:
-        return message
+    async def create(self, spec):
+        return self
+
+    async def resume(self, spec):
+        return self
+
+    async def run(self, request: AgentRunRequest) -> AgentRunResult:
+        return AgentRunResult(session_id=request.session_id, turn_id=request.request_id, status="completed")
+
+    async def dispose(self):
+        return None
 
     async def cancel_session(self, *args, **kwargs) -> bool:
         return True
@@ -59,8 +79,8 @@ def _method_names(cls: type) -> set[str]:
     }
 
 
-def test_agent_service_public_boundary_accepts_one_inbound_message() -> None:
-    """AgentService 接受 InboundMessage，不暴露 QueueItem 或 TurnExecutor。"""
+def test_agent_service_public_boundary_accepts_msg_run_request() -> None:
+    """AgentService 接受 Msg[]，不暴露 QueueItem 或 TurnExecutor。"""
     expected = {
         "run",
         "cancel",
@@ -78,9 +98,13 @@ def test_agent_service_public_boundary_accepts_one_inbound_message() -> None:
     }
     assert expected <= _method_names(AgentService)
     service = AgentService()
-    service.attach_runtime(_FakeAgentRuntime())
-    message = InboundMessage("s1", "r1", "ws", "hello")
-    assert asyncio.run(service.run(message)) == message
+    service.start()
+    service.register_factory(_FakeAgentRuntime())
+    asyncio.run(service.create(AgentCreateSpec("agent", AgentConfig(), "s1")))
+    result = asyncio.run(
+        service.run("agent", AgentRunRequest("s1", "r1", (UserMsg(content="hello"),)))
+    )
+    assert result.status == "completed"
     assert service.status("s1") == "idle"
     assert service.is_busy("s1") is False
 
@@ -164,7 +188,7 @@ def test_config_service_resolves_agent_config_from_its_snapshot(tmp_path, monkey
         },
     )
     monkeypatch.setattr(
-        "ftre.services.agent.config.load_config",
+        "ftre.services.agent_profile.config.load_config",
         lambda: (_ for _ in ()).throw(AssertionError("must not read global loader")),
     )
 

@@ -842,3 +842,4 @@ ftre-agent-core
 | 2026-08-26 | 恢复 F33 终局 Agent Package 架构 PRD，固定 `ftre-agent`、`ftre-agent-runtime`、Host Service、Plugin 和 Core 的边界及目标文件树 | 防止文档误删或 F31/F32/F33 迭代过程中丢失轻内核、Plugin-first 和单一 Owner 目标 |
 | 2026-08-26 | 根据 DSH 最新代码复核补充 Agent Registry/Loop Provider 分离、Session durable event 与 live Hook 分工、ftre 独立 Inbox 取舍、实际 F32 Inject、Hook Owner、文件映射、独立发行依赖和 AC21/AC22；修正原先虚构的 `run-start`/`step-completed`/`run-end` 与 Core Hook Owner 描述 | 让 F33 以真实代码和 DSH 可验证结构为依据，避免复制 DSH Inbox、重复 Core Hook 或制造 Host↔Runtime 循环依赖 |
 | 2026-08-26 | F33 实现验收：`ftre-agent` 契约包与 `ftre-agent-runtime` Provider 包落地，Host 删除旧 Agent Runtime Owner，Composition 改为 entry point 装载；AC1-AC22 全部通过（全量 pytest 667 passed、ruff、diff check、Gateway smoke、wheel 洁净安装验证） | 固定 Agent 终局分层：契约、Runtime、Host Service、Plugin、Core 各自唯一 Owner |
+| 2026-08-28 | F36 立项：在保留 F33 AgentService/Runtime 分层的基础上，进一步合并外部 `ftre-agent-core`；F36 为本 PRD 的后续修订，不回滚已验收边界 | 当前 Core 仍是最后发行边界，F36 将迁移 ReAct 算法并移除 Core 依赖 |

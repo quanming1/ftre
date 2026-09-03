@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from ftre_agent_core.message import AssistantMsg, ToolCallBlock, ToolCallState
+from ftre_agent.message import AssistantMsg, ToolCallBlock, ToolCallState
 
 from ftre.plugins.builtin.command import CommandService
 from ftre.plugins.builtin.command.builtin import register_builtin_commands

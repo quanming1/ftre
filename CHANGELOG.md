@@ -1,15 +1,120 @@
 # Changelog
 
+## [0.3.2] - 2026-09-03
+
+### F40 MCP 三层配置与统一目录
+
+- MCP 目录统一解析 global/agent/project 三层配置，按 `project > agent > global` 返回 effective/source
+  视图，HTTP CRUD 委托 Config、Agent Profile 和 Workspace Service，并对凭据字段脱敏。
+- ToolService 按 Agent/Session 隔离 MCP 工具；ConfigService watcher 负责全局热重载，ToolView 准备失败会
+  回滚工具、限制和私有连接，Agent MCP 配置使用原子写入并兼容 UTF-8 BOM。
+- 后端全量 pytest 776 passed，Ruff、架构扫描和 MCP 回归通过。
+
 ## [0.3.1] - 2026-08-27
 
 ### 修复
 
-- **responses reasoning 跨 Provider 重放 400**（F30）：历史 reasoning 组重放前按目标协议形状校验，DeepSeek UUID 组发 GPT、GPT summary-only 组发 DeepSeek 不再触发上游 400，不兼容组自动降级 rs_legacy 重建路径；组级原子判定杜绝混合历史
-- **CI 安装失败**（D1）：F33 新增的 ftre-agent/ftre-agent-runtime Package 在 CI 安装序列中缺本地注册，pip 解析失败；补齐 no-deps 注册
+- **responses reasoning 跨 Provider 重放 400**（F30）：历史 reasoning 组重放前按目标协议形状校验，
+  不兼容组自动降级重建路径，避免跨 Provider 请求被上游拒绝。
+- **CI 安装失败**（D1）：补齐 `ftre-agent` 与 `ftre-agent-runtime` 的本地发行物注册。
 
 ### 测试
 
-- inbox hook 测试解除对 Core 私有 LLM API 的依赖，改用 ftre_llm 事件类型
+- inbox hook 测试改用 `ftre_llm` 事件类型，解除对已退休 Core 私有 API 的依赖。
+
+## [未发布]
+
+### F39 ConfigService 外部变更热更新与模型目录
+
+- ConfigService 增加文件指纹、外部变更 reload、revision/hash 去重和可逆 watcher；非法外部
+  JSON 保留上一次有效快照。
+- 新增脱敏 `GET /api/config/models`；模型目录不返回 API key，客户端在打开模型面板时刷新，
+  失败时保留旧列表。
+- Agent Profile 与 Compaction 的生产配置读取改用注入的 ConfigService，减少根配置的重复 Owner。
+
+### C6 通用 Markdown 扩展与 Skill UI
+
+- 新增 `ftre-inline-extension` 协议 Package，统一解析和规范化 `ftre://v1` 引用；Skill
+  通过 HTTP 目录、输入框 token、聊天/摘要/Inspector Renderer 全链路接入。
+- SkillService 现在只发现 root 直下的 `<folder>/SKILL.md` 或 `.md` 候选，严格校验 YAML
+  frontmatter；没有合法 frontmatter 的普通 Markdown 只进入诊断，Skill 内部资源和嵌套 Markdown
+  不被扫描，坏候选通过 `GET /api/skills/diagnostics` 暴露结构化诊断。
+- Skill Handler 只在 `agent/pre-step` 处理用户消息，注入快照使用稳定 ID 幂等持久化，
+  刷新、重连和 Hook 重试不会重复注入。
+- Skill 详情现在返回稳定 `ftre://v1/skill/<name>`、来源路径、revision 和预览能力；真实
+  `.ftre` 文件复用现有目录预览，运行时内容快照不会触发文件系统 IPC。
+- 收尾审计限制 filesystem source 只能来自已验证的 Skill 目录记录；运行时 Skill 路径保持
+  content source，避免把任意运行时路径暴露给客户端。
+- Skill Plugin 注入按当前 Agent/工作区生成的模型使用说明和可用 Skill 清单；正文仍通过显式
+  `ftre://` 注入或 `loadSkill` 按需读取，避免模型把普通 Markdown 资源当作 Skill。
+- C6.6 以 YAML `name` 作为唯一规范名称，移除文件名黑名单；修复用户 Skill 的 frontmatter/编码，
+  列表增加来源摘要，输入框和管理面板按当前 Session/Agent 作用域刷新并提供诊断查看。
+- 审计补齐模型提示与发现规则的一致性，`loadSkill` 按当前 Agent/工作区解析，管理面板明确显示查询作用域。
+- Windows 编辑器写入的 UTF-8 BOM、以及 YAML key/value 前缀 BOM 不再导致 Skill 消失；只要 `name` 和
+  `description` 合法即可被发现，错误的可选 metadata/策略字段会回退默认或被忽略。
+
+### F38 Inbox 恢复幂等与队列生命周期（已完成，未发布）
+
+- 已执行请求在取消、失败或中断后不再回到 pending；普通队列只在正常 RunCompleted 后推进，
+  启动恢复不会自动发送历史队列。
+- UserMessage 按 `session_id + request_id` 幂等落盘并保留原始身份/时间/内容；Agent Run 防止
+  重复执行；Inbox 统一使用 Session canonical 用户数据根。
+- Steering 按 Session 持久化并在同一 Session 的 Reasoning 边界交付；未赶上当前 Run 的消息会由正常完成后的 FIFO worker 交给后续 Run，并发重放有单写保护。
+- 修复目标 Run 在最后一次推理前正常结束时 Next Step 永久滞留：`agent/after-run` 完成事件会解除目标绑定，交由现有 FIFO worker 进入下一轮；取消、失败、暂停和中断仍保留队列。
+- Inbox 进一步收敛为 `Inbound → QueueItem → FIFO claim → AgentService`，删除 delivery lease、
+  release/ack 回退分支；claim 后消息永久离开 pending，失败由 AgentService 返回终态。
+- 后端全量 pytest 745 passed、Ruff 与架构门禁通过；Desktop renderer 537 tests passed，三个
+  Package wheel 构建验收通过。
+
+### F37 Process Service 与后端进程生命周期
+
+- 新增 `ftre-process` Package，统一外部进程的 argv/shell、stdout/stderr、超时、取消、进程组和
+  Windows 无控制台策略；Bash Tool 与 Gateway 后台管理迁移到该 Service。
+- 增加 `process` Provider、架构扫描和生命周期回归测试；MCP stdio 保留上游 transport 边界并验证
+  `CREATE_NO_WINDOW`/Job Object 策略。
+- 客户端由 `BackendSupervisor` 直接使用 bundled `pythonw.exe` 启动 Gateway，增加 health ready、
+  状态/日志 IPC 和优雅退出；Windows 原生无黑窗验收仍待目标机器完成。
+
+### Tool 执行稳定性修复
+
+- 同步工具（包括 bash）改在线程中执行，避免慢速文件系统或子进程阻塞 Gateway 的 HTTP/WebSocket 事件循环；异步工具仍按原路径 await。
+- Tool Hook 与 Tool Service 共用同一个 `ToolExecutionResult` 公共类型，修复透明 `tool/after` 审计导致工具结果被误判失败的问题。
+
+### F36 Agent Core 合并与 Package 分层简化（已完成，未发布）
+
+- `ftre-agent`、`ftre-agent-runtime`、`ftre-llm` 和 Host `ToolService` 分别成为
+  Agent 契约、ReAct Runtime、LLM 协议和工具执行的唯一 Owner；Ftre 生产代码与活动测试不再
+  导入 `ftre_agent_core`。
+- Runtime 现在输出真实有序 AgentStreamEvent，ToolView 负责权限/审批/执行，Host
+  `PIPELINE_EVENT`/`SESSION_MAINTENANCE` 与 Agent 回复流分离；无生产者的旧事件与客户端 reducer
+  分支已删除。
+- 完成 Ftre Package wheel 与 Desktop renderer 回归、跨仓残留扫描；Core C8 已删除旧生产目录、
+  测试、示例和 `pyproject.toml`，不提供兼容 alias/re-export，保留 `docs/`、`work/` 和用户数据。
+
+### F35 Agent Service / Profile / Inbox 边界收敛（已完成，未发布）
+
+- F35.4 将 Inbox 输入冻结为可持久化 `Msg[]`，新增 `AgentService` RunReservation 与 Inbox durable
+  lease（`claim_lease/ack/release`）；Agent 失败/取消会 release，成功才 ack；进程重启会丢弃旧 owner
+  的 inflight 项且不自动启动历史 pending，避免中断请求被重复投递。
+- 扩展 `inbox/before-admit` 决策 Hook 与 `inbox/admitted`、`inbox/claimed`、`inbox/deferred`、
+  `inbox/delivered`、`inbox/failed`、`inbox/discarded`、`inbox/error` 观察 Hook；Agent 状态变化通过
+  事件唤醒 worker，移除 quiescent 固定时间轮询；Agent 公共入口不再接受 InboundMessage。
+- 全量 pytest 693 passed，Inbox/契约/架构专项 217 passed，ruff 与 diff check 通过。
+- F35.5 在 `before-reasoning` 交接点派发带 run/previous assistant 坐标的真实 `UserMessageEvent`；
+  Session Projection 先即时封口旧 Assistant，再持久化/广播 UserMsg，失败保留 active 供重试；
+  全量 pytest 695 passed，消息边界专项 197 passed。
+- F35.6 完成 RuntimeInput 收口、Agent InboundMessage 兼容路径删除、失败结果 lease release、取消/重启
+  恢复、clean wheel/import 和终局架构扫描；全量 pytest 703 passed，架构/契约/生命周期专项 272 passed。
+- F35 后续修复：Agent Runtime 以持久化 Assistant 的 `request_id/run_id` 做幂等短路；Session Projection
+  拒绝向已终态 Assistant 追加重放事件；启动加载的 pending 需新 admission 或显式 `resume_pending()` 才会执行。
+- F35 后续修复：权限确认挂起通过 `AgentRunResult.paused` 明确标记，Inbox 在 paused 状态下不消费后续队列，
+  仅在确认恢复并正常结束后继续派发。
+
+- F35.3 将 Host 侧 Profile、配置、路由和 Team 成员 Profile 迁移至
+  `src/ftre/services/agent_profile/`，由 `AgentProfileService` 统一持有；Profile 按项目、用户、Host
+  优先级解析并冻结为带来源 trace/hash 的 `AgentProfileSnapshot`。
+- 删除旧 `src/ftre/services/agent` 源码 Owner，更新 Composition、Session、Compaction、测试引用；
+  全量 pytest 682 passed，ruff、架构门禁和 diff check 通过。
 
 ### F33 Agent Package 终局架构（已完成，未发布）
 

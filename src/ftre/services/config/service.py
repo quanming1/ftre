@@ -7,6 +7,7 @@ concurrency 和原子写入才有单一语义。
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import inspect
 import json
@@ -37,6 +38,8 @@ class ConfigSnapshot:
     """一次配置提交后的防御性快照。"""
     revision: int
     value: dict[str, Any]
+    source_path: str = ""
+    content_hash: str = ""
 
 
 class ConfigService:
@@ -45,9 +48,21 @@ class ConfigService:
 
     def __init__(self, path: Path | str = CONFIG_PATH, initial: dict[str, Any] | None = None) -> None:
         self._store = JsonConfigStore(Path(path))
-        self._value = copy.deepcopy(initial) if initial is not None else self._store.read()
+        if initial is None:
+            self._value, self._content_hash = self._store.read_with_hash()
+        else:
+            self._value = copy.deepcopy(initial)
+            try:
+                _disk_value, self._content_hash = self._store.read_with_hash()
+            except (OSError, UnicodeError, TypeError, ValueError):
+                self._content_hash = ""
         self._revision = 0
         self._watchers: list[Callable[[ConfigSnapshot], Any]] = []
+        self._source_path = str(self._store.path.expanduser().resolve())
+        self._file_signature = self._store.signature()
+        self._watcher_task: asyncio.Task | None = None
+        self._watch_interval = 1.0
+        self._notification_tasks: set[asyncio.Task] = set()
 
     @property
     def path(self) -> Path:
@@ -56,11 +71,20 @@ class ConfigService:
 
     def snapshot(self) -> ConfigSnapshot:
         """Return a defensive copy so callers cannot mutate service state."""
-        return ConfigSnapshot(self._revision, copy.deepcopy(self._value))
+        self.reload_if_changed()
+        return self._snapshot()
+
+    def _snapshot(self) -> ConfigSnapshot:
+        return ConfigSnapshot(
+            self._revision,
+            copy.deepcopy(self._value),
+            self._source_path,
+            self._content_hash,
+        )
 
     def plugin_config(self, plugin_id: str) -> dict[str, Any]:
         """Read one plugin's nested config without exposing the full config object."""
-        entries = self._value.get("plugins", [])
+        entries = self.snapshot().value.get("plugins", [])
         if not isinstance(entries, list):
             return {}
         for entry in entries:
@@ -74,9 +98,10 @@ class ConfigService:
 
         这是 ConfigService 对外公开的最小模型解析边界：调用方只能拿到一次
         防御性快照，不能访问内部配置字典或 AgentProfile。返回值包含构造
-        Core Adapter 所需的协议和凭据，但本方法不记录、不打印 API key。
+        LLM Adapter 所需的协议和凭据，但本方法不记录、不打印 API key。
         未找到 provider/model 时返回 ``None``，由调用方决定是否放弃可选能力。
         """
+        self.reload_if_changed()
         if not isinstance(provider_name, str) or not provider_name:
             return None
         if not isinstance(model_id, str) or not model_id:
@@ -163,7 +188,7 @@ class ConfigService:
         if not system_prompt:
             prompt_path = self._store.path.parent / "system_prompt.md"
             if not prompt_path.exists():
-                from ftre.services.agent.config import SYSTEM_PROMPT_PATH
+                from ftre.services.agent_profile.config import SYSTEM_PROMPT_PATH
 
                 prompt_path = SYSTEM_PROMPT_PATH
             try:
@@ -231,6 +256,117 @@ class ConfigService:
 
         return dispose
 
+    def start_watcher(self, interval: float = 1.0) -> None:
+        """Start a lightweight external-file watcher owned by the Config Plugin."""
+        if self._watcher_task is not None and not self._watcher_task.done():
+            return
+        self._watch_interval = max(float(interval), 0.1)
+        self._watcher_task = asyncio.create_task(
+            self._watch_loop(),
+            name=f"config-watcher:{self._store.path.name}",
+        )
+
+    async def _watch_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._watch_interval)
+            try:
+                self.reload_if_changed()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("[config] 外部变更检查失败: %s", self._source_path)
+
+    async def close(self) -> None:
+        """Stop the external watcher and pending asynchronous notifications."""
+        watcher = self._watcher_task
+        self._watcher_task = None
+        if watcher is not None and not watcher.done():
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+        tasks = tuple(self._notification_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._notification_tasks.clear()
+        self._watchers.clear()
+
+    def reload_if_changed(self, *, force: bool = False) -> ConfigSnapshot:
+        """Reload an externally edited file without replacing a valid active snapshot."""
+        signature = self._store.signature()
+        if not force and signature == self._file_signature:
+            return self._snapshot()
+        if signature is None:
+            self._file_signature = None
+            return self._snapshot()
+        try:
+            value, content_hash = self._store.read_with_hash()
+        except (OSError, UnicodeError, TypeError, ValueError) as exc:
+            self._file_signature = signature
+            logger.error("[config] 外部 reload 失败 path=%s error=%s", self._source_path, exc)
+            return self._snapshot()
+        self._file_signature = signature
+        if content_hash == self._content_hash:
+            return self._snapshot()
+        self._value = copy.deepcopy(value)
+        self._content_hash = content_hash
+        self._revision += 1
+        snapshot = self._snapshot()
+        self._schedule_watcher_notifications(snapshot)
+        logger.info(
+            "[config] 外部配置已 reload revision=%s path=%s",
+            snapshot.revision,
+            self._source_path,
+        )
+        return snapshot
+
+    async def reload(self, *, force: bool = False) -> ConfigSnapshot:
+        """Reload the file and wait for asynchronous watcher callbacks."""
+        snapshot = self.reload_if_changed(force=force)
+        if self._notification_tasks:
+            await asyncio.gather(*tuple(self._notification_tasks), return_exceptions=True)
+        return snapshot
+
+    def model_catalog(self) -> dict[str, Any]:
+        """Return a credential-free Provider/Model catalog for UI consumers."""
+        snapshot = self.snapshot()
+        raw_providers = snapshot.value.get("providers", {})
+        providers: list[dict[str, Any]] = []
+        if isinstance(raw_providers, dict):
+            for name, raw_provider in raw_providers.items():
+                if not isinstance(name, str) or not isinstance(raw_provider, dict):
+                    continue
+                raw_models = raw_provider.get("models", ())
+                models: list[dict[str, Any]] = []
+                if isinstance(raw_models, (list, tuple)):
+                    for raw_model in raw_models:
+                        if isinstance(raw_model, str) and raw_model:
+                            models.append({"id": raw_model, "name": raw_model})
+                            continue
+                        if not isinstance(raw_model, dict):
+                            continue
+                        model_id = raw_model.get("id") or raw_model.get("name")
+                        if not isinstance(model_id, str) or not model_id:
+                            continue
+                        item: dict[str, Any] = {
+                            "id": model_id,
+                            "name": raw_model.get("name") or model_id,
+                            "vision": bool(raw_model.get("vision", False)),
+                        }
+                        for key in ("api_type", "context_window", "max_output", "reasoning_effort_values"):
+                            if key in raw_model:
+                                item[key] = copy.deepcopy(raw_model[key])
+                        models.append(item)
+                providers.append(
+                    {
+                        "name": name,
+                        "api_type": raw_provider.get("api_type") or "completions",
+                        "configured": bool(raw_provider.get("api_key") or raw_provider.get("apiKey")),
+                        "models": models,
+                    }
+                )
+        return {"revision": snapshot.revision, "providers": providers}
+
     async def update(self, patch: dict[str, Any], expected_revision: int | None = None) -> ConfigSnapshot:
         """Deep-merge a patch and commit it with optional optimistic concurrency."""
         if not isinstance(patch, dict):
@@ -249,8 +385,17 @@ class ConfigService:
             raise ConfigConflictError(f"expected revision {expected_revision}, current {self._revision}")
         self._store.write_atomic(candidate)
         self._value = copy.deepcopy(candidate)
+        try:
+            _disk_value, self._content_hash = self._store.read_with_hash()
+        except (OSError, UnicodeError, TypeError, ValueError):
+            self._content_hash = ""
+        self._file_signature = self._store.signature()
         self._revision += 1
-        snapshot = self.snapshot()
+        snapshot = self._snapshot()
+        await self._notify_watchers(snapshot)
+        return snapshot
+
+    async def _notify_watchers(self, snapshot: ConfigSnapshot) -> None:
         for callback in tuple(self._watchers):
             try:
                 result = callback(snapshot)
@@ -258,7 +403,15 @@ class ConfigService:
                     await result
             except Exception:
                 logger.exception("config watcher failed")
-        return snapshot
+
+    def _schedule_watcher_notifications(self, snapshot: ConfigSnapshot) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._notify_watchers(snapshot), name="config-watcher-notify")
+        self._notification_tasks.add(task)
+        task.add_done_callback(self._notification_tasks.discard)
 
 
 def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:

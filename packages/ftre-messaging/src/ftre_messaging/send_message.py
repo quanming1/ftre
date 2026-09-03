@@ -20,9 +20,9 @@ send_message 工具 - 向另一个 session 发送一条消息
 import asyncio
 import uuid
 
-from ftre_agent import InboundMessage
-from ftre_agent_core.message import AssistantMsg
-from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_agent.message import AssistantMsg
+from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
+from ftre_inbox.protocol import InboundMessage
 
 from ftre.services.messaging.bus import BusMessage
 from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
@@ -33,7 +33,7 @@ _INVOKE_PREFIX_TEMPLATE = (
 )
 
 
-def create_send_message_tool(channel_manager, inbox) -> Tool:
+def create_send_message_tool(channel_manager, inbox) -> ToolDefinition:
     """创建由 messaging Plugin 拥有、可消费 Inbox 的跨 Session 消息工具。"""
 
     def send_message(
@@ -43,7 +43,7 @@ def create_send_message_tool(channel_manager, inbox) -> Tool:
         kind: str = "notify",
         caller_channel: str = Injected("channel_id"),
         caller_session: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        event_loop=Injected("event_loop"),  # noqa: B008 - ToolDefinition execution context primitive
         bus=Injected("bus"),  # noqa: B008 - MessageBus transport context
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
@@ -103,7 +103,7 @@ def create_send_message_tool(channel_manager, inbox) -> Tool:
         except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
             return f"[error] 发送失败: {type(e).__name__}: {e}"
 
-    return Tool(
+    return ToolDefinition(
         name="send_message",
         description=(
             "向另一个 session 发送一条消息。\n"

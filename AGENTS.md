@@ -1,15 +1,15 @@
 # ftre 后端协作说明
 
 本文件是 `E:\\ftre` 后端仓库的协作约束。后端代码位于 `src/ftre/`；桌面端和文档站
-仍是严格边界。`ftre-agent-core` 是独立仓库；只有明确授权的跨仓库阶段（如 F7/C1）
-才可在 Core 自有 feature 分支同步修改，禁止把 Core 文件复制进本仓库。
+仍是严格边界。Agent 契约、Runtime 和 LLM 已迁入本仓库 `packages/`；原
+`ftre-agent-core` 仅保留退休记录，不得重新作为运行时依赖或兼容导入。
 
 ## 项目边界
 
 | 组件 | 路径/仓库 | 责任 |
 | --- | --- | --- |
 | ftre Gateway | `src/ftre/` | 有状态长驻进程：组合 Service、加载 Plugin、管理 Session、Agent、Channel 和 HTTP/WS |
-| Agent Core | `E:\\ftre-agent-core` | 无状态 ReAct/LLM/Tool 算法库，被 Gateway import，不独立部署 |
+| Agent packages | `packages/ftre-agent`、`packages/ftre-agent-runtime`、`packages/ftre-llm` | 无状态 Agent 契约、ReAct Runtime 与 LLM 协议 |
 | Desktop | `E:\\binn\\ftre-desktop` | Electron + React 客户端；本仓库只维护兼容 API，不改客户端 |
 | 外部插件 | `C:\\Users\\蒋全明\\.ftre\\plugins\\` | 显式配置后由 Plugin Runtime 发现和加载；Octo 仓库保持独立 |
 | 用户配置 | `C:\\Users\\蒋全明\\.ftre\\` | `config.json`、Agent 配置、插件目录和运行时数据 |
@@ -38,7 +38,7 @@ Team、MCP、Skill、WebSocket payload、Agent prompt、Tool policy 等产品或
 `kernel/` 中出现这些词汇或实现依赖时，默认视为分层错误。
 
 Agent Runtime 是最小执行能力，但仍是由 Provider Plugin 装配的业务 Service，不属于 Cordis
-Kernel。它只负责 `InboundMessage → Turn → Reasoning/Tool → Assistant Output`，不负责
+Kernel。它只负责 `RuntimeInput → Turn → Reasoning/Tool → Assistant Output`，不负责
 Queue、Command、Compaction、Channel 协议和 Plugin 行为。
 
 ### Plugin-first

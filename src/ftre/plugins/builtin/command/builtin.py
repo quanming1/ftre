@@ -9,8 +9,8 @@ import logging
 from collections.abc import Callable
 
 from ftre_agent import AgentService
-from ftre_agent_core.event import UserConfirmResultEvent
-from ftre_agent_core.message import ToolCallBlock, ToolCallState
+from ftre_agent.event import UserConfirmResultEvent
+from ftre_agent.message import ToolCallBlock, ToolCallState
 
 from ftre.services.session import SessionService
 from ftre.services.session.message.converter import _as_msg

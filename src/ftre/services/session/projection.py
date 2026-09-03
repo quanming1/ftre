@@ -12,19 +12,21 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ftre_agent_core.event import (
-    CustomEvent,
+from ftre_agent.event import (
     ReplyEndEvent,
     ReplyFinishedReason,
     ReplyStartEvent,
     UserMessageEvent,
 )
-from ftre_agent_core.message import AssistantMsg, Msg, MsgName, UserMsg
+from ftre_agent.message import AssistantMsg, Msg, MsgName, UserMsg
 
-from ftre.services.session.events import SessionMaintenanceEvent
+from ftre.services.session.events import (
+    SessionMaintenanceEvent,
+    SessionMaintenanceRecord,
+)
 
 if TYPE_CHECKING:
     from ftre.services.session import SessionService
@@ -40,7 +42,7 @@ logger = logging.getLogger(__name__)
 # - MODEL_CALL_END：本次模型调用已结束，usage 等统计字段稳定。
 # REPLY_END 不在这里：它走 apply() 中独立的最终写入和 active Reply 移除逻辑。
 IMMEDIATE_CHECKPOINT_TYPES = frozenset({
-    "REPLY_START", "TEXT_BLOCK_END", "THINKING_BLOCK_END", "DATA_BLOCK_END",
+    "REPLY_START", "TEXT_BLOCK_END", "THINKING_BLOCK_END",
     "TOOL_CALL_START", "TOOL_CALL_END", "TOOL_RESULT_END", "MODEL_CALL_END",
     # 权限确认：把 tool_call 置 ASKING 后必须立即落盘。挂起不产 REPLY_END，
     # 若不在此 checkpoint，ASKING 只停留在内存，进程/实例销毁后无法从 state.json 恢复。
@@ -88,8 +90,11 @@ class SessionProjection:
         # 不落盘的 session 级运行状态。它们不是 Msg，也没有 reply_id，但客户端
         # attach 时必须知道（例如正在进行的 context compact）。终态到达即清除。
         self._active_session_events: dict[
-            str, dict[SessionMaintenanceEvent, CustomEvent]
+            str, dict[SessionMaintenanceEvent, SessionMaintenanceRecord]
         ] = {}
+        # UserMessage 的稳定 ID 可能同时由恢复任务和实时 Event 投影提交；
+        # 该锁把“存在检查 + 首次写入”收成同一条 Session 内的临界区。
+        self._user_message_locks: dict[str, asyncio.Lock] = {}
         # 保护上述内存投影，避免 Event 流、attach snapshot 与取消路径并发修改同一 Msg。
         # 普通 Event 的磁盘 I/O 在锁外执行；UserMessage 已由 Inbox 在安全边界提交，
         # Projection 只按 message_id 更新对应 AssistantMsg。
@@ -100,6 +105,7 @@ class SessionProjection:
         async with self._lock:
             self._replies.clear()
             self._active_session_events.clear()
+            self._user_message_locks.clear()
 
     async def apply(self, session_id: str, event) -> ProjectionResult:
         """应用一个 Event，返回投影结果。
@@ -107,45 +113,54 @@ class SessionProjection:
         处理两类事件：
         - Reply 生命周期事件（REPLY_START/.../REPLY_END）：聚合为运行中 assistant
           Msg 快照，REPLY_END 时返回 completed_message。
-        - CustomEvent(name=context_compact_done)：投影为一条 user/compact Msg
-          并 upsert 落盘；其他 CustomEvent 不持久化。
+        - Host maintenance events are handled by ``apply_maintenance`` and never
+          enter the Agent event union.
 
         Msg 只在这里创建和修改，Turn 与 WebSocket 均不持有它。每个成功接收的
         Reply 事件都会推进内存快照的 revision。
         """
         if isinstance(event, UserMessageEvent):
-            message = UserMsg(
-                name=MsgName.DEFAULT,
-                content=event.content,
-                id=event.id,
-                created_at=event.created_at,
-                metadata=event.message_metadata,
-            )
-            await self._session_manager.upsert_message(session_id, message)
-            return ProjectionResult(persisted_messages=[message])
+            lock = self._user_message_locks.setdefault(session_id, asyncio.Lock())
+            async with lock:
+                message = UserMsg(
+                    name=MsgName.DEFAULT,
+                    content=event.content,
+                    id=event.id,
+                    created_at=event.created_at,
+                    metadata=event.message_metadata,
+                )
+                get_state_message = getattr(self._session_manager, "get_state_message", None)
+                if callable(get_state_message):
+                    existing_raw = await get_state_message(session_id, event.id)
+                    if isinstance(existing_raw, dict):
+                        from ftre.services.session.message.converter import _as_msg
+
+                        existing = _as_msg(existing_raw)
+                        existing_metadata = existing.metadata or {}
+                        incoming_fingerprint = message.metadata.get("request_fingerprint")
+                        existing_fingerprint = existing_metadata.get("request_fingerprint")
+                        if existing_fingerprint and incoming_fingerprint:
+                            if existing_fingerprint != incoming_fingerprint:
+                                raise ValueError("request_id 已绑定不同内容")
+                        elif existing.content != message.content:
+                            raise ValueError("request_id 已绑定不同内容")
+                        return ProjectionResult(persisted_messages=[existing])
+                previous_id = str(
+                    event.message_metadata.get("previous_assistant_message_id")
+                    or event.data.get("previous_assistant_message_id")
+                    or ""
+                )
+                if previous_id:
+                    await self._close_assistant_at_user_boundary(
+                        session_id,
+                        previous_id,
+                        finished_at=event.created_at,
+                    )
+                await self._session_manager.upsert_message(session_id, message)
+                return ProjectionResult(persisted_messages=[message])
 
         reply_id = getattr(event, "reply_id", "") or ""
         if not reply_id:
-            # 非 Reply 生命周期事件。CustomEvent 可能携带 compact 投影语义。
-            if isinstance(event, CustomEvent):
-                if event.name == SessionMaintenanceEvent.COMPACTION_START:
-                    async with self._lock:
-                        self._active_session_events.setdefault(session_id, {})[
-                            SessionMaintenanceEvent.COMPACTION_START
-                        ] = event
-                    return ProjectionResult()
-                if event.name == SessionMaintenanceEvent.COMPACTION_DONE:
-                    # 先完成 Msg 落盘，再清除 start，避免 attach 落在两者之间时
-                    # 既拿不到 active start，也读不到已完成摘要。
-                    result = await self._project_compact_done(session_id, event)
-                    await self._clear_active_session_event(
-                        session_id, SessionMaintenanceEvent.COMPACTION_START
-                    )
-                    return result
-                if event.name == SessionMaintenanceEvent.COMPACTION_FAILED:
-                    await self._clear_active_session_event(
-                        session_id, SessionMaintenanceEvent.COMPACTION_START
-                    )
             return ProjectionResult()
 
         event_type = getattr(event, "type", "")
@@ -176,6 +191,14 @@ class SessionProjection:
                         restored_message = _as_msg(record)
                         break
 
+        # 终态 Assistant 不能再接收恢复/重放事件；否则旧文本会被继续追加，
+        # 重启后的重复 Resume 就会污染原始消息。暂停中的未终态 Reply 仍允许
+        # confirmation 路径复用，这是唯一保留的跨进程恢复语义。
+        if restored_message is not None and restored_message.finished_at is not None:
+            return ProjectionResult()
+        if is_start and restored_message is not None:
+            return ProjectionResult()
+
         boundary_updates: list[Msg] = []
         async with self._lock:
             # 同一 session 的 Event 可能来自异步流与取消路径；锁只保护内存投影，
@@ -183,7 +206,7 @@ class SessionProjection:
             replies = self._replies.setdefault(session_id, {})
             state = replies.get(message_id)
             if state is None:
-                # Core 在同一次 reply 中开启新的 message_id 时，上一条 Assistant
+                # Runtime 在同一次 reply 中开启新的 message_id 时，上一条 Assistant
                 # 已经完成安全边界；先封口，稍后在锁外 checkpoint。
                 for previous_id, previous in tuple(replies.items()):
                     if previous.reply_id != reply_id or previous_id == message_id:
@@ -197,7 +220,7 @@ class SessionProjection:
                 if restored_message is not None:
                     message = restored_message
                 else:
-                    metadata = {}
+                    metadata = dict(getattr(event, "metadata", {}) or {})
                     if is_start and getattr(event, "name", ""):
                         # Msg.name 只表示消息语义；实际调用的模型属于可选元数据。
                         metadata["model"] = event.name
@@ -254,8 +277,30 @@ class SessionProjection:
                         self._replies.pop(session_id, None)
         return ProjectionResult(completed_message=completed)
 
+    async def apply_maintenance(
+        self, session_id: str, event: SessionMaintenanceRecord
+    ) -> ProjectionResult:
+        """Apply a typed Host maintenance record outside AgentStreamEvent."""
+        if event.name == SessionMaintenanceEvent.COMPACTION_START:
+            async with self._lock:
+                self._active_session_events.setdefault(session_id, {})[
+                    SessionMaintenanceEvent.COMPACTION_START
+                ] = event
+            return ProjectionResult()
+        if event.name == SessionMaintenanceEvent.COMPACTION_DONE:
+            result = await self._project_compact_done(session_id, event)
+            await self._clear_active_session_event(
+                session_id, SessionMaintenanceEvent.COMPACTION_START
+            )
+            return result
+        if event.name == SessionMaintenanceEvent.COMPACTION_FAILED:
+            await self._clear_active_session_event(
+                session_id, SessionMaintenanceEvent.COMPACTION_START
+            )
+        return ProjectionResult()
+
     async def _project_compact_done(
-        self, session_id: str, event: CustomEvent
+        self, session_id: str, event: SessionMaintenanceRecord
     ) -> ProjectionResult:
         """把 context_compact_done 投影为一条 Msg 并幂等落盘。
 
@@ -334,6 +379,53 @@ class SessionProjection:
         for message in completed:
             await self._session_manager.update_message(message)
         return completed
+
+    async def _close_assistant_at_user_boundary(
+        self,
+        session_id: str,
+        message_id: str,
+        *,
+        finished_at: str | None,
+    ) -> None:
+        """在真实 UserMessage 到达时立即封口上一条 Assistant。"""
+        boundary: Msg | None = None
+        active_state: ReplyState | None = None
+        async with self._lock:
+            replies = self._replies.get(session_id, {})
+            state = replies.get(message_id)
+            if state is not None:
+                active_state = state
+                state.message.finished_at = finished_at or datetime.now(UTC).isoformat()
+                state.message.finished_reason = ReplyFinishedReason.COMPLETED
+                state.revision += 1
+                state.dirty = False
+                boundary = state.message.model_copy(deep=True)
+
+        if boundary is None:
+            from ftre.services.session.message.converter import _as_msg
+
+            records = await self._session_manager.get_messages_by_session(session_id)
+            for record in records:
+                record_id = record.id if isinstance(record, Msg) else record.get("id")
+                if record_id != message_id:
+                    continue
+                candidate = _as_msg(record)
+                if candidate.role != "assistant" or candidate.finished_at is not None:
+                    return
+                candidate.finished_at = finished_at or datetime.now(UTC).isoformat()
+                candidate.finished_reason = ReplyFinishedReason.COMPLETED
+                boundary = candidate
+                break
+
+        if boundary is not None:
+            await self._session_manager.update_message(boundary)
+            if active_state is not None:
+                async with self._lock:
+                    replies = self._replies.get(session_id)
+                    if replies is not None and replies.get(message_id) is active_state:
+                        replies.pop(message_id, None)
+                        if not replies:
+                            self._replies.pop(session_id, None)
 
     async def snapshot(self, session_id: str) -> list[dict]:
         """返回一个 session 内每条运行中 AssistantMsg 的最新完整快照。"""

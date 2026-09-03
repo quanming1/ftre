@@ -201,8 +201,8 @@ class LlmService:
     ):
         """执行一次调用。
 
-        直接消费者（Compaction/Title）默认进入 ``llm/stream``；Core Runner
-        通过 ``LlmServiceAdapter`` 调用时关闭这里的重复派发，由 Core 外层
+        直接消费者（Compaction/Title）默认进入 ``llm/stream``；Runtime Runner
+        通过 ``LlmServiceAdapter`` 调用时关闭这里的重复派发，由 Runtime 外层
         的同名 Hook 统一拥有 Agent 流包装。
         """
 

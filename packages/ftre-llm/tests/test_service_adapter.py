@@ -1,4 +1,4 @@
-"""Core 调用形状适配测试：只组装 Request，不重复派发流 Hook。"""
+"""Runtime 调用形状适配测试：只组装 Request，不重复派发流 Hook。"""
 
 import asyncio
 

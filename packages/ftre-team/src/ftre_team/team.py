@@ -49,8 +49,8 @@ import asyncio
 import uuid
 from datetime import UTC, datetime
 
-from ftre_agent import InboundMessage
-from ftre_agent_core.tool import Injected, Tool, ToolParameter
+from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
+from ftre_inbox.protocol import InboundMessage
 
 from ftre.services.messaging.bus import AgentRef, InboundMetadata
 from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
@@ -168,8 +168,8 @@ def _member_last_text(session_manager, event_loop, member_sid: str) -> str | Non
     return None
 
 
-def create_team_tools(channel_manager, inbox, agent_profiles) -> list[Tool]:
-    """构建 team 工具集，返回 6 个 Tool。
+def create_team_tools(channel_manager, inbox, agent_profiles) -> list[ToolDefinition]:
+    """构建 team 工具集，返回 6 个 ToolDefinition。
 
     该工厂属于 ``ftre-team``；团队关系落在 SessionService metadata，Inbox 只负责成员
     消息的耐久接纳和完成屏障。
@@ -198,12 +198,12 @@ def _guard_not_subagent(caller_channel: str) -> str | None:
 
 
 # ── team_create ────────────────────────────────────────────────
-def _create_team_create_tool() -> Tool:
+def _create_team_create_tool() -> ToolDefinition:
     def team_create(
         team_name: str,
         team_id: str = "",
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        event_loop=Injected("event_loop"),  # noqa: B008 - ToolDefinition execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
@@ -242,7 +242,7 @@ def _create_team_create_tool() -> Tool:
             f"添加成员。"
         )
 
-    return Tool(
+    return ToolDefinition(
         name="team_create",
         description=(
             "创建一个团队（挂在当前会话下，可创建多个）。你作为 leader 通过团队"
@@ -267,14 +267,14 @@ def _create_team_create_tool() -> Tool:
 
 
 # ── team_add_agent ─────────────────────────────────────────────
-def _create_team_add_agent_tool(channel_manager, inbox, agent_profiles) -> Tool:
+def _create_team_add_agent_tool(channel_manager, inbox, agent_profiles) -> ToolDefinition:
     def team_add_agent(
         team_id: str,
         agent_name: str,
         profile: dict | None = None,
         invoke: str = "",
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        event_loop=Injected("event_loop"),  # noqa: B008 - ToolDefinition execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
@@ -412,7 +412,7 @@ def _create_team_add_agent_tool(channel_manager, inbox, agent_profiles) -> Tool:
             f"或 wait_agent 等它完成。"
         )
 
-    return Tool(
+    return ToolDefinition(
         name="team_add_agent",
         description=(
             "向团队添加一个成员 agent（异步，不阻塞）。\n"
@@ -459,13 +459,13 @@ def _create_team_add_agent_tool(channel_manager, inbox, agent_profiles) -> Tool:
 
 
 # ── team_say ───────────────────────────────────────────────────
-def _create_team_say_tool(channel_manager, inbox) -> Tool:
+def _create_team_say_tool(channel_manager, inbox) -> ToolDefinition:
     def team_say(
         team_id: str,
         session_id: str,
         content: str,
         parent_session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        event_loop=Injected("event_loop"),  # noqa: B008 - ToolDefinition execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
@@ -520,7 +520,7 @@ def _create_team_say_tool(channel_manager, inbox) -> Tool:
             f"用 wait_agent 等待完成，或 team_agent_status 查看进展。"
         )
 
-    return Tool(
+    return ToolDefinition(
         name="team_say",
         description=(
             "给团队某个成员发送一条消息/派发新任务（异步，不阻塞）。\n"
@@ -549,12 +549,12 @@ def _create_team_say_tool(channel_manager, inbox) -> Tool:
 
 
 # ── team_agent_status ─────────────────────────────────────────
-def _create_team_agent_status_tool() -> Tool:
+def _create_team_agent_status_tool() -> ToolDefinition:
     def team_agent_status(
         team_id: str,
         session_id: str = "",
         parent_session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        event_loop=Injected("event_loop"),  # noqa: B008 - ToolDefinition execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
@@ -641,7 +641,7 @@ def _create_team_agent_status_tool() -> Tool:
             )
         return "\n".join(lines)
 
-    return Tool(
+    return ToolDefinition(
         name="team_agent_status",
         description=(
             "查看团队成员的最新执行状态（不阻塞）。\n"
@@ -667,11 +667,11 @@ def _create_team_agent_status_tool() -> Tool:
 
 
 # ── team_delete ────────────────────────────────────────────────
-def _create_team_delete_tool(agent_profiles) -> Tool:
+def _create_team_delete_tool(agent_profiles) -> ToolDefinition:
     def team_delete(
         team_id: str,
         session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        event_loop=Injected("event_loop"),  # noqa: B008 - ToolDefinition execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
@@ -721,7 +721,7 @@ def _create_team_delete_tool(agent_profiles) -> Tool:
             msg += f" {failed} 个成员 session 删除失败（可能已不存在）。"
         return msg
 
-    return Tool(
+    return ToolDefinition(
         name="team_delete",
         description=(
             "解散一个团队并级联删除其所有成员 session（不可恢复）。\n"
@@ -739,11 +739,11 @@ def _create_team_delete_tool(agent_profiles) -> Tool:
 
 
 # ── wait_agent ─────────────────────────────────────────────────
-def _create_wait_agent_tool(inbox) -> Tool:
+def _create_wait_agent_tool(inbox) -> ToolDefinition:
     def wait_agent(
         session_ids: list | None = None,
         parent_session_id: str = Injected("session_id"),
-        event_loop=Injected("event_loop"),  # noqa: B008 - Tool execution context primitive
+        event_loop=Injected("event_loop"),  # noqa: B008 - ToolDefinition execution context primitive
         session_manager=Injected("sessions"),  # noqa: B008 - public SessionService runtime key
         agent_service=Injected("agent"),  # noqa: B008 - public AgentService runtime key
         caller_channel: str = Injected("channel_id"),
@@ -796,7 +796,7 @@ def _create_wait_agent_tool(inbox) -> Tool:
 
         return "wait_agent 完成，各成员结果：\n" + "\n".join(results)
 
-    return Tool(
+    return ToolDefinition(
         name="wait_agent",
         description=(
             "等待一批成员 agent 完成当前任务后再继续（类似 Promise.all）。\n"

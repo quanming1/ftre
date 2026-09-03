@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ftre_agent_core.message import (
+from ftre_agent.message import (
     DataBlock,
     HintBlock,
     Msg,

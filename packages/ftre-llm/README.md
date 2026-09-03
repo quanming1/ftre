@@ -2,9 +2,8 @@
 
 统一的 LLM Service 与 OpenAI Chat Completions/Responses 协议适配器。
 
-流输出协议迁移自 `ftre-agent-core.llm.events`，现在由本包自己的
-`ftre_llm.events` 持有和维护。本包不依赖 Core，也不把 Core 的临时兼容桥
-打包进来；未来删除 Agent Core 时，LLM 协议和 Provider 无需再次迁移。
+流输出协议由本包自己的 `ftre_llm.events` 持有和维护。本包不依赖已退休的
+Agent Core，也不打包旧路径兼容桥。
 
 本包只负责一次 LLM 调用、协议注册和 StreamChunk 输出，不负责 Agent、Session、队列、
 压缩、重试或 fallback。`contracts.py` 中只有一个公开适配器契约 `LlmAdapter`；

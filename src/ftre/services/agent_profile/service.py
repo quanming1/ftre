@@ -7,43 +7,108 @@ Feature 可消费的窄接口，调用方不需要知道 profile 在磁盘上的
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from .manager import AgentManager
-from .models import EffectiveProfile
+from .models import AgentProfileSnapshot, EffectiveProfile, ProfileQuery, freeze_profile
 
 
 class AgentProfileService:
     """提供 profile CRUD/解析，但不向 Feature 暴露 Manager 的存储细节。"""
     key = "agent_profiles"
 
-    def __init__(self, manager: AgentManager, sessions=None) -> None:
-        self.manager = manager
+    def __init__(self, manager: AgentManager, sessions=None, config_service=None) -> None:
+        self._manager = manager
         self._sessions = sessions
+        self._config_service = config_service
 
     def list(self) -> list[dict[str, Any]]:
         """列出可用 Agent profile 的摘要。"""
-        return self.manager.list_agents()
+        return self._manager.list_agents()
 
     def get(self, agent_id: str):
         """读取一个 profile；不存在时由 Manager 返回空值/抛出领域错误。"""
-        return self.manager.load(agent_id)
+        return self._manager.load(agent_id)
 
     def create(self, **kwargs: Any):
         """创建 profile，并由 Manager 负责默认值和磁盘校验。"""
-        return self.manager.create_agent_profile(**kwargs)
+        return self._manager.create_agent_profile(**kwargs)
 
     def update(self, agent_id: str, payload: dict[str, Any]):
         """更新指定 profile 的可编辑配置。"""
-        return self.manager.update_agent(agent_id, payload)
+        return self._manager.update_agent(agent_id, payload)
+
+    def mcp_source(self, agent_id: str) -> dict[str, Any]:
+        """Return only the Agent-owned MCP layer, never the merged profile."""
+        return self._manager.read_mcp_source(agent_id)
+
+    def replace_mcp_source(self, agent_id: str, entries: dict[str, Any]) -> dict[str, Any]:
+        """Atomically replace an Agent's own MCP source through its owner."""
+        updated = self._manager.update_agent(agent_id, {"mcp": entries})
+        raw = updated.get("mcp", {}) if isinstance(updated, dict) else {}
+        return dict(raw) if isinstance(raw, dict) else {}
 
     def delete(self, agent_id: str) -> None:
         """删除 profile；不会由 Service 直接操作 profile 目录。"""
-        self.manager.delete_agent(agent_id)
+        self._manager.delete_agent(agent_id)
 
-    def resolve(self, agent_id: str, session_id: str | None = None) -> EffectiveProfile:
-        """解析当前 Agent 的有效配置投影，供一次请求使用。"""
-        return EffectiveProfile(agent_id, self.manager.load(agent_id))
+    def resolve(
+        self,
+        query_or_agent_id: ProfileQuery | str,
+        session_id: str | None = None,
+    ) -> EffectiveProfile | AgentProfileSnapshot:
+        """解析旧请求或返回冻结 ProfileSnapshot。"""
+        if isinstance(query_or_agent_id, ProfileQuery):
+            return self.resolve_snapshot(query_or_agent_id)
+        return EffectiveProfile(query_or_agent_id, self._manager.load(query_or_agent_id))
+
+    def resolve_snapshot(self, query: ProfileQuery) -> AgentProfileSnapshot:
+        """按项目 > 用户 > 当前 Host Manager 选择 Profile 并冻结来源。"""
+        if not isinstance(query, ProfileQuery):
+            raise TypeError("resolve_snapshot requires ProfileQuery")
+        profile = None
+        source_trace: list[str] = []
+        candidates: list[Path] = []
+        if query.project_root:
+            candidates.append(Path(query.project_root) / ".ftre" / "agents")
+        if query.user_root:
+            user_root = Path(query.user_root)
+            candidates.append(
+                user_root / "agents" if user_root.name == ".ftre" else user_root / ".ftre" / "agents"
+            )
+        candidates.append(self._manager._agents_dir)
+        for agents_dir in candidates:
+            if not agents_dir.is_dir():
+                continue
+            candidate = agents_dir / query.name
+            if not candidate.is_dir():
+                continue
+            manager = (
+                self._manager
+                if agents_dir.resolve() == self._manager._agents_dir.resolve()
+                else AgentManager(
+                    agents_dir=agents_dir,
+                    config_service=self._config_service,
+                )
+            )
+            profile = manager.load(query.name, strict=True)
+            source_trace.append(str(candidate.resolve()))
+            break
+        if profile is None:
+            profile = self._manager.load(query.name)
+            source_trace.append(str(self._manager._agents_dir.resolve()))
+        snapshot = freeze_profile(profile, query=query)
+        return AgentProfileSnapshot(
+            name=snapshot.name,
+            snapshot_hash=snapshot.snapshot_hash,
+            llm=snapshot.llm,
+            prompt_sources=snapshot.prompt_sources,
+            tool_policy=snapshot.tool_policy,
+            workspace=snapshot.workspace,
+            source_trace=tuple(source_trace),
+            metadata=snapshot.metadata,
+        )
 
     async def resolve_for_inbound(
         self,
@@ -68,6 +133,7 @@ class AgentProfileService:
                 self._sessions,
                 str(leader_session),
                 session_id,
+                config_service=self._config_service,
             )
 
         if profile is None:
@@ -80,6 +146,7 @@ class AgentProfileService:
                     self._sessions,
                     binding["leader_session"],
                     session_id,
+                    config_service=self._config_service,
                 )
 
         if profile is not None:
@@ -88,11 +155,11 @@ class AgentProfileService:
 
     def list_prompts(self, agent_id: str) -> dict[str, str]:
         """Read prompt files through the profile owner."""
-        return self.manager.read_prompts(agent_id)
+        return self._manager.read_prompts(agent_id)
 
     def update_prompt(self, agent_id: str, filename: str, content: str) -> None:
         """Write one allow-listed prompt file through the profile owner."""
-        self.manager.write_prompt(agent_id, filename, content)
+        self._manager.write_prompt(agent_id, filename, content)
 
     # 团队 Package 只能注入这个公开 Service，不能 import profile 目录下的私有存储
     # helper。成员 profile 仍由 Agent Profile Owner 负责路径、校验、落盘和清理。

@@ -2,7 +2,7 @@
 
 数据流如下：
 
-``Core attempt 失败 → llm/error → on_error → decide → Core Retry Loop``
+``Runtime attempt 失败 → llm/error → on_error → decide → Runtime Retry Loop``
 
 本文件只做装配和生命周期绑定。配置清洗在 ``config.py``，错误决策在 ``policy.py``；
 这样卸载 Plugin 时只需移除一个 Hook Receipt，不存在后台任务或额外 Service 要清理。
@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from cordis import Context
-from ftre_agent_core.hooks import LLM_ERROR_SPEC
+from ftre_agent.hooks import LLM_ERROR_SPEC
 
 from .config import parse_config
 from .policy import decide
@@ -26,7 +26,7 @@ provide = ()
 
 
 def apply(ctx: Context, config=None):
-    """解析一次配置，并把 Core 的 ``llm/error`` listener 绑定到当前 Fiber。"""
+    """解析一次配置，并把 Runtime 的 ``llm/error`` listener 绑定到当前 Fiber。"""
 
     # snapshot 被闭包只读持有；运行中修改原始 config 不会造成半轮请求使用新旧两套规则。
     snapshot = parse_config(config)
@@ -37,7 +37,7 @@ def apply(ctx: Context, config=None):
         result = decide(payload, snapshot)
         if result is not None:
             return result
-        # 未匹配时继续 Hook 链，最终回到 Core 默认策略。
+        # 未匹配时继续 Hook 链，最终回到 Runtime 默认策略。
         return await next_()
 
     # context=ctx 让 HookRuntime 把 Receipt 绑定到 Cordis Fiber：Plugin unload/restart 时
