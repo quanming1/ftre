@@ -90,7 +90,9 @@ reply_persistence）；v4 采纳 DSH 模式后这些中间结构**全部不需�
 - [x] **FR8 deriveMessages（读侧 fold）**（`packages/ftre-agent/src/ftre_agent/
       session/derive.py`）：`derive_messages(events) -> list[Msg]` 幂等纯函数——
       按 surface 规则（F41 FR3）fold：`user/message`→UserMsg、`assistant/message`
-      →whole-value AssistantMsg（替代其前 chunk 聚合）、`tool/result`→配对
+      →whole-value AssistantMsg（替代其前 chunk 聚合）；在 whole-value 到达前，
+      `assistant/chunk(kind=text|thinking|tool_result_text)` 按稳定块 id 折叠为
+      in-flight Assistant；`tool/result`→配对
       toolCall 定稿、`hint/message`/`compact/message`→对应块；增量优化：
       `SessionLog.derive()` 记录已派生 seq 水位，只 fold 新增事件（DSH
       deriveMessages 同款）。**同时是** `/api/sessions/:id/messages` 与 LLM 上下文
@@ -178,6 +180,11 @@ reply_persistence）；v4 采纳 DSH 模式后这些中间结构**全部不需�
       `tool/result-start` 先于工具输出；客户端历史与直播共用同一 Msg 投影，turn/end
       累计 usage 不得覆盖 `last_call_usage`，并展示 `context_tokens`。
 
+- [x] **FR23 历史快照与游标原子性（本轮回归）**：`SessionService` 读取一次
+      `SessionLog.events`，在这份不可变事件列表上完成 derive、分页和 `last_seq` 计算；
+      `/api/sessions/:id/messages` 不得先读消息再单独读取游标。快照可以返回尚未结束的
+      Assistant chunk，后续 whole-value 仍按同 `message_id` 替换。
+
 ## 3. 技术方案
 
 ### 3.1 模块布局
@@ -261,6 +268,8 @@ class SessionService:
     def log(self, session_id) -> SessionLog            # 唯一写入入口（Runtime 经注入调用）
     async def get_events(self, session_id, *, after_seq: int, limit: int) -> Page
     def derived_messages(self, session_id) -> list[Msg]  # derive 缓存快照
+    async def get_messages_snapshot(self, session_id, *, limit_turns=None, before_ts=None)
+        -> tuple[list[MessageModel], bool, int]  # messages/has_more/snapshot_last_seq
     # 既有 get_session/list/fork 保留；fork = 事件日志前缀拷贝（新实现）
 ```
 
@@ -319,6 +328,9 @@ def decode_storage_record(record: dict) -> list[dict]: ...
       usage 不能单独触发压缩。
 - [x] **AC16（v5）恢复兼容**：旧的逐事件 JSONL 与新的 packed JSONL 都能被同一
       `read_event_log` 读取，`SessionLog.load` 看到的仍是连续原始事件。
+- [x] **AC17（本轮回归）刷新中的消息**：只写入 chunk、尚未写入
+      `assistant/message` 的活动 Turn，通过 `get_messages_snapshot()` 仍能返回合并后的
+      text/thinking/tool-result 内容；返回的 `last_seq` 与这份消息快照覆盖同一事件末端。
 
 ## 5.1 v5 实施顺序
 
@@ -327,8 +339,10 @@ def decode_storage_record(record: dict) -> list[dict]: ...
 2. 修正 `derive.py` 的 `turn/end` fold 和 `SessionService`/`CompactionService`
    的上下文水位字段。
 3. 增加 storage codec，接入 JSONL 读写；最后补充回归与旧日志兼容测试。
+4. 修复历史读取：derive 折叠 in-flight chunk，并让 `/messages` 的消息与游标来自同一事件快照。
 
-不引入新的 Event 类型、Projection、Coordinator 或 Service；客户端 wire 不需要修改。
+不引入新的 Event 类型、Projection、Coordinator 或 Service；客户端沿用现有 wire，
+同步服务端的 chunk fold 规则。
 
 ## 6. 测试计划
 
@@ -360,6 +374,7 @@ def decode_storage_record(record: dict) -> list[dict]: ...
 | 2026-09-04 | v5 实施验收：`chunk_rows.py` 接入 JSONL 原子写/读取；TurnExecutor 在 `turn/end` 前唯一收口 Assistant；derive 保留 `last_call_usage`；压缩使用 `context_tokens`；新增回归测试；全量 pytest 786 passed、Ruff 和 diff check 通过 | 修复会话文件膨胀与 1M 上下文误压缩 |
 | 2026-09-05 | 缺陷修复回归：末行物理截断与 repair 原子落盘/当前 turn 绑定；write-behind 失败批次保序重试且 flush 不再假成功；user fold 的 block id/时间确定性；summary cutoff、fast `tool_result_ids`；Turn 多 assistant 快照、工具结果 metadata/order；客户端统一 Msg 投影、turn/end token scope 与 `context_tokens` | 真实 session 审计发现重复恢复、旧 fast compact 误裁未来输出、消息时间/id漂移、工具元数据丢失和客户端累计 token 误显示 |
 | 2026-09-06 | 收尾审计：PRD 模块树与事件数量统一为 13，移除不存在的 `checkpoint_policy.py`/运行时双写描述；`SessionService.fork_session()` 统一经 `log()` 入口后再复制，未加载父会话也会先 repair；删除会话和关闭服务时清理 per-session 装配锁；新增未加载父会话 fork repair 回归测试，后端 794 tests、桌面 592 tests、Ruff、TypeScript 与 diff check 通过 | 消除文档与实现漂移，避免 fork 复制悬空 turn，并收口生命周期缓存 |
+| 2026-09-06 | 刷新期间流式消息修复：derive 折叠 text/thinking/tool_result_text chunk；新增 `get_messages_snapshot()`，保证 `/messages` 的消息和 `last_seq` 同源；客户端同步回退注释与缺失 block_id 规则 | 原实现只在直播客户端聚合 chunk，服务端历史只 materialize tool call；独立读取消息与游标会在并发追加时跳过 chunk |
 
 ## 9. 附录 B：目标文件夹结构（三仓联动终态）
 

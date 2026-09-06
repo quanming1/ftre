@@ -308,6 +308,40 @@ class SessionService:
             return []
         return await self._records(session_id)
 
+    async def get_messages_snapshot(
+        self,
+        session_id: str,
+        *,
+        limit_turns: int | None = None,
+        before_ts: float | None = None,
+    ) -> tuple[list[MessageModel], bool, int]:
+        """返回同一事件快照派生的消息、分页标记和覆盖游标。
+
+        事件列表和 ``last_seq`` 必须来自同一次内存读取。否则流式事件恰好
+        在两次读取之间追加时，客户端会拿到旧消息和新游标，刷新后就会跳过
+        尚未出现在消息列表里的 chunk。
+        """
+        if self._repo.get_state(session_id) is None:
+            return [], False, -1
+
+        log = await self.log(session_id)
+        events = list(log.events)
+        snapshot_seq = int(events[-1]["seq"]) if events else -1
+        cached = self._derive_cache.get(session_id)
+        if cached is not None and cached[0] == snapshot_seq:
+            derived = cached[1]
+        else:
+            derived = derive_messages(events)
+            self._derive_cache[session_id] = (snapshot_seq, derived)
+
+        records = [self._repo.to_message_model(message, session_id) for message in derived]
+        if limit_turns is None or limit_turns <= 0:
+            return records, False, snapshot_seq
+        page, has_more = self._paginate_records(
+            records, limit_turns=limit_turns, before_ts=before_ts
+        )
+        return page, has_more, snapshot_seq
+
     async def last_seq(self, session_id: str) -> int:
         if self._repo.get_state(session_id) is None:
             return -1
@@ -636,6 +670,18 @@ class SessionService:
     ) -> tuple[list[MessageModel], bool]:
         """获取指定 session 最近 N 轮对话的所有消息（派生记录上分页）。"""
         records = await self._records(session_id)
+        return self._paginate_records(
+            records, limit_turns=limit_turns, before_ts=before_ts
+        )
+
+    @staticmethod
+    def _paginate_records(
+        records: list[MessageModel],
+        *,
+        limit_turns: int,
+        before_ts: float | None,
+    ) -> tuple[list[MessageModel], bool]:
+        """在同一派生记录列表上按可见用户消息切最近轮次。"""
         if before_ts is not None:
             records = [r for r in records if r["timestamp"] < before_ts]
         if not records:

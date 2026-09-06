@@ -17,7 +17,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 # ── surface/ignorable 注册表（F41 FR3/FR8）─────────────────────────
-# 只有 surface 事件构成"消息表面"（模型可见历史与消息列表 fold 输入）。
+# 只有 surface 事件直接构成"消息表面"；assistant/chunk 在 whole-value 到达前
+# 由 derive_messages/ConversationAssembler 折叠为临时 Assistant。
 SURFACE_EVENT_TYPES: frozenset[str] = frozenset({
     "user/message", "assistant/message", "tool/result",
     "hint/message", "compact/message",

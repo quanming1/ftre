@@ -390,6 +390,37 @@ async def test_recent_messages_by_turns(manager):
 
 
 @pytest.mark.asyncio
+async def test_messages_snapshot_includes_inflight_chunks_and_matching_cursor(manager):
+    sid = await manager.create_session("ws")
+    await _save_user(manager, sid, _user("开始"), request_id="r-inflight")
+    await manager.append_event(
+        sid,
+        "assistant/chunk",
+        {"kind": "text", "delta": "流式回答", "block_id": "b-inflight"},
+        message_id="m-inflight",
+    )
+    await manager.append_event(
+        sid,
+        "assistant/chunk",
+        {"kind": "thinking", "delta": "思考中", "block_id": "t-inflight"},
+        message_id="m-inflight",
+    )
+
+    messages, has_more, last_seq = await manager.get_messages_snapshot(sid)
+
+    assert has_more is False
+    assert last_seq == (await manager.log(sid)).last_seq
+    assistant = next(message for message in messages if message["role"] == "assistant")
+    assert [block["text"] for block in assistant["content"] if block["type"] == "text"] == [
+        "流式回答"
+    ]
+    assert [
+        block["thinking"] for block in assistant["content"] if block["type"] == "thinking"
+    ] == ["思考中"]
+    assert assistant["finished_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_recent_messages_hidden_user_not_turn_boundary(manager):
     sid = await manager.create_session("ws")
     visible_id = await _save_user(

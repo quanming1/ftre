@@ -6,12 +6,13 @@
 fold 规则（与 F41 §4.2 surface 列一致）：
   user/message      → 新 UserMsg（并封口上一条未完成 assistant——steering 边界）
   assistant/message → whole-value 替换该 message_id 的聚合态
+  assistant/chunk   → 把 text/thinking/tool_result_text 折叠进进行中的消息
   tool/call-start   → 确保 assistant 消息存在（流式期占位）+ 追加 ToolCallBlock
   tool/result       → 追加 ToolResultBlock + 配对 ToolCall 置 finished
   hint/message      → 追加 HintBlock
   compact/message   → compact 锚点 UserMsg（name=compact/compact_fast）
   turn/end          → 对 message_id 消息落终态（finished_at/reason/error/token）
-  chunk / tool/result-start / approval / turn.start·retry / session/status → 不产消息
+  tool/result-start / approval / turn.start·retry / session/status → 不产消息
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from ftre_agent.message import (
     Msg,
     MsgName,
     TextBlock,
+    ThinkingBlock,
     ToolCallBlock,
     ToolCallState,
     ToolResultBlock,
@@ -44,6 +46,14 @@ def _find_block(message: Msg, block_type: str, block_id: str):
         if block.type == block_type and block.id == block_id:
             return block
     return None
+
+
+def _chunk_block_id(data: dict[str, Any], *, kind: str, message_id: str) -> str:
+    """返回 chunk 的稳定块 id；旧事件缺 id 时按消息和块类型归一。"""
+    block_id = data.get("block_id")
+    if isinstance(block_id, str) and block_id:
+        return block_id
+    return f"assistant_{kind}_{message_id}"
 
 
 def _normalize_user_content(
@@ -165,6 +175,103 @@ class _FoldState:
                 return
             if message.role == "user":
                 return
+
+
+def _tool_owner(state: _FoldState, tool_call_id: str) -> str | None:
+    owner_id = state.tool_calls.get(tool_call_id)
+    if owner_id is not None:
+        return owner_id
+    for candidate_id in reversed(state.order):
+        candidate = state.messages[candidate_id]
+        if candidate.role == "assistant" and _find_block(
+            candidate, "tool_call", tool_call_id
+        ) is not None:
+            return candidate_id
+    return None
+
+
+def _append_assistant_chunk(
+    state: _FoldState, event: dict[str, Any], data: dict[str, Any]
+) -> None:
+    message_id = str(event.get("message_id") or "")
+    kind = str(data.get("kind") or "")
+    if not message_id or kind not in {"text", "thinking"}:
+        return
+    time_ms = int(event.get("time") or 0)
+    message = state.ensure_assistant(message_id, time_ms)
+    block_id = _chunk_block_id(data, kind=kind, message_id=message_id)
+    delta = str(data.get("delta") or "")
+    block = _find_block(message, kind, block_id)
+    if kind == "text":
+        if isinstance(block, TextBlock):
+            block.text += delta
+        else:
+            message.content.append(
+                TextBlock(
+                    text=delta,
+                    id=block_id,
+                    created_at=_iso_from_ms(time_ms),
+                )
+            )
+    elif isinstance(block, ThinkingBlock):
+        block.thinking += delta
+    else:
+        message.content.append(
+            ThinkingBlock(
+                thinking=delta,
+                id=block_id,
+                created_at=_iso_from_ms(time_ms),
+            )
+        )
+
+
+def _append_tool_result_chunk(
+    state: _FoldState, event: dict[str, Any], data: dict[str, Any]
+) -> None:
+    tool_call_id = str(data.get("tool_call_id") or "")
+    if not tool_call_id:
+        return
+    owner_id = _tool_owner(state, tool_call_id)
+    if owner_id is None:
+        return
+    time_ms = int(event.get("time") or 0)
+    message = state.messages[owner_id]
+    existing = _find_block(message, "tool_result", tool_call_id)
+    if isinstance(existing, ToolResultBlock) and existing.finished_at is not None:
+        return
+    if existing is None:
+        call = _find_block(message, "tool_call", tool_call_id)
+        existing = ToolResultBlock(
+            id=tool_call_id,
+            name=str(getattr(call, "name", "") or ""),
+            output=[],
+            state=ToolResultState.RUNNING,
+            metadata={},
+            created_at=_iso_from_ms(time_ms),
+        )
+        message.content.append(existing)
+    if isinstance(existing.output, str):
+        existing.output = [
+            TextBlock(
+                text=existing.output,
+                id=f"tool_result_{tool_call_id}_text",
+                created_at=existing.created_at,
+            )
+        ]
+    elif not isinstance(existing.output, list):
+        existing.output = []
+    delta = str(data.get("delta") or "")
+    last = existing.output[-1] if existing.output else None
+    if isinstance(last, TextBlock):
+        last.text += delta
+    else:
+        existing.output.append(
+            TextBlock(
+                text=delta,
+                id=f"tool_result_{tool_call_id}_text",
+                created_at=_iso_from_ms(time_ms),
+            )
+        )
 
 
 def derive_messages(events: list[dict[str, Any]]) -> list[Msg]:
@@ -397,15 +504,7 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
 
     if type_ == "tool/result":
         tool_call_id = str(data.get("tool_call_id") or "")
-        owner_id = state.tool_calls.get(tool_call_id)
-        if owner_id is None:
-            for candidate_id in reversed(state.order):
-                candidate = state.messages[candidate_id]
-                if candidate.role == "assistant" and _find_block(
-                    candidate, "tool_call", tool_call_id
-                ) is not None:
-                    owner_id = candidate_id
-                    break
+        owner_id = _tool_owner(state, tool_call_id)
         if owner_id is None:
             return
         message = state.messages[owner_id]
@@ -431,6 +530,14 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
         if call_block is not None:
             call_block.state = ToolCallState.FINISHED
             call_block.finished_at = _iso_from_ms(time_ms)
+        return
+
+    if type_ == "assistant/chunk":
+        kind = str(data.get("kind") or "")
+        if kind in {"text", "thinking"}:
+            _append_assistant_chunk(state, event, data)
+        elif kind == "tool_result_text":
+            _append_tool_result_chunk(state, event, data)
         return
 
     if type_ == "turn/end":
@@ -461,8 +568,8 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
                 message.token = message.token.model_copy(update={"usage": token})
         return
 
-    # assistant/chunk / tool/result-start / approval/asked /
-    # turn/start / turn/retry / session/status：不改变消息表面
+    # tool/result-start / approval/asked / turn/start / turn/retry /
+    # session/status：不改变消息表面
     return
 
 

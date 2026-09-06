@@ -26,7 +26,8 @@ v3（本文件上一版）确定"Msg 快照为唯一下行事实"，仍保留**�
 
 - 流式输出 = 日志里的 `assistant/chunk` 事件（已提交即已持久化语义）；
 - 完整消息 = 一个 whole-value `assistant/message` 事件；
-- 会话可见历史 = 读侧幂等纯函数按需 fold（`deriveMessages`）；
+- 会话可见历史 = 读侧幂等纯函数按需 fold（`deriveMessages`）；在 whole-value 快照到达前，
+  也 materialize 当前正在生成的 Assistant；
 - 恢复 = `session/subscribed{lastSeq}` 基线 + tail-page 事件重拉（**流式中途断线也能
   精确补齐**，优于 v3 的快照兜底）；
 - 服务端**不存在**"正在生成回复"的内存聚合注册表（SessionProjection 及其继任者全部退场）。
@@ -58,10 +59,13 @@ v3（本文件上一版）确定"Msg 快照为唯一下行事实"，仍保留**�
 - [x] **FR2 事件表（核心词汇，13 种）**：§4.2 全集即协议主体；每事件 payload schema
       在本文档唯一定义。旧 21 种 AgentStreamEvent 按附录 A 映射收敛，收敛后的类
       `AgentStreamEvent` 联合**对扩展关闭**——新能力一律新增事件类型（FR8）。
-- [x] **FR3 surface 规则**：只有带 `message_id` 的事件构成"消息表面"（模型可见历史与
-      客户端消息列表的 fold 输入）；chunk/生命周期类事件不属于表面。fold 规则是
-      幂等纯函数，服务端（deriveMessages）与客户端（ConversationAssembler）共享同一
-      规则定义（各自实现，golden fixture 共享，见 F42 §3.1）。
+- [x] **FR3 surface 规则**：表面事件（`user/message`、`assistant/message`、
+      `tool/result`、`hint/message`、`compact/message`）直接产生或替换 Msg；
+      `assistant/chunk` 虽是非表面事件，但在 whole-value 快照到达前会按
+      `message_id + block_id` 折叠为临时 Assistant 内容。生命周期事件不产生消息。
+      fold 规则是幂等纯函数，服务端（deriveMessages）与客户端
+      （ConversationAssembler）共享同一规则定义（各自实现，golden fixture 共享，见
+      F42 §3.1）。
 - [x] **FR4 透传帧（6 种）**：§4.4；`session/event` 帧**原样透传**事件（含完整信封），
       不包装、不改写、不附加渲染意图（DSH ToolEventView 的旁挂数据模式本阶段不引入）。
 - [x] **FR5 双投路由**：下行帧投递 owner channel 与 ws 观察面（F42 跨 channel 实时
@@ -144,7 +148,7 @@ v3（本文件上一版）确定"Msg 快照为唯一下行事实"，仍保留**�
 
 | type | data |
 |---|---|
-| `assistant/chunk` | `{kind: text\|thinking\|tool_input\|tool_result_text, block_id?, tool_call_id?, delta}` |
+| `assistant/chunk` | `{kind: text\|thinking\|tool_input\|tool_result_text, block_id?, tool_call_id?, delta}`；text/thinking/tool_result_text 在最终快照前折叠进临时 Msg |
 | `tool/call-start` | `{tool_call_id, name, arguments}` **whole-value**（不再流式拼参；见附录 A-7） |
 | `tool/result-start` | `{tool_call_id, name}` |
 | `approval/asked` | `{tool_call_id, name, arguments, reason, rule_id}` |
@@ -164,7 +168,7 @@ v3（本文件上一版）确定"Msg 快照为唯一下行事实"，仍保留**�
 |---|---|
 | I1 | `user/message` 先于 claim 后的 queue 快照（存储顺序契约，F43 FR6） |
 | I2 | `turn/start` 先于该 turn 全部表面/chunk 事件；`turn/end` 后无该 turn 的 chunk |
-| I3 | `assistant/message` 的 message_id 与其前置 chunk 序列一致；whole-value 覆盖后，先前 chunk 仅作历史（fold 结果与 chunk 无关） |
+| I3 | `assistant/message` 的 message_id 与其前置 chunk 序列一致；whole-value 到达前 fold 展示 chunk 累积内容，到达后以 whole-value 原子替换同一 message_id，避免重复正文 |
 | I4 | `approval/asked` 后紧跟 `turn/end(outcome=paused)`；恢复由新 `turn/start(trigger=confirm)` 表达 |
 | I5 | `tool/result` 与 `tool/call-start` 按 tool_call_id 配对；`turn/end` 前全部闭合（或由 repair 合成，F43 §3.5） |
 | I6 | seq 严格连续：直播帧、tail-page、日志文件三处一致 |
@@ -194,7 +198,8 @@ attach(sid) ─► session/subscribed{last_seq=N}   （在输出锁内，先于�
            返回 {events:[…], has_more}          （含流式中途的 chunk 事件）
         ─► fold 重放 → 追平后继续消费直播
 历史加载: GET /api/sessions/:sid/messages 仍返回 fold 后的 Msg 数组（deriveMessages，
-        形状不变，分页参数不变）——首屏仍走 Msg；增量/断线走事件补拉
+        形状不变，分页参数不变）；响应中的 `messages` 与 `last_seq` 来自同一事件
+        快照，快照可包含尚未结束的 Assistant chunk——首屏仍走 Msg；增量/断线走事件补拉
 ```
 
 ## 5. 验收标准
@@ -206,7 +211,8 @@ attach(sid) ─► session/subscribed{last_seq=N}   （在输出锁内，先于�
       严格连续且一致。
 - [x] AC3：I1-I5 各一集成测试（真实 Inbox→SessionLog→帧 桩断言）。
 - [x] AC4：断线精确恢复——流式 chunk 中途断开，重连后 tail-page 补齐至断点，
-      客户端消息文本与服务端日志 fold 结果逐字节一致。
+      客户端消息文本与服务端日志 fold 结果逐字节一致；刷新正在流式生成的会话时，
+      `/messages` 直接返回当前 Assistant 文本，不得只返回 tool call。
 - [x] AC5：双投 byte-identical（octo session 双桩验证）。
 - [x] AC6：未知事件容错——客户端桩对 `{"type":"future/x"}` 跳过并计数不断连；
       日志恢复器对未声明 ignorable 的未知类型拒绝（FR6/FR8 口径）。
@@ -258,3 +264,4 @@ attach(sid) ─► session/subscribed{last_seq=N}   （在输出锁内，先于�
 | 2026-09-04 | 实施验收收尾：事件表计数修正为 13（表面 5+流式 4+生命周期 4）；FR6 与 FR8 的未知类型策略统一为「默认拒绝、ignorable 才跳过」；AC5/AC6 按实现口径修订；新增 tests/contracts/test_{session_events,wire_frames}.py 作为事件/帧 golden 与双投 byte-identical 证据 | FR2 原文 17 为分类计数笔误；服务端 load 拒绝未知类型比静默跳过更安全（防数据损坏静默丢失），与 FR8 声明式注册扩展配套；AC1-AC8 中 AC7（gen_wire_types codegen）未实施——TS 类型当前为手写 `types/wire.ts`，codegen 列为后续项（用户已知） |
 | 2026-09-04 | 收尾补齐：实施 FR9/AC7——`scripts/gen_wire_types.py` 落地（Pydantic → `wire.gen.ts`，双跑幂等 sha256 一致；手写 wire.ts 删除）；wire.py 帧 payload 类型化（subscribed/projection/maintenance/event 帧载荷契约模型 + RpcPayload/RpcError 契约模型，rpc 帧 payload 运行时保持 dict 直通以维持 value/error 缺省不上 wire 的既有字节形状）；golden fixture 同步纳入 gen 产物 | 消除 TS 手写副本漂移源；Pydantic 成为 wire 契约唯一事实源 |
 | 2026-09-05 | 兼容字段修订：`compact/message` fast 模式增加可选 `tool_result_ids` 精确裁剪标识；`turn/end.data.metadata` 允许 repair 标记 synthetic；客户端仍须忽略未知字段 | 解决旧 compact 数量误裁后续工具输出，同时保持 v1 新增字段向前兼容 |
+| 2026-09-06 | 修复刷新中的流式消息恢复：derive 在 whole-value 快照前折叠 text/thinking/tool_result_text chunk；`/messages` 以同一事件快照生成消息与 `last_seq` | 原实现只在客户端直播 fold chunk，服务端历史只生成 tool call，刷新后文本消失且新游标会跳过已读 chunk |

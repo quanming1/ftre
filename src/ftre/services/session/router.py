@@ -98,11 +98,13 @@ def build_router(sessions, agents, inbox) -> APIRouter:
         queue = await inbox_service.wire_snapshot(session_id) if inbox_service is not None else None
         session = await sessions.get_session(session_id)
         metadata = session["metadata"] if session else {}
-        last_seq = await sessions.last_seq(session_id)
         if limit_turns is not None and limit_turns > 0:
-            messages, has_more = await sessions.get_recent_messages_by_turns(session_id, limit_turns, before_ts=before_ts)
+            messages, has_more, last_seq = await sessions.get_messages_snapshot(
+                session_id, limit_turns=limit_turns, before_ts=before_ts
+            )
             return {"messages": messages, "has_more": has_more, "status": status, "queue": queue, "metadata": metadata, "last_seq": last_seq}
-        return {"messages": await sessions.get_messages_by_session(session_id), "status": status, "queue": queue, "metadata": metadata, "last_seq": last_seq}
+        messages, _, last_seq = await sessions.get_messages_snapshot(session_id)
+        return {"messages": messages, "status": status, "queue": queue, "metadata": metadata, "last_seq": last_seq}
 
     @router.get("/sessions/{session_id}/events")
     async def get_events(

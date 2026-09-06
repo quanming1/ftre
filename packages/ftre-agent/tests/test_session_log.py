@@ -223,6 +223,62 @@ class TestDerive:
         assert assistant.token is not None
         assert assistant.token.usage.total_tokens == 15
 
+    def test_inflight_chunks_are_visible_before_whole_value_snapshot(self):
+        log = SessionLog("ws_sess_inflight")
+        log.append_user_message(
+            request_id="req_inflight",
+            content=[{"type": "text", "text": "继续"}],
+        )
+        log.append(
+            "assistant/chunk",
+            {"kind": "text", "delta": "正在"},
+            message_id="reply_inflight",
+        )
+        log.append(
+            "assistant/chunk",
+            {"kind": "text", "delta": "生成"},
+            message_id="reply_inflight",
+        )
+        log.append(
+            "assistant/chunk",
+            {"kind": "thinking", "delta": "先检查"},
+            message_id="reply_inflight",
+        )
+        log.append(
+            "tool/call-start",
+            {"tool_call_id": "tc_inflight", "name": "read", "arguments": {}},
+            message_id="reply_inflight",
+        )
+        log.append(
+            "assistant/chunk",
+            {
+                "kind": "tool_result_text",
+                "delta": "第一行\n",
+                "tool_call_id": "tc_inflight",
+            },
+            message_id="reply_inflight",
+        )
+        log.append(
+            "assistant/chunk",
+            {
+                "kind": "tool_result_text",
+                "delta": "第二行",
+                "tool_call_id": "tc_inflight",
+            },
+            message_id="reply_inflight",
+        )
+
+        user, assistant = derive_messages(list(log.events))
+        assert user.get_text_content() == "继续"
+        text = next(block for block in assistant.content if block.type == "text")
+        thinking = next(block for block in assistant.content if block.type == "thinking")
+        result = next(block for block in assistant.content if block.type == "tool_result")
+        assert text.text == "正在生成"
+        assert thinking.thinking == "先检查"
+        assert result.state == "running"
+        assert result.output[0].text == "第一行\n第二行"
+        assert assistant.finished_at is None
+
     def test_idempotent_replay(self):
         events = _full_flow_events()
         once = derive_messages(events)
