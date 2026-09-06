@@ -32,14 +32,13 @@ class SessionRoot:
 
 
 def _provide_plugin_dependencies(context: Context) -> None:
-    """为 Inbox Plugin 提供它真正声明的公开 Service 依赖。
+    """为 Inbox Plugin 提供它真正声明的公开 Service 依赖占位。
 
-    这些测试只验证队列 admission 与 Runtime Hook 的连接，不需要真实的
-    SessionEventService；但 `session_events` 仍是 Inbox 的必需注入边界，
-    因此用显式的空能力填充最小测试上下文，而不是让 Plugin 回退到隐式
-    `ctx.get()`。
+    Inbox 的注入边界是 ``sessions``（SessionLog 写入）；
+    测试已在各处 provide("sessions", ...)，
+    这里保留空实现仅为少改动三个测试的调用点。
     """
-    context.provide("session_events", None)
+    del context
 
 
 @pytest.mark.asyncio

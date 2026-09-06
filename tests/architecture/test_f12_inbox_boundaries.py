@@ -61,11 +61,15 @@ def test_agent_service_contract_is_single_message_execution_boundary() -> None:
 
 
 def test_queue_wire_contract_has_no_legacy_frame_or_mailbox_alias() -> None:
-    protocol = (SRC / "services" / "messaging" / "bus" / "protocol.py").read_text(encoding="utf-8")
+    """下行帧契约唯一事实源是 messaging/wire.py（PRD-F41 §4.4 六帧）。"""
+    wire = (SRC / "services" / "messaging" / "wire.py").read_text(encoding="utf-8")
     channel = (SRC / "plugins" / "builtin" / "channels" / "websocket" / "channel.py").read_text(encoding="utf-8")
-    assert "session/queue" in protocol
-    assert "session/status" in protocol
-    assert "mailbox_snapshot" not in protocol
+    assert "session/queue" in wire
+    # 状态由 session/subscribed 基线与 session/projection 快照承载，
+    # wire 上不存在独立的 session/status 帧类型
+    assert "session/status" not in wire
+    assert "session/event" in wire
+    assert "mailbox_snapshot" not in wire
     assert "frame_id" not in channel
     assert "mailbox" not in channel.lower()
 

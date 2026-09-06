@@ -3,7 +3,7 @@
 Handlers capture the Session and Agent Service instances supplied by
 Composition.  No module-level setter or aggregate API router is involved.
 """
-# 中文说明：Session HTTP 路由：通过 SessionService/AgentService 查询和修改会话，不直接触碰 state.json。
+# 中文说明：Session HTTP 路由：通过 SessionService/AgentService 查询和修改会话，不直接触碰会话磁盘文件。
 
 from __future__ import annotations
 
@@ -98,10 +98,24 @@ def build_router(sessions, agents, inbox) -> APIRouter:
         queue = await inbox_service.wire_snapshot(session_id) if inbox_service is not None else None
         session = await sessions.get_session(session_id)
         metadata = session["metadata"] if session else {}
+        last_seq = await sessions.last_seq(session_id)
         if limit_turns is not None and limit_turns > 0:
             messages, has_more = await sessions.get_recent_messages_by_turns(session_id, limit_turns, before_ts=before_ts)
-            return {"messages": messages, "has_more": has_more, "status": status, "queue": queue, "metadata": metadata}
-        return {"messages": await sessions.get_messages_by_session(session_id), "status": status, "queue": queue, "metadata": metadata}
+            return {"messages": messages, "has_more": has_more, "status": status, "queue": queue, "metadata": metadata, "last_seq": last_seq}
+        return {"messages": await sessions.get_messages_by_session(session_id), "status": status, "queue": queue, "metadata": metadata, "last_seq": last_seq}
+
+    @router.get("/sessions/{session_id}/events")
+    async def get_events(
+        session_id: str,
+        after_seq: int = -1,
+        limit: int = 500,
+    ):
+        """tail-page：seq > after_seq 的事件分页（客户端断线补齐入口）。"""
+        limit = max(1, min(limit, 2000))
+        events, has_more = await sessions.get_events_page(
+            session_id, after_seq=after_seq, limit=limit
+        )
+        return {"events": events, "has_more": has_more, "last_seq": await sessions.last_seq(session_id)}
 
     @router.get("/sessions/{session_id}/state")
     async def get_session_state(

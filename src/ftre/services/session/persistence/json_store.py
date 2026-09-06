@@ -1,10 +1,10 @@
-"""Agent State JSON 文件存储（设计文档 §5 / §9 / §10）。
+"""Session 元信息 JSON 文件存储（设计文档 §5 / §9 / §10）。
 
 磁盘结构：
 
     ~/.ftre/sessions/
     └── <session_id>/              # 目录名即 session_id（如 ws_sess_ed930104a1d2）
-        └── state.json
+        └── session.json
 
 session_id 规范：只允许 [A-Za-z0-9_-]，由 manager 生成时保证。
 本模块在路径解析时再次校验，拒绝含 /、\\、:、.. 等危险字符的 ID。
@@ -34,11 +34,11 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from ..entity.state import AgentStateFile, parse_agent_state_json
+from ..entity.state import SessionMetaFile, parse_session_meta_json
 
 logger = logging.getLogger(__name__)
 
-STATE_FILE_NAME = "state.json"
+STATE_FILE_NAME = "session.json"
 
 # session_id 允许的字符集：字母、数字、下划线、连字符
 _SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -55,14 +55,14 @@ def validate_session_id(session_id: str) -> None:
 
 
 class CorruptStateError(Exception):
-    """单个 state.json 损坏 / 校验失败。"""
+    """单个 session.json 损坏 / 校验失败。"""
 
     def __init__(self, path: Path, session_hint: str, reason: str):
         self.path = path
         self.session_hint = session_hint
         self.reason = reason
         super().__init__(
-            f"state.json 损坏 path={path} session={session_hint!r}: {reason}"
+            f"session.json 损坏 path={path} session={session_hint!r}: {reason}"
         )
 
 
@@ -71,7 +71,7 @@ class JsonStateStore:
 
     def __init__(self, root: str | Path):
         self._root = Path(root)
-        self.states: dict[str, AgentStateFile] = {}
+        self.states: dict[str, SessionMetaFile] = {}
         # session_hint → 错误信息；访问这些 Session 时应明确报错
         self.corrupt: dict[str, CorruptStateError] = {}
         self.locks: dict[str, asyncio.Lock] = {}
@@ -106,7 +106,7 @@ class JsonStateStore:
     # ─── 扫描加载 ────────────────────────────────────────────
 
     async def load_all(self) -> None:
-        """扫描 root 下所有 state.json 并加载到内存。
+        """扫描 root 下所有 session.json 并加载到内存。
 
         - 残留 .tmp 不覆盖正式文件；
         - 损坏文件隔离为 .corrupt-<timestamp> 并记入 corrupt；
@@ -131,17 +131,16 @@ class JsonStateStore:
                 payload = await asyncio.to_thread(
                     state_file.read_text, encoding="utf-8"
                 )
-                state = parse_agent_state_json(payload)
-            except Exception as exc:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
+                state = parse_session_meta_json(payload)
+            except Exception as exc:  # noqa: BLE001 边界：损坏文件隔离不中断加载
                 await self._quarantine(state_file, child, exc)
                 continue
             self.states[state.session.id] = state
 
         logger.info(
-            "[session-store] backend=json directory=%s loaded sessions=%d messages=%d corrupt=%d",
+            "[session-store] backend=json directory=%s loaded sessions=%d corrupt=%d",
             self._root,
             len(self.states),
-            sum(len(s.messages) for s in self.states.values()),
             len(self.corrupt),
         )
 
@@ -152,7 +151,7 @@ class JsonStateStore:
         session_hint = self._session_hint(state_file, session_dir)
         error = CorruptStateError(state_file, session_hint, str(exc))
         self.corrupt[session_hint] = error
-        logger.error("[session-store] invalid state file %s", error)
+        logger.error("[session-store] invalid session file %s", error)
         try:
             stamp = datetime.now().strftime("%Y%m%d%H%M%S")  # noqa: DTZ005 legacy compatibility boundary reviewed in F1
             await asyncio.to_thread(
@@ -179,8 +178,8 @@ class JsonStateStore:
 
     # ─── 原子读写 ────────────────────────────────────────────
 
-    async def write(self, state: AgentStateFile) -> None:
-        """原子写入单个 Session 的 state.json。
+    async def write(self, state: SessionMetaFile) -> None:
+        """原子写入单个 Session 的 session.json。
 
         payload 已通过 Pydantic 校验；临时文件与目标同目录；
         写盘异常向上抛，由调用方保证内存缓存不提前提交。
@@ -196,7 +195,7 @@ class JsonStateStore:
     @classmethod
     def _atomic_replace(cls, path: Path, payload: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # 固定的 state.json.tmp 会让两个 Gateway 进程互相覆盖/移动临时文件。
+        # 固定的 session.json.tmp 会让两个 Gateway 进程互相覆盖/移动临时文件。
         # 每次写入拥有独立临时文件，失败时也不会污染其他写入者。
         tmp = path.with_name(
             f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
@@ -219,7 +218,7 @@ class JsonStateStore:
                     raise
                 delay = min(cls._REPLACE_DELAY * (2**attempt), 2.0)
                 logger.warning(
-                    "state.json 被占用，%.1fs 后重试 replace: target=%s attempt=%s/%s",
+                    "session.json 被占用，%.1fs 后重试 replace: target=%s attempt=%s/%s",
                     delay,
                     path,
                     attempt + 1,
@@ -233,18 +232,16 @@ class JsonStateStore:
         return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
 
     async def delete(self, session_id: str) -> bool:
-        """删除精确目标 state.json 及其目录；目标不存在返回 False。"""
+        """删除整个 Session 目录（session.json + session.jsonl 等）；不存在返回 False。"""
         path = self.state_path(session_id)  # 越界时抛 ValueError
 
         def _remove() -> bool:
-            if not path.exists():
+            directory = path.parent
+            if not directory.exists():
                 return False
-            path.unlink()
-            try:
-                path.parent.rmdir()
-            except OSError:
-                # 目录内还有其他文件（如 .corrupt 隔离件），保留目录
-                pass
+            import shutil
+
+            shutil.rmtree(directory, ignore_errors=True)
             return True
 
         return await asyncio.to_thread(_remove)

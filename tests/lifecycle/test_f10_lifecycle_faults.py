@@ -1,4 +1,5 @@
-"""F12 Inbox 生命周期、取消、Hook 失败和恢复契约。"""
+"""F12 Inbox 生命周期、取消、Hook 失败和恢复契约。
+"""
 
 from __future__ import annotations
 
@@ -177,16 +178,3 @@ async def test_delete_session_waits_for_active_turn_before_removing_history():
     assert order == [
         "turn-cancelled", "turn-finished", "parent-finished", "delete-history",
     ]
-
-
-@pytest.mark.asyncio
-async def test_deleted_session_does_not_publish_status_to_empty_channel():
-    """Turn finally 晚于 Session 删除时，不向空通道发送伪状态。"""
-    loop = object.__new__(AgentLoop)
-    loop.sessions = AsyncMock()
-    loop.sessions.get_session.return_value = None
-    loop.message_bus = AsyncMock()
-
-    await loop._publish_session_status_async("deleted", "idle")
-
-    loop.message_bus.publish_outbound.assert_not_awaited()

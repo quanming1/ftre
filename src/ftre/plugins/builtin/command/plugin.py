@@ -25,9 +25,7 @@ from cordis import Context
 from ftre.services.messaging.bus import (
     MESSAGING_ROUTE_SPEC,
     BusMessage,
-    CommandMessagePayload,
     IngressResult,
-    SessionCommandMessage,
 )
 
 from .builtin import register_builtin_commands
@@ -171,23 +169,27 @@ def _accepted(message: BusMessage) -> IngressResult:
     )
 
 
-async def _publish_result(ctx: Context, inbound: BusMessage, result) -> None:
-    """通过统一的 ``session/command`` outbound 帧发送命令结果。
+def _publish_result(ctx: Context, inbound, result) -> None:
+    """命令文本反馈：session/maintenance 帧（PRD-F41 §4.4）。"""
+    import asyncio
 
-    命令结果不是 Agent assistant 消息，不写入 LLM 上下文；它使用结构化 Bus
-    Envelope，让 WebSocket/其它 Channel 按自己的协议展示成功或错误文本。空文本
-    结果不发送气泡，但 command/run、command/done 仍会写入 Session metadata 供诊断。
-    """
-    if result is None or not getattr(result, "text", ""):
-        return
-    level = "error" if getattr(result, "kind", "success") == "error" else "info"
-    await ctx.message_bus.publish_outbound(
-        SessionCommandMessage(
-            from_channel=inbound.from_channel,
-            to_channel=inbound.from_channel,
-            from_session=inbound.from_session,
-            to_session=inbound.from_session,
-            data=CommandMessagePayload(content=result.text, level=level),
-            metadata=inbound.metadata,
+    async def _send() -> None:
+        session_id = str(inbound.data.get("session_id") or inbound.from_session)
+        channel_id = inbound.from_channel or "ws"
+        level = "error" if getattr(result, "kind", "success") == "error" else "info"
+        await ctx.message_bus.publish_maintenance(
+            session_id,
+            channel_id,
+            "command_message",
+            {
+                "content": result.text,
+                "level": level,
+                "request_id": str(inbound.metadata.request_id or ""),
+            },
         )
-    )
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_send())
+    except RuntimeError:  # pragma: no cover - 同步边界兜底
+        asyncio.run(_send())

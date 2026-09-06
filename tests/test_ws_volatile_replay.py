@@ -1,11 +1,15 @@
-"""WebSocket attach 与现代 Queue/Status baseline。"""
+"""WebSocket attach 基线与 rpc 结算（模板见 tests/startup/test_f12_ws_smoke.py）。
 
+wire 帧形状（PRD-F41）：
+- attach 基线两连：session/subscribed{last_seq, status} → session/queue 快照；
+- prompt/updateQueue 结算 = rpc 帧 {v, session_id, type:"rpc",
+  payload:{request_id, ok, value?|error?}}。
+"""
 from __future__ import annotations
 
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -20,6 +24,11 @@ class FakeWebSocket:
 
     async def send_text(self, text: str) -> None:
         self.sent.append(json.loads(text))
+
+
+class _Sessions:
+    async def last_seq(self, _session_id: str) -> int:
+        return 5
 
 
 class _Inbox:
@@ -61,13 +70,9 @@ class _Inbox:
 
 @pytest.mark.asyncio
 async def test_attach_reads_inbox_queue_and_status_baseline():
-    projection = SimpleNamespace(
-        snapshot=AsyncMock(return_value=[]),
-        session_event_snapshot=AsyncMock(return_value=[]),
-    )
     channel = WebSocketChannel(
         EventBus(),
-        session_projection=projection,
+        sessions_service=_Sessions(),
         inbox_provider=_Inbox(),
         status_provider=lambda _sid: "idle",
     )
@@ -75,10 +80,15 @@ async def test_attach_reads_inbox_queue_and_status_baseline():
     await channel._on_message(
         json.dumps({"type": "attach", "payload": {"session_id": "s1"}}), ws
     )
-    assert ws.sent[0]["type"] == "reply_snapshot"
+    # 基线两连：subscribed{last_seq, status} → queue 快照
+    assert len(ws.sent) == 2
+    assert ws.sent[0]["type"] == "session/subscribed"
+    assert ws.sent[0]["v"] == 1
+    assert ws.sent[0]["session_id"] == "s1"
+    assert ws.sent[0]["payload"]["last_seq"] == 5
+    assert ws.sent[0]["payload"]["status"] == "idle"
     assert ws.sent[1]["type"] == "session/queue"
     assert ws.sent[1]["payload"]["items"][0]["placement"] == "queued"
-    assert ws.sent[2]["type"] == "session/status"
     assert "frame_id" not in ws.sent[0]
 
 
@@ -100,13 +110,17 @@ async def test_prompt_response_waits_for_bus_reply_and_uses_queue_envelope():
     bus.resolve_inbound(inbound.id, SimpleNamespace(accepted=True, session_id="s1"))
     await received
     assert ws.sent == [{
-        "type": "session/queue",
-        "request_id": "client-1",
-        "ok": True,
+        "v": 1,
+        "session_id": "s1",
+        "type": "rpc",
         "payload": {
-            "session_id": "s1",
-            "revision": 1,
-            "items": [{"id": "queued-1", "placement": "queued", "message": {"content": []}}],
+            "request_id": "client-1",
+            "ok": True,
+            "value": {
+                "session_id": "s1",
+                "revision": 1,
+                "items": [{"id": "queued-1", "placement": "queued", "message": {"content": []}}],
+            },
         },
     }]
 
@@ -120,7 +134,10 @@ async def test_prompt_without_request_id_is_rejected_before_bus():
         json.dumps({"type": "session.prompt", "payload": {"session_id": "s", "content": "x"}}),
         ws,
     )
-    assert ws.sent[0]["error"]["code"] == "missing_request_id"
+    # 拒绝也是 rpc 帧（payload.error）
+    assert ws.sent[0]["type"] == "rpc"
+    assert ws.sent[0]["payload"]["ok"] is False
+    assert ws.sent[0]["payload"]["error"]["code"] == "missing_request_id"
     assert bus._inbound_queue.empty()
 
 
@@ -141,13 +158,17 @@ async def test_update_queue_steer_returns_latest_queue_snapshot():
         ws,
     )
     assert ws.sent == [{
-        "type": "session/queue",
-        "request_id": "update-1",
-        "ok": True,
+        "v": 1,
+        "session_id": "s1",
+        "type": "rpc",
         "payload": {
-            "session_id": "s1",
-            "revision": 2,
-            "items": [{"id": "queued-1", "placement": "steering", "message": {"content": []}}],
+            "request_id": "update-1",
+            "ok": True,
+            "value": {
+                "session_id": "s1",
+                "revision": 2,
+                "items": [{"id": "queued-1", "placement": "steering", "message": {"content": []}}],
+            },
         },
     }]
 
@@ -181,5 +202,7 @@ async def test_steering_item_is_immutable_until_claim():
         }),
         ws,
     )
-    assert ws.sent[-1]["ok"] is False
-    assert ws.sent[-1]["error"]["code"] == "steering-locked"
+    # 拒绝也是 rpc 帧（payload.ok=False + payload.error）
+    assert ws.sent[-1]["type"] == "rpc"
+    assert ws.sent[-1]["payload"]["ok"] is False
+    assert ws.sent[-1]["payload"]["error"]["code"] == "steering-locked"

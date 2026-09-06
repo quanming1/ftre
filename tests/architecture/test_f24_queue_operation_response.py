@@ -20,7 +20,11 @@ def _source(path: Path) -> str:
 
 
 def test_queue_mutations_have_one_success_owner() -> None:
-    """WebSocket 只包装 Inbox 的 wire snapshot，不再拥有第二种成功协议。"""
+    """操作成功统一由 rpc 帧结算（_send_rpc / _send_queue_rpc）。
+
+    WebSocket 只包装 Inbox 的 wire snapshot（SessionQueueFrame / rpc.value），
+    不拥有第二种成功协议。
+    """
     source = _source(CHANNEL)
     tree = ast.parse(source)
     function_names = {
@@ -28,10 +32,12 @@ def test_queue_mutations_have_one_success_owner() -> None:
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    assert "_send_queue_response" in function_names
+    assert "_send_queue_rpc" in function_names
+    assert "_send_rpc" in function_names
     assert "_send_admission_ack" not in function_names
-    assert '"type": "session/queue"' in source
-    assert '"value": {"accepted": accepted' in source  # 仅 session.cancel 控制 ACK
+    assert "SessionQueueFrame(" in source  # session/queue 快照帧（wire.py 契约）
+    # 仅 session.cancel 控制 ACK（rpc.value.accepted 由 turn_cancel ack 派生）
+    assert 'value={"accepted": bool(getattr(ack, "created", False)),' in source
 
 
 def test_wire_snapshot_exposes_persisted_revision_only() -> None:

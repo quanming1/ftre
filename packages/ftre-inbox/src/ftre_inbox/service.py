@@ -83,15 +83,15 @@ class InboxService:
         *,
         hook_runtime=None,
         before_claim=None,
-        session_events=None,
+        sessions=None,
     ) -> None:
         self.repository = repository
         self._agent = agent
         self._hook_runtime = hook_runtime
         self._before_claim = before_claim
-        self._session_events = session_events
+        self._sessions = sessions
         self._closed = False
-        self._sessions: dict[str, _SessionState] = {}
+        self._sessions_state: dict[str, _SessionState] = {}
         self._workers: dict[str, asyncio.Task] = {}
         self._receipts: dict[tuple[str, str], asyncio.Future] = {}
         self._agent_status_disposer = None
@@ -114,7 +114,7 @@ class InboxService:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._workers.clear()
-        self._sessions.clear()
+        self._sessions_state.clear()
         for future in self._receipts.values():
             if not future.done():
                 future.cancel()
@@ -125,7 +125,7 @@ class InboxService:
             self._agent_status_disposer = None
         self._before_claim = None
         self._hook_runtime = None
-        self._session_events = None
+        self._sessions = None
         self._agent = None
 
     async def followup(self, message: InboundMessage | AgentRunRequest) -> IngressResult:
@@ -385,6 +385,18 @@ class InboxService:
         if wake:
             if state.blocked_reason is not None and state.blocked_reason.startswith(("before-claim", "claim:")):
                 state.blocked_reason = None
+                if self._sessions is not None:
+                    try:
+                        await self._sessions.append_event(
+                            item.session_id,
+                            "session/status",
+                            {"status": "idle", "reason": "unblocked"},
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "[ftre-inbox] session/status(idle) 事件失败 session=%s",
+                            item.session_id,
+                        )
             self._ensure_worker(item.session_id)
             state.wake.set()
         return IngressResult(True, item.session_id, item.request_id, created)
@@ -417,7 +429,9 @@ class InboxService:
         )
 
     def _state(self, session_id: str) -> _SessionState:
-        return self._sessions.setdefault(session_id, _SessionState())
+        # 内部会话状态字典是 _sessions_state；_sessions 是注入的
+        # SessionService，不能在这里当 dict 用。
+        return self._sessions_state.setdefault(session_id, _SessionState())
 
     def _ensure_worker(self, session_id: str) -> None:
         if self._closed or self._agent is None:
@@ -557,30 +571,60 @@ class InboxService:
         *,
         run_id: str = "",
     ) -> dict[str, str]:
-        if self._session_events is None:
+        """claim 前把用户消息幂等写入 SessionLog（PRD-F43 FR6）。
+
+        顺序契约：先 user/message 事件落日志（I1：早于 claim 后 queue 快照），
+        再由调用方 claim。幂等由 SessionLog 的 request_id 索引保证。
+        """
+        if self._sessions is None:
             return {}
         history_ids: dict[str, str] = {}
         previous_assistant_id = None
-        active_id = getattr(self._session_events, "active_assistant_message_id", None)
-        if callable(active_id):
-            previous_assistant_id = await active_id(candidates[0].session_id)
+        append_user = getattr(self._sessions, "append_user_message_if_absent", None)
+        active_id = getattr(self._sessions, "log", None)
+        if callable(active_id) and callable(append_user):
+            try:
+                log = await active_id(candidates[0].session_id)
+                last = log.events
+                previous_assistant_id = next(
+                    (
+                        event.get("message_id")
+                        for event in reversed(last)
+                        if event.get("type") == "assistant/message"
+                    ),
+                    None,
+                )
+            except Exception:  # noqa: BLE001 - 边界信息缺失不阻断持久化
+                previous_assistant_id = None
         for candidate in candidates:
             if candidate.source != "user":
                 continue
-            result = await self._session_events.emit_user_message_if_absent(
+            if not callable(append_user):
+                break
+            content_parts = candidate.content
+            if isinstance(content_parts, str):
+                content_parts = [{"type": "text", "text": content_parts}]
+            result = await append_user(
                 candidate.session_id,
-                candidate.channel_id,
                 request_id=candidate.request_id,
-                content=candidate.content,
-                attachments=candidate.attachments,
-                source=candidate.source,
-                run_id=run_id,
+                content=list(content_parts),
+                metadata={
+                    "hide": False,
+                    "request_id": candidate.request_id,
+                    "source": candidate.source,
+                    "agent_id": candidate.agent_id or "default",
+                    **(
+                        {"previous_assistant_message_id": previous_assistant_id}
+                        if previous_assistant_id
+                        else {}
+                    ),
+                },
                 previous_assistant_message_id=previous_assistant_id,
             )
-            persisted = getattr(result, "persisted_messages", ()) or ()
-            if persisted:
-                history_ids[candidate.request_id] = persisted[0].id
+            if result is not None:
+                history_ids[candidate.request_id] = str(result.get("message_id") or "")
             previous_assistant_id = None
+        del run_id
         return history_ids
 
     async def _before_claim_batch(
@@ -684,6 +728,17 @@ class InboxService:
             )
 
     async def _status(self, session_id: str, status: str) -> None:
+        """blocked 进入写入 SessionLog（session/status 事件，自动转发帧）；
+        其余瞬态（paused/running/idle）不进日志——客户端由 turn 事件推导。"""
+        if status == "blocked" and self._sessions is not None:
+            try:
+                await self._sessions.append_event(
+                    session_id,
+                    "session/status",
+                    {"status": "blocked", "reason": "inbox"},
+                )
+            except Exception:  # noqa: BLE001 - 状态事件失败不阻断 Inbox
+                logger.warning("[ftre-inbox] session/status 事件失败 session=%s", session_id)
         if self._hook_runtime is not None and INBOX_STATUS_CHANGED_SPEC is not None:
             await self._hook_runtime.dispatch(
                 INBOX_STATUS_CHANGED_SPEC,

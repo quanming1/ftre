@@ -1,21 +1,24 @@
-"""会话内容搜索——内存态纯函数检索。
+"""会话元信息搜索——内存态纯函数检索（PRD-F43 检索面收缩）。
 
-前提：网关启动时 ``JsonStateStore.load_all()`` 已把全部 state.json 加载进内存，
-运行期读写均在内存。因此搜索直接遍历内存快照（``list[(sid, AgentStateFile)]``），
-绝不读盘 / 解析 JSON——这就是性能保证的全部来源，无需任何旁路索引。
+消息事实位于 per-session 事件日志（session.jsonl）；会话列表检索
+只扫元信息——title + last_user_text（最后一条真实用户消息的反规范化预览，
+由 SessionService 在 user/message 事件后维护）。正文级检索需要派生全量
+消息，留待后续阶段（索引层）再引入。
 
-调用方（SessionManager.search_sessions）负责用 ``asyncio.to_thread`` 把本模块
+前提：网关启动时 ``JsonStateStore.load_all()`` 已把全部 session.json 加载进
+内存，运行期读写均在内存。因此搜索直接遍历内存快照
+（``list[(sid, SessionMetaFile)]``），绝不读盘 / 解析 JSON——这就是性能
+保证的全部来源，无需任何旁路索引。
+
+调用方（SessionService.search_sessions）负责用 ``asyncio.to_thread`` 把本模块
 的同步函数移出事件循环。
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from ftre.services.session.entity.state import AgentStateFile
+from ftre.services.session.entity.state import SessionMetaFile
 
-# 每会话返回的命中摘要条数（最近的优先）
-MAX_HITS_PER_SESSION = 3
 # 摘要半径：命中位置前后各取的字符数
 SNIPPET_RADIUS = 80
 
@@ -33,78 +36,19 @@ def _snippet(text: str, q_lower: str) -> str:
     return f"{prefix}{text[start:end]}{suffix}"
 
 
-def _single_text(msg) -> str | None:
-    """单 text block 的快路径（最常见形态），避免 list+join 分配。"""
-    blocks = msg.content
-    if len(blocks) == 1:
-        b = blocks[0]
-        if b.type == "text":
-            return b.text
-    return None
-
-
-def _structured_text(value: Any) -> str:
-    """从工具结果/Hint 的嵌套文本载体中取可展示文本，跳过二进制数据。"""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return "\n".join(part for item in value if (part := _structured_text(item)))
-    if not isinstance(value, dict):
-        return ""
-
-    # 图片、音频等数据块的 base64 既不可读，也不应复制到搜索文本。
-    if value.get("type") == "data":
-        return str(value.get("name") or "")
-
-    parts: list[str] = []
-    for key in ("text", "thinking", "hint", "output", "content", "message", "name", "path"):
-        if key in value:
-            text = _structured_text(value[key])
-            if text:
-                parts.append(text)
-    return "\n".join(parts)
-
-
-def _message_text(msg) -> str:
-    """提取聊天界面可见的文字：正文、推理、工具调用与工具结果。"""
-    single = _single_text(msg)
-    if single is not None:
-        return single
-
-    parts: list[str] = []
-    for block in msg.content:
-        block_type = block.type
-        if block_type == "text":
-            parts.append(block.text)
-        elif block_type == "thinking":
-            parts.append(block.thinking)
-        elif block_type == "hint":
-            text = _structured_text(block.hint)
-            if text:
-                parts.append(text)
-        elif block_type == "tool_call":
-            parts.append(block.name)
-            parts.append(json.dumps(block.arguments, ensure_ascii=False, default=str))
-        elif block_type == "tool_result":
-            parts.append(block.name)
-            text = _structured_text(block.output)
-            if text:
-                parts.append(text)
-    return "\n".join(part for part in parts if part)
-
-
 def search_sessions(
-    states: list[tuple[str, AgentStateFile]],
+    states: list[tuple[str, SessionMetaFile]],
     q: str,
     limit: int = 30,
     workspace: str | None = None,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """在内存快照上按子串检索会话（标题 + 可见消息文本）。
+    """在内存快照上按子串检索会话（title + last_user_text 元信息）。
 
     - 大小写不敏感（ASCII lower；中文不受影响）；
     - 标题命中排前，组内按 session.updated_at 倒序（两次稳定排序）；
-    - 每会话最多 MAX_HITS_PER_SESSION 条摘要（消息序倒序取最近）；
+    - last_user_text 命中产出恰好一条 role=user 摘要（桌面端 hits 形状
+      兼容：mid 为空串、role="user"、snippet 定位命中位置）；
     - workspace 传值时精确过滤（空串匹配"未设置工作区"）；
     - limit / offset 分页，避免常用词命中超过首屏上限时静默漏会话。
     """
@@ -113,7 +57,7 @@ def search_sessions(
         return {"query": q, "total": 0, "results": []}
     q_lower = q.lower()
     # q 含 ASCII 字母时才需要大小写折叠（文本侧可能有大小写差异）；
-    # 纯中文/数字/标点查询跳过每条消息的 lower() 分配（200MB 基准下省 ~40% 耗时）
+    # 纯中文/数字/标点查询跳过每条预览的 lower() 分配
     fold_case = any(c.isascii() and c.isalpha() for c in q)
 
     results: list[dict[str, Any]] = []
@@ -124,22 +68,15 @@ def search_sessions(
         title = state.session.title or ""
         title_matched = q_lower in (title.lower() if fold_case else title)
 
+        # 检索面：last_user_text 反规范化预览（用户输入），最多 1 条命中
+        preview = state.session.last_user_text or ""
         hits: list[dict[str, Any]] = []
-        # 倒序扫，先命中最近的；凑满即可提前结束该会话的正文扫描
-        for msg in reversed(state.messages):
-            if len(hits) >= MAX_HITS_PER_SESSION:
-                break
-            if msg.role != "user" and msg.role != "assistant":
-                continue
-            text = _message_text(msg)
-            if not text:
-                continue
-            if fold_case:
-                if q_lower not in text.lower():
-                    continue
-            elif q not in text:
-                continue
-            hits.append({"mid": msg.id, "role": msg.role, "snippet": _snippet(text, q_lower)})
+        if preview:
+            matched = q_lower in (preview.lower() if fold_case else preview)
+            if matched:
+                hits.append(
+                    {"mid": "", "role": "user", "snippet": _snippet(preview, q_lower)}
+                )
 
         if not title_matched and not hits:
             continue

@@ -19,12 +19,16 @@ BASELINE_TESTS = {
     "session": (
         "tests/test_session_manager_baseline.py",
         "tests/test_session_json_store.py",
-        "tests/test_session_projection.py",
+        # 等价基线是事件日志仓库不变量（并发 append / seq 连续）。
+        # （PRD-F43 §3.7 退场清单）
+        "tests/test_session_event_log_repository.py",
     ),
     "command": ("tests/test_confirm_commands.py", "tests/test_ws_control_commands.py"),
     "compaction": (
         "packages/ftre-compaction/tests/test_compact_algo.py",
-        "packages/ftre-compaction/tests/test_compact_summary.py",
+        # 摘要持久化是 compact/message 事件（PRD-F43 §3.7）；
+        # 插件级行为基线在 test_plugin.py。
+        "packages/ftre-compaction/tests/test_plugin.py",
         "tests/test_turn_lifecycle.py",
     ),
 }

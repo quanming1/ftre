@@ -78,9 +78,16 @@ def test_turn_executor_is_not_user_message_owner() -> None:
 
 
 def test_session_plugin_owns_the_session_event_service() -> None:
+    """SessionLog 是 SessionService 的内部实现，不是独立 Service。
+
+    Session plugin 只提供 sessions 一个 Service；事件帧转发在 plugin 装配
+    （set_frame_publisher → message_bus.publish_frame，session/event 唯一出口）。
+    """
     source = _source("services/session/plugin.py")
-    assert 'provide = ("sessions", "session_events")' in source
-    assert "SessionEventService(service, ctx.message_bus)" in source
+    assert 'provide = ("sessions",)' in source
+    assert "session_events" not in source
+    assert 'inject = ("hook_runtime", "message_bus")' in source
+    assert "set_frame_publisher(ctx.message_bus.publish_frame)" in source
 
 
 def test_builtin_tools_use_public_channel_names_not_provider_modules() -> None:

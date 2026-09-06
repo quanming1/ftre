@@ -782,7 +782,7 @@ def _create_wait_agent_tool(inbox) -> ToolDefinition:
                     timeout=None,
                 )
                 # 已确认队列与当前 Turn 全部清空；完成历史只在内存的
-                # CompletionRegistry 保留，不再写入 session state.json。
+                # CompletionRegistry 保留，不再写入 Session 元信息或事件日志。
             except Exception as e:  # noqa: BLE001 legacy compatibility boundary reviewed in F1
                 results.append(f"- {sid}: [error] 等待出错: {type(e).__name__}: {e}")
                 continue

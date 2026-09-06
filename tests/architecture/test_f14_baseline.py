@@ -116,7 +116,12 @@ def test_optional_runtime_capabilities_are_ready_before_agent_provider() -> None
 
 
 def test_agent_runtime_delegates_session_events_to_the_session_owner() -> None:
-    """Agent Runtime 不能保留 Projection/Hook/Bus 的第二事件出口。"""
+    """Agent Runtime 不能保留 Projection/Hook/Bus 的第二事件出口。
+
+    Runtime 经 append_session_event → sessions.append_event 提交事件
+    （SessionLog 唯一事实源）；不存在 session_events Service 或
+    publish_session_status 出口。
+    """
     source = (
         ROOT
         / "packages"
@@ -125,7 +130,9 @@ def test_agent_runtime_delegates_session_events_to_the_session_owner() -> None:
         / "ftre_agent_runtime"
         / "engine.py"
     ).read_text(encoding="utf-8")
-    assert "self.session_events.emit(" in source
+    assert "await self.sessions.append_event(" in source
+    assert "self.session_events.emit(" not in source
+    assert "publish_session_status(" not in source
     assert "self.session_projection.apply(" not in source
     assert "_emit_session_event_hook" not in source
     assert "SESSION_EVENT_SPEC" not in source

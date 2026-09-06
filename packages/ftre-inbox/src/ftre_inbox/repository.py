@@ -24,13 +24,11 @@ class InboxRepository:
         capacity: int = 100,
         session_exists: Callable[[str], bool] | None = None,
         request_seen: Callable[[str, str], bool] | None = None,
-        legacy_root: str | Path | None = None,
     ) -> None:
         self.root = Path(root)
         self.capacity = capacity
         self._session_exists = session_exists
         self._request_seen = request_seen
-        self.legacy_root = Path(legacy_root) if legacy_root is not None else None
         self._states: dict[str, _MutableInbox] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -39,7 +37,6 @@ class InboxRepository:
 
     async def load_all(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        await self._migrate_legacy_mailboxes()
         for path in self.root.glob("*/inbox.json"):
             try:
                 raw = json.loads(await asyncio.to_thread(path.read_text, encoding="utf-8"))
@@ -55,50 +52,6 @@ class InboxRepository:
             except Exception:  # noqa: BLE001 - isolate one broken Inbox
                 corrupt = path.with_name(f"inbox.json.corrupt-{uuid.uuid4().hex[:8]}")
                 await asyncio.to_thread(path.rename, corrupt)
-
-    async def _migrate_legacy_mailboxes(self) -> None:
-        if self.legacy_root is None or not self.legacy_root.exists():
-            return
-        for state_path in self.legacy_root.glob("*/state.json"):
-            session_id = state_path.parent.name
-            try:
-                raw = json.loads(await asyncio.to_thread(state_path.read_text, encoding="utf-8"))
-                mailbox = raw.get("mailbox")
-                if not isinstance(mailbox, dict):
-                    continue
-                session = raw.get("session") if isinstance(raw.get("session"), dict) else {}
-                state = _MutableInbox(
-                    session_id=session_id,
-                    revision=int(mailbox.get("revision", 0)),
-                    next_sequence=int(mailbox.get("next_sequence", 1)),
-                )
-                pending = mailbox.get("pending", ())
-                if not isinstance(pending, list):
-                    raise TypeError("mailbox.pending 必须是数组")
-                for value in pending:
-                    if not isinstance(value, dict):
-                        raise TypeError("mailbox.pending 项必须是对象")
-                    state.next_turn.append(
-                        QueueItem(
-                            request_id=str(value["request_id"]),
-                            sequence=int(value["sequence"]),
-                            session_id=session_id,
-                            channel_id=str(session.get("channel_id") or ""),
-                            content=str(value.get("content", "")),
-                            attachments=tuple(dict(item) for item in value.get("attachments", ())),
-                            agent_id=str(value.get("agent_id") or "default"),
-                        )
-                    )
-                state.validate()
-                await self._commit(state)
-                raw.pop("mailbox", None)
-                await asyncio.to_thread(
-                    self._atomic_write,
-                    state_path,
-                    json.dumps(raw, ensure_ascii=False, indent=2),
-                )
-            except (OSError, TypeError, ValueError, KeyError):
-                continue
 
     def recoverable_sessions(self) -> list[str]:
         return [sid for sid, state in self._states.items() if state.next_turn or state.next_step]

@@ -1,26 +1,57 @@
-"""state.json 分页只读视图测试。"""
+"""派生消息 + session.json 的一致性分页视图测试（PRD-F43）。
+
+消息经 append_event("user/message" / "assistant/message", whole-value) 提交；
+分页视图基于 derived messages，file_path 指向 session.jsonl。
+"""
 
 import pytest
+import pytest_asyncio
 from ftre_agent.message import AssistantMsg, UserMsg
 
 from ftre.services.session.service import SessionService as SessionManager
 
 
+@pytest_asyncio.fixture
+async def manager(tmp_path):
+    mgr = SessionManager(sessions_dir=str(tmp_path / "sessions"))
+    await mgr.init()
+    yield mgr
+    await mgr.close()
+
+
+async def _append_user(manager, session_id, text: str, message_id: str) -> None:
+    user = UserMsg(name="default", content=text)
+    await manager.append_event(
+        session_id,
+        "user/message",
+        {
+            "content": user.model_dump(mode="json")["content"],
+            "metadata": {},
+            "request_id": message_id,
+        },
+        message_id=message_id,
+    )
+
+
+async def _append_assistant(manager, session_id, msg: AssistantMsg) -> None:
+    await manager.append_event(
+        session_id,
+        "assistant/message",
+        {"message": msg.model_dump(mode="json")},
+        message_id=msg.id,
+    )
+
+
 @pytest.mark.asyncio
-async def test_state_page_defaults_to_tail_and_supports_earlier_pages(tmp_path):
-    manager = SessionManager(sessions_dir=str(tmp_path / "sessions"))
-    await manager.init()
+async def test_state_page_defaults_to_tail_and_supports_earlier_pages(manager, tmp_path):
     session_id = await manager.create_session(channel_id="ws", title="分页测试")
     for index in range(7):
-        await manager.save_message(
-            session_id,
-            UserMsg(name="default", content=f"消息 {index}", id=f"msg_{index}"),
-        )
+        await _append_user(manager, session_id, f"消息 {index}", f"msg_{index}")
 
     tail = await manager.get_state_page(session_id, limit=3)
     assert tail is not None
-    assert tail["schema_version"] == 1
-    assert tail["file_path"] == str(tmp_path / "sessions" / session_id / "state.json")
+    assert tail["schema_version"] == 2
+    assert tail["file_path"] == str(tmp_path / "sessions" / session_id / "session.jsonl")
     assert tail["session"]["id"] == session_id
     assert tail["truncated_message_ids"] == []
     assert tail["stats"]["message_count"] == 7
@@ -47,9 +78,7 @@ async def test_state_page_defaults_to_tail_and_supports_earlier_pages(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_state_page_clamps_limit_and_returns_none_for_missing_session(tmp_path):
-    manager = SessionManager(sessions_dir=str(tmp_path / "sessions"))
-    await manager.init()
+async def test_state_page_clamps_limit_and_returns_none_for_missing_session(manager):
     session_id = await manager.create_session(channel_id="ws")
 
     page = await manager.get_state_page(session_id, offset=-10, limit=1000)
@@ -60,15 +89,10 @@ async def test_state_page_clamps_limit_and_returns_none_for_missing_session(tmp_
 
 
 @pytest.mark.asyncio
-async def test_state_page_truncates_large_strings_and_loads_full_message_on_demand(tmp_path):
-    manager = SessionManager(sessions_dir=str(tmp_path / "sessions"))
-    await manager.init()
+async def test_state_page_truncates_large_strings_and_loads_full_message_on_demand(manager):
     session_id = await manager.create_session(channel_id="ws")
     large_text = "x" * 5_000
-    await manager.save_message(
-        session_id,
-        UserMsg(name="default", content=large_text, id="msg_large"),
-    )
+    await _append_user(manager, session_id, large_text, "msg_large")
 
     page = await manager.get_state_page(
         session_id,
@@ -86,15 +110,11 @@ async def test_state_page_truncates_large_strings_and_loads_full_message_on_dema
 
 
 @pytest.mark.asyncio
-async def test_state_page_stats_cover_full_session_not_only_current_page(tmp_path):
-    manager = SessionManager(sessions_dir=str(tmp_path / "sessions"))
-    await manager.init()
+async def test_state_page_stats_cover_full_session_not_only_current_page(manager):
     session_id = await manager.create_session(channel_id="ws")
-    await manager.save_message(
-        session_id,
-        UserMsg(name="default", content="问题", id="msg_user"),
-    )
-    await manager.save_message(
+    await _append_user(manager, session_id, "问题", "msg_user")
+    await _append_assistant(
+        manager,
         session_id,
         AssistantMsg(
             name="default",

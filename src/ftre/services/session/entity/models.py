@@ -1,10 +1,10 @@
 """Session 对外数据模型（TypedDict 投影）。
 
-这些是 state.json 存储结构面向调用方的只读投影形状：
+这些是会话持久化结构（session.json + session.jsonl 派生）面向调用方的只读投影形状：
 - SessionModel: 会话元信息（时间戳转为 epoch）
 - MessageModel: 持久化 Msg 快照
 - ExternalSessionModel: 外部平台会话绑定信息
-- StatePageModel: state.json 分页只读视图
+- StatePageModel: 派生消息 + 元信息的分页只读视图
 
 纯数据结构定义，不含行为。
 """
@@ -54,7 +54,7 @@ class ExternalSessionModel(TypedDict):
 
 
 class StatePageModel(TypedDict):
-    """state.json 的分页只读视图。messages 保持原始 Msg 结构。"""
+    """会话派生状态的分页只读视图。messages 保持原始 Msg 结构。"""
 
     schema_version: int
     file_path: str

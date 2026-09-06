@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from cordis import Context
 
+from ftre.services.messaging.bus import SessionQueueFrame
+
 from .channel import WebSocketChannel
 
 inject = (
@@ -25,7 +27,6 @@ provide = ()
 def apply(ctx: Context, config=None):
     """创建并注册 WebSocket Channel，但不在 apply 中偷偷启动监听 Server。"""
     options = config if isinstance(config, dict) else {}
-    projection = getattr(ctx.sessions, "projection", None)
 
     def current_inbox():
         # 这里是有意保留的动态解析例外：Inbox 可独立 restart，WebSocket Channel
@@ -40,60 +41,34 @@ def apply(ctx: Context, config=None):
             return
         session = await ctx.sessions.get_session(session_id)
         channel_id = session["channel_id"] if session is not None else "ws"
-        await ctx.message_bus.publish_outbound(
-            _session_frame(
-                "session/queue",
-                session_id,
-                channel_id,
-                await inbox.wire_snapshot(session_id),
-            )
-        )
-
-    async def publish_status(session_id: str, status: str) -> None:
-        session = await ctx.sessions.get_session(session_id)
-        channel_id = session["channel_id"] if session is not None else "ws"
-        await ctx.message_bus.publish_outbound(
-            _session_frame(
-                "session/status",
-                session_id,
-                channel_id,
-                {"session_id": session_id, "status": status},
-            )
+        queue_snapshot = await inbox.wire_snapshot(session_id)
+        await ctx.message_bus.publish_frame(
+            session_id,
+            channel_id,
+            SessionQueueFrame(session_id=session_id, payload=queue_snapshot),
         )
 
     # Inbox emits these facts after each durable mutation. Listening to the Hook
-    # rather than binding callbacks to one Inbox instance makes restart safe:
-    # the listener resolves the current Service each time. The HookSpec is a
-    # stable public contract owned by the Package; the WebSocket Plugin owns
-    # only the outbound adapter and its disposer.
+    # rather than binding callbacks to one Inbox instance makes restart safe.
+    # queue 快照经 publish_frame(session/queue) 下发；blocked 状态走
+    # SessionLog 的 session/status 事件（自动透传），status Hook 不发帧。
     inbox = current_inbox()
     inbox_changed_spec = getattr(inbox, "changed_hook_spec", None)
-    inbox_status_spec = getattr(inbox, "status_hook_spec", None)
 
     if inbox_changed_spec is not None:
         async def on_inbox_changed(payload, next_):
             await publish_snapshot(payload.session_id)
             return await next_()
 
-        async def on_inbox_status(payload, next_):
-            await publish_status(payload.session_id, payload.status)
-            return await next_()
-
-        for spec, callback, label in (
-            (inbox_changed_spec, on_inbox_changed, "channel:ws:inbox-changed"),
-            (inbox_status_spec, on_inbox_status, "channel:ws:inbox-status"),
-        ):
-            if spec is None:
-                continue
-            receipt = ctx.hook_runtime.register(
-                spec,
-                callback,
-                owner="websocket-channel",
-                context=ctx,
-                all_agent_scopes=True,
-            )
-            # HookRuntime 已绑定当前 Plugin Fiber；不再重复登记 receipt disposer。
-            del receipt, label
+        receipt = ctx.hook_runtime.register(
+            inbox_changed_spec,
+            on_inbox_changed,
+            owner="websocket-channel",
+            context=ctx,
+            all_agent_scopes=True,
+        )
+        # HookRuntime 已绑定当前 Plugin Fiber；不再重复登记 receipt disposer。
+        del receipt
 
     def status_provider(session_id: str) -> str:
         inbox = current_inbox()
@@ -106,7 +81,7 @@ def apply(ctx: Context, config=None):
         port=int(options.get("port", 48650)),
         attachment_service=ctx.attachments,
         http_service=ctx.http,
-        session_projection=projection,
+        sessions_service=ctx.sessions,
         inbox_provider=current_inbox,
         status_provider=status_provider,
     )
@@ -118,17 +93,3 @@ def apply(ctx: Context, config=None):
         channel._ws_endpoint,
     )
     ctx.effect(lambda: route_disposer, label="http:websocket")
-
-
-def _session_frame(kind: str, session_id: str, channel_id: str, data):
-    """Build the existing Bus envelope without coupling the plugin to Gateway."""
-    from ftre.services.messaging.bus import BusMessage
-
-    return BusMessage(
-        type=kind,
-        from_channel=channel_id,
-        to_channel=channel_id,
-        from_session=session_id,
-        to_session=session_id,
-        data=data,
-    )

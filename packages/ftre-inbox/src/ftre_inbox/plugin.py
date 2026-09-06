@@ -19,7 +19,7 @@ from .service import InboxService
 # send_message/task/team are deliberately not dependencies here. They are three
 # independent business Packages which consume ``inbox``; using Inbox does not
 # make them Inbox-owned.
-inject = ("sessions", "agents", "hook_runtime", "session_events")
+inject = ("sessions", "agents", "hook_runtime")
 provide = ("inbox",)
 
 
@@ -47,13 +47,8 @@ async def apply(ctx: Context, config=None):
                 "Inbox Plugin requires an explicit inbox_dir or SessionService.sessions_root()"
             )
     exists = None
-    request_seen = None
     if sessions is not None and hasattr(sessions, "has_session"):
         exists = sessions.has_session
-    if sessions is not None and hasattr(sessions, "has_request_id"):
-        request_seen = sessions.has_request_id
-    sessions_root = getattr(sessions, "sessions_root", None)
-    legacy_root = sessions_root() if callable(sessions_root) else None
     try:
         capacity = max(
             1,
@@ -73,16 +68,13 @@ async def apply(ctx: Context, config=None):
         root,
         capacity=capacity,
         session_exists=exists,
-        request_seen=request_seen,
-        legacy_root=legacy_root,
     )
     service = InboxService(
         repository,
         ctx.agents,
         hook_runtime=ctx.hook_runtime,
-        # session_events 已在 inject 中声明；直接读取注入属性，避免必选依赖
-        # 又退回动态 Service Locator，保证 Owner 图可静态追踪。
-        session_events=ctx.session_events,
+        # UserMsg 持久化走 SessionService（SessionLog 幂等入口）。
+        sessions=sessions,
     )
     ctx.provide("inbox", service)
 

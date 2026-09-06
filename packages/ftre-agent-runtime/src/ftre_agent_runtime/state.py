@@ -79,6 +79,10 @@ class Turn:
     continuation_count: int = 0
     max_continuations: int = 3
     paused: bool = False
+    # 真正的 whole-value assistant/message 是否已经提交；最终收口只允许一次。
+    assistant_message_emitted: bool = False
+    # 本 Turn 已提交的 assistant message_id；steering 可能产生多个消息。
+    assistant_message_ids_emitted: set[str] = field(default_factory=set)
     # 每个 Turn 独占一个取消信号；控制型 Agent Hook 只能观察这一个实例。
     cancellation: asyncio.Event = field(default_factory=asyncio.Event)
 

@@ -1,13 +1,21 @@
 """业务消息 Bus、协议模型和 MessageBusService。"""
 
+from ..wire import (
+    DownstreamFrame,
+    FrameBase,
+    RpcFrame,
+    SessionEventFrame,
+    SessionMaintenanceFrame,
+    SessionProjectionFrame,
+    SessionQueueFrame,
+    SessionSubscribedFrame,
+)
 from .bus import EventBus
 from .ingress import MESSAGING_ROUTE_SPEC, IngressResult
 from .message import (
     GLOBAL_CHANNEL,
     GLOBAL_SESSION,
     BusMessage,
-    SessionCommandMessage,
-    SessionEventMessage,
     TypedBusMessage,
 )
 from .payloads import CommandMessagePayload
@@ -29,7 +37,9 @@ __all__ = [
     "AgentRef",
     "BusMessage",
     "CommandMessagePayload",
+    "DownstreamFrame",
     "EventBus",
+    "FrameBase",
     "InboundData",
     "InboundMetadata",
     "IngressResult",
@@ -37,8 +47,12 @@ __all__ = [
     "MessageType",
     "OutboundMetadata",
     "PromptMode",
-    "SessionCommandMessage",
-    "SessionEventMessage",
+    "RpcFrame",
+    "SessionEventFrame",
+    "SessionMaintenanceFrame",
+    "SessionProjectionFrame",
+    "SessionQueueFrame",
+    "SessionSubscribedFrame",
     "TypedBusMessage",
     "coerce_inbound_metadata",
 ]

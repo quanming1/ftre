@@ -14,7 +14,7 @@
   - 工具结果在 ftre 里是独立 ``{role:"tool"}`` 消息，层次 A 先保留为
     ToolResultBlock（方案 Y：边界转换时再拆回独立消息）
 
-层次 A 边界: 仅定义 Block + 状态机，不引入 Msg / append_event（层次 B）。
+层次 A 边界: 仅定义 Block + 状态机，不引入 Msg 实体（层次 B）。
 """
 from __future__ import annotations
 

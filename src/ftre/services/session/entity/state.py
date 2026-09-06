@@ -1,36 +1,30 @@
-"""Session 的持久化状态模型。
+"""Session 元信息持久化模型（session.json，PRD-F43）。
 
-队列已经迁移到独立的 ``ftre-inbox`` Package。这里仅保留 Session 身份、消息历史和
-metadata；旧 state.json 中的 ``mailbox`` 字段只在解析时丢弃，具体迁移由 Inbox 包完成。
+架构（PRD-F43）：消息事实位于 session.jsonl 事件日志；session.json 只保留
+会话身份、metadata 与 external 绑定。last_user_text 反规范化存储（会话列表预览，
+由 SessionService 在 user/message 事件时更新），避免列表页全量 derive。
+旧格式会话目录启动时直接忽略：不解析、不迁移。
 """
 from __future__ import annotations
 
 import json
 from typing import Any, Literal
 
-from ftre_agent.message import Msg
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-CURRENT_SCHEMA_VERSION = 1
-_MSG_ALLOWED_KEYS = frozenset(Msg.model_fields)
+CURRENT_SCHEMA_VERSION = 2
 
 
-def _check_msg_shape(item: Any) -> None:
-    if isinstance(item, dict):
-        extra = set(item) - _MSG_ALLOWED_KEYS
-        if extra:
-            raise ValueError(f"messages 含非 Msg 字段: {sorted(extra)}")
+class UnsupportedSessionMetaVersion(ValueError):
+    """磁盘 session.json schema 版本超出当前代码支持范围。"""
 
-
-class UnsupportedAgentStateVersion(ValueError):
-    """磁盘 state.json schema 版本超出当前代码支持范围。"""
     def __init__(self, version: Any):
         self.version = version
-        super().__init__(f"不支持的 AgentState schema_version: {version!r}")
+        super().__init__(f"不支持的 session.json schema_version: {version!r}")
 
 
 class SessionState(BaseModel):
-    """state.json 中的会话元信息，不包含消息和 mailbox 内容。"""
+    """会话身份与展示信息。"""
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -40,53 +34,39 @@ class SessionState(BaseModel):
     workspace: str = ""
     created_at: str
     updated_at: str
+    # 会话列表预览：最后一条真实用户消息摘要（反规范化，随 user/message 更新）
+    last_user_text: str = ""
 
 
-class AgentStateFile(BaseModel):
-    """一个 Session 的完整磁盘快照：元信息、消息和 metadata。"""
+class SessionMetaFile(BaseModel):
+    """sessions/<sid>/session.json：元信息 + metadata（无消息）。"""
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     session: SessionState
-    messages: list[Msg] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @model_validator(mode="before")
-    @classmethod
-    def drop_legacy_mailbox(cls, value: Any) -> Any:
-        """让旧 state 可以先被 SessionService 读取，再由 Inbox 包完成迁移。"""
-        if isinstance(value, dict) and "mailbox" in value:
-            value = dict(value)
-            value.pop("mailbox", None)
-        return value
 
-    @field_validator("messages", mode="before")
-    @classmethod
-    def reject_event_shapes(cls, value: Any) -> Any:
-        if isinstance(value, list):
-            for item in value:
-                _check_msg_shape(item)
-        return value
-
-    @field_validator("messages", mode="after")
-    @classmethod
-    def validate_no_duplicate_ids(cls, value: list[Msg]) -> list[Msg]:
-        ids = [m.id for m in value]
-        if len(ids) != len(set(ids)):
-            raise ValueError("duplicate Msg.id in session")
-        return value
-
-
-def parse_agent_state(data: dict[str, Any]) -> AgentStateFile:
-    """校验 schema version 和字段形状后解析 AgentStateFile。"""
+def parse_session_meta(data: dict[str, Any]) -> SessionMetaFile:
+    """校验 schema version 后解析 SessionMetaFile。"""
     if not isinstance(data, dict):
-        raise ValueError("AgentState 必须是 JSON 对象")  # noqa: TRY004 legacy compatibility boundary reviewed in F1
+        raise ValueError("SessionMeta 必须是 JSON 对象")  # noqa: TRY004 协议边界
     version = data.get("schema_version")
     if version != CURRENT_SCHEMA_VERSION:
-        raise UnsupportedAgentStateVersion(version)
-    return AgentStateFile.model_validate(data)
+        raise UnsupportedSessionMetaVersion(version)
+    return SessionMetaFile.model_validate(data)
 
 
-def parse_agent_state_json(payload: str | bytes) -> AgentStateFile:
-    """从 JSON 文本解析当前版本 AgentStateFile。"""
-    return parse_agent_state(json.loads(payload))
+def parse_session_meta_json(payload: str | bytes) -> SessionMetaFile:
+    """从 JSON 文本解析当前版本 SessionMetaFile。"""
+    return parse_session_meta(json.loads(payload))
+
+
+__all__ = [
+    "CURRENT_SCHEMA_VERSION",
+    "SessionMetaFile",
+    "SessionState",
+    "UnsupportedSessionMetaVersion",
+    "parse_session_meta",
+    "parse_session_meta_json",
+]

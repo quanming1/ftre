@@ -1,6 +1,6 @@
 """SessionRepository —— Session 纯数据存取（CRUD + 索引 + 提交）。
 
-只负责把 AgentStateFile 搬进搬出并维护索引，不含任何业务规则
+只负责把 SessionMetaFile 搬进搬出并维护索引，不含任何业务规则
 （上下文裁剪 / token 计算 / 前端投影等归 Service 层）。
 
 并发模型：per-session asyncio.Lock + 全局 create/delete 锁；
@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 from ftre_agent.message import Msg, MsgName
-from ftre_agent.types import ReplyFinishedReason
 
 from ftre.services.config.paths import CONFIG_PATH
 from ftre.services.session.entity.models import (
@@ -33,25 +32,13 @@ from ftre.services.session.entity.models import (
     SessionModel,
 )
 from ftre.services.session.entity.state import (
-    AgentStateFile,
+    SessionMetaFile,
     SessionState,
 )
 
 from .json_store import JsonStateStore, validate_session_id
 
 logger = logging.getLogger(__name__)
-
-
-def _assistant_request_state(message: Msg) -> str:
-    if message.finished_at is None:
-        return "running"
-    reason = str(message.finished_reason or ReplyFinishedReason.COMPLETED)
-    if reason == ReplyFinishedReason.ERROR:
-        return "failed"
-    if reason == ReplyFinishedReason.INTERRUPTED:
-        return "interrupted"
-    return "completed"
-
 
 # 该参数保留为构造函数的目录锚点；实际持久化始终使用 sessions/ JSON 文件。
 DEFAULT_DB_PATH = str(CONFIG_PATH.parent / "sessions.db")
@@ -85,14 +72,12 @@ def _validate_channel_id(channel_id: str) -> None:
 _LAST_USER_TEXT_MAX = 200
 
 
-def _last_user_text(state: AgentStateFile) -> str:
-    """提取最后一条真实用户消息的文本摘要（倒序找第一条命中的）。
+def summarize_last_user_text(messages: list[Msg]) -> str:
+    """从派生消息中提取最后一条真实用户消息摘要（供反规范化 last_user_text 字段）。
 
-    "真实用户消息"判定：role == user 且 name == default（跳过 compact/compact_fast
-    摘要，它们虽 role=user 但是系统生成的）。取该消息全部 TextBlock 文本，
-    折叠空白、截断到 _LAST_USER_TEXT_MAX。无命中返回空串。
+    "真实用户消息"判定：role == user 且 name == default（跳过 compact 摘要）。
     """
-    for msg in reversed(state.messages):
+    for msg in reversed(messages):
         if msg.role != "user":
             continue
         if msg.name != MsgName.DEFAULT.value:
@@ -102,14 +87,13 @@ def _last_user_text(state: AgentStateFile) -> str:
         texts = [b.text for b in msg.content if getattr(b, "type", "") == "text"]
         joined = " ".join(t.strip() for t in texts if t and t.strip())
         joined = re.sub(r"\s+", " ", joined).strip()
-        if not joined:
-            continue
-        return joined[:_LAST_USER_TEXT_MAX]
+        if joined:
+            return joined[:_LAST_USER_TEXT_MAX]
     return ""
 
 
 class SessionRepository:
-    """Session 数据存取唯一入口；调用方不应直接读写 state.json。"""
+    """Session 数据存取唯一入口；调用方不应直接读写 session.json/session.jsonl。"""
 
     def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
         # db_path 仅用于推导 sessions/ 所在的配置目录。
@@ -118,8 +102,6 @@ class SessionRepository:
         self._sessions_root = root
         self._store = JsonStateStore(root)
         self._states = self._store.states  # 引用同一 dict（store 负责清空/填充）
-        # Msg.id → session_id（Msg.id 在配置目录内全局唯一）
-        self._message_sessions: dict[str, str] = {}
         # (channel_id, external_key) → session_id
         self._external_sessions: dict[tuple[str, str], str] = {}
 
@@ -136,46 +118,15 @@ class SessionRepository:
     # 供 Service 层使用的数据访问原语
     # ============================================================
 
-    def get_state(self, session_id: str) -> AgentStateFile | None:
-        """读取内存中的完整状态；不存在返回 None（损坏 session 明确报错）。"""
+    def get_state(self, session_id: str) -> SessionMetaFile | None:
+        """读取内存中的会话元信息；不存在返回 None（损坏 session 明确报错）。"""
         state = self._states.get(session_id)
         if state is None:
             self._ensure_not_corrupt(session_id)
             return None
         return state
 
-    def has_request_id(self, session_id: str, request_id: str) -> bool:
-        """查询正式消息历史中是否已经提交过 request_id。"""
-        if not request_id:
-            return False
-        state = self._states.get(session_id)
-        if state is None:
-            return False
-        return any(
-            message.metadata.get("request_id") == request_id
-            for message in state.messages
-        )
-
-    def request_state(
-        self, session_id: str, request_id: str, run_id: str | None = None
-    ) -> str | None:
-        """返回已持久化请求对应的 Assistant 终态，未开始则返回 None。"""
-        if not request_id and not run_id:
-            return None
-        state = self._states.get(session_id)
-        if state is None:
-            return None
-        for message in reversed(state.messages):
-            if message.role != "assistant":
-                continue
-            metadata = message.metadata or {}
-            if request_id and metadata.get("request_id") == request_id:
-                return _assistant_request_state(message)
-            if run_id and metadata.get("run_id") == run_id:
-                return _assistant_request_state(message)
-        return None
-
-    def all_states(self) -> list[tuple[str, AgentStateFile]]:
+    def all_states(self) -> list[tuple[str, SessionMetaFile]]:
         """全部 (session_id, 状态) 快照列表，供启动期全量扫描类业务使用。"""
         return list(self._states.items())
 
@@ -194,17 +145,11 @@ class SessionRepository:
         """sessions 存储根目录（~/.ftre/sessions/）。"""
         return self._store.root
 
-    async def commit(self, new_state: AgentStateFile) -> None:
+    async def commit(self, new_state: SessionMetaFile) -> None:
         """原子写盘成功后提交内存缓存（并发场景调用方必须已持有对应锁）。"""
         await self._store.write(new_state)
         session_id = new_state.session.id
-        old_state = self._states.get(session_id)
-        if old_state is not None:
-            for message in old_state.messages:
-                self._message_sessions.pop(message.id, None)
         self._states[session_id] = new_state
-        for message in new_state.messages:
-            self._message_sessions[message.id] = session_id
         external = self._external_of(new_state)
         stale = [k for k, v in self._external_sessions.items() if v == session_id]
         for key in stale:
@@ -218,18 +163,15 @@ class SessionRepository:
     # ============================================================
 
     def _rebuild_indexes(self) -> None:
-        self._message_sessions.clear()
         self._external_sessions.clear()
         for session_id, state in self._states.items():
-            for message in state.messages:
-                self._message_sessions[message.id] = session_id
             external = self._external_of(state)
             if external is not None:
                 key = (external["channel_id"], external["external_key"])
                 self._external_sessions[key] = session_id
 
     @staticmethod
-    def _external_of(state: AgentStateFile) -> dict[str, Any] | None:
+    def _external_of(state: SessionMetaFile) -> dict[str, Any] | None:
         external = state.metadata.get("external")
         if (
             isinstance(external, dict)
@@ -245,7 +187,7 @@ class SessionRepository:
         if error is not None:
             raise error
 
-    def _require_state(self, session_id: str) -> AgentStateFile:
+    def _require_state(self, session_id: str) -> SessionMetaFile:
         state = self._states.get(session_id)
         if state is None:
             self._ensure_not_corrupt(session_id)
@@ -253,7 +195,7 @@ class SessionRepository:
         return state
 
     @staticmethod
-    def to_session_model(state: AgentStateFile) -> SessionModel:
+    def to_session_model(state: SessionMetaFile) -> SessionModel:
         session = state.session
         return SessionModel(
             id=session.id,
@@ -264,7 +206,7 @@ class SessionRepository:
             metadata=dict(state.metadata),
             created_at=_iso_to_epoch(session.created_at),
             updated_at=_iso_to_epoch(session.updated_at),
-            last_user_text=_last_user_text(state),
+            last_user_text=session.last_user_text,
         )
 
     @staticmethod
@@ -296,7 +238,7 @@ class SessionRepository:
         """创建新 session，返回 session_id（格式: '<channel_id>_sess_<hex12>'）"""
         sid = self.make_session_id(channel_id)
         now = _now_iso()
-        state = AgentStateFile(
+        state = SessionMetaFile(
             session=SessionState(
                 id=sid,
                 channel_id=channel_id,
@@ -315,15 +257,11 @@ class SessionRepository:
         _validate_channel_id(channel_id)
         return f"{channel_id}_{self.create_id()}"
 
-    async def create_session_with_state(self, state: AgentStateFile) -> str:
-        """用调用方已构建完整的 state 原子创建一个 session：单次 commit 落盘。
-
-        业务规则（复制哪些消息/metadata、重生成 Msg.id 等）由 Service 层在构建
-        state 时完成；本方法只做格式校验、防覆盖与跨 session Msg.id 唯一性检查，
-        并在 global_lock 内一次性提交（1 次序列化 + 1 次 fsync + 1 次 replace）。
+    async def create_session_with_state(self, state: SessionMetaFile) -> str:
+        """用调用方已构建完整的元信息原子创建一个 session：单次 commit 落盘。
 
         Raises:
-            ValueError: session_id 非法、已存在/损坏，或任一 Msg.id 已被占用。
+            ValueError: session_id 非法、已存在或损坏。
         """
         validate_session_id(state.session.id)
         _validate_channel_id(state.session.channel_id)
@@ -335,12 +273,6 @@ class SessionRepository:
                 raise ValueError(
                     f"session 已存在或损坏，拒绝覆盖: {state.session.id}"
                 )
-            # 与 save_message 的跨 session Msg.id 唯一性检查等价（绕开逐条
-            # save_message 后此防线必须由本方法补齐，否则会静默劫持索引）。
-            for msg in state.messages:
-                owner = self._message_sessions.get(msg.id)
-                if owner is not None:
-                    raise ValueError(f"message 已存在: {msg.id} (session={owner})")
             await self.commit(state)
         return state.session.id
 
@@ -372,7 +304,7 @@ class SessionRepository:
                 return session_id
 
             session_id = self.make_session_id(channel_id)
-            state = AgentStateFile(
+            state = SessionMetaFile(
                 session=SessionState(
                     id=session_id,
                     channel_id=channel_id,
@@ -504,8 +436,6 @@ class SessionRepository:
         async with self._store.global_lock, self._store.lock_for(session_id):
             state = self._states.pop(session_id, None)
             if state is not None:
-                for message in state.messages:
-                    self._message_sessions.pop(message.id, None)
                 stale = [
                     k for k, v in self._external_sessions.items() if v == session_id
                 ]
@@ -549,7 +479,7 @@ class SessionRepository:
         *,
         channel_id: str | None = None,
         workspace: str | None = None,
-    ) -> list[AgentStateFile]:
+    ) -> list[SessionMetaFile]:
         states = []
         for state in self._states.values():
             if channel_id and state.session.channel_id != channel_id:
@@ -586,117 +516,22 @@ class SessionRepository:
     # Message（Msg 快照）
     # ============================================================
 
-    async def save_message(
-        self,
-        session_id: str,
-        message: Msg | dict[str, Any],
-        *,
-        timestamp: float | None = None,
-    ) -> str:
-        """保存一条完整 Msg；流式 Event 不属于这个存储边界。
+    # ============================================================
+    # 消息事实由 SessionLog + session.jsonl 承载（PRD-F43）。
+    # 本 Repository 不保存消息；派生读取统一走 SessionService。
+    # ============================================================
 
-        timestamp 参数仅为旧接口兼容保留，磁盘不再保存单独的
-        timestamp；排序以 messages 数组顺序为准，对外游标由 created_at 派生。
-        """
-        del timestamp  # 见 docstring
-        msg = message if isinstance(message, Msg) else Msg.model_validate(message)
+    def session_dir(self, session_id: str) -> Path:
+        """事件日志所在的会话目录（session.jsonl 与 session.json 同目录）。"""
+        return self._store.session_dir(session_id)
+
+    async def set_last_user_text(self, session_id: str, text: str) -> None:
+        """维护反规范化预览字段（SessionService 在 user/message 事件后调用）。"""
         async with self._store.lock_for(session_id):
-            state = self._require_state(session_id)
-            owner = self._message_sessions.get(msg.id)
-            if owner is not None:
-                raise ValueError(f"message 已存在: {msg.id} (session={owner})")
+            state = self._states.get(session_id)
+            if state is None:
+                self._ensure_not_corrupt(session_id)
+                return
             new_state = state.model_copy(deep=True)
-            # 深拷贝隔离：调用方持有的 Msg 不能直接改到内部缓存
-            new_state.messages.append(msg.model_copy(deep=True))
-            new_state.session.updated_at = _now_iso()
+            new_state.session.last_user_text = text
             await self.commit(new_state)
-        return msg.id
-
-    async def update_message(self, message: Msg | dict[str, Any]) -> None:
-        """更新已持久化 Msg 的可变快照字段，不改变数组中的位置。"""
-        await self.update_messages([message])
-
-    async def update_messages(
-        self, messages: list[Msg | dict[str, Any]]
-    ) -> None:
-        """批量更新同一 Session 的 Msg，一次性原子提交完整 state。
-
-        调用方可以按任意顺序传入消息；磁盘 transcript 始终保持原数组顺序。
-        所有 id 与所属 session 会在写盘前完成校验，任一消息不存在、重复或
-        跨 session 时整体失败，不产生部分更新。
-        """
-        msgs = [
-            message if isinstance(message, Msg) else Msg.model_validate(message)
-            for message in messages
-        ]
-        if not msgs:
-            return
-
-        message_ids = [message.id for message in msgs]
-        if len(set(message_ids)) != len(message_ids):
-            raise ValueError("批量更新含重复 message id")
-
-        owners: set[str] = set()
-        for message_id in message_ids:
-            owner = self._message_sessions.get(message_id)
-            if owner is None:
-                raise ValueError(f"message 不存在: {message_id}")
-            owners.add(owner)
-        if len(owners) != 1:
-            raise ValueError("批量更新的 message 跨 session")
-        session_id = next(iter(owners))
-
-        async with self._store.lock_for(session_id):
-            state = self._require_state(session_id)
-            indexes = {
-                existing.id: index
-                for index, existing in enumerate(state.messages)
-            }
-            missing = [
-                message_id
-                for message_id in message_ids
-                if message_id not in indexes
-            ]
-            if missing:  # pragma: no cover - 索引与状态不一致的兜底
-                raise ValueError(f"message 不存在: {missing[0]}")
-
-            new_state = state.model_copy(deep=True)
-            for message in msgs:
-                new_state.messages[indexes[message.id]] = message.model_copy(deep=True)
-            new_state.session.updated_at = _now_iso()
-            await self.commit(new_state)
-
-    async def get_messages_by_session(self, session_id: str) -> list[MessageModel]:
-        """获取指定 session 的完整 transcript（按消息顺序正序）。
-
-        供 HTTP API / Desktop 历史展示使用；给 LLM 构建上下文请用
-        ContextService.get_context_messages()。
-        """
-        state = self._states.get(session_id)
-        if state is None:
-            self._ensure_not_corrupt(session_id)
-            return []
-        return [self.to_message_model(m, session_id) for m in state.messages]
-
-    async def upsert_message(
-        self, session_id: str, message: Msg | dict[str, Any]
-    ) -> str:
-        """按 id 幂等写入：存在则更新，不存在则追加。
-
-        供 SessionProjection 投影 context_compact_done 时使用——同一 Event id
-        重放不会产生重复 Msg。
-        """
-        msg = message if isinstance(message, Msg) else Msg.model_validate(message)
-        async with self._store.lock_for(session_id):
-            state = self._require_state(session_id)
-            new_state = state.model_copy(deep=True)
-            for index, existing in enumerate(new_state.messages):
-                if existing.id == msg.id:
-                    new_state.messages[index] = msg.model_copy(deep=True)
-                    new_state.session.updated_at = _now_iso()
-                    await self.commit(new_state)
-                    return msg.id
-            new_state.messages.append(msg.model_copy(deep=True))
-            new_state.session.updated_at = _now_iso()
-            await self.commit(new_state)
-        return msg.id

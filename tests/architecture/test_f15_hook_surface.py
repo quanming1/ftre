@@ -175,7 +175,12 @@ def test_production_hook_registration_uses_context_and_single_runtime_owner():
 
 
 def test_retired_host_hook_names_are_absent_from_production_sources():
-    """删除的时机不能只从导出表消失，生产源码也不得继续发布或引用它们。"""
+    """删除的时机不能只从导出表消失，生产源码也不得继续发布或引用它们。
+
+    注："session/event" 不在本名单——它是下行 wire 帧类型
+    （messaging/wire.py SessionEventFrame），与 Host Hook 名是不同
+    命名空间；名单中的退役 Hook 名仍禁止出现在生产源码。
+    """
 
     root = Path(__file__).parents[2]
     retired = (
@@ -187,7 +192,6 @@ def test_retired_host_hook_names_are_absent_from_production_sources():
         "agent/" + "error",
         "agent/" + "session-start",
         "agent/" + "status",
-        "session/" + "event",
         "session/" + "flush",
         "messaging/" + "inbound",
         "inbox/" + "inserted",

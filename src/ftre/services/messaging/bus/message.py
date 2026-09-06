@@ -2,14 +2,14 @@
 Bus 消息定义
 
 wire 协议契约（data/metadata 形状）在 protocol.py，本文件只定义 Bus 内部信封。
+下行一律走 ``downstream_frame``（帧模型见 messaging/wire.py）。
 """
 import time
 import uuid
-from typing import Any, Literal, TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .payloads import CommandMessagePayload
 from .protocol import InboundMetadata, MessageType, coerce_inbound_metadata
 
 # 全局事件标记：to_channel / to_session 设为这个硬编码值时，
@@ -28,13 +28,13 @@ class BusMessage(BaseModel):
     to_channel / to_session：消息目标
 
     Inbound:  from=Channel, to=Agent   （type=user_message）
-    Outbound: from=Agent, to=Channel   （type=agent_event/global_event/session_event）
+    Outbound: from=Agent, to=Channel   （type=downstream_frame）
 
     metadata 契约：
         InboundMetadata（request_id/agent_id/agent_ref），dict 传入自动归一。
     data 契约：
         inbound  → user_message 载荷，形状见 protocol.InboundData
-        outbound → 事件 dump / 包装结构，由各生产方定义
+        outbound → downstream_frame 载荷（wire 帧模型 dump）
     """
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
@@ -57,11 +57,7 @@ PayloadT = TypeVar("PayloadT", bound=BaseModel)
 
 
 class TypedBusMessage[PayloadT: BaseModel](BusMessage):
-    """带强类型 Payload 的 Bus 信封。
-
-    旧的 ``BusMessage`` 暂时保留给 inbound/Agent event；Gateway 自有
-    session/global 事件必须使用本类的具体子类，避免再次退回裸字典。
-    """
+    """带强类型 Payload 的 Bus 信封。"""
 
     data: PayloadT
 
@@ -84,16 +80,3 @@ class TypedBusMessage[PayloadT: BaseModel](BusMessage):
                 f"payload={payload_session_id!r}, routes={sorted(routed_sessions)!r}"
             )
         return self
-
-
-class SessionCommandMessage(TypedBusMessage[CommandMessagePayload]):
-    """session_event:command_message。"""
-
-    type: Literal["session_event:command_message"] = "session_event:command_message"
-
-
-class SessionEventMessage(TypedBusMessage[BaseModel]):
-    """Host pipeline/maintenance event carried on the session_event topic."""
-
-    type: Literal["session_event"] = "session_event"
-    data: Any

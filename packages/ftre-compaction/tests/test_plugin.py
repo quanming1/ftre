@@ -25,14 +25,6 @@ class _Sessions:
         return {"channel_id": "ws"}
 
 
-class _SessionEvents:
-    async def emit(self, *_args, **_kwargs):
-        return None
-
-    async def emit_maintenance(self, *_args, **_kwargs):
-        return None
-
-
 class _Config:
     """最小 ConfigService 替身：插件只需要读取 snapshot。"""
 
@@ -54,7 +46,6 @@ async def test_compaction_service_and_feature_hooks_register_separately():
     context.provide("config", _Config())
     context.provide("llm", object())
     context.provide("sessions", _Sessions())
-    context.provide("session_events", _SessionEvents())
     context.provide("inbox", object())
     context.provide("commands", type("Commands", (), {"register": lambda *_args, **_kwargs: lambda: True})())
     apply(context)
@@ -73,7 +64,6 @@ async def test_overflow_hook_retries_only_after_generation_advances():
     context.provide("config", _Config())
     context.provide("llm", object())
     context.provide("sessions", _Sessions())
-    context.provide("session_events", _SessionEvents())
     context.provide("inbox", object())
     context.provide("commands", type("Commands", (), {"register": lambda *_args, **_kwargs: lambda: True})())
     apply(context)
@@ -127,7 +117,6 @@ async def test_compaction_service_effect_cancels_inflight_tasks_on_unload():
     context.provide("config", _Config())
     context.provide("llm", object())
     context.provide("sessions", _Sessions())
-    context.provide("session_events", _SessionEvents())
     context.provide("inbox", object())
     context.provide("commands", type("Commands", (), {"register": lambda *_args, **_kwargs: lambda: True})())
     apply(context)
@@ -150,7 +139,6 @@ async def test_compaction_commands_execute_directly_without_turn():
     context.provide("config", _Config())
     context.provide("llm", object())
     context.provide("sessions", _Sessions())
-    context.provide("session_events", _SessionEvents())
     context.provide("inbox", object())
     context.provide("commands", commands)
     apply(context)

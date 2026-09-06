@@ -9,6 +9,13 @@
 - ToolService 按 Agent/Session 隔离 MCP 工具；ConfigService watcher 负责全局热重载，ToolView 准备失败会
   回滚工具、限制和私有连接，Agent MCP 配置使用原子写入。
 
+### F43 SessionLog 存储与 Token 水位修复
+
+- 流式 `assistant/chunk` 在 JSONL 落盘前按连续增量无损打包，读取时还原原事件；未知形状原样保留。
+- Assistant whole-value 快照改为 Turn 语义边界唯一收口，不再为同一条累计消息重复写入几十次。
+- 分离 Turn 累计 Token 与最后一次 LLM 调用 Token，压缩水位使用当前 prompt 上下文，不再因整轮累计值误触发。
+- 后端全量 pytest 通过，Ruff 与 diff check 通过。
+
 ### F39 ConfigService 外部变更热更新与模型目录
 
 - ConfigService 增加文件指纹、外部变更 reload、revision/hash 去重和可逆 watcher；非法外部
