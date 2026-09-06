@@ -92,7 +92,8 @@ reply_persistence）；v4 采纳 DSH 模式后这些中间结构**全部不需�
       按 surface 规则（F41 FR3）fold：`user/message`→UserMsg、`assistant/message`
       →whole-value AssistantMsg（替代其前 chunk 聚合）；在 whole-value 到达前，
       `assistant/chunk(kind=text|thinking|tool_result_text)` 按稳定块 id 折叠为
-      in-flight Assistant；`tool/result`→配对
+      in-flight Assistant，`tool/result-start` 创建 running ToolResultBlock；
+      `tool/result`→配对
       toolCall 定稿、`hint/message`/`compact/message`→对应块；增量优化：
       `SessionLog.derive()` 记录已派生 seq 水位，只 fold 新增事件（DSH
       deriveMessages 同款）。**同时是** `/api/sessions/:id/messages` 与 LLM 上下文

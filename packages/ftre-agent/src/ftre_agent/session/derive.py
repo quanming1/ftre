@@ -8,11 +8,12 @@ fold 规则（与 F41 §4.2 surface 列一致）：
   assistant/message → whole-value 替换该 message_id 的聚合态
   assistant/chunk   → 把 text/thinking/tool_result_text 折叠进进行中的消息
   tool/call-start   → 确保 assistant 消息存在（流式期占位）+ 追加 ToolCallBlock
+  tool/result-start → 创建 running ToolResultBlock 占位
   tool/result       → 追加 ToolResultBlock + 配对 ToolCall 置 finished
   hint/message      → 追加 HintBlock
   compact/message   → compact 锚点 UserMsg（name=compact/compact_fast）
   turn/end          → 对 message_id 消息落终态（finished_at/reason/error/token）
-  tool/result-start / approval / turn.start·retry / session/status → 不产消息
+  approval / turn.start·retry / session/status → 不产消息
 """
 from __future__ import annotations
 
@@ -190,6 +191,28 @@ def _tool_owner(state: _FoldState, tool_call_id: str) -> str | None:
     return None
 
 
+def _ensure_running_tool_result(
+    message: Msg,
+    tool_call_id: str,
+    *,
+    name: str,
+    time_ms: int,
+) -> ToolResultBlock:
+    existing = _find_block(message, "tool_result", tool_call_id)
+    if isinstance(existing, ToolResultBlock):
+        return existing
+    result = ToolResultBlock(
+        id=tool_call_id,
+        name=name,
+        output=[],
+        state=ToolResultState.RUNNING,
+        metadata={},
+        created_at=_iso_from_ms(time_ms),
+    )
+    message.content.append(result)
+    return result
+
+
 def _append_assistant_chunk(
     state: _FoldState, event: dict[str, Any], data: dict[str, Any]
 ) -> None:
@@ -236,20 +259,15 @@ def _append_tool_result_chunk(
         return
     time_ms = int(event.get("time") or 0)
     message = state.messages[owner_id]
-    existing = _find_block(message, "tool_result", tool_call_id)
-    if isinstance(existing, ToolResultBlock) and existing.finished_at is not None:
+    call = _find_block(message, "tool_call", tool_call_id)
+    existing = _ensure_running_tool_result(
+        message,
+        tool_call_id,
+        name=str(getattr(call, "name", "") or ""),
+        time_ms=time_ms,
+    )
+    if existing.finished_at is not None:
         return
-    if existing is None:
-        call = _find_block(message, "tool_call", tool_call_id)
-        existing = ToolResultBlock(
-            id=tool_call_id,
-            name=str(getattr(call, "name", "") or ""),
-            output=[],
-            state=ToolResultState.RUNNING,
-            metadata={},
-            created_at=_iso_from_ms(time_ms),
-        )
-        message.content.append(existing)
     if isinstance(existing.output, str):
         existing.output = [
             TextBlock(
@@ -502,6 +520,21 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
             state.tool_calls[tool_call_id] = message.id
         return
 
+    if type_ == "tool/result-start":
+        tool_call_id = str(data.get("tool_call_id") or "")
+        if not tool_call_id:
+            return
+        owner_id = _tool_owner(state, tool_call_id)
+        if owner_id is None:
+            return
+        _ensure_running_tool_result(
+            state.messages[owner_id],
+            tool_call_id,
+            name=str(data.get("name") or ""),
+            time_ms=time_ms,
+        )
+        return
+
     if type_ == "tool/result":
         tool_call_id = str(data.get("tool_call_id") or "")
         owner_id = _tool_owner(state, tool_call_id)
@@ -568,8 +601,7 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
                 message.token = message.token.model_copy(update={"usage": token})
         return
 
-    # tool/result-start / approval/asked / turn/start / turn/retry /
-    # session/status：不改变消息表面
+    # approval/asked / turn/start / turn/retry / session/status：不改变消息表面
     return
 
 

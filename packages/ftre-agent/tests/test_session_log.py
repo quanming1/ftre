@@ -250,6 +250,10 @@ class TestDerive:
             message_id="reply_inflight",
         )
         log.append(
+            "tool/result-start",
+            {"tool_call_id": "tc_inflight", "name": "read"},
+        )
+        log.append(
             "assistant/chunk",
             {
                 "kind": "tool_result_text",
@@ -276,6 +280,7 @@ class TestDerive:
         assert text.text == "正在生成"
         assert thinking.thinking == "先检查"
         assert result.state == "running"
+        assert result.name == "read"
         assert result.output[0].text == "第一行\n第二行"
         assert assistant.finished_at is None
 

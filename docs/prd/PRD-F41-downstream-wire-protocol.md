@@ -150,7 +150,7 @@ v3（本文件上一版）确定"Msg 快照为唯一下行事实"，仍保留**�
 |---|---|
 | `assistant/chunk` | `{kind: text\|thinking\|tool_input\|tool_result_text, block_id?, tool_call_id?, delta}`；text/thinking/tool_result_text 在最终快照前折叠进临时 Msg |
 | `tool/call-start` | `{tool_call_id, name, arguments}` **whole-value**（不再流式拼参；见附录 A-7） |
-| `tool/result-start` | `{tool_call_id, name}` |
+| `tool/result-start` | `{tool_call_id, name}`；创建 running ToolResultBlock 占位，等待 chunk/result |
 | `approval/asked` | `{tool_call_id, name, arguments, reason, rule_id}` |
 
 #### 生命周期事件
