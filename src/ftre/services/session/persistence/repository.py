@@ -1,12 +1,13 @@
 """SessionRepository —— Session 纯数据存取（CRUD + 索引 + 提交）。
 
-只负责把 SessionMetaFile 搬进搬出并维护索引，不含任何业务规则
+只负责把 Session Snapshot 搬进搬出并维护索引，不含任何业务规则
 （上下文裁剪 / token 计算 / 前端投影等归 Service 层）。
 
 并发模型：per-session asyncio.Lock + 全局 create/delete 锁；
 写盘采用临时文件 + fsync + os.replace 原子替换，写盘成功后才提交内存缓存。
 
-会话数据只从 ``sessions/`` 目录中的当前 JSON 模型读取，不提供旧格式迁移。
+会话数据只从 ``sessions/`` 目录中的 session.json 读取；旧 JSONL 迁移由
+SessionService 的 Snapshot 边界负责。
 
 Repository 是 SessionService 的存储实现，不是可被 Feature 直接注入的 Service；
 只有 SessionService 能决定什么时候写入消息、什么时候发出 lifecycle/flush Hook。
@@ -93,7 +94,7 @@ def summarize_last_user_text(messages: list[Msg]) -> str:
 
 
 class SessionRepository:
-    """Session 数据存取唯一入口；调用方不应直接读写 session.json/session.jsonl。"""
+    """Session 数据存取唯一入口；调用方不应直接读写 session.json。"""
 
     def __init__(self, db_path: str | None = None, *, sessions_dir: str | None = None):
         # db_path 仅用于推导 sessions/ 所在的配置目录。
@@ -220,6 +221,7 @@ class SessionRepository:
             content=payload["content"],
             metadata=payload["metadata"],
             created_at=msg.created_at,
+            seq=int(payload.get("seq", -1)),
             token=payload.get("token"),
             finished_at=msg.finished_at,
             finished_reason=payload.get("finished_reason"),
@@ -512,21 +514,12 @@ class SessionRepository:
             entry["latest_at"] = max(entry["latest_at"], updated)
         return sorted(grouped.values(), key=lambda e: e["latest_at"], reverse=True)
 
-    # ============================================================
-    # Message（Msg 快照）
-    # ============================================================
-
-    # ============================================================
-    # 消息事实由 SessionLog + session.jsonl 承载（PRD-F43）。
-    # 本 Repository 不保存消息；派生读取统一走 SessionService。
-    # ============================================================
-
     def session_dir(self, session_id: str) -> Path:
-        """事件日志所在的会话目录（session.jsonl 与 session.json 同目录）。"""
+        """Session Snapshot 所在目录。"""
         return self._store.session_dir(session_id)
 
     async def set_last_user_text(self, session_id: str, text: str) -> None:
-        """维护反规范化预览字段（SessionService 在 user/message 事件后调用）。"""
+        """维护预览字段，同时保留同一文件中的 Msg Snapshot。"""
         async with self._store.lock_for(session_id):
             state = self._states.get(session_id)
             if state is None:

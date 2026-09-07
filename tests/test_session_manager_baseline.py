@@ -45,18 +45,13 @@ async def _wait_next_ms(after_ms: int) -> int:
 
 
 async def _wait_log_flushed(manager: SessionManager, sid: str, timeout: float = 5.0) -> None:
-    """等待 write-behind 批窗口（默认 200ms）把事件物化为 session.jsonl。
-
-    已知 src 限制（不修 src，记录于报告）：WriteBehindCoordinator.flush() 的
-    空队列快速路径只 yield 一次，不会等待 flusher 正在聚合的 in-flight 批；
-    close() 随即 cancel flusher，批窗口内事件丢失。重启恢复类测试必须等
-    窗口自然过期后数据才在磁盘上。
-    """
-    path = manager.session_dir(sid) / "session.jsonl"
+    """等待 Snapshot checkpoint 完成。"""
+    await manager.flush_log(sid)
+    path = manager.session_dir(sid) / "session.json"
     deadline = time.monotonic() + timeout
     while not path.exists():
         if time.monotonic() > deadline:
-            raise AssertionError("write-behind 未在超时内落盘 session.jsonl")
+            raise AssertionError("Snapshot 未在超时内落盘 session.json")
         await asyncio.sleep(0.05)
 
 
@@ -168,7 +163,7 @@ async def test_delete_session_removes_messages(manager):
     assert await manager.get_session(sid) is None
     assert await manager.get_messages_by_session(sid) == []
     assert await manager.get_session_metadata(sid) == {}
-    # 事件日志随会话目录一起删除（session.json + session.jsonl）
+    # Session Snapshot 随会话目录一起删除（单一 session.json）
     assert not manager.session_dir(sid).exists()
 
 
@@ -406,10 +401,10 @@ async def test_messages_snapshot_includes_inflight_chunks_and_matching_cursor(ma
         message_id="m-inflight",
     )
 
-    messages, has_more, last_seq = await manager.get_messages_snapshot(sid)
+    messages, has_more, seq = await manager.get_messages_snapshot(sid)
 
     assert has_more is False
-    assert last_seq == (await manager.log(sid)).last_seq
+    assert seq == (await manager.log(sid)).seq
     assistant = next(message for message in messages if message["role"] == "assistant")
     assert [block["text"] for block in assistant["content"] if block["type"] == "text"] == [
         "流式回答"
@@ -617,8 +612,7 @@ async def test_state_survives_reinit(tmp_path):
         sid, request_id="r1", content=[{"type": "text", "text": "记住我"}]
     )
     await mgr.update_session_metadata(sid, "plan", {"a": 1})
-    # 事件经 write-behind 落盘；批窗口内 close 会丢事件（见
-    # _wait_log_flushed 注释），必须等 session.jsonl 物化后再重启。
+    # Snapshot checkpoint 成功后再重启。
     await _wait_log_flushed(mgr, sid)
     await mgr.close()
 

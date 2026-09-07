@@ -1,7 +1,6 @@
-"""fork_session 行为测试（事件日志整份拷贝，PRD-F43）。
+"""fork_session 行为测试（Msg Snapshot 深拷贝，PRD-F44）。
 
-fork 完整拷贝事件日志（session.json + session.jsonl）；message_id /
-request_id 原样保留（不存在跨 session Msg.id 全局索引）。
+fork 完整拷贝 Msg Snapshot；message_id / request_id 原样保留。
 
 锁定的对外语义与关键不变量：
 - 事件日志全量克隆：派生 messages 与父逐条一致（id/内容/顺序/created_at/metadata）
@@ -19,7 +18,6 @@ from ftre_inbox.protocol import InboundMessage
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
 
-from ftre.services.session.persistence.jsonl import write_event_log_atomic
 from ftre.services.session.service import SessionService as SessionManager
 
 
@@ -60,8 +58,8 @@ async def _seed_parent(manager, sid, n_turns=3, *, tag="seed"):
 
 
 @pytest.mark.asyncio
-async def test_fork_copies_event_log_and_stays_independent(manager):
-    """fork 完整拷贝事件日志（message_id 不重生成），且与父相互独立。"""
+async def test_fork_copies_snapshot_and_stays_independent(manager):
+    """fork 完整拷贝 Msg Snapshot（message_id 不重生成），且与父相互独立。"""
     parent = await manager.create_session("ws", title="parent", workspace="E:\\x")
     await _seed_parent(manager, parent, n_turns=3)
     parent_msgs = await manager.get_messages_by_session(parent)
@@ -227,34 +225,22 @@ async def test_fork_after_parent_deleted_raises(manager):
 
 @pytest.mark.asyncio
 async def test_fork_repairs_unloaded_parent_before_copying(manager):
-    """未加载父会话也必须先 repair，fork 不能复制悬空 active turn。"""
+    """未加载的旧会话 fork 时先迁移 Snapshot，不能复制悬空流式 chunk。"""
     parent = await manager.create_session("ws", title="open")
-    write_event_log_atomic(
-        manager.session_dir(parent),
-        [
-            {
-                "type": "turn/start",
-                "seq": 0,
-                "time": 1,
-                "message_id": None,
-                "data": {"turn_id": "t1", "request_id": "r1", "trigger": "user"},
-            },
-            {
-                "type": "assistant/chunk",
-                "seq": 1,
-                "time": 2,
-                "message_id": "m1",
-                "data": {"kind": "text", "delta": "partial"},
-            },
-        ],
+    legacy = manager.session_dir(parent) / "session.jsonl"
+    legacy.write_text(
+        '{"v": 1, "format": "ftre-session-log"}\n'
+        '{"type":"turn/start","seq":0,"time":1,"message_id":null,"data":{"turn_id":"t1","request_id":"r1","trigger":"user"}}\n'
+        '{"type":"assistant/chunk","seq":1,"time":2,"message_id":"m1","data":{"kind":"text","delta":"partial"}}\n',
+        encoding="utf-8",
     )
 
     result = await manager.fork_session(parent)
 
-    parent_events = list((await manager.log(parent)).events)
-    fork_events = list((await manager.log(result.fork_session_id)).events)
-    assert parent_events[-1]["type"] == "turn/end"
-    assert parent_events[-1]["data"]["reason"] == "crashed"
-    assert [event["type"] for event in fork_events] == [
-        event["type"] for event in parent_events
+    parent_messages = await manager.get_messages_by_session(parent)
+    fork_messages = await manager.get_messages_by_session(result.fork_session_id)
+    assert parent_messages[-1]["finished_reason"] == "interrupted"
+    assert [message["content"] for message in fork_messages] == [
+        message["content"] for message in parent_messages
     ]
+    assert not legacy.exists()

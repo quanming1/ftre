@@ -50,12 +50,8 @@ def test_persisted_msg_converts_without_event_replay():
 
 
 @pytest.mark.asyncio
-async def test_state_json_stores_msg_without_event_fields(tmp_path):
-    """session.json 只存元信息；消息事实是 session.jsonl 事件（whole-value）。"""
-    import asyncio
-
-    db_path = tmp_path / "sessions.db"
-    manager = SessionManager(str(db_path))
+async def test_session_json_stores_complete_msg_snapshot(tmp_path):
+    manager = SessionManager(str(tmp_path / "sessions.db"), snapshot_interval_ms=20)
     await manager.init()
     session_id = await manager.create_session("ws")
     await manager.append_event(
@@ -68,35 +64,14 @@ async def test_state_json_stores_msg_without_event_fields(tmp_path):
         },
         message_id="reply-1",
     )
-    # 等待 write-behind 批窗口（200ms）把事件物化为 session.jsonl
-    jsonl_path = tmp_path / "sessions" / session_id / "session.jsonl"
-    for _ in range(100):
-        if jsonl_path.exists():
-            break
-        await asyncio.sleep(0.05)
-    else:
-        raise AssertionError("write-behind 未在超时内落盘 session.jsonl")
+    await manager.flush_log(session_id)
     await manager.close()
 
-    meta_path = tmp_path / "sessions" / session_id / "session.json"
-    payload = json.loads(meta_path.read_text(encoding="utf-8"))
-
-    # 元信息与消息事实分栏持久化；session.json 无 messages
-    assert set(payload) == {"schema_version", "session", "metadata"}
-    assert payload["schema_version"] == 2
-
-    # session.jsonl：header + whole-value 事件，不含流式 Event 字段
-    lines = [ln for ln in jsonl_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert json.loads(lines[0]) == {"v": 1, "format": "ftre-session-log"}
-    assert len(lines) == 2
-    event = json.loads(lines[1])
-    assert event["type"] == "assistant/message"
-    assert event["seq"] == 0
-    assert event["message_id"] == "reply-1"
-    stored = event["data"]["message"]
-    assert stored["role"] == "assistant"
-    assert '"hello"' in json.dumps(stored["content"], ensure_ascii=False)
-    assert "TEXT_BLOCK_DELTA" not in "\n".join(lines)
-    assert "reply_id" not in "\n".join(lines)
-    # 不再创建 SQLite 库
-    assert not db_path.exists()
+    directory = tmp_path / "sessions" / session_id
+    payload = json.loads((directory / "session.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 5
+    assert payload["messages"][0]["id"] == "reply-1"
+    assert payload["messages"][0]["content"][0]["text"] == "hello"
+    assert not (directory / "session.jsonl").exists()
+    assert "assistant/chunk" not in json.dumps(payload, ensure_ascii=False)
+    assert not (tmp_path / "sessions.db").exists()

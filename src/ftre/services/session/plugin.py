@@ -18,6 +18,7 @@ async def apply(ctx: Context, config=None):
         service = SessionService(
             sessions_dir=options.get("sessions_dir"),
             hook_runtime=ctx.hook_runtime,
+            snapshot_interval_ms=int(options.get("snapshot_interval_ms", 500)),
         )
         # 唯一帧出口：SessionLog 事件 → message_bus.publish_frame（session/event）
         service.set_frame_publisher(ctx.message_bus.publish_frame)

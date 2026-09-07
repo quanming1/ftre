@@ -1,7 +1,7 @@
-"""JsonStateStore 文件安全测试（session.json 元信息存储，PRD-F43）。
+"""JsonStateStore 文件安全测试（session.json Snapshot，PRD-F44）。
 
-session.json 存 SessionMetaFile（schema_version=2，无 messages——消息事实
-在 session.jsonl 事件日志）；schema_version 不匹配的文件按损坏隔离。
+session.json 存 SessionMetaFile（schema_version=5，包含 Msg Snapshot）；schema_version
+不匹配的文件按损坏隔离。
 
 验收标准（语义不变）：
 - 模拟写入失败后旧 session.json 保持完整；
@@ -78,11 +78,10 @@ async def test_write_and_reload_recovers_state(store):
     # 文件可读（人类可读 JSON），目录名即 session_id
     raw = json.loads(store.state_path("ws_sess_1").read_text(encoding="utf-8"))
     assert set(raw) == {
-        "schema_version",
-        "session",
-        "metadata",
+        "schema_version", "session", "metadata", "seq",
+        "messages", "requests", "extensions",
     }
-    assert raw["schema_version"] == 2
+    assert raw["schema_version"] == 5
     assert raw["session"]["title"] == "会话标题"
     assert (store.root / "ws_sess_1" / "session.json").exists()
 

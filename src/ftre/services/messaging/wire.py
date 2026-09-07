@@ -1,6 +1,6 @@
-"""下行 Wire 帧契约——PRD-F41 §4.4（6 帧）唯一实现。
+"""下行 Wire 帧契约——F41/F44 唯一实现。
 
-帧信封：{v, session_id, type, payload}；无帧级 seq（事件帧内 seq 为权威，
+帧信封：{v, session_id, type, payload}；无帧级 seq（session 帧内 seq 为权威，
 queue/projection 各自携带 revision/seq）。rpc 帧不经 bus 广播，由 WS Channel
 对发起连接直回。
 
@@ -32,10 +32,13 @@ class SessionEventFramePayload(BaseModel):
 
 
 class SessionSubscribedPayload(BaseModel):
-    """attach 基线锚点：客户端比对本地 lastSeq 决定是否 tail-page 补拉。"""
+    """attach 响应：返回基线 seq 之后尚未折叠为 Msg 的 Event。"""
     model_config = ConfigDict(extra="allow")
-    last_seq: int = -1
+    seq: int = -1
+    events: list[dict[str, Any]] = Field(default_factory=list)
     status: str = "idle"
+    has_more: bool = False
+    resync_required: bool = False
 
 
 class SessionProjectionPayload(BaseModel):
@@ -63,7 +66,7 @@ class RpcError(BaseModel):
 
 
 class RpcPayload(BaseModel):
-    """上行操作结算（prompt/updateQueue → queue 快照或 error；cancel → accepted）。"""
+    """上行操作结算（prompt/updateQueue/resume → queue 快照或 error；cancel → accepted）。"""
     model_config = ConfigDict(extra="allow")
     request_id: str
     ok: bool
@@ -80,7 +83,7 @@ class SessionEventFrame(FrameBase):
 
 
 class SessionSubscribedFrame(FrameBase):
-    """attach 基线锚点：客户端比对本地 lastSeq 决定是否 tail-page 补拉。"""
+    """attach 响应：事件数组和当前 Session seq 以同一帧返回。"""
     type: Literal["session/subscribed"] = "session/subscribed"
     payload: SessionSubscribedPayload
 
@@ -104,7 +107,7 @@ class SessionMaintenanceFrame(FrameBase):
 
 
 class RpcFrame(FrameBase):
-    """上行操作结算（prompt/updateQueue → queue 快照或 error；cancel → accepted）。
+    """上行操作结算（prompt/updateQueue/resume → queue 快照或 error；cancel → accepted）。
 
     payload 运行时为 dict 直通（value/error 缺省时不上 wire，保持既有字节
     形状）；``RpcPayload``/``RpcError`` 是 TS 生成用的契约模型。

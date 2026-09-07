@@ -378,6 +378,7 @@ class AgentLoop:
                             request_id=message.request_id,
                             status=(outcome.status if "outcome" in locals() else "cancelled"),
                             cancellation=cancellation,
+                            paused=bool(getattr(outcome, "paused", False)) if "outcome" in locals() else False,
                             channel_id=message.channel_id,
                             config=config,
                             set_maintenance=self._set_maintenance_status(session_id),
@@ -544,7 +545,8 @@ class AgentLoop:
     ) -> None:
         """把 Runtime 产出的会话事件提交进 SessionLog（唯一出口）。
 
-        SessionLog 的订阅方（write-behind / 帧转发）各自承担持久化与广播；
+        SessionService 的订阅方负责 live Event 转发，Snapshot checkpoint 由
+        SessionService 统一调度；Runtime 不知道磁盘格式，也不在每次调用前强制写盘；
         stream 队列（task 工具进程内消费）在此一并投递。
         """
         queue = getattr(self, "_stream_queues", {}).get(session_id)
@@ -597,6 +599,7 @@ class AgentLoop:
         turn_id = f"confirm_{uuid.uuid4().hex[:12]}"
         cancellation = asyncio.Event()
         config, profile = await self._executor.resolve_inbound_config(inbound, turn_id=turn_id)
+        outcome = None
         task = asyncio.create_task(
             self._executor.execute(
                 inbound,
@@ -611,12 +614,35 @@ class AgentLoop:
         self._direct_tasks[session_id] = task
         self._direct_signals[session_id] = cancellation
         try:
-            return await task
+            outcome = await task
+            return outcome
         except asyncio.CancelledError:
-            return AgentRunResult(session_id=session_id, turn_id=turn_id, status="cancelled")
+            outcome = AgentRunResult(session_id=session_id, turn_id=turn_id, status="cancelled")
+            return outcome
         finally:
             self._direct_tasks.pop(session_id, None)
             self._direct_signals.pop(session_id, None)
+            try:
+                final_agent_id = str(metadata_values.get("agent_id") or "default")
+                record = self.agent_registry.ensure(final_agent_id)
+                await self._dispatch_agent_hook(
+                    AGENT_AFTER_RUN_SPEC,
+                    AfterRunPayload(
+                        agent=AgentSubject(final_agent_id, record.identity),
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        request_id=inbound.request_id,
+                        status=(outcome.status if outcome is not None else "cancelled"),
+                        cancellation=cancellation,
+                        paused=bool(getattr(outcome, "paused", False)) if outcome is not None else False,
+                        channel_id=channel_id,
+                        config=config,
+                        set_maintenance=self._set_maintenance_status(session_id),
+                    ),
+                    agent_id=final_agent_id,
+                )
+            except Exception:
+                logger.exception("[agent-loop] confirmation agent/after-run failed session=%s", session_id)
 
     def _set_maintenance_status(self, session_id: str):
         """Return the callback used by after-run maintenance Hooks.

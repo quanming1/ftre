@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -150,14 +149,6 @@ class ActingExecutor:
     ) -> AsyncGenerator[Any, None]:
         """并发执行一批 tool_call 并成组写入结果、产出事件。"""
         message_id = self.state.message_id or self.state.reply_id
-        session_id = str(self.state.runtime_context.get("session_id") or "")
-
-        # checkpoint：工具执行前强制 flush 事件日志（PRD-F43 FR5）
-        log_flush = self.state.runtime_context.get("log_flush")
-        if callable(log_flush) and tool_calls:
-            flushed = log_flush(session_id)
-            if inspect.isawaitable(flushed):
-                await flushed
 
         # ── 阶段 1：spawn 所有工具任务 ──
         tool_tasks: dict[str, asyncio.Task] = {}

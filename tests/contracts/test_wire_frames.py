@@ -27,7 +27,7 @@ FRAMES = [
         {"event": {"type": "turn/start", "seq": 0, "time": 1, "message_id": None, "data": {"turn_id": "t1"}}},
         "session/event",
     ),
-    (SessionSubscribedFrame, {"last_seq": 7, "status": "idle"}, "session/subscribed"),
+    (SessionSubscribedFrame, {"seq": 7, "events": [], "status": "idle", "has_more": False, "resync_required": False}, "session/subscribed"),
     (SessionQueueFrame, {"revision": 3, "items": []}, "session/queue"),
     (SessionProjectionFrame, {"key": "token_usage", "value": {"total_tokens": 1}, "seq": 12}, "session/projection"),
     (SessionMaintenanceFrame, {"name": "command_message", "value": {"content": "已执行 /compact", "level": "info", "request_id": "r1"}}, "session/maintenance"),
@@ -50,7 +50,7 @@ def test_frame_rejects_extra_fields():
 
 def test_frame_version_is_frozen():
     with pytest.raises(ValidationError):
-        SessionSubscribedFrame(v=2, session_id="s", payload={"last_seq": 0})
+        SessionSubscribedFrame(v=2, session_id="s", payload={"seq": 0, "events": []})
 
 
 # ── 双投 byte-identical（PRD-F41 FR5 / AC5；F43 AC8）─────────────────

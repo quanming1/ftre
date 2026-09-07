@@ -24,7 +24,6 @@ INBOX_ERROR = "inbox/error"
 INBOX_FAILED = "inbox/failed"
 INBOX_DISCARDED = "inbox/discarded"
 INBOX_CHANGED = "inbox/changed"
-INBOX_STATUS_CHANGED = "inbox/status-changed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,14 +52,6 @@ class InboxChangedPayload:
     """队列事实已持久化，可供协议适配器读取最新权威快照。"""
 
     session_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class InboxStatusPayload:
-    """Inbox 自有阻塞/空闲状态变化，不混入 queue snapshot。"""
-
-    session_id: str
-    status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,17 +241,6 @@ INBOX_DISCARDED_SPEC = HookSpec(
     default=_observe,
     scope=HookScope.GLOBAL,
 )
-INBOX_STATUS_CHANGED_SPEC = HookSpec(
-    INBOX_STATUS_CHANGED,
-    "inbox",
-    HookMode.PARALLEL,
-    failure_policy=HookFailurePolicy.OBSERVE,
-    payload_type=InboxStatusPayload,
-    result_type=type(None),
-    default=lambda _payload: None,
-    scope=HookScope.GLOBAL,
-)
-
 __all__ = [
     "INBOX_ADMITTED",
     "INBOX_ADMITTED_SPEC",
@@ -282,8 +262,6 @@ __all__ = [
     "INBOX_ERROR_SPEC",
     "INBOX_FAILED",
     "INBOX_FAILED_SPEC",
-    "INBOX_STATUS_CHANGED",
-    "INBOX_STATUS_CHANGED_SPEC",
     "AllowAdmission",
     "BeforeAdmissionPayload",
     "BeforeClaimPayload",
@@ -296,7 +274,6 @@ __all__ = [
     "InboxDiscardedPayload",
     "InboxErrorPayload",
     "InboxFailedPayload",
-    "InboxStatusPayload",
     "RejectAdmission",
     "RejectClaim",
 ]

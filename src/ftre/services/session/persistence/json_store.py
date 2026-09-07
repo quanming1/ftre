@@ -1,4 +1,4 @@
-"""Session 元信息 JSON 文件存储（设计文档 §5 / §9 / §10）。
+"""Session Snapshot JSON 文件存储（PRD-F44）。
 
 磁盘结构：
 
@@ -232,7 +232,7 @@ class JsonStateStore:
         return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
 
     async def delete(self, session_id: str) -> bool:
-        """删除整个 Session 目录（session.json + session.jsonl 等）；不存在返回 False。"""
+        """删除整个 Session 目录（当前正式文件为 session.json）。"""
         path = self.state_path(session_id)  # 越界时抛 ValueError
 
         def _remove() -> bool:

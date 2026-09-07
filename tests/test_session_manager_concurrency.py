@@ -58,16 +58,13 @@ async def _append_compact(manager, sid, summary_text, through_message_id, messag
 
 
 async def _wait_log_flushed(manager, sid, timeout: float = 5.0) -> None:
-    """等待 write-behind 批窗口（200ms）把事件物化为 session.jsonl。
-
-    已知 src 限制：flush()/close() 不等待 in-flight 批（详见
-    tests/test_session_manager_baseline.py 同名 helper 注释）。
-    """
-    path = manager.session_dir(sid) / "session.jsonl"
+    """等待 Msg Snapshot checkpoint 写入 session.json。"""
+    await manager.flush_log(sid)
+    path = manager.session_dir(sid) / "session.json"
     deadline = time.monotonic() + timeout
     while not path.exists():
         if time.monotonic() > deadline:
-            raise AssertionError("write-behind 未在超时内落盘 session.jsonl")
+            raise AssertionError("Snapshot 未在超时内落盘 session.json")
         await asyncio.sleep(0.05)
 
 
@@ -189,15 +186,8 @@ async def test_state_json_human_readable(manager, tmp_path):
     payload = json.loads(meta_text)
     assert payload["session"]["id"] == sid
     assert payload["session"]["title"] == "可读性"
-    # session.json 只存元信息，消息事实在 session.jsonl
-    assert "messages" not in payload
-
-    jsonl_path = files[0].parent / "session.jsonl"
-    log_text = jsonl_path.read_text(encoding="utf-8")
-    lines = [line for line in log_text.splitlines() if line.strip()]
-    assert json.loads(lines[0]) == {"v": 1, "format": "ftre-session-log"}
-    events = [json.loads(line) for line in lines[1:]]
-    assert events[0]["type"] == "user/message"
-    assert "直接阅读我" in json.dumps(events[0]["data"]["content"], ensure_ascii=False)
-    # 无流式 Event 名称混入
-    assert "TEXT_BLOCK_DELTA" not in meta_text + log_text
+    assert payload["schema_version"] == 5
+    assert "messages" in payload
+    assert "直接阅读我" in json.dumps(payload["messages"], ensure_ascii=False)
+    assert "TEXT_BLOCK_DELTA" not in meta_text
+    assert not (files[0].parent / "session.jsonl").exists()

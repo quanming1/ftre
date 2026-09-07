@@ -1,4 +1,9 @@
-# PRD-F43 服务端会话事件管道（v5，SessionLog 存储与 Token 修订）
+# PRD-F43 服务端会话事件管道（v5，历史档案）
+
+> 本文是 F43 的历史实现记录：其中 JSONL/chunk-row/repair 持久化已被
+> [PRD-F44](PRD-F44-session-snapshot-protocol.md) 的单文件 Msg Snapshot 替代；
+> EventLog、derive、Token 作用域等运行时原则仍作为 F44 的输入。以下 FR 和文件树
+> 仅用于追溯，不得恢复已删除的生产路径。
 
 > 状态生命周期：草稿 → 评审 → approved（定稿）→ 开发中 → 已验收
 > **v4 已完成；本版为 v5 增量修订**：SessionProjection 及其继任方案（fold 返回值/ProjectionOutcome）
@@ -12,7 +17,7 @@
 |---|---|
 | 阶段 | F43 |
 | 名称 | 服务端会话事件管道（SessionLog / 持久化 / 恢复 / 派生） |
-| 状态 | 开发中（缺陷修复回归） |
+| 状态 | 已归档（持久化由 F44 接管） |
 | 创建日期 | 2026-09-04 |
 | 定稿日期 | 2026-09-04 |
 | 验收日期 | 2026-09-04 |

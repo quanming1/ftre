@@ -147,10 +147,10 @@ AgentLoop 不再拥有 Command/Inbox 的业务分流：
 
 - Command 必须在接入裁决层通过 Inject 的 CommandService 旁路执行；普通输入由 `ftre-inbox`
   持久接纳后才交给 AgentService。
-- 不同 Session 可并行；同一 Session 同时最多一个 active turn；队列 worker 由 `ftre-inbox` 独立拥有。
+- 不同 Session 可并行；同一 Session 同时最多一个 active turn；队列只在明确的 Agent Hook 边界领取，不由 Inbox 自主循环。
 - `ftre-inbox` 的 `next-turn`/`next-step`、pending、容量和恢复不进入 AgentService；`messages` 是聊天历史，
   `CompletionRegistry` 仅保存进程内等待。
-- Channel 负责接入与协议，EventBus 只负责传输，`ftre-inbox` 负责 admission、队列串行化和
+- Channel 负责接入与协议，EventBus 只负责传输，`ftre-inbox` 负责 admission、队列持久化和
   claim，AgentService 负责 active Turn。默认 Composition 将 Inbox 声明为 required；若嵌入式
   Host 自定义 Composition 不装载它，启动应明确失败或由接入层返回 capability error，不能回退旧 Lane。
 

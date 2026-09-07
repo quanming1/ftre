@@ -29,7 +29,7 @@ async def test_prompt_command_text_is_forwarded_to_command_plane():
     async def wire_snapshot(session_id):
         return {"session_id": session_id, "revision": 0, "items": []}
 
-    channel = WebSocketChannel(EventBus(), inbox_provider=SimpleNamespace(wire_snapshot=wire_snapshot))
+    channel = WebSocketChannel(EventBus(), snapshot_provider=wire_snapshot)
     ws = FakeWebSocket()
     received = asyncio.create_task(channel._on_message(
         json.dumps({

@@ -1906,10 +1906,12 @@ stages:
             status: in_progress
       - id: F43
         title: 服务端会话事件管道与持久化
-        status: in_progress
+        status: done
         date: 2026-09-04
         prd: docs/prd/PRD-F43-server-event-pipeline.md
-        prd_status: 开发中（缺陷修复回归）
+        prd_status: 已完成的历史实现；持久化部分由 F44 替代
+        superseded_by: F44
+        superseded_scope: session.jsonl、chunk_rows、repair 和跨进程 seq 恢复
         depends_on:
           - F41
           - F42
@@ -1938,4 +1940,45 @@ stages:
             status: done
           - id: F43.4
             title: 恢复、fork 与生成物收尾审计
-            status: in_progress
+            status: done
+      - id: F44
+        title: 会话快照协议与流式消息持久化收敛
+        status: done
+        date: 2026-09-07
+        prd: docs/prd/PRD-F44-session-snapshot-protocol.md
+        prd_status: 已验收：统一 seq attach 恢复
+        depends_on:
+          - F41
+          - F42
+          - F43
+        paired_stage: E:\\binn\\ftre-desktop
+        implementation_boundary: SessionService/SessionLog 的持久化与恢复、统一 seq attach wire 帧和客户端 hydrate；保留 live Event 语义，不修改 Inbox/Agent/LLM 业务策略
+        modules:
+          - src/ftre/services/session/entity/state.py
+          - src/ftre/services/session/persistence/snapshot.py
+          - src/ftre/services/session/persistence/repository.py
+          - src/ftre/services/session/persistence/json_store.py
+          - src/ftre/services/session/service.py
+          - src/ftre/services/session/router.py
+          - src/ftre/services/messaging/wire.py
+          - src/ftre/plugins/builtin/channels/websocket/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/stores/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/services/
+          - tests/
+        acceptance: 每个 Session 目录仅有 session.json；chunk 不独立持久化；旧 JSONL 可一次迁移；HTTP Msg 基线、统一 seq、attach Event[] 和实时事件折叠后消息、工具、压缩、权限、插入用户消息和回滚内容一致；Gateway 重启后 seq 不归零；后端、客户端、Ruff、typecheck 和 portable 包启动健康检查均通过
+        tasks:
+          - id: F44.1
+            title: schema v5 Snapshot 与原子 checkpoint
+            status: done
+          - id: F44.2
+            title: 旧 JSONL 一次迁移与生产路径清理
+            status: done
+          - id: F44.3
+            title: HTTP Msg 基线、seq attach Event[] 与客户端 hydrate
+            status: done
+          - id: F44.4
+            title: 跨功能回归、审计、打包和启动验收
+            status: done
+          - id: F44.5
+            title: 统一 seq、attach Event[] 与旧恢复路径清理
+            status: done

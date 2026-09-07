@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from cordis import Context
 from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, RejectClaim
+from ftre_inbox.models import QueueItem
 from ftre_inbox.protocol import InboundMessage
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
@@ -38,6 +39,25 @@ class CancellableAgent(FakeAgent):
         return True
 
 
+class FailThenCompleteAgent(FakeAgent):
+    async def run(self, message):
+        self.running.add(message.session_id)
+        self.received.append(message)
+        await asyncio.sleep(0)
+        self.running.remove(message.session_id)
+        self.done.set()
+        if len(self.received) == 1:
+            return {
+                "status": "failed",
+                "error": {
+                    "code": "upstream",
+                    "message": "upstream unavailable",
+                    "retryable": False,
+                },
+            }
+        return {"status": "completed"}
+
+
 class BlockingFirstAgent(FakeAgent):
     def __init__(self):
         super().__init__()
@@ -56,7 +76,7 @@ class BlockingFirstAgent(FakeAgent):
 
 
 @pytest.mark.asyncio
-async def test_followup_starts_worker_and_inject_does_not(tmp_path):
+async def test_followup_dispatches_once_and_inject_waits_for_reasoning_hook(tmp_path):
     agent = FakeAgent()
     service = InboxService(InboxRepository(tmp_path), agent)
     await service.start()
@@ -66,34 +86,31 @@ async def test_followup_starts_worker_and_inject_does_not(tmp_path):
 
     await service.followup(InboundMessage("s1", "r1", "ws", "hello"))
     await asyncio.wait_for(agent.done.wait(), timeout=1)
-    for _ in range(100):
-        if len(agent.received) == 2:
-            break
-        await asyncio.sleep(0.01)
-    assert [message.request_id for message in agent.received] == ["ctx", "r1"] or [
-        message.request_id for message in agent.received
-    ] == ["r1", "ctx"]
+    assert [message.request_id for message in agent.received] == ["r1"]
+    assert [item.request_id for item in (await service.snapshot("s1")).next_step] == ["ctx"]
+    claimed = await service.deliver_next_step_for_reasoning("s1")
+    assert [item.request_id for item in claimed] == ["ctx"]
     await service.close()
 
 
 @pytest.mark.asyncio
-async def test_idle_steer_is_delivered_as_normal_agent_turn(tmp_path):
-    """没有 active Turn 时，steer 也必须被 worker 交付而不能卡在 next-step。"""
+async def test_idle_steer_waits_for_an_active_reasoning_boundary(tmp_path):
+    """idle 时的 steer 不会偷偷启动一个新的 Agent Turn。"""
     agent = FakeAgent()
     service = InboxService(InboxRepository(tmp_path), agent)
     await service.start()
 
     await service.steer(InboundMessage("s1", "steer-idle", "ws", "直接执行"))
-    await asyncio.wait_for(agent.done.wait(), timeout=1)
-
-    assert [message.request_id for message in agent.received] == ["steer-idle"]
-    assert not (await service.snapshot("s1")).has_pending
+    await asyncio.sleep(0.05)
+    assert agent.received == []
+    claimed = await service.deliver_next_step_for_reasoning("s1")
+    assert [item.request_id for item in claimed] == ["steer-idle"]
     await service.close()
 
 
 @pytest.mark.asyncio
 async def test_steer_arriving_during_a_turn_runs_after_that_turn(tmp_path):
-    """没有新的 Reasoning 边界时，pending steer 仍由 Inbox fallback 为下一 Turn。"""
+    """steer 等待 Runtime 的下一次 before-reasoning，不回退为下一 Turn。"""
     agent = BlockingFirstAgent()
     service = InboxService(InboxRepository(tmp_path), agent)
     await service.start()
@@ -104,11 +121,34 @@ async def test_steer_arriving_during_a_turn_runs_after_that_turn(tmp_path):
     assert [item.request_id for item in (await service.snapshot("s1")).next_step] == ["steer-1"]
 
     agent.release.set()
-    for _ in range(100):
-        if len(agent.received) == 2 and not (await service.snapshot("s1")).has_pending:
-            break
-        await asyncio.sleep(0.01)
-    assert [message.request_id for message in agent.received] == ["turn-1", "steer-1"]
+    await asyncio.sleep(0.05)
+    assert [message.request_id for message in agent.received] == ["turn-1"]
+    assert [item.request_id for item in (await service.snapshot("s1")).next_step] == ["steer-1"]
+    claimed = await service.deliver_next_step_for_reasoning("s1")
+    assert [item.request_id for item in claimed] == ["steer-1"]
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_after_run_completed_is_the_only_next_turn_trigger(tmp_path):
+    agent = BlockingFirstAgent()
+    service = InboxService(InboxRepository(tmp_path), agent)
+    await service.followup(InboundMessage("s1", "turn-1", "ws", "先执行"))
+    await asyncio.wait_for(agent.started.wait(), timeout=1)
+    second = await service.followup(InboundMessage("s1", "turn-2", "ws", "排队"))
+
+    agent.release.set()
+    await asyncio.sleep(0.05)
+    assert [message.request_id for message in agent.received] == ["turn-1"]
+    assert (await service.snapshot("s1")).next_turn[0].request_id == "turn-2"
+
+    service.handle_after_run("s1", "cancelled")
+    await asyncio.sleep(0.05)
+    assert [message.request_id for message in agent.received] == ["turn-1"]
+
+    service.handle_after_run("s1", "completed")
+    await asyncio.wait_for(service.wait("s1", second.request_id), timeout=1)
+    assert [message.request_id for message in agent.received] == ["turn-1", "turn-2"]
     await service.close()
 
 
@@ -120,14 +160,10 @@ async def test_steering_is_isolated_between_sessions(tmp_path):
 
     await service.steer(InboundMessage("s1", "step-1", "ws", "会话一"))
     await service.steer(InboundMessage("s2", "step-2", "ws", "会话二"))
-    for _ in range(100):
-        if len(agent.received) == 2:
-            break
-        await asyncio.sleep(0.01)
-
-    assert {message.session_id for message in agent.received} == {"s1", "s2"}
-    assert not (await service.snapshot("s1")).has_pending
-    assert not (await service.snapshot("s2")).has_pending
+    await asyncio.sleep(0.05)
+    assert agent.received == []
+    assert [item.request_id for item in (await service.snapshot("s1")).next_step] == ["step-1"]
+    assert [item.request_id for item in (await service.snapshot("s2")).next_step] == ["step-2"]
     await service.close()
 
 
@@ -232,8 +268,8 @@ async def test_before_claim_failure_keeps_entire_batch(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_claim_failure_blocks_worker_without_unhandled_task(tmp_path):
-    """持久化 claim 失败时 pending 保留，worker 进入 blocked 而不泄漏异常。"""
+async def test_claim_failure_keeps_pending_without_inbox_lock(tmp_path):
+    """持久化 claim 失败时 pending 保留，但 Inbox 不建立 blocked 状态。"""
     agent = FakeAgent()
     repository = InboxRepository(tmp_path)
 
@@ -243,14 +279,47 @@ async def test_claim_failure_blocks_worker_without_unhandled_task(tmp_path):
     repository.claim = fail_claim
     service = InboxService(repository, agent)
     await service.followup(InboundMessage("s1", "r1", "ws", "hello"))
-    for _ in range(100):
-        if service.status("s1") == "blocked":
-            break
-        await asyncio.sleep(0.01)
-    assert service.status("s1") == "blocked"
+    await asyncio.sleep(0.05)
     assert [item.request_id for item in (await service.snapshot("s1")).pending] == ["r1"]
-    worker = service._workers.get("s1")
-    assert worker is None or worker.done()
+    assert service._dispatch_tasks.get("s1") is None
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_new_followup_can_start_after_agent_failure_without_global_block(tmp_path):
+    """失败不会冻结 Inbox；新的明确 followup 可以开启新的 Agent Run。"""
+    agent = FailThenCompleteAgent()
+    service = InboxService(InboxRepository(tmp_path), agent)
+    await service.start()
+
+    first = await service.followup(InboundMessage("s1", "r1", "ws", "first"))
+    first_result = await asyncio.wait_for(service.wait("s1", first.request_id), timeout=1)
+    assert first_result["status"] == "failed"
+
+    second = await service.followup(InboundMessage("s1", "r2", "ws", "second"))
+    second_result = await asyncio.wait_for(service.wait("s1", second.request_id), timeout=1)
+    assert second_result["status"] == "completed"
+    assert [message.request_id for message in agent.received] == ["r1", "r2"]
+    assert not (await service.snapshot("s1")).has_pending
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_recovered_pending_queue_waits_for_a_new_lifecycle_trigger(tmp_path):
+    """重启只恢复队列数据，不偷偷再次执行；生命周期 Hook 才启动交付。"""
+    repository = InboxRepository(tmp_path)
+    await repository.admit(QueueItem("r1", 0, "s1", "ws", "恢复后执行"), "next-turn")
+    repository.close()
+
+    agent = FakeAgent()
+    service = InboxService(InboxRepository(tmp_path), agent)
+    await service.start()
+    await asyncio.sleep(0.05)
+
+    assert agent.received == []
+    service.schedule_next_turn("s1")
+    await asyncio.wait_for(agent.done.wait(), timeout=1)
+    assert [message.request_id for message in agent.received] == ["r1"]
     await service.close()
 
 

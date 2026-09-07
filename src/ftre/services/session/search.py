@@ -1,6 +1,6 @@
 """会话元信息搜索——内存态纯函数检索（PRD-F43 检索面收缩）。
 
-消息事实位于 per-session 事件日志（session.jsonl）；会话列表检索
+消息事实位于 per-session session.json Snapshot；会话列表检索
 只扫元信息——title + last_user_text（最后一条真实用户消息的反规范化预览，
 由 SessionService 在 user/message 事件后维护）。正文级检索需要派生全量
 消息，留待后续阶段（索引层）再引入。

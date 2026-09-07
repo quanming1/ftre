@@ -60,6 +60,26 @@ def test_agent_service_contract_is_single_message_execution_boundary() -> None:
     assert "pending" not in source
 
 
+def test_inbox_has_no_autonomous_worker_or_status_gate() -> None:
+    source = (PACKAGE / "src" / "ftre_inbox" / "service.py").read_text(encoding="utf-8")
+    assert "_workers" not in source
+    assert "blocked_reason" not in source
+    assert "on_status_changed" not in source
+    assert "resume_pending" not in source
+    assert "handle_after_run" in source
+
+
+def test_websocket_channel_is_transport_only() -> None:
+    source = (
+        SRC / "plugins" / "builtin" / "channels" / "websocket" / "channel.py"
+    ).read_text(encoding="utf-8")
+    assert "Inbox" not in source
+    assert "SessionQueueFrame" not in source
+    assert "inbox_provider" not in source
+    assert "control_handler" in source
+    assert "baseline_provider" in source
+
+
 def test_queue_wire_contract_has_no_legacy_frame_or_mailbox_alias() -> None:
     """下行帧契约唯一事实源是 messaging/wire.py（PRD-F41 §4.4 六帧）。"""
     wire = (SRC / "services" / "messaging" / "wire.py").read_text(encoding="utf-8")

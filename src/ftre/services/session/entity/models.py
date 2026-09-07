@@ -1,6 +1,6 @@
 """Session 对外数据模型（TypedDict 投影）。
 
-这些是会话持久化结构（session.json + session.jsonl 派生）面向调用方的只读投影形状：
+这些是会话单文件 Snapshot 面向调用方的只读投影形状：
 - SessionModel: 会话元信息（时间戳转为 epoch）
 - MessageModel: 持久化 Msg 快照
 - ExternalSessionModel: 外部平台会话绑定信息
@@ -35,6 +35,7 @@ class MessageModel(TypedDict):
     content: list[dict[str, Any]]
     metadata: dict[str, Any]
     created_at: str
+    seq: int             # 该 Msg 最后一次被 Event 修改的 Session 序号
     token: dict[str, Any] | None
     finished_at: str | None
     finished_reason: str | None

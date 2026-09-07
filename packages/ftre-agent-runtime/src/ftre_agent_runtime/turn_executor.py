@@ -492,8 +492,6 @@ class TurnExecutor:
             "cancellation": turn.cancellation,
             "continuation_count": turn.continuation_count,
             "max_continuations": turn.max_continuations,
-            # checkpoint：LLM 请求前 / 工具执行前的强制 flush（PRD-F43 FR5）
-            "log_flush": getattr(self._sessions, "flush_log", None),
         }
 
     async def _run(self, turn: Turn) -> TurnStatus:

@@ -352,7 +352,6 @@ class ReActRunner:
             "max_iterations", self.agent.max_iterations,
         )
         self.state.start()
-        self._capture_assistant_baseline()
 
         # ── 准备 Tracing 元数据 ──
         # 调用方可通过 runtime_context 传入自定义 trace 元数据，
@@ -386,6 +385,11 @@ class ReActRunner:
             # 列表形式：原样写入 context（含 system 消息等）
             for msg in message:
                 MessageContext.add_raw(self.agent.state.context, msg)
+
+        # 列表输入是 Host 已经组装好的历史上下文，不是本轮新增的
+        # Assistant 输出。必须在回灌完成后记录基线，否则这些历史 Assistant
+        # 会被最终快照收口误判为本轮新增消息，并再次发出 assistant/message。
+        self._capture_assistant_baseline()
 
         # ── 生成稳定 run reply_id 与首个 Assistant message_id ──
         self.state.reply_id = uuid.uuid4().hex[:16]

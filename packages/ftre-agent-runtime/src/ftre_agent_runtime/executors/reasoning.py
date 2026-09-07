@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import time
@@ -126,7 +125,6 @@ class ReasoningExecutor:
         """执行一次 LLM 调用，流式 yield 会话事件，结束后设置 ``self.result``。"""
         message_id = self.state.message_id or self.state.reply_id
         model_name = self.agent.model
-        session_id = str(self.state.runtime_context.get("session_id") or "")
 
         # ── 阶段 1：hint 写入 memory + hint/message 事件 ──────────────────
         if action.hint:
@@ -148,13 +146,6 @@ class ReasoningExecutor:
         # ── 阶段 2：准备 messages + tools ────────────────────────────────
         messages = MessageContext.get_messages(self.agent.state.context, self.agent.system_prompt)
         tools = None if action.force_no_tools else self.agent.tool_view.to_openai_tools() or None
-
-        # checkpoint：LLM 请求前强制 flush 事件日志（PRD-F43 FR5）
-        log_flush = self.state.runtime_context.get("log_flush")
-        if callable(log_flush):
-            flushed = log_flush(session_id)
-            if inspect.isawaitable(flushed):
-                await flushed
 
         max_attempts = 1 + self.agent.max_retries
         turn_start_ts = time.perf_counter()

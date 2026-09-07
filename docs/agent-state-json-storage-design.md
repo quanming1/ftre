@@ -1,6 +1,8 @@
 # FTRE Agent State JSON 持久化设计
 
-> 状态：设计稿，尚未实施  
+> 状态：历史设计稿，已由 [PRD-F44](prd/PRD-F44-session-snapshot-protocol.md) 替代；本文只保留
+> 早期决策背景，不得作为当前 Session 存储实现依据。当前规范是每个 Session 一个
+> `session.json` Msg Snapshot，旧 JSONL 仅通过一次性迁移读取。
 > 目标读者：负责实施 FTRE Session 持久化重构的开发者  
 > 适用仓库：`E:\ftre`，并需联动验证 `E:\binn\ftre-desktop`
 

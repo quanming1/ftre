@@ -1,14 +1,7 @@
-"""SessionService —— Session 业务门面（SessionLog 架构，PRD-F43）。
+"""SessionService —— Session 元信息、Msg 快照和 live Event 的唯一门面。
 
-数据面（PRD-F43）：消息事实的唯一载体是 per-session 事件日志
-``sessions/<sid>/session.jsonl``；本 Service 负责：
-- SessionLog 的装配与懒加载（load + repair 合成关闭事件）；
-- write-behind 持久化协调（WriteBehindCoordinator）；
-- 事件 → session/event 帧转发（转发器由 plugin 注入 publisher）；
-- 读侧派生（derive_messages / derive_context_messages + 缓存）；
-- session.json 元信息 CRUD（委托 Repository，无消息）。
-
-调用方不应直接读写 session.json / session.jsonl，也不应绕过本门面使用 repository。
+SessionLog 只负责当前进程的事件顺序与直播；SnapshotCoordinator 在定时或语义
+边界把完整 Msg 列表原子写入同一个 ``session.json``。调用方不应直接读写磁盘。
 """
 from __future__ import annotations
 
@@ -23,7 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from ftre_agent.message import Msg
-from ftre_agent.session import SessionLog, derive_context_messages, derive_messages
+from ftre_agent.session import (
+    SessionLog,
+    derive_context_messages_from_messages,
+    derive_messages,
+    request_fingerprint,
+)
 from ftre_agent.session.events import (
     AssistantMessageData,
 )
@@ -35,20 +33,25 @@ from ftre.services.session.entity.models import (
     SessionModel,
     StatePageModel,
 )
-from ftre.services.session.entity.state import SessionMetaFile, SessionState
+from ftre.services.session.entity.state import (
+    CURRENT_SCHEMA_VERSION,
+    SessionMetaFile,
+    SessionState,
+)
 from ftre.services.session.hooks import (
     SESSION_CREATED_SPEC,
     SESSION_DISPOSED_SPEC,
     SessionLifecyclePayload,
 )
-from ftre.services.session.persistence.jsonl import (
-    WriteBehindCoordinator,
-    read_event_log,
-    write_event_log_atomic,
-)
 from ftre.services.session.persistence.repository import (
     SessionRepository,
     summarize_last_user_text,
+)
+from ftre.services.session.persistence.snapshot import (
+    SnapshotCoordinator,
+    legacy_log_path,
+    read_legacy_events,
+    repair_legacy_events,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,17 +82,22 @@ class SessionService:
         *,
         sessions_dir: str | None = None,
         hook_runtime: HookRuntime | None = None,
+        snapshot_interval_ms: int = 500,
     ):
         self._repo = SessionRepository(db_path, sessions_dir=sessions_dir)
         self._hook_runtime = hook_runtime
-        # ── 事件日志运行态 ──────────────────────────────
+        # ── 运行态：live Event 与已落盘 Msg 基线 ─────────────
         self._logs: dict[str, SessionLog] = {}
-        self._writer = WriteBehindCoordinator(self._repo.session_dir)
+        self._baseline_messages: dict[str, list[Msg]] = {}
+        self._snapshot = SnapshotCoordinator(
+            self._write_snapshot,
+            interval_ms=snapshot_interval_ms,
+        )
         # 帧发布器（plugin 注入；签名 publish_frame(session_id, channel_id, frame)）
         self._frame_publisher: FramePublisher | None = None
         self._forward_queue: asyncio.Queue[tuple[str, str, dict[str, Any]]] | None = None
         self._forward_task: asyncio.Task | None = None
-        # 读侧派生缓存：session_id → (last_seq, messages)
+        # 读侧派生缓存：session_id → (live_seq, merged messages)
         self._derive_cache: dict[str, tuple[int, list[Msg]]] = {}
         # per-session 日志装配锁（懒加载并发首触去重）
         self._log_locks: dict[str, asyncio.Lock] = {}
@@ -113,7 +121,7 @@ class SessionService:
         queue.put_nowait((session_id, channel_id, event))
 
     async def _forward_loop(self, queue: asyncio.Queue) -> None:
-        """串行转发事件帧（顺序 = 事件序）；turn/end 追加 token_usage 投影帧。"""
+        """串行转发 live Event（顺序 = 当前进程事件序）；turn/end 追加 usage。"""
         while True:
             session_id, channel_id, event = await queue.get()
             try:
@@ -166,6 +174,24 @@ class SessionService:
                     session_id, event.get("seq"),
                 )
 
+    def _on_event(self, session_id: str, channel_id: str, event: dict[str, Any]) -> None:
+        """Event 提交后的唯一运行态 fan-out：直播、缓存失效和 checkpoint。"""
+        self._derive_cache.pop(session_id, None)
+        self._enqueue_forward(session_id, channel_id, event)
+        event_type = event.get("type")
+        self._snapshot.mark_dirty(
+            session_id,
+            immediate=event_type in {
+                "user/message",
+                "assistant/message",
+                "tool/result",
+                "compact/message",
+                "hint/message",
+                "approval/asked",
+                "turn/end",
+            },
+        )
+
     # ============================================================
     # SessionLog 装配 / 懒加载
     # ============================================================
@@ -175,10 +201,10 @@ class SessionService:
         return state.session.channel_id if state is not None else ""
 
     async def log(self, session_id: str) -> SessionLog:
-        """取得（必要时懒加载 + repair）一个会话的事件日志。
+        """取得一个会话的 live EventLog，并加载已落盘的 Msg Snapshot。
 
-        per-session 创建锁：并发首触时保证只有一个协程做 load/装配，
-        其余等待并复用同一实例（避免内存日志实例被覆盖导致事件丢失）。
+        旧 F43 JSONL 只在这里做一次导入：先 derive 成 Msg、原子写入 schema v5，
+        成功后删除旧文件；新运行永远不会从磁盘恢复 chunk Event。
         """
         existing = self._logs.get(session_id)
         if existing is not None:
@@ -191,35 +217,170 @@ class SessionService:
             if existing is not None:
                 return existing
 
-            from ftre.services.session.repair import repair_events
-
             session_dir = self._repo.session_dir(session_id)
-            stored = await asyncio.to_thread(read_event_log, session_dir)
-            repaired = repair_events(stored)
-            if len(repaired) != len(stored):
-                # repair 不是临时投影：如果只把合成 turn/end 放在内存里，
-                # 下一次重启仍会看到同一个未闭合 turn，既重复告警又可能重复收尾。
-                # 在装配 SessionLog 前原子写回，随后 writer cursor 才能从真实磁盘
-                # 前缀继续追加。
-                await asyncio.to_thread(
-                    write_event_log_atomic, session_dir, repaired
+            state = self._repo.get_state(session_id)
+            if state is None:
+                raise ValueError(f"session 不存在: {session_id}")
+
+            baseline = self._load_snapshot_messages(state)
+            legacy_path = legacy_log_path(session_dir)
+            migrated = False
+            if not baseline and legacy_path.exists():
+                stored = await asyncio.to_thread(read_legacy_events, session_dir)
+                repaired = repair_legacy_events(stored)
+                baseline = derive_messages(repaired)
+                migrated = True
+                request_index = self._request_index_from_events(repaired)
+                migrated_state = state.model_copy(
+                    deep=True,
+                    update={
+                        "schema_version": CURRENT_SCHEMA_VERSION,
+                        "seq": int(repaired[-1]["seq"]) if repaired else state.seq,
+                        "messages": [m.model_dump(mode="json") for m in baseline],
+                        "requests": request_index,
+                    },
                 )
-            new_log = SessionLog(session_id)
-            new_log.load(repaired)
+                preview = summarize_last_user_text(baseline)
+                if preview:
+                    migrated_state.session.last_user_text = preview
+                await self._repo.commit(migrated_state)
+                state = migrated_state
+                try:
+                    await asyncio.to_thread(legacy_path.unlink, True)
+                except (FileNotFoundError, OSError):
+                    logger.warning(
+                        "[session-snapshot] legacy JSONL cleanup deferred path=%s",
+                        legacy_path,
+                    )
+
+            self._baseline_messages[session_id] = baseline
+            new_log = SessionLog(session_id, start_seq=int(state.seq) + 1)
             self._logs[session_id] = new_log
-            # write-behind：已加载前缀（包括已原子写回的 repair）视为已持久化。
-            self._writer.attach(session_id, new_log)
-            # 帧转发
             channel_id = self._channel_of(session_id)
             new_log.subscribe(
-                lambda event, sid=session_id, cid=channel_id: self._enqueue_forward(sid, cid, event)
+                lambda event, sid=session_id, cid=channel_id: self._on_event(sid, cid, event)
             )
-            if len(repaired) != len(stored):
+            if migrated:
                 logger.info(
-                    "[session] repair 注入 %d 个合成关闭事件 session=%s",
-                    len(repaired) - len(stored), session_id,
+                    "[session-snapshot] migrated legacy session=%s messages=%d",
+                    session_id,
+                    len(baseline),
                 )
             return new_log
+
+    @staticmethod
+    def _load_snapshot_messages(state: SessionMetaFile) -> list[Msg]:
+        """从 schema v5 文件解析完整 Msg；坏的一条不应吞掉整份会话。"""
+        messages: list[Msg] = []
+        for index, raw in enumerate(state.messages):
+            try:
+                messages.append(Msg.model_validate(raw))
+            except Exception as exc:
+                raise ValueError(
+                    f"session snapshot message[{index}] 无法解析: {exc}"
+                ) from exc
+        return messages
+
+    @staticmethod
+    def _request_index_from_events(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """从旧 Event 构造最小 request 幂等索引。"""
+        index: dict[str, dict[str, Any]] = {}
+        for event in events:
+            type_ = event.get("type")
+            data = event.get("data") or {}
+            if type_ == "user/message":
+                request_id = str(data.get("request_id") or "")
+                if request_id:
+                    index.setdefault(
+                        request_id,
+                        {
+                            "message_id": event.get("message_id") or "",
+                            "run_id": "",
+                            "status": "pending",
+                            "fingerprint": request_fingerprint(data.get("content")),
+                        },
+                    )
+            elif type_ == "turn/start":
+                request_id = str(data.get("request_id") or "")
+                if request_id:
+                    record = index.setdefault(request_id, {})
+                    record.update({"run_id": data.get("turn_id") or "", "status": "running"})
+            elif type_ == "turn/end":
+                request_id = str(data.get("request_id") or "")
+                if request_id:
+                    record = index.setdefault(request_id, {})
+                    outcome = str(data.get("outcome") or "error")
+                    record["status"] = "completed" if outcome == "completed" else "failed"
+        return index
+
+    @staticmethod
+    def _merge_messages(baseline: list[Msg], live: list[Msg]) -> list[Msg]:
+        """将 checkpoint 基线与本进程未落盘的 live fold 合并，按消息 id 替换。"""
+        result = [message.model_copy(deep=True) for message in baseline]
+        positions = {message.id: index for index, message in enumerate(result)}
+        for message in live:
+            copy_message = message.model_copy(deep=True)
+            index = positions.get(copy_message.id)
+            if index is None:
+                positions[copy_message.id] = len(result)
+                result.append(copy_message)
+            else:
+                result[index] = copy_message
+        return result
+
+    async def _write_snapshot(self, session_id: str) -> None:
+        """生成并原子提交一次完整 Msg Snapshot。"""
+        state = self._repo.get_state(session_id)
+        if state is None:
+            return
+        log = self._logs.get(session_id)
+        if log is None:
+            return
+        # 在任何 await 之前捕获同一份事件视图和水位。否则事件在 derive 与
+        # commit 之间追加时，快照可能写入旧 Msg 却声明了新的 seq，客户端
+        # attach 会因此跳过尚未出现在 Msg 中的事件。
+        events = list(log.events)
+        snapshot_seq = log.seq
+        baseline = self._baseline_messages.get(session_id, [])
+        messages = self._merge_messages(baseline, derive_messages(events))
+        event_requests = self._request_index_from_events(events)
+        for message in messages:
+            request_id = str(message.metadata.get("request_id") or "")
+            if request_id:
+                record = event_requests.setdefault(
+                    request_id,
+                    {"message_id": message.id, "run_id": "", "status": "pending"},
+                )
+                record.setdefault("message_id", message.id)
+                record.setdefault(
+                    "fingerprint",
+                    request_fingerprint(
+                        [block.model_dump(mode="json") for block in message.content]
+                    ),
+                )
+        async with self._repo.lock_for(session_id):
+            current = self._repo.get_state(session_id)
+            if current is None:
+                return
+            # 另一个快照已经覆盖了更高水位时，本次旧快照不能回写覆盖它。
+            if int(current.seq) > snapshot_seq:
+                return
+            requests = dict(current.requests)
+            requests.update(event_requests)
+            new_state = current.model_copy(
+                deep=True,
+                update={
+                    "schema_version": CURRENT_SCHEMA_VERSION,
+                    "seq": snapshot_seq,
+                    "messages": [message.model_dump(mode="json") for message in messages],
+                    "requests": requests,
+                },
+            )
+            new_state.session.updated_at = _now_iso()
+            preview = summarize_last_user_text(messages)
+            if preview:
+                new_state.session.last_user_text = preview
+            await self._repo.commit(new_state)
 
     async def append_event(
         self,
@@ -249,7 +410,17 @@ class SessionService:
         保留参数位以兼容调用方；封口语义由 derive fold 的用户边界规则承担。
         """
         del previous_assistant_message_id
+        self._validate_persisted_request(session_id, request_id, content)
+        if self._has_persisted_request(session_id, request_id):
+            # Snapshot 已经记录过该 request；Inbox 仍可继续 claim pending 项，
+            # 但绝不能再追加第二个 user/message 气泡。
+            return None
         log = await self.log(session_id)
+        # legacy JSONL 可能在上面的检查后才完成迁移；再次检查避免重启时
+        # 同一个 request 生成第二条用户消息。
+        self._validate_persisted_request(session_id, request_id, content)
+        if self._has_persisted_request(session_id, request_id):
+            return None
         event = log.append_user_message(
             request_id=request_id, content=content, metadata=metadata
         )
@@ -259,6 +430,42 @@ class SessionService:
         if preview:
             await self._repo.set_last_user_text(session_id, preview)
         return event
+
+    def _has_persisted_request(self, session_id: str, request_id: str) -> bool:
+        if not request_id:
+            return False
+        state = self._repo.get_state(session_id)
+        if state is not None and request_id in state.requests:
+            return True
+        return any(
+            str(message.metadata.get("request_id") or "") == request_id
+            for message in self._baseline_messages.get(session_id, [])
+        )
+
+    def _validate_persisted_request(
+        self, session_id: str, request_id: str, content: list[Any]
+    ) -> None:
+        """跨重启复用 request_id 时拒绝绑定到不同内容。"""
+        if not request_id:
+            return
+        expected = request_fingerprint(content)
+        state = self._repo.get_state(session_id)
+        record = state.requests.get(request_id) if state is not None else None
+        if isinstance(record, dict):
+            stored = record.get("fingerprint")
+            if isinstance(stored, str) and stored and stored != expected:
+                raise ValueError(f"request_id 已绑定不同内容: {request_id}")
+            if isinstance(stored, str) and stored:
+                return
+        for message in self._baseline_messages.get(session_id, []):
+            if str(message.metadata.get("request_id") or "") != request_id:
+                continue
+            actual = request_fingerprint(
+                [block.model_dump(mode="json") for block in message.content]
+            )
+            if actual != expected:
+                raise ValueError(f"request_id 已绑定不同内容: {request_id}")
+            return
 
     async def append_external_message(
         self,
@@ -274,28 +481,43 @@ class SessionService:
         )
 
     async def flush_log(self, session_id: str) -> None:
-        """语义 flush 屏障：强制把该会话积压事件写盘（幂等）。"""
-        await self._writer.flush(session_id)
+        """语义 flush 屏障：强制把该会话的 Msg Snapshot 写盘。"""
+        if session_id in self._logs:
+            self._snapshot.mark_dirty(session_id, immediate=True)
+        await self._snapshot.flush(session_id)
 
-    async def get_events_page(
+    async def events_after(
         self, session_id: str, *, after_seq: int, limit: int = 500
-    ) -> tuple[list[dict[str, Any]], bool]:
-        """tail-page：seq > after_seq 的至多 limit 条事件（内存即权威）。"""
+    ) -> tuple[list[dict[str, Any]], bool, bool, int]:
+        """返回基线之后尚未折叠为 Msg 的事件。
+
+        ``resync_required`` 表示客户端水位早于磁盘快照或领先当前 Session，
+        这时 attach 不能凭空补造旧事件，调用方应重新请求 HTTP /messages。
+        """
+        state = self._repo.get_state(session_id)
+        if state is None:
+            return [], False, True, -1
         log = await self.log(session_id)
-        return log.tail(after_seq, limit)
+        current_seq = log.seq
+        persisted_seq = int(state.seq)
+        if after_seq < persisted_seq or after_seq > current_seq:
+            return [], False, True, current_seq
+        events, has_more = log.tail(after_seq, limit)
+        return events, has_more, False, current_seq
 
     # ============================================================
     # 读侧派生（derive + 缓存）
     # ============================================================
 
     async def derived_messages(self, session_id: str) -> list[Msg]:
-        """全量 transcript（含 hide 消息）；按 last_seq 缓存。"""
+        """全量 transcript（含 hide 消息）：checkpoint 基线 + live Event fold。"""
         log = await self.log(session_id)
         cached = self._derive_cache.get(session_id)
-        if cached is not None and cached[0] == log.last_seq:
+        if cached is not None and cached[0] == log.seq:
             return cached[1]
-        messages = derive_messages(list(log.events))
-        self._derive_cache[session_id] = (log.last_seq, messages)
+        baseline = self._baseline_messages.get(session_id, [])
+        messages = self._merge_messages(baseline, derive_messages(list(log.events)))
+        self._derive_cache[session_id] = (log.seq, messages)
         return messages
 
     async def _records(self, session_id: str) -> list[MessageModel]:
@@ -315,9 +537,9 @@ class SessionService:
         limit_turns: int | None = None,
         before_ts: float | None = None,
     ) -> tuple[list[MessageModel], bool, int]:
-        """返回同一事件快照派生的消息、分页标记和覆盖游标。
+        """返回同一事件快照派生的消息、分页标记和覆盖 seq。
 
-        事件列表和 ``last_seq`` 必须来自同一次内存读取。否则流式事件恰好
+        事件列表和 ``seq`` 必须来自同一次内存读取。否则流式事件恰好
         在两次读取之间追加时，客户端会拿到旧消息和新游标，刷新后就会跳过
         尚未出现在消息列表里的 chunk。
         """
@@ -326,12 +548,13 @@ class SessionService:
 
         log = await self.log(session_id)
         events = list(log.events)
-        snapshot_seq = int(events[-1]["seq"]) if events else -1
+        snapshot_seq = log.seq
         cached = self._derive_cache.get(session_id)
         if cached is not None and cached[0] == snapshot_seq:
             derived = cached[1]
         else:
-            derived = derive_messages(events)
+            baseline = self._baseline_messages.get(session_id, [])
+            derived = self._merge_messages(baseline, derive_messages(events))
             self._derive_cache[session_id] = (snapshot_seq, derived)
 
         records = [self._repo.to_message_model(message, session_id) for message in derived]
@@ -342,18 +565,20 @@ class SessionService:
         )
         return page, has_more, snapshot_seq
 
-    async def last_seq(self, session_id: str) -> int:
+    async def seq(self, session_id: str) -> int:
         if self._repo.get_state(session_id) is None:
             return -1
         log = await self.log(session_id)
-        return log.last_seq
+        return log.seq
 
     async def get_context_messages(self, session_id: str) -> list[MessageModel]:
         """返回给 LLM 使用的上下文消息：最后 summary compact 锚点 + tail。"""
         if self._repo.get_state(session_id) is None:
             return []
         log = await self.log(session_id)
-        messages = derive_context_messages(list(log.events))
+        baseline = self._baseline_messages.get(session_id, [])
+        messages = self._merge_messages(baseline, derive_messages(list(log.events)))
+        messages = derive_context_messages_from_messages(messages)
         return [self._repo.to_message_model(m, session_id) for m in messages]
 
     # ============================================================
@@ -385,22 +610,24 @@ class SessionService:
         return await asyncio.to_thread(search_sessions, snapshot, q, limit, workspace, offset)
 
     async def init(self) -> None:
-        """启动：加载 session.json 元信息索引、清扫孤儿目录。
+        """启动：加载 session.json Snapshot 索引并清扫孤儿目录。
 
-        事件日志懒加载（首次访问该会话时 load + repair），不在启动期全量读取。
+        Msg Snapshot 与旧 JSONL 迁移在首次访问该会话时懒加载，避免启动阶段读取
+        所有大历史文件。
         """
         await self._repo.init()
         await self._sweep_orphan_session_dirs()
 
     async def close(self) -> None:
-        """安全幂等：drain write-behind、停帧转发；磁盘数据保留。"""
+        """安全幂等：drain Snapshot、停帧转发；磁盘数据保留。"""
         if self._forward_task is not None:
             self._forward_task.cancel()
             await asyncio.gather(self._forward_task, return_exceptions=True)
             self._forward_task = None
             self._forward_queue = None
-        await self._writer.close()
+        await self._snapshot.close()
         self._logs.clear()
+        self._baseline_messages.clear()
         self._derive_cache.clear()
         self._log_locks.clear()
 
@@ -413,7 +640,7 @@ class SessionService:
         return self._repo.create_id()
 
     def session_dir(self, session_id: str) -> Path:
-        """Session 目录（session.json + session.jsonl 所在目录）。"""
+        """Session 目录（唯一持久化文件为 session.json）。"""
         return self._repo.session_dir(session_id)
 
     async def create_session(
@@ -454,17 +681,24 @@ class SessionService:
         return self._repo.sessions_root()
 
     def has_request_id(self, session_id: str, request_id: str) -> bool:
-        """同步只读幂等查询（仅元信息层；完整判定走 request_state）。"""
-        del session_id, request_id
-        return False
+        """同步只读幂等查询（完整状态由 request_state 异步读取）。"""
+        state = self._repo.get_state(session_id)
+        return bool(state and request_id and request_id in state.requests)
 
     async def request_state(
         self, session_id: str, request_id: str, run_id: str | None = None
     ) -> str | None:
-        """查询请求是否已经产生过 Assistant 执行结果（turn/end 事件索引）。"""
+        """查询请求是否已经产生过可阻止重复执行的状态。"""
         del run_id
         if self._repo.get_state(session_id) is None:
             return None
+        state = self._repo.get_state(session_id)
+        if state is not None:
+            record = state.requests.get(request_id)
+            if isinstance(record, dict):
+                status = str(record.get("status") or "")
+                if status in {"completed", "failed", "running"}:
+                    return "completed" if status == "completed" else status
         log = await self.log(session_id)
         return log.request_state(request_id)
 
@@ -542,8 +776,9 @@ class SessionService:
                     )
 
         for msid in member_sids:
-            self._writer.detach(msid)
+            self._snapshot.detach(msid)
             self._logs.pop(msid, None)
+            self._baseline_messages.pop(msid, None)
             self._derive_cache.pop(msid, None)
             self._log_locks.pop(msid, None)
             await self._repo.delete_session(msid)
@@ -551,8 +786,9 @@ class SessionService:
 
         sub_agent_profile.delete_all_profiles(self, session_id)
 
-        self._writer.detach(session_id)
+        self._snapshot.detach(session_id)
         self._logs.pop(session_id, None)
+        self._baseline_messages.pop(session_id, None)
         self._derive_cache.pop(session_id, None)
         self._log_locks.pop(session_id, None)
         await self._repo.delete_session(session_id)
@@ -786,7 +1022,7 @@ class SessionService:
                 truncated_message_ids.append(message.id)
         return {
             "schema_version": state.schema_version,
-            "file_path": str(self._repo.session_dir(session_id) / "session.jsonl"),
+            "file_path": str(self._repo.session_dir(session_id) / "session.json"),
             "session": state.session.model_dump(mode="json"),
             "messages": messages,
             "metadata": state.metadata.copy(),
@@ -828,25 +1064,24 @@ class SessionService:
         return None
 
     # ============================================================
-    # Fork：事件日志前缀拷贝
+    # Fork：Msg Snapshot 深拷贝
     # ============================================================
 
     FORK_METADATA_EXCLUDE = frozenset({"teams", "team_member", "external"})
 
     async def fork_session(self, parent_session_id: str) -> ForkResult:
-        """把 parent 派生为独立 session：session.json 元信息 + 事件日志整份拷贝。
-
-        说明：派生是 per-session 的，事件中的 message_id / request_id 无需
-        重生成（不再存在跨 session Msg.id 全局索引）。
-        """
+        """把 parent 的当前 Msg Snapshot 派生为独立 session。"""
         async with self._repo.lock_for(parent_session_id):
             parent_state = self._repo.get_state(parent_session_id)
             if parent_state is None:
                 raise ValueError(f"session not found: {parent_session_id}")
-            # 统一走 SessionLog 装配入口，确保未被访问过的父会话也先执行
-            # torn-tail 截断和 open-turn repair，再复制事实日志。
-            parent_log = await self.log(parent_session_id)
-            events = list(parent_log.events)
+            messages = await self.derived_messages(parent_session_id)
+            parent_log = self._logs.get(parent_session_id)
+            fork_requests = copy.deepcopy(parent_state.requests)
+            if parent_log is not None:
+                fork_requests.update(
+                    self._request_index_from_events(list(parent_log.events))
+                )
             parent_header = parent_state.session
             fork_id = self._repo.make_session_id(parent_header.channel_id)
             fork_title = (
@@ -878,12 +1113,12 @@ class SessionService:
                 last_user_text=parent_header.last_user_text,
             ),
             metadata=fork_metadata,
+            seq=int(parent_log.seq if parent_log is not None else parent_state.seq),
+            messages=[message.model_dump(mode="json") for message in messages],
+            requests=fork_requests,
+            extensions=copy.deepcopy(parent_state.extensions),
         )
         await self._repo.create_session_with_state(new_state)
-        if events:
-            await asyncio.to_thread(
-                write_event_log_atomic, self._repo.session_dir(fork_id), events
-            )
         return ForkResult(
             fork_session_id=fork_id,
             title=fork_title,

@@ -484,7 +484,7 @@ class DeferRun:
 
 @dataclass(frozen=True, slots=True)
 class AfterRunPayload:
-    """Run 完成后的可等待维护边界。"""
+    """Run 完成后的可等待维护边界；``paused`` 表示权限挂起而非自然完成。"""
 
     agent: AgentSubject
     session_id: str
@@ -492,6 +492,7 @@ class AfterRunPayload:
     request_id: str
     status: str
     cancellation: asyncio.Event
+    paused: bool = False
     channel_id: str = ""
     config: AgentConfig | None = None
     set_maintenance: Callable[[bool, str], Awaitable[None]] | None = None

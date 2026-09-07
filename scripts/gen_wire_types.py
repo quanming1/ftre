@@ -40,6 +40,7 @@ GOLDEN_FIXTURE_SRC = REPO_ROOT / "packages" / "ftre-agent" / "tests" / "fixtures
 
 from ftre_agent.message import (
     DataBlock,
+    ExtensionBlock,
     HintBlock,
     Msg,
     MsgToken,
@@ -56,14 +57,14 @@ from ftre.services.messaging import wire
 
 HEADER = """\
 /**
- * GENERATED FILE —— 禁止手写（PRD-F41 FR9/AC7）。
+ * GENERATED FILE —— 禁止手写（PRD-F41/F44）。
  * 由 ftre 仓 `scripts/gen_wire_types.py` 从 Pydantic 契约生成：
  *   - packages/ftre-agent/src/ftre_agent/session/events.py   事件表（13 种）
  *   - packages/ftre-agent/src/ftre_agent/message/{_msg,_block}.py  Msg/Block
  *   - src/ftre/services/messaging/wire.py                    帧表（6 种）
  * 重新生成：`py scripts/gen_wire_types.py`；产物 diff 必须为空。
  *
- * 帧信封：{v: 1, session_id, type, payload}，共 6 种帧（F41 §4.4）。
+ * 帧信封：{v: 1, session_id, type, payload}，共 6 种帧（F41/F44）。
  * 事件信封：{type, seq, time, message_id?, data}，共 13 种事件（F41 §4.2）。
  */
 
@@ -76,6 +77,7 @@ TS_NAME_MAP: dict[type, str] = {
     TextBlock: "WireTextBlock",
     ThinkingBlock: "WireThinkingBlock",
     DataBlock: "WireDataBlock",
+    ExtensionBlock: "WireExtensionBlock",
     HintBlock: "WireHintBlock",
     ToolCallBlock: "WireToolCallBlock",
     ToolResultBlock: "WireToolResultBlock",
@@ -90,7 +92,7 @@ TS_NAME_MAP: dict[type, str] = {
 REQUIRED_FIELDS: set[tuple[str, str]] = {
     # Msg 身份字段（wire dump 恒有）
     ("Msg", "name"), ("Msg", "content"), ("Msg", "id"),
-    ("Msg", "metadata"), ("Msg", "created_at"),
+    ("Msg", "metadata"), ("Msg", "created_at"), ("Msg", "seq"),
     # 工具块核心字段
     ("ToolCallBlock", "arguments"),
     # 事件 data：运行时由模型构造，字段恒在
@@ -111,8 +113,11 @@ REQUIRED_FIELDS: set[tuple[str, str]] = {
     ("TurnEndData", "iterations"),
     ("SessionStatusData", "status"), ("SessionStatusData", "reason"),
     # 帧载荷
-    ("SessionSubscribedPayload", "last_seq"),
+    ("SessionSubscribedPayload", "seq"),
+    ("SessionSubscribedPayload", "events"),
     ("SessionSubscribedPayload", "status"),
+    ("SessionSubscribedPayload", "has_more"),
+    ("SessionSubscribedPayload", "resync_required"),
     ("SessionProjectionPayload", "seq"),
     ("SessionMaintenancePayload", "value"),
     ("WireRpcError", "code"), ("WireRpcError", "message"),
@@ -122,6 +127,7 @@ REQUIRED_FIELDS: set[tuple[str, str]] = {
 FIELD_TYPE_OVERRIDES: dict[tuple[str, str], str] = {
     # 事件信封透传（运行时 dict 直通，未知事件由 F41 FR6 兜底）
     ("SessionEventFramePayload", "event"): "SessionEvent",
+    ("SessionSubscribedPayload", "events"): "SessionEvent[]",
     # whole-value Msg 载荷
     ("AssistantMessageData", "message"): "WireMsg",
     # 客户端 user 消息 content 携带原始 parts（服务端 dump 为 Block）
@@ -140,6 +146,7 @@ MESSAGE_MODELS: list[tuple[type, str]] = [
     (TextBlock, "纯文本内容块。"),
     (ThinkingBlock, "模型推理过程（思维链）内容块。"),
     (DataBlock, "二进制数据块（图片等），source 为 base64 或 URL。"),
+    (ExtensionBlock, "未来或插件内容块（保留原始 JSON）。"),
     (HintBlock, "提示块（默认隐藏渲染，注入上下文）。"),
     (ToolCallBlock, "工具调用块；arguments 为 whole-value。"),
     (ToolResultBlock, "工具执行结果块。"),
@@ -197,7 +204,8 @@ EVENT_TYPE_ORDER: list[str] = [
 
 FRAME_CLASSES: list[type] = [
     wire.SessionEventFrame, wire.SessionSubscribedFrame, wire.SessionQueueFrame,
-    wire.SessionProjectionFrame, wire.SessionMaintenanceFrame, wire.RpcFrame,
+    wire.SessionProjectionFrame,
+    wire.SessionMaintenanceFrame, wire.RpcFrame,
 ]
 
 
@@ -324,11 +332,12 @@ def main() -> int:
     frame_literals = [cls.model_fields["type"].default for cls in FRAME_CLASSES]
     out.extend(emit_union("DownstreamFrameType", [], frame_literals))
     out.append("")
-    out.append("/** 下行帧公共信封；无帧级 seq（事件帧内 seq 为权威）。 */")
+    out.append("/** 下行帧公共信封；Session 事件和 Msg 共用 seq。 */")
     out.append("export interface WireFrame<TPayload = unknown> {")
     out.append("  v: 1;")
     out.append("  session_id: string;")
-    out.append("  type: DownstreamFrameType;")
+    out.append("  // Unknown future frame types are accepted and ignored by consumers.")
+    out.append("  type: DownstreamFrameType | (string & {});")
     out.append("  payload?: TPayload;")
     out.append("}")
     out.append("")
@@ -352,7 +361,7 @@ def main() -> int:
     out.append("")
     out.append("export interface SessionEvent<TData = any> {")
     out.append("  type: SessionEventType | (string & {});")
-    out.append("  /** 会话内从 0 严格连续的事件序号。 */")
+    out.append("  /** Session 持久单调事件序号；跨 Gateway 重启继续递增。 */")
     out.append("  seq: number;")
     out.append("  /** epoch 毫秒。 */")
     out.append("  time: number;")
@@ -379,6 +388,7 @@ def main() -> int:
     out.append("  | WireTextBlock")
     out.append("  | WireThinkingBlock")
     out.append("  | WireDataBlock")
+    out.append("  | WireExtensionBlock")
     out.append("  | WireHintBlock")
     out.append("  | WireToolCallBlock")
     out.append("  | WireToolResultBlock;")

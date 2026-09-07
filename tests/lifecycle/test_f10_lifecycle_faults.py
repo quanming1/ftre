@@ -40,7 +40,7 @@ class _Agent:
 
 
 @pytest.mark.asyncio
-async def test_close_cancels_worker_and_keeps_claimed_state_out_of_pending(tmp_path):
+async def test_close_cancels_dispatch_task_and_keeps_claimed_state_out_of_pending(tmp_path):
     agent = _Agent()
     repo = InboxRepository(tmp_path / "inbox")
     service = InboxService(repo, agent)
@@ -82,7 +82,7 @@ async def test_restart_loads_unclaimed_item_without_auto_dispatch(tmp_path):
     assert agent.calls == []
     assert [item.request_id for item in (await second.snapshot("s1")).pending] == ["r1"]
 
-    await second.resume_pending("s1")
+    second.schedule_next_turn("s1")
     await agent.started.wait()
     agent.release.set()
     await second.close()
@@ -103,7 +103,8 @@ async def test_inbox_plugin_restart_replaces_closed_service_without_duplicate_li
         second = composition.context.get("inbox")
         assert second is not first
         assert second._closed is False
-        assert composition.context.get("channels").manager.get("ws")._current_inbox() is second
+        channel = composition.context.get("channels").manager.get("ws")
+        assert not hasattr(channel, "_current_inbox")
         entries = composition.context.get("hook_runtime").snapshot("session/disposed")
         assert len([entry for entry in entries if not entry.disposed]) == 1
     finally:
@@ -111,7 +112,23 @@ async def test_inbox_plugin_restart_replaces_closed_service_without_duplicate_li
 
 
 @pytest.mark.asyncio
-async def test_inbox_plugin_unload_releases_worker_state_and_listener():
+async def test_inbox_owns_only_the_two_agent_delivery_boundaries():
+    composition = await build_composition({})
+    try:
+        runtime = composition.context.get("hook_runtime")
+        for hook in ("agent/before-reasoning", "agent/after-run"):
+            owners = [
+                item.owner
+                for item in runtime.snapshot(hook)
+                if not item.disposed
+            ]
+            assert "ftre-inbox" in owners
+    finally:
+        await composition.close()
+
+
+@pytest.mark.asyncio
+async def test_inbox_plugin_unload_releases_dispatch_state_and_listener():
     composition = await build_composition({})
     service = composition.context.get("inbox")
     try:

@@ -1,7 +1,7 @@
 """Workspace Service 的 Provider Plugin。
 
 它注入 ``sessions`` 作为状态 Owner；Workspace 自身只提供路径解析和策略，不会
-复制一份 Session 数据，也不会绕过 SessionService 直接读 session.json/session.jsonl。
+复制一份 Session 数据，也不会绕过 SessionService 直接读 session.json Snapshot。
 """
 
 from __future__ import annotations

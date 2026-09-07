@@ -162,3 +162,29 @@ async def test_token_usage_drops_after_compact(manager):
     await _seed(manager, sid, 1, tag="tail")
     after = await manager.get_token_usage(sid)
     assert after["total"] < before["total"]
+
+
+@pytest.mark.asyncio
+async def test_restart_keeps_compact_context_anchor(tmp_path):
+    db_path = str(tmp_path / "sessions.db")
+    first = SessionManager(db_path, snapshot_interval_ms=20)
+    await first.init()
+    sid = await first.create_session("ws")
+    covered = await _seed(first, sid, 1, tag="covered")
+    await _compact(first, sid, "persisted summary", covered[1])
+    tail = await _seed(first, sid, 1, tag="tail", start=1)
+    await first.flush_log(sid)
+    await first.close()
+
+    second = SessionManager(db_path, snapshot_interval_ms=20)
+    await second.init()
+    try:
+        context = await second.get_context_messages(sid)
+        assert [message["content"][0]["text"] for message in context] == [
+            "persisted summary",
+            "u1",
+            "a1",
+        ]
+        assert [message["id"] for message in context[1:]] == tail
+    finally:
+        await second.close()

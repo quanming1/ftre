@@ -100,6 +100,7 @@ async def apply(ctx: Context, config=None):
     hook_runtime = ctx.hook_runtime
     if hook_runtime is not None:
         from ftre_agent import (
+            AGENT_AFTER_RUN_SPEC,
             AGENT_BEFORE_REASONING_SPEC,
             BeforeReasoningResult,
         )
@@ -140,6 +141,25 @@ async def apply(ctx: Context, config=None):
             all_agent_scopes=True,
         )
         del before_reasoning_receipt
+
+        async def on_after_run(payload, next_):
+            """正常完成才允许把一条 next-turn 交给 Agent。"""
+            result = await next_()
+            service.handle_after_run(
+                payload.session_id,
+                payload.status,
+                paused=bool(getattr(payload, "paused", False)),
+            )
+            return result
+
+        after_run_receipt = hook_runtime.register(
+            AGENT_AFTER_RUN_SPEC,
+            on_after_run,
+            owner="ftre-inbox",
+            context=ctx,
+            all_agent_scopes=True,
+        )
+        del after_run_receipt
 
         async def on_session_disposed(payload):
             await service.delete_session(payload.session_id)

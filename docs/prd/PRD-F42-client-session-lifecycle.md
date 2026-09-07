@@ -1,5 +1,8 @@
 # PRD-F42 客户端会话状态机与 UI 投影（v4，事件 fold 消费端）
 
+> 历史 hydrate 与跨进程恢复现在以 [PRD-F44](PRD-F44-session-snapshot-protocol.md)
+> 的 Msg Snapshot + `seq` attach Event[] 为准；F42 的 live fold 和 UI 状态语义继续有效。
+
 > 状态生命周期：草稿 → 评审 → approved（定稿）→ 开发中 → 已验收
 > **本版为 v4 重写**：输入源从"v3 的 10 帧"改为"F41 的 6 帧 + 13 事件表"；
 > 状态机/按钮/五阶段等 UI 契约自 v3 原样继承，仅替换消费引擎。
@@ -14,17 +17,17 @@
 | 创建日期 | 2026-09-04 |
 | 定稿日期 | 2026-09-04 |
 | 验收日期 | 2026-09-04 |
-| 关联文档 | `docs/prd/PRD-F41-downstream-wire-protocol.md`（**唯一依赖**，事件表/帧表/恢复协议以 F41 为准）、`docs/prd/PRD-F43-server-event-pipeline.md`；实施仓库 `E:\binn\ftre-desktop` |
+| 关联文档 | `docs/prd/PRD-F44-session-snapshot-protocol.md`（当前恢复与 seq attach 唯一规范）、`docs/prd/PRD-F41-downstream-wire-protocol.md`（历史事件词汇）；实施仓库 `E:\binn\ftre-desktop` |
 
 ## 1. 背景与目标
 
 ### 1.1 v4 客户端职责变化
 
-v3 客户端消费"服务端投影好的快照"（reconcile）；v4 事实源是事件日志，客户端需要：
+v3 客户端消费"服务端投影好的快照"（reconcile）；v4 事实源是事件协议，客户端需要：
 ①实现 **ConversationAssembler**——把 `session/event` 流 fold 成消息列表的幂等纯函数
-引擎（DSH conversation-assembler.ts 同构）；②实现**恢复客户端**——subscribed/tail-page
-补齐逻辑。换来的是：断线精确恢复（chunk 级）、消息列表可从任意 seq 重建、
-服务端零投影负担。
+引擎（DSH conversation-assembler.ts 同构）；②实现**恢复客户端**——先用 HTTP Msg 建立
+基线，再消费 `session/subscribed` 携带的 attach Event[]。换来的是：断线精确恢复（chunk 级）、
+消息列表可从任意 seq 重建、服务端零重复投影负担。
 
 UI 层完全不变：ChatMessage DTO、全部组件、按钮状态机、五阶段生命周期、队列横幅规则
 自 v3 §3.2-3.4 **原文继承**（本 PRD 直接引用，不重写）。
@@ -46,11 +49,11 @@ UI 层完全不变：ChatMessage DTO、全部组件、按钮状态机、五阶�
 - [x] **FR1 ConversationAssembler**：`fold(state, event) → state'` 幂等纯函数引擎；
       规则表 = F41 §4.2 事件表的 fold 语义列（§3.1 展开）；输入 `event.seq ≤
       state.lastSeq` 时直接跳过（幂等重放安全）。
-- [x] **FR2 seq 游标与恢复**：维护 per-session `lastSeq`；收到 `session/subscribed`
-      时若 `local.lastSeq < last_seq` 或直播帧跳号 → 请求 tail-page
-      `GET /api/sessions/:id/events?after_seq=` 重放补齐（分页循环至追平）；
-      补齐期间直播帧入缓冲，追平后按 seq 合并消费。HTTP `/messages` 返回的
-      `last_seq` 表示同一消息快照完整覆盖到的事件序号。
+- [x] **FR2 seq 游标与恢复**：维护 per-session 本地 `lastSeq`；先用 HTTP `/messages`
+      建立 Msg 基线及其 `seq`，再发送 `attach{session_id,seq}`。服务端在
+      `session/subscribed` 中返回该水位之后尚未折叠的 Event[]；客户端按 seq 合并消费，
+      补齐期间直播帧入缓冲。若服务端返回 `resync_required`，重新走 HTTP 基线后再次 attach，
+      不再请求独立的 tail-page HTTP 事件接口。
 - [x] **FR3 会话状态机**：迁移表自 v3 §3.1 继承，驱动事件替换为——
       `turn/start`→dispatching→executing 入口、`turn/end(outcome)`→idle/error/
       cancelled/paused、`session/status(blocked)`、`session/maintenance`（compaction）
@@ -102,7 +105,7 @@ UI 层完全不变：ChatMessage DTO、全部组件、按钮状态机、五阶�
 
 ```text
 stores/conversationAssembler.ts   # 新增：fold 引擎（纯函数，~200 行）
-stores/sessionEventClient.ts      # 新增：seq 游标 + tail-page 恢复 + 直播缓冲合并
+stores/sessionEventClient.ts      # 新增：seq 游标 + attach Event[] 恢复 + 直播缓冲合并
 stores/chatProjection.ts          # 重写：applyEvent(state, event) 分发 → assembler/状态机；
                                    # 删除 v3 的 applyFrame/applyEvent 旧实现
 services/websocket-client.ts      # 帧解析 + subscribed 处理 + rpc 结算（v3 结构沿用）
@@ -137,14 +140,14 @@ class ConversationAssembler {
 - [x] AC3：v3 全部 UI 验收项（AC2-AC10：五阶段/steering/HITL/断线/刷新一致性/
       跨 channel/性能）在事件输入下重跑通过。
 - [x] AC4：**断线精确恢复**（v4 新增强项）——流式 chunk 中途断开 30s，重连后
-      tail-page 补齐，消息文本与持续在线的第二客户端完全一致；刷新仍在生成的会话时，
+      HTTP Msg 基线 + attach Event[] 补齐，消息文本与持续在线的第二客户端完全一致；刷新仍在生成的会话时，
       HTTP 首屏直接显示服务端派生的 Assistant 文本，不得退化为只有工具调用。
 - [x] AC5：未知事件注入（future/x）不崩溃、游标推进、诊断计数 +1。
 - [x] AC6：vitest 全绿（chat.test.ts 等测试改事件构造；UI 组件测试零改动）。
 
 ## 6. 测试计划
 
-- 单元：assembler 全事件分支；seq 跳过/乱序；tail-page 分页循环。
+- 单元：assembler 全事件分支；seq 跳过/乱序；attach Event[] 分批与缓冲。
 - 对拍：与 ftre 仓 `deriveMessages` 共享 fixture 的 CI 双向断言。
 - 集成：S1-S8 场景事件序列回放；双客户端一致性（AC4）。
 - 手动：e2e 同 v3 清单 + 重连时 toast"正在同步历史…"体验。
@@ -169,4 +172,4 @@ class ConversationAssembler {
 | 2026-09-04 | 实施验收收尾：FR1-FR8/AC2-AC6 全绿（590 tests + tsc）；AC1 的跨语言对拍落地为双侧独立 golden（服务端 `test_session_log.py::test_full_flow_golden` ↔ 客户端 `chat.test.ts` assembler 用例），共享 fixture 的 CI 双仓自动对拍未建立，与 wire codegen（F41 AC7）一并列后续项；TS wire 类型为手写 `types/wire.ts`（PRD §3.2 原文 wire.gen.ts） | 一次性终态交付（用户指令）以 golden contract 测试 + 冷启动 e2e 替代中间发布；跨仓 CI 门禁超出本交付形态 |
 | 2026-09-04 | 收尾补齐：实施 AC1 共享 fixture 自动对拍 + wire 类型切换为生成产物（F41 AC7 联动）——`session_events_golden.json` 成为双侧 fold 的唯一事实源（desktop 侧经 gen 脚本同步为 `types/wire.golden.json`）；两侧 fold 补确定性 parity（hint/compact 块确定性 id、tool_call 终态时间戳）；desktop 消费层 import 切至 `@/types/wire.gen`，手写 wire.ts 删除 | 对拍从「双侧独立 golden」升级为「同一 fixture 双侧断言」；592 tests 全绿 |
 | 2026-09-05 | 缺陷修复回归：历史加载移除重复的 persisted Msg 投影，统一复用 `msgToChatMessage`；user 附件映射与 skill part 保留；修复 turn/end 累计 usage 覆盖 `last_call_usage`；状态面板助手占比改用 assistant_messages；接入 context_tokens 水位 | 保证 HTTP 历史、WS 直播和 token UI 使用同一投影语义，避免刷新后显示与实时消息不一致 |
-| 2026-09-06 | 刷新恢复回归：服务端消息快照包含未完成 chunk，`last_seq` 与消息内容绑定同一快照；客户端仅保留快照未覆盖的本地 in-flight 消息 | 修复刷新期间 Assistant 文本消失、游标跳过 chunk 的问题 |
+| 2026-09-06 | 刷新恢复回归：服务端消息快照包含未完成 chunk，统一 `seq` 与消息内容绑定同一快照；客户端仅保留快照未覆盖的本地 in-flight 消息 | 修复刷新期间 Assistant 文本消失、游标跳过 chunk 的问题 |

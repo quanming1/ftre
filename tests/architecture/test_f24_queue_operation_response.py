@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
 CHANNEL = ROOT / "src" / "ftre" / "plugins" / "builtin" / "channels" / "websocket" / "channel.py"
+WS_PLUGIN = ROOT / "src" / "ftre" / "plugins" / "builtin" / "channels" / "websocket" / "plugin.py"
 INBOX_SERVICE = ROOT / "packages" / "ftre-inbox" / "src" / "ftre_inbox" / "service.py"
 COMPOSITION = ROOT / "src" / "ftre" / "app" / "gateway" / "composition.py"
 
@@ -32,10 +33,10 @@ def test_queue_mutations_have_one_success_owner() -> None:
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    assert "_send_queue_rpc" in function_names
+    assert "_send_snapshot_rpc" in function_names
     assert "_send_rpc" in function_names
     assert "_send_admission_ack" not in function_names
-    assert "SessionQueueFrame(" in source  # session/queue 快照帧（wire.py 契约）
+    assert "SessionQueueFrame(" in _source(WS_PLUGIN)  # session/queue 由协议 Plugin 组装
     # 仅 session.cancel 控制 ACK（rpc.value.accepted 由 turn_cancel ack 派生）
     assert 'value={"accepted": bool(getattr(ack, "created", False)),' in source
 

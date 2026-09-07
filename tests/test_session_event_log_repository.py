@@ -1,108 +1,235 @@
-"""Session 事件日志提交面等价不变量测试（PRD-F43）。
-
-whole-value 事件语义：每条 append_event 即一次原子提交，顺序由事件序决定；
-错误（session 不存在 / 未知事件类型 / request_id 冲突）在单条提交时同步抛出，
-天然无部分更新。本文件覆盖：
-①并发 append_event 不丢事件且 seq 连续；
-②write_event_log_atomic 拒绝 seq 断档（write-behind / repair / torn-tail 的
-  完整能力矩阵见 tests/test_event_log_pipeline.py，此处只做轻量回归）。
-"""
+"""Session Event 内存提交与 Msg Snapshot 持久化不变量（PRD-F44）。"""
 import asyncio
-import time
 
 import pytest
 import pytest_asyncio
-from ftre_agent.message import AssistantMsg
+from ftre_agent.message import AssistantMsg, UserMsg
 
-from ftre.services.session.persistence.jsonl import (
-    EventLogError,
-    read_event_log,
-    write_event_log_atomic,
-)
 from ftre.services.session.service import SessionService
 
 
 @pytest_asyncio.fixture
 async def manager(tmp_path):
-    mgr = SessionService(str(tmp_path / "sessions.db"))
+    mgr = SessionService(str(tmp_path / "sessions.db"), snapshot_interval_ms=20)
     await mgr.init()
     yield mgr
     await mgr.close()
 
 
-async def _wait_lines(path, minimum: int, timeout: float = 5.0) -> int:
-    """轮询等待事件日志行数（含 header）达到 minimum。
-
-    write-behind 批窗口（200ms）内 flush()/close() 不等待 in-flight 批
-    （已知 src 限制，见 test_session_manager_baseline.py 注释），落盘
-    断言只能等窗口自然过期。
-    """
-    deadline = time.monotonic() + timeout
-    while True:
-        if path.exists():
-            count = len(
-                [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-            )
-            if count >= minimum:
-                return count
-        if time.monotonic() > deadline:
-            raise AssertionError(f"事件日志未在超时内达到 {minimum} 行: {path}")
-        await asyncio.sleep(0.05)
-
-
 @pytest.mark.asyncio
-async def test_concurrent_append_event_loses_nothing_and_seq_contiguous(manager):
+async def test_concurrent_append_event_loses_nothing_and_snapshot_is_compact(manager):
     sid = await manager.create_session("ws")
-    # 暖缓存：log() 懒加载无锁，并发首触会互相覆盖 SessionLog 实例
-    # （已知 src 限制，见 test_session_manager_concurrency.py 注释）
     await manager.get_messages_by_session(sid)
-
     messages = [AssistantMsg(name="default", content=f"m{i}") for i in range(20)]
     await asyncio.gather(
         *(
             manager.append_event(
                 sid,
                 "assistant/message",
-                {"message": m.model_dump(mode="json")},
-                message_id=m.id,
+                {"message": message.model_dump(mode="json")},
+                message_id=message.id,
             )
-            for m in messages
+            for message in messages
         )
     )
-
-    # 内存权威态：事件一个不少，seq 0..N-1 连续（append-only，无覆盖）
     log = await manager.log(sid)
-    events = list(log.events)
-    assert len(events) == 20
-    assert [e["seq"] for e in events] == list(range(20))
-
-    # 派生消息顺序 = 事件序（whole-value 逐条替换不重排）
+    assert [event["seq"] for event in log.events] == list(range(20))
     derived = await manager.get_messages_by_session(sid)
-    assert [m["id"] for m in derived] == [m.id for m in messages]
+    assert [message["id"] for message in derived] == [message.id for message in messages]
+    await manager.flush_log(sid)
+    directory = manager.session_dir(sid)
+    assert (directory / "session.json").exists()
+    assert not (directory / "session.jsonl").exists()
+    payload = (directory / "session.json").read_text(encoding="utf-8")
+    assert payload.count('"messages"') == 1
 
-    # 落盘后读回仍不丢、不重排
-    jsonl = manager.session_dir(sid) / "session.jsonl"
-    await _wait_lines(jsonl, minimum=21)  # header + 20
-    stored = read_event_log(manager.session_dir(sid))
-    assert [e["message_id"] for e in stored] == [m.id for m in messages]
-    assert [e["seq"] for e in stored] == list(range(20))
+
+@pytest.mark.asyncio
+async def test_snapshot_seq_and_msg_seq_are_explicit(manager):
+    sid = await manager.create_session("ws")
+    await manager.append_event(
+        sid,
+        "assistant/message",
+        {"message": AssistantMsg(content="x", id="m").model_dump(mode="json")},
+        message_id="m",
+    )
+    await manager.flush_log(sid)
+    assert await manager.get_session(sid) is not None
+    messages, _, seq = await manager.get_messages_snapshot(sid)
+    assert seq == 0
+    assert messages[0]["id"] == "m"
+    assert messages[0]["seq"] == 0
 
 
-def test_write_event_log_atomic_rejects_seq_gap(tmp_path):
-    """轻量回归：seq 断档必须整体拒绝，不落半份日志。"""
-    session_dir = tmp_path / "sessions" / "ws_sess_x"
-    good = [
-        {"type": "assistant/message", "seq": 0, "time": 1, "message_id": "m0", "data": {}},
-        {"type": "assistant/message", "seq": 1, "time": 2, "message_id": "m1", "data": {}},
-    ]
-    write_event_log_atomic(session_dir, good)
-    assert [e["seq"] for e in read_event_log(session_dir)] == [0, 1]
+@pytest.mark.asyncio
+async def test_multiple_chunks_advance_one_msg_seq(manager):
+    sid = await manager.create_session("ws")
+    for delta in ("a", "b", "c"):
+        await manager.append_event(
+            sid,
+            "assistant/chunk",
+            {"kind": "text", "delta": delta, "block_id": "text-1"},
+            message_id="assistant-1",
+        )
 
-    gap_dir = tmp_path / "sessions" / "ws_sess_gap"
-    gapped = [
-        {"type": "assistant/message", "seq": 0, "time": 1, "message_id": "m0", "data": {}},
-        {"type": "assistant/message", "seq": 2, "time": 2, "message_id": "m2", "data": {}},
-    ]
-    with pytest.raises(EventLogError, match="seq 不连续"):
-        write_event_log_atomic(gap_dir, gapped)
-    assert not (gap_dir / "session.jsonl").exists()
+    messages, _, seq = await manager.get_messages_snapshot(sid)
+    assert seq == 2
+    assert len(messages) == 1
+    assert messages[0]["id"] == "assistant-1"
+    assert messages[0]["seq"] == 2
+    assert messages[0]["content"][0]["text"] == "abc"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_seq_matches_the_msg_cut_captured_before_concurrent_append(manager):
+    sid = await manager.create_session("ws")
+    await manager.append_event(
+        sid,
+        "assistant/chunk",
+        {"kind": "text", "delta": "a", "block_id": "text-1"},
+        message_id="assistant-1",
+    )
+
+    commit_started = asyncio.Event()
+    release_commit = asyncio.Event()
+    committed: list[tuple[int, str]] = []
+    original_commit = manager._repo.commit
+
+    async def delayed_commit(state):
+        assistant = next(
+            (message for message in state.messages if message.get("id") == "assistant-1"),
+            None,
+        )
+        committed.append((int(state.seq), str((assistant or {}).get("content", [{}])[0].get("text", ""))))
+        if len(committed) == 1:
+            commit_started.set()
+            await release_commit.wait()
+        await original_commit(state)
+
+    manager._repo.commit = delayed_commit
+    flush_task = asyncio.create_task(manager.flush_log(sid))
+    await commit_started.wait()
+    await manager.append_event(
+        sid,
+        "assistant/chunk",
+        {"kind": "text", "delta": "b", "block_id": "text-1"},
+        message_id="assistant-1",
+    )
+    release_commit.set()
+    await flush_task
+
+    assert committed[0] == (0, "a")
+    assert committed[-1] == (1, "ab")
+
+
+@pytest.mark.asyncio
+async def test_restart_continues_session_seq_from_snapshot(tmp_path):
+    db_path = str(tmp_path / "sessions.db")
+    first = SessionService(db_path, snapshot_interval_ms=20)
+    await first.init()
+    sid = await first.create_session("ws")
+    await first.append_event(
+        sid,
+        "assistant/chunk",
+        {"kind": "text", "delta": "before", "block_id": "text-1"},
+        message_id="assistant-1",
+    )
+    await first.flush_log(sid)
+    await first.close()
+
+    second = SessionService(db_path, snapshot_interval_ms=20)
+    await second.init()
+    try:
+        event = await second.append_event(
+            sid,
+            "assistant/chunk",
+            {"kind": "text", "delta": "after", "block_id": "text-1"},
+            message_id="assistant-1",
+        )
+        assert event["seq"] == 1
+        pending, has_more, resync, current = await second.events_after(
+            sid, after_seq=0
+        )
+        assert has_more is False
+        assert resync is False
+        assert current == 1
+        assert [item["seq"] for item in pending] == [1]
+    finally:
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_reads_snapshot_for_messages_and_context(tmp_path):
+    db_path = str(tmp_path / "sessions.db")
+    first = SessionService(db_path, snapshot_interval_ms=20)
+    await first.init()
+    sid = await first.create_session("ws")
+    user = UserMsg(content="persisted question", metadata={"hide": False})
+    await first.append_user_message_if_absent(
+        sid,
+        request_id="persisted-request",
+        content=user.model_dump(mode="json")["content"],
+        metadata=dict(user.metadata or {}),
+    )
+    assistant = AssistantMsg(content="persisted answer", id="persisted-assistant")
+    await first.append_event(
+        sid,
+        "assistant/message",
+        {"message": assistant.model_dump(mode="json")},
+        message_id=assistant.id,
+    )
+    await first.flush_log(sid)
+    await first.close()
+
+    second = SessionService(db_path, snapshot_interval_ms=20)
+    await second.init()
+    try:
+        messages, has_more, _ = await second.get_messages_snapshot(sid)
+        assert has_more is False
+        assert [message["content"][0]["text"] for message in messages] == [
+            "persisted question",
+            "persisted answer",
+        ]
+        context = await second.get_context_messages(sid)
+        assert [message["content"][0]["text"] for message in context] == [
+            "persisted question",
+            "persisted answer",
+        ]
+    finally:
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_request_id_is_idempotent_and_rejects_content_conflict(tmp_path):
+    db_path = str(tmp_path / "sessions.db")
+    first = SessionService(db_path, snapshot_interval_ms=20)
+    await first.init()
+    sid = await first.create_session("ws")
+    original = UserMsg(content="same request", metadata={"hide": False})
+    original_content = original.model_dump(mode="json")["content"]
+    assert await first.append_user_message_if_absent(
+        sid,
+        request_id="stable-request",
+        content=original_content,
+        metadata=dict(original.metadata or {}),
+    )
+    await first.flush_log(sid)
+    await first.close()
+
+    second = SessionService(db_path, snapshot_interval_ms=20)
+    await second.init()
+    try:
+        assert await second.append_user_message_if_absent(
+            sid,
+            request_id="stable-request",
+            content=original_content,
+        ) is None
+        conflicting = UserMsg(content="different request", metadata={"hide": False})
+        with pytest.raises(ValueError, match="request_id 已绑定不同内容"):
+            await second.append_user_message_if_absent(
+                sid,
+                request_id="stable-request",
+                content=conflicting.model_dump(mode="json")["content"],
+            )
+    finally:
+        await second.close()

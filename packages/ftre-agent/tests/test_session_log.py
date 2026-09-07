@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from ftre_agent.message import MsgName
+from ftre_agent.message import Msg, MsgName
 from ftre_agent.session import SessionLog, derive_context_messages, derive_messages
 
 
@@ -16,7 +16,7 @@ class TestSessionLogAppend:
         for i in range(5):
             event = log.append("turn/start", {"turn_id": f"t{i}", "trigger": "user"})
             assert event["seq"] == i
-        assert log.last_seq == 4
+        assert log.seq == 4
 
     def test_envelope_shape(self):
         log = _mk_log()
@@ -54,7 +54,7 @@ class TestSessionLogAppend:
         log.subscribe(bad_subscriber)
         log.append("turn/start", {"turn_id": "t", "trigger": "user"})
         # 嵌套 append 被订阅者异常吞掉（containment），主事件仍提交成功
-        assert log.last_seq == 0
+        assert log.seq == 0
 
     def test_subscriber_failure_isolated(self):
         log = _mk_log()
@@ -89,7 +89,7 @@ class TestSessionLogAppend:
             request_id="req_1", content=[{"type": "text", "text": "hi"}]
         )
         assert second is None
-        assert log.last_seq == 0
+        assert log.seq == 0
 
     def test_user_message_fingerprint_conflict(self):
         log = _mk_log()
@@ -123,7 +123,7 @@ class TestSessionLogLoad:
              "data": {"turn_id": "t", "trigger": "user"}},
         ]
         log.load(events)
-        assert log.last_seq == 0
+        assert log.seq == 0
         log.append("turn/end", {
             "turn_id": "t", "outcome": "completed", "reason": "completed",
         })
@@ -392,6 +392,20 @@ class TestDerive:
         }
         assert by_id["old"].output[0].text.startswith("[已压缩裁剪")
         assert by_id["new"].output[0].text == "new"
+
+    def test_unknown_msg_block_is_preserved_as_extension(self):
+        message = Msg.model_validate({
+            "role": "assistant",
+            "id": "future-message",
+            "content": [{"type": "audio", "url": "https://example.test/a.wav", "x": 1}],
+            "metadata": {"future": True},
+            "future_field": {"keep": "yes"},
+        })
+        block = message.content[0]
+        assert block.type == "extension"
+        assert block.original_type == "audio"
+        assert block.data["url"] == "https://example.test/a.wav"
+        assert message.model_dump(mode="json")["future_field"] == {"keep": "yes"}
 
 
 class TestTail:

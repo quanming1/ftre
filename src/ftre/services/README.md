@@ -24,7 +24,7 @@ Composition Root 通过 Provider Plugin 创建和销毁。
 | `http` | `http/service.py` | 收集路由贡献、冲突检查、冻结后构建 FastAPI | Gateway Host、各路由 Plugin |
 | `message_bus` | `messaging/bus/service.py` | Inbound/Outbound 的进程内消息队列门面 | Channel、AgentLoop |
 | `channels` | `messaging/channel/service.py` | Channel 注册、启动/停止和发送 | WebSocket、Subagent、Cron |
-| `sessions` | `session/service.py` | Session 身份/元信息唯一持久化入口；SessionLog 事件日志装配（append + write-behind + repair）、读侧 derive、session/event 帧转发 | AgentLoop、Inbox、Compaction、Workspace、Command |
+| `sessions` | `session/service.py` | Session 身份/元信息与 Msg Snapshot 唯一持久化入口；SessionLog 只承载当前进程 live Event，SnapshotCoordinator 按时间/语义边界写入 `session.json`，并提供 derive、session/event 与 attach Event[] | AgentLoop、Inbox、Compaction、Workspace、Command |
 | `agents` | `packages/ftre-agent` + Runtime Provider | Agent 身份、状态和公开数据面 | HTTP/WS、Agent Runtime Provider |
 | `agent_profiles` | `agent_profile/service.py` | Agent 配置文件的 CRUD 与解析 | Agent Runtime、MCP、Tools |
 | `tools` | `tools/service.py` | 全局工具、Agent scoped 工具和 allow/deny 视图 | AgentLoop、Tool Feature |
@@ -41,19 +41,21 @@ Agent key 是 `agents`，HTTP/WS 和 Plugin 只依赖这个 Service，不会拿�
 ```text
 Channel
   → MessageBusService.request_inbound()
-  → AgentService（内部 Runtime）
   → ftre-inbox.InboxService
+  → AgentService（内部 Runtime）
   → SystemPromptService + ToolService
   → ftre-agent-runtime / ftre-llm
-  → SessionService（SessionLog.append 事件提交；write-behind 落盘 + 帧转发）
+  → SessionService（SessionLog.append live Event；Snapshot checkpoint 落盘 + 帧转发）
   → MessageBusService.publish_frame()（downstream_frame）
   → ChannelService / Channel
 ```
 
 - `MessageBusService` 只负责传递，不保存会话业务状态。
-- `SessionService` 拥有 session.json 元信息与 session.jsonl 事件日志（唯一事实源）；
-  Msg 历史由读侧 `derive_messages` 从事件日志派生。独立 `InboxService` 负责 durable
-  pending、串行交付和恢复；AgentService 只执行已交付输入。
+- `SessionService` 拥有 session.json Msg Snapshot 与当前进程 live Event；Msg 历史由
+  Snapshot + live Event derive。独立 `InboxService` 负责 durable
+  pending、claim 和恢复；`agent/before-reasoning` 消费 `next-step`，
+  `agent/after-run(status=completed)` 触发一条 `next-turn`；异常结束不自动消费队列。
+  AgentService 只执行已交付输入。
 - `ToolService` 和 `SystemPromptService` 提供本轮可见的工具/提示词视图，不能把
   全局注册表直接暴露给 Agent。
 - `ChannelService` 只管理协议通道，不参与模型推理或 Session 业务规则。

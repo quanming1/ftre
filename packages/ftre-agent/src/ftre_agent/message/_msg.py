@@ -10,6 +10,8 @@ Msg 是 assistant/message 事件的载荷结构，也是读侧
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import uuid
 from collections.abc import Sequence
@@ -17,11 +19,12 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..types import ReplyFinishedReason
 from ._block import (
     ContentBlock,
+    ContentBlockTypes,
     TextBlock,
 )
 
@@ -94,7 +97,7 @@ class Msg(BaseModel):
     assistant/message 事件以 whole-value 方式携带本结构；读侧
     ``derive_messages`` 把事件流 fold 成 Msg 列表（PRD-F43 §1.1）。
     """
-    model_config = ConfigDict(use_enum_values=True)
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
 
     # ── 进 context 的字段 ──
     name: MsgName = MsgName.DEFAULT
@@ -105,6 +108,9 @@ class Msg(BaseModel):
     # ── 元数据 ──
     metadata: dict = Field(default_factory=dict)
     created_at: str = Field(default_factory=_now_iso)
+    # Session 内最后一个修改该 Msg 的 Event 序号；同一条流式消息的多个
+    # chunk 会持续推进这个值，Msg 本身不会因为 chunk 数量而复制。
+    seq: int = -1
     token: MsgToken | None = Field(default=None)
 
     # ── 工作流控制 ──
@@ -113,13 +119,41 @@ class Msg(BaseModel):
     structured_output: dict | None = Field(default=None)
     error: dict[str, Any] | None = Field(default=None)
 
+    @field_validator("content", mode="before")
+    @classmethod
+    def _preserve_unknown_blocks(cls, value: Any) -> Any:
+        """把未来未知 block 包进 extension，保留原始 JSON。"""
+        if not isinstance(value, list):
+            return value
+        normalized: list[Any] = []
+        for index, raw in enumerate(value):
+            if not isinstance(raw, dict):
+                normalized.append(raw)
+                continue
+            raw_type = raw.get("type")
+            if raw_type in ContentBlockTypes:
+                normalized.append(raw)
+                continue
+            original = dict(raw)
+            encoded = json.dumps(original, ensure_ascii=False, sort_keys=True, default=str)
+            block_id = str(original.get("id") or "extension_" + hashlib.sha256(encoded.encode()).hexdigest()[:16])
+            normalized.append({
+                "type": "extension",
+                "original_type": str(raw_type or "unknown"),
+                "data": original,
+                "id": block_id,
+                "created_at": str(original.get("created_at") or _now_iso()),
+                "finished_at": original.get("finished_at"),
+            })
+        return normalized
+
     @model_validator(mode="after")
     def _validate_role_content(self) -> Msg:
         """角色约束（对齐 AgentScope）。"""
         for block in self.content:
-            if self.role == "user" and block.type not in ("text", "data"):
+            if self.role == "user" and block.type not in ("text", "data", "extension"):
                 raise ValueError("User message can only contain text/data blocks.")
-            if self.role == "system" and block.type != "text":
+            if self.role == "system" and block.type not in ("text", "extension"):
                 raise ValueError("System message can only contain text blocks.")
         if self.token is not None and self.role != "assistant":
             raise ValueError(

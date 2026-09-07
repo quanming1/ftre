@@ -195,6 +195,7 @@ async def test_paused_run_does_not_consume_queue_until_confirmation_completes(tm
     assert [request.request_id for request in factory.calls] == ["r1"]
 
     await agents.resume_confirmation("s1", "ws", [], {})
+    service.schedule_next_turn("s1")
     for _ in range(100):
         if [request.request_id for request in factory.calls] == ["r1", "r2"]:
             break
@@ -205,7 +206,7 @@ async def test_paused_run_does_not_consume_queue_until_confirmation_completes(tm
 
 
 @pytest.mark.asyncio
-async def test_agent_failure_after_claim_freezes_queue(tmp_path):
+async def test_agent_failure_after_claim_does_not_create_inbox_status(tmp_path):
     from ftre_agent import AgentService
 
     agents = AgentService()
@@ -219,12 +220,12 @@ async def test_agent_failure_after_claim_freezes_queue(tmp_path):
     assert result.status == "failed"
     snapshot = await service.snapshot("s1")
     assert snapshot.pending == ()
-    assert service.status("s1") == "blocked"
+    assert not hasattr(service, "status")
     await service.close()
 
 
 @pytest.mark.asyncio
-async def test_cancelled_request_is_terminal_before_new_message(tmp_path):
+async def test_cancelled_request_does_not_block_a_new_followup(tmp_path):
     from ftre_agent import AgentService
 
     agents = AgentService()
@@ -240,9 +241,8 @@ async def test_cancelled_request_is_terminal_before_new_message(tmp_path):
     await service.followup(InboundMessage("s1", "r2", "ws", "second"))
     await asyncio.sleep(0.05)
 
-    assert [request.request_id for request in factory.calls] == ["r1"]
-    assert [item.request_id for item in (await service.snapshot("s1")).pending] == ["r2"]
-    assert service.status("s1") == "blocked"
+    assert [request.request_id for request in factory.calls] == ["r1", "r2"]
+    assert (await service.snapshot("s1")).pending == ()
     await service.close()
 
 

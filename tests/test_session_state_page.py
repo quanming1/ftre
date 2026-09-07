@@ -1,7 +1,7 @@
-"""派生消息 + session.json 的一致性分页视图测试（PRD-F43）。
+"""派生消息 + session.json Snapshot 的一致性分页视图测试（PRD-F44）。
 
 消息经 append_event("user/message" / "assistant/message", whole-value) 提交；
-分页视图基于 derived messages，file_path 指向 session.jsonl。
+分页视图基于 derived messages，file_path 指向 session.json。
 """
 
 import pytest
@@ -50,8 +50,8 @@ async def test_state_page_defaults_to_tail_and_supports_earlier_pages(manager, t
 
     tail = await manager.get_state_page(session_id, limit=3)
     assert tail is not None
-    assert tail["schema_version"] == 2
-    assert tail["file_path"] == str(tmp_path / "sessions" / session_id / "session.jsonl")
+    assert tail["schema_version"] == 5
+    assert tail["file_path"] == str(tmp_path / "sessions" / session_id / "session.json")
     assert tail["session"]["id"] == session_id
     assert tail["truncated_message_ids"] == []
     assert tail["stats"]["message_count"] == 7

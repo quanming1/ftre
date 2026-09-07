@@ -1,9 +1,9 @@
-"""SessionMetaFile Schema 测试（session.json 元信息 + 事件日志分离）。
+"""SessionMetaFile Snapshot Schema 测试（PRD-F44）。
 
 验收标准：
-- 合法 SessionMeta 可 round-trip（无 messages 字段）；
+- 合法 Snapshot 可 round-trip（包含 messages / seq）；
 - 未知 schema_version 明确报不支持；
-- 含 messages 的 schema_version=1 输入直接拒绝（旧格式不解析、不迁移）。
+- schema_version=1 输入直接拒绝；schema v2 仅作为迁移输入接受。
 """
 import pytest
 from pydantic import ValidationError
@@ -34,8 +34,11 @@ def _session(**overrides) -> dict:
 def test_minimal_meta_round_trip():
     state = SessionMetaFile(session=_session())  # type: ignore[arg-type]
     payload = state.model_dump(mode="json")
-    assert set(payload) == {"schema_version", "session", "metadata"}
-    assert payload["schema_version"] == 2
+    assert set(payload) == {
+        "schema_version", "session", "metadata", "seq",
+        "messages", "requests", "extensions",
+    }
+    assert payload["schema_version"] == 5
     assert payload["metadata"] == {}
     restored = parse_session_meta(payload)
     assert restored.session.id == "ws_sess_abc123"
@@ -73,14 +76,16 @@ def test_schema_v1_with_messages_rejected():
         })
 
 
-def test_unknown_fields_rejected():
-    with pytest.raises(ValidationError):
-        parse_session_meta({
-            "schema_version": 2,
-            "session": _session(),
-            "metadata": {},
-            "unknown_field": True,
-        })
+def test_unknown_fields_are_preserved_for_extensions():
+    restored = parse_session_meta({
+        "schema_version": 4,
+        "session": _session(),
+        "metadata": {},
+        "cursor": 12,
+        "unknown_field": True,
+    })
+    assert restored.model_dump(mode="json")["unknown_field"] is True
+    assert restored.seq == 12
 
 
 def test_session_state_requires_channel_and_timestamps():

@@ -1,4 +1,4 @@
-"""WebSocket Channel：桌面客户端协议到 Bus 的适配层（PRD-F41 wire）。
+"""WebSocket Channel：桌面客户端协议到 Bus 的通用适配层（PRD-F41 wire）。
 
 连接 / session 模型：
 - 一个客户端 = 一条物理 WebSocket，可 attach 多个 session（前端同时关注多会话）。
@@ -7,16 +7,16 @@
 wire 帧（PRD-F41 §4.4，信封 {v, session_id, type, payload}）：
 - 下行透传：BusMessage(type="downstream_frame") 的 data 即完整帧——
   Channel 只做 json.dumps + 按 attach 扇出 + per-session 输出锁保序。
-- attach 基线三连（输出锁内）：session/subscribed{last_seq,status} →
-  session/queue（若有 Inbox）→ 直播事件流。
-- rpc 帧：prompt/cancel/updateQueue 的结算响应，对发起连接直回（不经 Bus 广播）。
+- attach 基线由宿主协议适配器提供，Channel 只负责顺序发送。
+- rpc 帧：prompt/cancel 以及宿主提供的控制操作结算响应，对发起连接直回。
 
 Channel 只负责连接、帧校验、attach 和 outbound 推送；Session admission、命令解析
-和 Agent 执行仍由 MessageBus/Inbox 完成。
+和 Agent 执行仍由宿主协议适配器与 MessageBus 完成。
 """
 import asyncio
 import base64
 import binascii
+import inspect
 import json
 import logging
 from typing import Any
@@ -33,11 +33,7 @@ from ftre.services.messaging.bus import (
     InboundMetadata,
 )
 from ftre.services.messaging.channel.base import Channel
-from ftre.services.messaging.wire import (
-    RpcFrame,
-    SessionQueueFrame,
-    SessionSubscribedFrame,
-)
+from ftre.services.messaging.wire import RpcFrame
 
 logger = logging.getLogger(__name__)
 
@@ -137,9 +133,9 @@ class WebSocketChannel(Channel):
         app: FastAPI | None = None,
         attachment_service: AttachmentService | None = None,
         http_service=None,
-        sessions_service=None,
-        inbox_provider=None,
-        status_provider=None,
+        control_handler=None,
+        baseline_provider=None,
+        snapshot_provider=None,
     ):
         super().__init__(channel_id="ws", name="WebSocket Channel", bus=bus)
         self.host = host
@@ -161,10 +157,10 @@ class WebSocketChannel(Channel):
         self._ws_sessions: dict[WebSocket, set[str]] = {}
         # per-session 输出锁：保证 attach 基线与实时帧的 FIFO 顺序
         self._session_output_locks: dict[str, asyncio.Lock] = {}
-        # 能力注入（Plugin 构造时显式传入）
-        self._sessions_service = sessions_service
-        self._inbox_provider = inbox_provider
-        self._status_provider = status_provider
+        # 协议扩展由当前 Plugin 提供；Channel 不知道具体业务 Service。
+        self._control_handler = control_handler
+        self._baseline_provider = baseline_provider
+        self._snapshot_provider = snapshot_provider
         self._http_service = http_service
         self._server = None
         self._server_task: asyncio.Task | None = None
@@ -180,12 +176,6 @@ class WebSocketChannel(Channel):
             return
         app.websocket("/")(self._ws_endpoint)
         setattr(app.state, marker, True)
-
-    def _current_inbox(self):
-        provider = self._inbox_provider
-        if callable(provider):
-            return provider()
-        return provider
 
     async def start(self) -> None:
         """启动 WebSocket 服务"""
@@ -328,10 +318,10 @@ class WebSocketChannel(Channel):
     # ============================================================
 
     async def _on_message(self, raw: str, ws: WebSocket) -> None:
-        """收到客户端消息 → 通过 Bus 交给 Inbox/Command 边界。
+        """收到客户端消息 → 通过 Bus 交给宿主入站边界。
 
         上行帧格式: {type, request_id, payload: {...}, metadata?}
-        type: attach | detach | session.prompt | session.cancel | session.updateQueue
+        type: attach | detach | session.prompt | session.cancel | <plugin control>
         """
         try:
             frame = json.loads(raw)
@@ -350,7 +340,11 @@ class WebSocketChannel(Channel):
             lock = self._output_lock(session_id)
             async with lock:
                 self._attach(session_id, ws)
-                await self._send_baseline(session_id, ws)
+                await self._send_baseline(
+                    session_id,
+                    ws,
+                    client_seq=data.get("seq"),
+                )
             return
 
         if frame_type == "detach":
@@ -362,7 +356,7 @@ class WebSocketChannel(Channel):
             return
 
         if frame_type == "session.updateQueue":
-            await self._on_queue_update(ws, frame, data)
+            await self._on_control(ws, frame_type, frame, data)
             return
 
         if frame_type != "session.prompt":
@@ -437,7 +431,7 @@ class WebSocketChannel(Channel):
                     "retryable": bool(error.get("retryable")),
                 })
                 return
-            await self._send_queue_rpc(ws, request_id, session_id)
+            await self._send_snapshot_rpc(ws, request_id, session_id)
         except Exception:
             logger.exception(
                 "[ws-channel] durable admission 失败 session=%s request=%s",
@@ -497,81 +491,59 @@ class WebSocketChannel(Channel):
                 "retryable": True,
             })
 
-    async def _on_queue_update(self, ws: WebSocket, frame: dict, data: dict) -> None:
-        """session.updateQueue：edit/remove/steer → rpc(ok+queue)。"""
+    async def _on_control(
+        self,
+        ws: WebSocket,
+        frame_type: str,
+        frame: dict,
+        data: dict,
+    ) -> None:
+        """把业务控制帧交给当前协议 Plugin，不解释其领域语义。"""
         session_id = str(data.get("session_id") or "")
         request_id = str(frame.get("request_id") or "")
-        item_id = str(data.get("item_id") or "")
-        action = data.get("action") or {}
-        inbox = self._current_inbox()
-        if not session_id or not item_id or not isinstance(action, dict) or inbox is None:
+        if not session_id or not request_id:
             await self._send_rpc(ws, request_id, session_id, ok=False, error={
-                "code": "inbox-unavailable",
-                "message": "队列能力不可用",
+                "code": "missing_request_id",
+                "message": "控制帧缺少 session_id 或 request_id",
                 "session_id": session_id,
                 "retryable": False,
             })
             return
-        kind = action.get("kind")
-        try:
-            snapshot = await inbox.snapshot(session_id)
-            steering_ids = {
-                item.request_id
-                for item in snapshot.next_step
-                if getattr(item, "source", "user") == "user"
-            }
-            if kind in {"edit", "remove"} and item_id in steering_ids:
-                await self._send_rpc(ws, request_id, session_id, ok=False, error={
-                    "code": "steering-locked",
-                    "message": "steering 消息已锁定，不能编辑或移除",
-                    "session_id": session_id,
-                    "retryable": False,
-                })
-                return
-            if kind == "edit":
-                accepted = await inbox.edit(
-                    session_id, item_id,
-                    _prompt_text(action.get("content")),
-                    action.get("attachments"),
-                )
-            elif kind == "remove":
-                accepted = await inbox.remove(session_id, item_id)
-            elif kind == "steer":
-                if not any(item.request_id == item_id for item in snapshot.next_turn):
-                    await self._send_rpc(ws, request_id, session_id, ok=False, error={
-                        "code": "steer-not-available",
-                        "message": "只有 queued 消息可以提升为 steering",
-                        "session_id": session_id,
-                        "retryable": False,
-                    })
-                    return
-                accepted = await inbox.promote(session_id, item_id)
-            else:
-                await self._send_rpc(ws, request_id, session_id, ok=False, error={
-                    "code": "invalid_queue_action",
-                    "message": "未知队列操作",
-                    "session_id": session_id,
-                    "retryable": False,
-                })
-                return
-        except Exception:
-            logger.exception("[ws-channel] queue update failed session=%s item=%s", session_id, item_id)
+        if self._control_handler is None:
             await self._send_rpc(ws, request_id, session_id, ok=False, error={
-                "code": "queue_update_failed",
-                "message": "队列操作失败",
+                "code": "control-unavailable",
+                "message": "控制能力不可用",
                 "session_id": session_id,
                 "retryable": True,
             })
             return
-        if not accepted:
+        try:
+            value = self._control_handler(frame_type, frame, data)
+            if inspect.isawaitable(value):
+                value = await value
+            if not isinstance(value, dict):
+                value = {"ok": True, "value": value}
+            await self._send_rpc(
+                ws,
+                request_id,
+                session_id,
+                ok=bool(value.get("ok", True)),
+                value=value.get("value"),
+                error=value.get("error"),
+            )
+        except Exception:
+            logger.exception(
+                "[ws-channel] control failed type=%s session=%s request=%s",
+                frame_type,
+                session_id,
+                request_id,
+            )
             await self._send_rpc(ws, request_id, session_id, ok=False, error={
-                "code": "item-not-pending",
-                "message": "消息已不在队列中",
+                "code": "control_failed",
+                "message": "控制指令执行失败，请重试",
                 "session_id": session_id,
-                "retryable": False,
+                "retryable": True,
             })
-            return
-        await self._send_queue_rpc(ws, request_id, session_id)
 
     async def _admit(
         self,
@@ -581,7 +553,7 @@ class WebSocketChannel(Channel):
         *,
         kind: str,
     ):
-        """把规范化 prompt 信封交给 MessageBus/InBox 边界。"""
+        """把规范化 prompt 信封交给 MessageBus 入站边界。"""
         message = BusMessage(
             type=kind,
             from_channel=self.channel_id,
@@ -597,42 +569,27 @@ class WebSocketChannel(Channel):
     # attach 基线 / rpc
     # ============================================================
 
-    async def _send_baseline(self, session_id: str, ws: WebSocket) -> None:
-        """attach 基线三连（输出锁内）：subscribed → queue → status。"""
-        last_seq = -1
-        status = "idle"
-        if self._sessions_service is not None:
-            try:
-                last_seq = await self._sessions_service.last_seq(session_id)
-            except Exception:  # noqa: BLE001 边界：基线尽力而为
-                last_seq = -1
-        if self._status_provider is not None:
-            try:
-                value = self._status_provider(session_id)
-                status = await value if asyncio.iscoroutine(value) else str(value)
-            except Exception:  # noqa: BLE001 边界
-                status = "idle"
-        subscribed = SessionSubscribedFrame(
-            session_id=session_id,
-            payload={"last_seq": last_seq, "status": status},
-        )
-        inbox = self._current_inbox()
-        queue_frame = None
-        if inbox is not None:
-            try:
-                queue_snapshot = await inbox.wire_snapshot(session_id)
-                queue_frame = SessionQueueFrame(
-                    session_id=session_id, payload=queue_snapshot
-                )
-            except Exception:  # noqa: BLE001 边界
-                queue_frame = None
+    async def _send_baseline(
+        self,
+        session_id: str,
+        ws: WebSocket,
+        *,
+        client_seq: Any = None,
+    ) -> None:
+        """按宿主协议适配器提供的顺序发送 attach 基线。"""
+        if self._baseline_provider is None:
+            return
         try:
-            await ws.send_text(
-                json.dumps(subscribed.model_dump(mode="json"), ensure_ascii=False, default=str)
+            frames = self._baseline_provider(
+                session_id,
+                client_seq=client_seq,
             )
-            if queue_frame is not None:
+            if inspect.isawaitable(frames):
+                frames = await frames
+            for frame in frames or ():
+                payload = frame.model_dump(mode="json") if hasattr(frame, "model_dump") else frame
                 await ws.send_text(
-                    json.dumps(queue_frame.model_dump(mode="json"), ensure_ascii=False, default=str)
+                    json.dumps(payload, ensure_ascii=False, default=str)
                 )
         except Exception as e:  # noqa: BLE001 边界
             logger.debug(f"[ws-channel] 基线发送失败: {e}")
@@ -658,30 +615,31 @@ class WebSocketChannel(Channel):
         except Exception as e:  # noqa: BLE001 边界
             logger.debug(f"[ws-channel] rpc 回写失败: {e}")
 
-    async def _send_queue_rpc(self, ws: WebSocket, request_id: str, session_id: str) -> None:
-        """把操作结算和最新 Inbox wire snapshot 合并成一个 rpc(ok) 响应。"""
-        inbox = self._current_inbox()
-        if inbox is None:
+    async def _send_snapshot_rpc(self, ws: WebSocket, request_id: str, session_id: str) -> None:
+        """把 admission 结算和宿主快照合并为一个通用 rpc 响应。"""
+        if self._snapshot_provider is None:
             await self._send_rpc(ws, request_id, session_id, ok=False, error={
-                "code": "inbox-unavailable",
-                "message": "队列能力不可用",
+                "code": "snapshot-unavailable",
+                "message": "快照能力不可用",
                 "session_id": session_id,
                 "retryable": True,
             })
             return
         try:
-            payload = await inbox.wire_snapshot(session_id)
+            payload = self._snapshot_provider(session_id)
+            if inspect.isawaitable(payload):
+                payload = await payload
             await self._send_rpc(
                 ws, request_id, session_id, ok=True, value=payload
             )
         except Exception:
             logger.exception(
-                "[ws-channel] queue response failed session=%s request=%s",
+                "[ws-channel] snapshot response failed session=%s request=%s",
                 session_id, request_id,
             )
             await self._send_rpc(ws, request_id, session_id, ok=False, error={
-                "code": "queue_snapshot_failed",
-                "message": "队列快照读取失败，请使用同一 request_id 重试",
+                "code": "snapshot_failed",
+                "message": "快照读取失败，请使用同一 request_id 重试",
                 "session_id": session_id,
                 "retryable": True,
             })

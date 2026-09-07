@@ -10,8 +10,9 @@ from ._block import (
     ContentBlock,
     ContentBlockTypes,
     DataBlock,
+    ExtensionBlock,
     HintBlock,
-    # 6 种内容块
+    # 内容块（含未来扩展保留容器）
     TextBlock,
     ThinkingBlock,
     ToolCallBlock,
@@ -43,6 +44,7 @@ __all__ = [
     "ContentBlock",
     "ContentBlockTypes",
     "DataBlock",
+    "ExtensionBlock",
     "HintBlock",
     "Msg",
     "MsgName",

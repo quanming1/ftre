@@ -1,7 +1,7 @@
 """WebSocket 协议 smoke：不依赖真实 LLM 或桌面客户端（PRD-F41 S 场景）。
 
-帧形状契约：attach 基线 = session/subscribed + session/queue（两帧）；
-prompt/updateQueue/cancel 结算 = rpc 帧 {v, session_id, type:"rpc", payload}。
+帧形状契约：attach 基线 = session/subscribed（含 Event[]） + session/queue（两帧）；
+ prompt/updateQueue/cancel 结算 = rpc 帧 {v, session_id, type:"rpc", payload}。
 """
 from __future__ import annotations
 
@@ -55,9 +55,20 @@ class FakeInbox:
         return SimpleNamespace(next_turn=(self.item,), next_step=())
 
 
-class FakeSessions:
-    async def last_seq(self, session_id: str) -> int:
-        return 5
+async def baseline_provider(session_id: str, **_kwargs):
+    from ftre.services.messaging.wire import SessionQueueFrame, SessionSubscribedFrame
+
+    inbox = baseline_provider.inbox
+    return [
+        SessionSubscribedFrame(
+            session_id=session_id,
+            payload={"seq": 5, "events": [], "status": "idle", "has_more": False},
+        ).model_dump(mode="json"),
+        SessionQueueFrame(
+            session_id=session_id,
+            payload=await inbox.wire_snapshot(session_id),
+        ).model_dump(mode="json"),
+    ]
 
 
 def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
@@ -77,12 +88,30 @@ def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
 
     bus.request_inbound = request_inbound
     inbox = FakeInbox()
+    baseline_provider.inbox = inbox
+
+    async def control_handler(_frame_type, _frame, data):
+        action = data["action"]
+        if action["kind"] == "edit":
+            accepted = await inbox.edit(
+                data["session_id"], data["item_id"], action["content"], None
+            )
+        elif action["kind"] == "remove":
+            accepted = await inbox.remove(data["session_id"], data["item_id"])
+        elif action["kind"] == "steer":
+            accepted = await inbox.promote(data["session_id"], data["item_id"])
+        else:
+            return {"ok": False, "error": {"code": "invalid_queue_action"}}
+        if not accepted:
+            return {"ok": False, "error": {"code": "item-not-pending"}}
+        return {"ok": True, "value": await inbox.wire_snapshot(data["session_id"])}
+
     channel = WebSocketChannel(
         bus,
         app=FastAPI(title="ftre-test"),
-        inbox_provider=inbox,
-        sessions_service=FakeSessions(),
-        status_provider=lambda _session_id: "idle",
+        control_handler=control_handler,
+        baseline_provider=baseline_provider,
+        snapshot_provider=inbox.wire_snapshot,
     )
 
     with TestClient(channel.app) as client:
@@ -91,14 +120,14 @@ def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
                 "type": "attach",
                 "payload": {"session_id": "s1"},
             })
-            # 基线两连：subscribed{last_seq,status} → queue 快照
+            # 基线两连：subscribed{seq,events,status} → queue 快照
             baseline = [websocket.receive_json() for _ in range(2)]
             assert [frame["type"] for frame in baseline] == [
                 "session/subscribed", "session/queue",
             ]
             assert baseline[0]["v"] == 1
             assert baseline[0]["session_id"] == "s1"
-            assert baseline[0]["payload"]["last_seq"] == 5
+            assert baseline[0]["payload"]["seq"] == 5
             assert baseline[0]["payload"]["status"] == "idle"
             assert baseline[1]["payload"]["items"][0]["placement"] == "queued"
 

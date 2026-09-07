@@ -144,7 +144,17 @@ class _FoldState:
         self.order: list[str] = []
         self.tool_calls: dict[str, str] = {}
 
-    def ensure_assistant(self, message_id: str, created_ms: int) -> Msg:
+    @staticmethod
+    def event_seq(event: dict[str, Any]) -> int:
+        value = event.get("seq")
+        return int(value) if isinstance(value, (int, float)) else -1
+
+    def touch(self, message: Msg, event: dict[str, Any]) -> None:
+        """记录最后一个实际修改该 Msg 的 Event 序号。"""
+        seq = self.event_seq(event)
+        message.seq = max(message.seq, seq)
+
+    def ensure_assistant(self, message_id: str, created_ms: int, event: dict[str, Any] | None = None) -> Msg:
         message = self.messages.get(message_id)
         if message is None:
             message = Msg(
@@ -153,8 +163,11 @@ class _FoldState:
                 content=[],
                 role="assistant",
                 created_at=_iso_from_ms(created_ms),
+                seq=self.event_seq(event or {}),
             )
             self.insert(message)
+        elif event is not None:
+            self.touch(message, event)
         return message
 
     def insert(self, message: Msg) -> None:
@@ -165,7 +178,7 @@ class _FoldState:
             if block.type == "tool_call":
                 self.tool_calls[block.id] = message.id
 
-    def seal_previous_assistant(self, finished_at: str) -> None:
+    def seal_previous_assistant(self, finished_at: str, event: dict[str, Any] | None = None) -> None:
         """真实用户消息到达时封口上一条未完成 assistant（steering/新轮边界）。"""
         for message_id in reversed(self.order):
             message = self.messages[message_id]
@@ -173,6 +186,8 @@ class _FoldState:
                 if message.finished_at is None:
                     message.finished_at = finished_at
                     message.finished_reason = "completed"
+                    if event is not None:
+                        self.touch(message, event)
                 return
             if message.role == "user":
                 return
@@ -221,7 +236,7 @@ def _append_assistant_chunk(
     if not message_id or kind not in {"text", "thinking"}:
         return
     time_ms = int(event.get("time") or 0)
-    message = state.ensure_assistant(message_id, time_ms)
+    message = state.ensure_assistant(message_id, time_ms, event)
     block_id = _chunk_block_id(data, kind=kind, message_id=message_id)
     delta = str(data.get("delta") or "")
     block = _find_block(message, kind, block_id)
@@ -246,6 +261,7 @@ def _append_assistant_chunk(
                 created_at=_iso_from_ms(time_ms),
             )
         )
+    state.touch(message, event)
 
 
 def _append_tool_result_chunk(
@@ -290,6 +306,7 @@ def _append_tool_result_chunk(
                 created_at=_iso_from_ms(time_ms),
             )
         )
+    state.touch(message, event)
 
 
 def derive_messages(events: list[dict[str, Any]]) -> list[Msg]:
@@ -304,6 +321,67 @@ def derive_context_messages(events: list[dict[str, Any]]) -> list[Msg]:
     """LLM 上下文视图：最后一条 summary compact 为锚点（含锚点），
     fast 模式 compact 累计裁剪的 tool_result 输出置为占位文本。"""
     messages = derive_messages(events)
+    trim_ids: set[str] = set()
+    tool_result_event_order = [
+        (int(event.get("seq") or 0), str((event.get("data") or {}).get("tool_call_id") or ""))
+        for event in events
+        if event.get("type") == "tool/result"
+        and (event.get("data") or {}).get("tool_call_id")
+    ]
+    for event in events:
+        if event.get("type") != "compact/message":
+            continue
+        data = event.get("data") or {}
+        if data.get("mode") != "fast":
+            continue
+        ids = data.get("tool_result_ids") or []
+        if isinstance(ids, list) and ids:
+            trim_ids.update(str(item) for item in ids if item)
+            continue
+        count = max(0, int(data.get("tool_results") or 0))
+        cutoff = int(event.get("seq") or 0)
+        if count:
+            eligible = [
+                tool_id
+                for seq, tool_id in tool_result_event_order
+                if seq < cutoff and tool_id not in trim_ids
+            ]
+            trim_ids.update(eligible[:count])
+    return _context_from_messages(messages, trim_ids=trim_ids)
+
+
+def derive_context_messages_from_messages(messages: list[Msg]) -> list[Msg]:
+    """从已持久化的 Msg Snapshot 构造 LLM 上下文。
+
+    Snapshot 不再保留 compact Event 的 seq，因此 fast compact 的裁剪依据必须
+    随 compact Msg 一起保存为 ``context_compact.tool_result_ids``；旧快照没有
+    该字段时按 Msg 顺序和 ``tool_results`` 数量做兼容降级。返回深拷贝，调用方
+    可以安全地把被裁剪的 tool_result 输出替换为占位文本。
+    """
+    snapshot = [message.model_copy(deep=True) for message in messages]
+    trim_ids: set[str] = set()
+    for index, message in enumerate(snapshot):
+        if message.name != MsgName.COMPACT_FAST:
+            continue
+        compact_meta = message.metadata.get("context_compact") or {}
+        ids = compact_meta.get("tool_result_ids") or []
+        if isinstance(ids, list) and ids:
+            trim_ids.update(str(item) for item in ids if item)
+            continue
+        count = max(0, int(compact_meta.get("tool_results") or 0))
+        if count:
+            eligible = [
+                block.id
+                for previous in snapshot[:index]
+                for block in previous.content
+                if block.type == "tool_result" and block.id not in trim_ids
+            ]
+            trim_ids.update(eligible[:count])
+    return _context_from_messages(snapshot, trim_ids=trim_ids)
+
+
+def _context_from_messages(messages: list[Msg], *, trim_ids: set[str]) -> list[Msg]:
+    """按 compact 锚点切上下文，并对 fast compact 做确定性裁剪。"""
     anchor_index = -1
     for index, message in enumerate(messages):
         if message.role == "user" and message.name == MsgName.COMPACT:
@@ -331,35 +409,6 @@ def derive_context_messages(events: list[dict[str, Any]]) -> list[Msg]:
             tail = [compact, *messages[anchor_index + 1:]]
     else:
         tail = messages
-
-    # fast compact 新事件持久化精确的 tool_result_ids；旧日志没有该字段时，
-    # 仅从该 compact 事件之前选择 n 个结果，避免旧 compact 误裁未来输出。
-    tool_result_event_order = [
-        (int(event.get("seq") or 0), str((event.get("data") or {}).get("tool_call_id") or ""))
-        for event in events
-        if event.get("type") == "tool/result"
-        and (event.get("data") or {}).get("tool_call_id")
-    ]
-    trim_ids: set[str] = set()
-    for event in events:
-        if event.get("type") != "compact/message":
-            continue
-        data = event.get("data") or {}
-        if data.get("mode") != "fast":
-            continue
-        ids = data.get("tool_result_ids") or []
-        if isinstance(ids, list) and ids:
-            trim_ids.update(str(item) for item in ids if item)
-            continue
-        count = max(0, int(data.get("tool_results") or 0))
-        cutoff = int(event.get("seq") or 0)
-        if count:
-            eligible = [
-                tool_id
-                for seq, tool_id in tool_result_event_order
-                if seq < cutoff and tool_id not in trim_ids
-            ]
-            trim_ids.update(eligible[:count])
 
     if trim_ids:
         for message in tail:
@@ -398,7 +447,7 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
     message_id = event.get("message_id")
 
     if type_ == "user/message":
-        state.seal_previous_assistant(_iso_from_ms(time_ms))
+        state.seal_previous_assistant(_iso_from_ms(time_ms), event)
         resolved_message_id = str(message_id or f"user_{event.get('seq', 0)}")
         message = _user_msg_factory(
             content=_normalize_user_content(
@@ -409,6 +458,7 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
             id=resolved_message_id,
             created_at=_iso_from_ms(time_ms),
             metadata=dict(data.get("metadata") or {}),
+            seq=state.event_seq(event),
         )
         state.insert(message)
         return
@@ -419,13 +469,14 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
         if message_id and message.id != message_id:
             # whole-value 载荷与信封坐标不一致时以信封为准（防御性对齐）
             message = message.model_copy(update={"id": message_id})
+        state.touch(message, event)
         state.insert(message)
         return
 
     if type_ == "hint/message":
         if not message_id:
             return
-        message = state.ensure_assistant(message_id, time_ms)
+        message = state.ensure_assistant(message_id, time_ms, event)
         # 块 id 派生自事件 seq：两侧 fold（derive / ConversationAssembler）对拍
         # 需要确定性标识，禁止随机生成（PRD-F42 AC1 / F43 AC5）。
         message.content.append(
@@ -437,10 +488,11 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
                 finished_at=_iso_from_ms(time_ms),
             )
         )
+        state.touch(message, event)
         return
 
     if type_ == "compact/message":
-        state.seal_previous_assistant(_iso_from_ms(time_ms))
+        state.seal_previous_assistant(_iso_from_ms(time_ms), event)
         mode = str(data.get("mode") or "summary")
         # 摘要块的 id 派生自 message_id（确定性，客户端 fold 同规则）
         compact_block_id = f"compact_{message_id or ''}"
@@ -456,6 +508,17 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
                 f"其原始内容不再可见（约节省 {saved} tokens）。"
                 "后续如需相关信息请重新获取。"
             )
+            compact_meta = {
+                "mode": "fast",
+                "tool_results": tool_results,
+                "tokens_before": tokens_before,
+                "tokens_after": tokens_after,
+            }
+            tool_result_ids = [
+                str(item) for item in (data.get("tool_result_ids") or []) if item
+            ]
+            if tool_result_ids:
+                compact_meta["tool_result_ids"] = tool_result_ids
             message = _assistant_factory(
                 name=MsgName.COMPACT_FAST,
                 content=[
@@ -467,16 +530,10 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
                 ],
                 id=message_id or "",
                 created_at=_iso_from_ms(time_ms),
+                seq=state.event_seq(event),
                 finished_at=_iso_from_ms(time_ms),
                 finished_reason="completed",
-                metadata={
-                    "context_compact": {
-                        "mode": "fast",
-                        "tool_results": tool_results,
-                        "tokens_before": tokens_before,
-                        "tokens_after": tokens_after,
-                    }
-                },
+                metadata={"context_compact": compact_meta},
             )
         else:
             message = _user_msg_factory(
@@ -490,6 +547,7 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
                 ],
                 id=message_id or "",
                 created_at=_iso_from_ms(time_ms),
+                seq=state.event_seq(event),
                 metadata={
                     "hide": True,
                     "context_compact": {
@@ -506,7 +564,7 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
     if type_ == "tool/call-start":
         if not message_id:
             return
-        message = state.ensure_assistant(message_id, time_ms)
+        message = state.ensure_assistant(message_id, time_ms, event)
         tool_call_id = str(data.get("tool_call_id") or "")
         if _find_block(message, "tool_call", tool_call_id) is None:
             message.content.append(
@@ -518,6 +576,7 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
                 )
             )
             state.tool_calls[tool_call_id] = message.id
+            state.touch(message, event)
         return
 
     if type_ == "tool/result-start":
@@ -527,12 +586,14 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
         owner_id = _tool_owner(state, tool_call_id)
         if owner_id is None:
             return
+        message = state.messages[owner_id]
         _ensure_running_tool_result(
-            state.messages[owner_id],
+            message,
             tool_call_id,
             name=str(data.get("name") or ""),
             time_ms=time_ms,
         )
+        state.touch(message, event)
         return
 
     if type_ == "tool/result":
@@ -563,6 +624,7 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
         if call_block is not None:
             call_block.state = ToolCallState.FINISHED
             call_block.finished_at = _iso_from_ms(time_ms)
+        state.touch(message, event)
         return
 
     if type_ == "assistant/chunk":
@@ -581,7 +643,12 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
             return
         if message.finished_at is None:
             message.finished_at = _iso_from_ms(time_ms)
-        message.finished_reason = str(data.get("reason") or data.get("outcome") or "completed")
+        reason = str(data.get("reason") or data.get("outcome") or "completed")
+        # Crash repair uses a transport-level ``crashed`` reason; Msg exposes
+        # the stable finished_reason vocabulary, so map recovery to interrupted.
+        if reason in {"crashed", "cancelled", "paused"}:
+            reason = "interrupted" if reason == "crashed" else "completed"
+        message.finished_reason = reason
         error = data.get("error")
         if isinstance(error, dict) and error:
             message.error = error
@@ -599,6 +666,7 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
             else:
                 # turn/end 的 usage 是整轮累计值，不能覆盖最近一次调用锚点。
                 message.token = message.token.model_copy(update={"usage": token})
+        state.touch(message, event)
         return
 
     # approval/asked / turn/start / turn/retry / session/status：不改变消息表面
