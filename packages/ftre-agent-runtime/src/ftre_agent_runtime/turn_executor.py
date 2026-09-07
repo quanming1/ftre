@@ -30,11 +30,16 @@ from ftre_agent import (
     RequestErrorPayload,
     RetryRequest,
 )
-from ftre_agent.event import (
-    ReplyFinishedReason,
-    UserConfirmResultEvent,
+from ftre_agent.event import UserConfirmResultEvent
+from ftre_agent.session.events import (
+    TurnEnd,
+    TurnEndData,
+    TurnRetry,
+    TurnRetryData,
+    TurnStart,
+    TurnStartData,
 )
-from ftre_agent.message import Msg
+from ftre_agent.types import ReplyFinishedReason
 
 from .factory import create_runtime_agent, default_agent_state
 from .protocol import RuntimeInput
@@ -120,8 +125,73 @@ class TurnExecutor:
             confirm_event=confirm_event,
             user_message_id=user_message_id,
         )
-        await self._emit_step(turn, "PIPELINE_START")
+        await self._append_turn_started(turn)
         return await self._drive(turn)
+
+    async def _append_turn_started(self, turn: Turn) -> None:
+        """turn/start 事件：任务开始的唯一信号（PRD-F41 §4.2）。"""
+        trigger = "confirm" if turn.confirm_event is not None else (
+            "cron" if turn.inbound.channel_id == "cron"
+            else "plugin" if turn.inbound.source == "plugin"
+            else "system" if turn.inbound.source == "system"
+            else "user"
+        )
+        model = ""
+        if turn.config is not None:
+            model = str(getattr(turn.config.llm, "model", "") or "")
+        agent_id = str(dict(turn.inbound.metadata or {}).get("agent_id") or "default")
+        await self._loop.append_session_event(
+            turn.session_id,
+            TurnStart(
+                data=TurnStartData(
+                    turn_id=turn.turn_id,
+                    request_id=turn.inbound.request_id,
+                    trigger=trigger,
+                    agent_id=agent_id,
+                    model=model,
+                )
+            ),
+        )
+
+    async def _append_turn_end(self, turn: Turn, outcome: str, reason: str) -> None:
+        """turn/end 事件：任务结束的唯一信号（usage/error/message_id 终态标记）。"""
+        usage: dict | None = None
+        error: dict | None = None
+        iterations = 0
+        run_state = getattr(turn.agent, "run_state", None) if turn.agent is not None else None
+        if run_state is not None:
+            token_usage = dict(getattr(run_state, "token_usage", {}) or {})
+            if token_usage.get("total_tokens"):
+                usage = {
+                    "prompt_tokens": token_usage.get("prompt_tokens", 0),
+                    "completion_tokens": token_usage.get("completion_tokens", 0),
+                    "total_tokens": token_usage.get("total_tokens", 0),
+                }
+            iterations = int(getattr(run_state, "iteration", 0) or 0)
+            if outcome == "error":
+                error = {
+                    "code": str(getattr(run_state, "error_code", "") or "turn_error"),
+                    "message": str(getattr(run_state, "error", "") or "Turn 执行失败"),
+                }
+        await self._loop.append_session_event(
+            turn.session_id,
+            TurnEnd(
+                data=TurnEndData(
+                    turn_id=turn.turn_id,
+                    request_id=turn.inbound.request_id,
+                    outcome=outcome,
+                    reason=reason,
+                    error=error,
+                    usage=usage,
+                    iterations=iterations,
+                ),
+                message_id=self._last_message_id(turn),
+            ),
+        )
+
+    @staticmethod
+    def _last_message_id(turn: Turn) -> str | None:
+        return getattr(turn, "_last_event_message_id", None)
 
     async def _drive(self, turn: Turn) -> AgentRunResult:
         """推进一个已准备好的 Turn，并统一负责 stopping/finalize 边界。"""
@@ -134,8 +204,6 @@ class TurnExecutor:
                 turn.status = await self._advance(turn)
         except asyncio.CancelledError:
             turn.status = TurnStatus.CANCELLED
-            if turn.agent is not None:
-                await self._persist_open_replies(turn, ReplyFinishedReason.INTERRUPTED)
         except Exception:
             logger.exception(
                 f"[turn-executor] 状态机异常 session={turn.session_id} "
@@ -143,32 +211,62 @@ class TurnExecutor:
             )
             turn.status = TurnStatus.ERROR
         finally:
-            # 无论正常完成、异常还是取消，都必须在离开 execute() 前关闭开放中的
-            # reply/tool 生命周期并发送 PIPELINE_END。Inbox 在这里返回之后
-            # 清除自己的内存运行态并唤醒同进程等待者；聊天事实已经写入 messages。
+            # turn/end：任务结束唯一信号（含 paused / error / cancelled 终态标记）。
             if turn.agent is not None:
                 await self._finalize(turn)
-            await self._emit_step(
-                turn,
-                "PIPELINE_END",
-                success=turn.status == TurnStatus.COMPLETED,
-                reason=(
-                    "error"
-                    if turn.status == TurnStatus.ERROR
-                    else "cancelled"
-                    if turn.status == TurnStatus.CANCELLED
-                    else ""
-                ),
-            )
+            run_state = getattr(turn.agent, "run_state", None) if turn.agent is not None else None
+            done_reason = getattr(run_state, "done_reason", None)
+            run_status = getattr(run_state, "status", None)
+            if turn.paused:
+                outcome, reason = "paused", "paused"
+            elif turn.status == TurnStatus.CANCELLED or run_status == RunStatus.CANCELLED:
+                outcome, reason = "cancelled", str(ReplyFinishedReason.INTERRUPTED)
+            elif turn.status == TurnStatus.ERROR or (
+                done_reason == ReplyFinishedReason.ERROR
+                and run_status != RunStatus.COMPLETED
+            ):
+                outcome, reason = "error", str(done_reason or ReplyFinishedReason.ERROR)
+            else:
+                outcome = "completed"
+                reason = str(done_reason or ReplyFinishedReason.COMPLETED)
+            try:
+                await self._append_final_assistant(turn)
+            except Exception:
+                logger.exception(
+                    "[turn-executor] final assistant 快照失败 session=%s",
+                    turn.session_id,
+                )
+            try:
+                await self._append_turn_end(turn, outcome, reason)
+            except Exception:
+                logger.exception(
+                    "[turn-executor] turn/end 事件失败 session=%s", turn.session_id
+                )
+            # checkpoint（PRD-F43 FR5③）：turn/end 落定即同步 flush，
+            # 崩溃损失框在批窗口内；失败降级为告警，等下一次窗口兜底。
+            flush_log = getattr(self._sessions, "flush_log", None)
+            if callable(flush_log):
+                try:
+                    await flush_log(turn.session_id)
+                except Exception:
+                    logger.exception(
+                        "[turn-executor] turn/end flush 失败（等待批窗口兜底） session=%s",
+                        turn.session_id,
+                    )
+        public_status = (
+            "failed" if outcome == "error"
+            else "cancelled" if outcome == "cancelled"
+            else PUBLIC_RUN_STATUS[turn.status]
+        )
         return AgentRunResult(
             session_id=turn.session_id,
             turn_id=turn.turn_id,
-            status=PUBLIC_RUN_STATUS[turn.status],
+            status=public_status,
             user_message_id=turn.user_message_id,
             final_content=turn.final_content,
             error=(
                 {"code": "turn_error", "message": "Turn 执行失败", "retryable": True}
-                if turn.status == TurnStatus.ERROR
+                if public_status == "failed"
                 else None
             ),
             paused=turn.paused,
@@ -411,10 +509,7 @@ class TurnExecutor:
         turn.final_content = ""
 
         try:
-            # TURN_START：Agent 执行开始，客户端据此显示流式区域
-            await self._emit_step(turn, "TURN_START", start_trigger="user")
-
-            # ── 遍历 Agent 产出的事件流 ──
+            # ── 遍历 Agent 产出的事件流，逐条提交 SessionLog ──
             # 恢复请求传 UserConfirmResultEvent 驱动 Runtime 从挂起继续；
             # 普通请求传消息列表。
             run_input = (
@@ -423,31 +518,17 @@ class TurnExecutor:
             async for event in agent.run(
                 run_input, runtime_context=turn.runtime_context
             ):
-                # Event 逐条交给 SessionProjection；Projection 按 message_id 聚合并在
-                # 语义屏障 checkpoint，REPLY_END 只负责当前 Assistant 的最终收尾。
-                completed_message = await self.publish_agent_event(turn, event)
-                if completed_message is not None:
-                    turn.final_content = completed_message.get_text_content() or ""
+                await self._append_event(turn, event)
 
             # AgentState 只保存可持久化的消息上下文；一次 run 的结束原因、
             # 迭代次数、token 用量和错误信息都属于临时 RunState。
             run_state = agent.run_state
 
             # ── 权限挂起（PAUSED）──
-            # 工具命中 ASK → run() 提前结束但未 finalize，done_reason 为 None。
-            # 这不是错误也不是回复结束：ASKING 状态已随 Msg 落盘，不产 error TURN_END、
-            # 不 finish open replies；发一条 success 的 TURN_END(reason=paused) 让客户端
-            # 退出 busy，Turn 正常收尾、agent 实例销毁。用户确认后由新 Turn 恢复。
+            # 工具命中 ASK → run() 提前结束但未 finalize。
+            # turn/end(paused) 由 _drive finally 统一产出；用户确认后由新 Turn 恢复。
             if run_state.status == RunStatus.PAUSED:
                 turn.paused = True
-                await self._emit_step(
-                    turn,
-                    "TURN_END",
-                    success=True,
-                    reason="paused",
-                    iterations=run_state.iteration,
-                    token_usage=dict(run_state.token_usage),
-                )
                 return TurnStatus.FINALIZING
 
             done_reason = run_state.done_reason or ReplyFinishedReason.ERROR
@@ -458,16 +539,7 @@ class TurnExecutor:
                 message=run_state.error or "Agent request failed",
             ):
                 return TurnStatus.RUNNING
-            await self._emit_step(
-                turn,
-                "TURN_END",
-                success=(done_reason == ReplyFinishedReason.COMPLETED),
-                reason=str(done_reason),
-                iterations=run_state.iteration,
-                token_usage=dict(run_state.token_usage),
-                error_message=run_state.error if _is_error else None,
-                error_code=run_state.error_code if _is_error else None,
-            )
+            del _is_error
             return TurnStatus.FINALIZING
 
         except asyncio.CancelledError:
@@ -475,14 +547,7 @@ class TurnExecutor:
             logger.info(
                 f"[turn-executor] Agent 被 cancel 中断 session={turn.session_id}"
             )
-            await self._persist_open_replies(turn, ReplyFinishedReason.INTERRUPTED)
-            # 仍发 TURN_END，让实时客户端立即结束本轮 busy 状态
-            await self._emit_step(
-                turn,
-                "TURN_END",
-                success=False,
-                reason=str(ReplyFinishedReason.INTERRUPTED),
-            )
+            # turn/end(cancelled) 由 _drive finally 统一产出
             return TurnStatus.CANCELLED
         except Exception:
             # 未预期异常
@@ -491,19 +556,6 @@ class TurnExecutor:
                 turn, error_code="request_exception", message="Agent request raised"
             ):
                 return TurnStatus.RUNNING
-            await self._persist_open_replies(
-                turn,
-                ReplyFinishedReason.ERROR,
-                error={"message": "Agent 执行异常", "code": "unknown"},
-            )
-            await self._emit_step(
-                turn,
-                "TURN_END",
-                success=False,
-                reason=str(ReplyFinishedReason.ERROR),
-                error_message="Agent 执行异常",
-                error_code="unknown",
-            )
             return TurnStatus.ERROR
 
     async def _finalize(self, turn: Turn) -> TurnStatus:
@@ -522,48 +574,70 @@ class TurnExecutor:
 
     # ─── 事件发布 ──────────────────────────────────────────
 
-    async def _emit_step(self, turn: Turn, phase: str, **kwargs) -> None:
-        """Emit a Host-owned pipeline event outside AgentStreamEvent."""
-        session_events = getattr(self._loop, "session_events", None)
-        if session_events is None:
-            raise RuntimeError("SessionEventService is not available")
-        await session_events.emit_pipeline(
-            turn.session_id,
-            turn.inbound.channel_id,
-            phase,
-            kwargs,
-            reply_id=turn.turn_id,
-            metadata=dict(turn.inbound.metadata or {}),
-        )
+    async def _append_final_assistant(self, turn: Turn) -> None:
+        """在 turn/end 前提交本 Turn 新增/变更的 Assistant 快照。"""
+        if turn.agent is None:
+            return
+        builders = getattr(turn.agent, "build_final_assistant_events", None)
+        if callable(builders):
+            events = builders() or []
+        else:
+            builder = getattr(turn.agent, "build_final_assistant_event", None)
+            event = builder() if callable(builder) else None
+            events = [event] if event is not None else []
+        for event in events:
+            message_id = getattr(event, "message_id", None)
+            if message_id and message_id in turn.assistant_message_ids_emitted:
+                continue
+            await self._append_event(turn, event)
+            if message_id:
+                turn.assistant_message_ids_emitted.add(message_id)
 
-    async def publish_agent_event(self, turn: Turn, event) -> Msg | None:
-        """实时派发 Event，并在 Reply 生命周期内管理 Msg 持久化。
+    async def _append_event(self, turn: Turn, event) -> None:
+        """把 Runtime 事件提交 SessionLog，并维护 turn 级跟踪状态。
 
-        - REPLY_START: 创建 AssistantMsg + save_message + 注册 ActiveReplyRegistry
-        - 其他 Event: append_event + checkpoint（节流/立即）
-        - REPLY_END: append_event + update_message + 注销 registry
-        - Host maintenance events are projected by SessionEventService
+        - 记录最后一个 message_id（turn/end 终态标记目标）；
+        - assistant/message whole-value 到达时更新 final_content。
         """
-        result = await self._loop.emit_session_event(
-            turn.session_id,
-            turn.inbound.channel_id,
-            event,
-            metadata=dict(turn.inbound.metadata or {}),
-        )
-        return result.completed_message
+        message_id = getattr(event, "message_id", None)
+        if message_id:
+            turn._last_event_message_id = message_id
+        if getattr(event, "type", "") == "assistant/message":
+            turn.assistant_message_emitted = True
+            payload = (event.data.model_dump(mode="json") if hasattr(event.data, "model_dump") else {}).get("message") or {}
+            content = payload.get("content") or []
+            texts = [
+                str(block.get("text") or "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            joined = "".join(texts).strip()
+            if joined:
+                turn.final_content = joined
+        await self._loop.append_session_event(turn.session_id, event)
 
-    async def _persist_open_replies(
+    async def _append_turn_retry(
         self,
         turn: Turn,
-        reason: ReplyFinishedReason,
         *,
-        error: dict | None = None,
+        code: str,
+        message: str,
+        attempt: int,
+        max_attempts: int = 0,
     ) -> None:
-        """异常中断时更新已持久化的 open Msg，写入终态。"""
-        for message in await self._sessions.finish_open_replies(
-            turn.session_id, reason, error=error
-        ):
-            turn.final_content = message.get_text_content() or turn.final_content
+        """REQUEST_RETRY 恢复路径的 turn/retry 事件。"""
+        await self._loop.append_session_event(
+            turn.session_id,
+            TurnRetry(
+                data=TurnRetryData(
+                    turn_id=turn.turn_id,
+                    code=code,
+                    message=message,
+                    attempt=attempt,
+                    max_attempts=max(0, int(max_attempts)),
+                )
+            ),
+        )
 
     async def _assemble_prompt(
         self,
@@ -666,11 +740,12 @@ class TurnExecutor:
             return False
         turn.retry_tokens.add(result.progress_token)
         turn.retry_count += 1
-        await self._emit_step(
+        await self._append_turn_retry(
             turn,
-            "REQUEST_RETRY",
-            reason=result.reason,
+            code="request_error_recovery",
+            message=str(result.reason or "Turn 失败，进入恢复重试"),
             attempt=turn.retry_count,
+            max_attempts=max(0, int(result.max_attempts)),
         )
         return True
 

@@ -2,12 +2,29 @@
 
 ## [未发布]
 
+### F44 会话快照协议与持久化收敛
+
+- Session transcript 改为每个会话单一 `session.json` Msg Snapshot；流式 chunk 仅在内存中聚合，
+  不再逐条写入 JSONL。
+- 新增固定窗口/语义边界 checkpoint、旧 JSONL 一次性迁移和 HTTP Msg 基线 + WebSocket
+  attach Event[] 恢复，并修复重启后历史与 LLM 上下文被遗漏的问题。
+- request_id 增加跨重启内容指纹幂等校验；未知 Msg block 通过 extension 容器保留原始 JSON。
+- 修复 Runtime 回灌历史 Assistant 时重新生成消息并重复落盘的问题；历史上下文现在不会再次产生
+  `assistant/message`，并清理一份受影响的会话快照。
+
 ### F40 MCP 三层配置与统一目录
 
 - MCP 目录统一解析 global/agent/project 三层配置，按 `project > agent > global` 返回 effective/source
   视图，HTTP CRUD 委托 Config、Agent Profile 和 Workspace Service，并对凭据字段脱敏。
 - ToolService 按 Agent/Session 隔离 MCP 工具；ConfigService watcher 负责全局热重载，ToolView 准备失败会
   回滚工具、限制和私有连接，Agent MCP 配置使用原子写入。
+
+### F43 SessionLog 存储与 Token 水位修复
+
+- 流式 `assistant/chunk` 在 JSONL 落盘前按连续增量无损打包，读取时还原原事件；未知形状原样保留。
+- Assistant whole-value 快照改为 Turn 语义边界唯一收口，不再为同一条累计消息重复写入几十次。
+- 分离 Turn 累计 Token 与最后一次 LLM 调用 Token，压缩水位使用当前 prompt 上下文，不再因整轮累计值误触发。
+- 后端全量 pytest 通过，Ruff 与 diff check 通过。
 
 ### F39 ConfigService 外部变更热更新与模型目录
 
@@ -44,8 +61,8 @@
   启动恢复不会自动发送历史队列。
 - UserMessage 按 `session_id + request_id` 幂等落盘并保留原始身份/时间/内容；Agent Run 防止
   重复执行；Inbox 统一使用 Session canonical 用户数据根。
-- Steering 按 Session 持久化并在同一 Session 的 Reasoning 边界交付；未赶上当前 Run 的消息会由正常完成后的 FIFO worker 交给后续 Run，并发重放有单写保护。
-- 修复目标 Run 在最后一次推理前正常结束时 Next Step 永久滞留：`agent/after-run` 完成事件会解除目标绑定，交由现有 FIFO worker 进入下一轮；取消、失败、暂停和中断仍保留队列。
+- Steering 按 Session 持久化并在同一 Session 的 Reasoning 边界交付；未赶上当前 Run 的消息留在 `next-step`，不创建独立调度器。
+- 修复目标 Run 在最后一次推理前正常结束时 Next Turn 永久滞留：`agent/after-run(status=completed)` 只触发一次队列领取；取消、失败、暂停和中断不自动派发。
 - Inbox 进一步收敛为 `Inbound → QueueItem → FIFO claim → AgentService`，删除 delivery lease、
   release/ack 回退分支；claim 后消息永久离开 pending，失败由 AgentService 返回终态。
 - 后端全量 pytest 745 passed、Ruff 与架构门禁通过；Desktop renderer 537 tests passed，三个

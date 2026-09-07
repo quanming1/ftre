@@ -1,16 +1,21 @@
-"""WebSocket attach 与现代 Queue/Status baseline。"""
+"""WebSocket attach 基线与 rpc 结算（模板见 tests/startup/test_f12_ws_smoke.py）。
 
+wire 帧形状（PRD-F41）：
+- attach 基线两连：session/subscribed{seq, events, status} → session/queue 快照；
+- prompt/updateQueue 结算 = rpc 帧 {v, session_id, type:"rpc",
+  payload:{request_id, ok, value?|error?}}。
+"""
 from __future__ import annotations
 
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
 from ftre.plugins.builtin.channels.websocket.channel import WebSocketChannel
 from ftre.services.messaging.bus import EventBus
+from ftre.services.messaging.wire import SessionQueueFrame, SessionSubscribedFrame
 
 
 class FakeWebSocket:
@@ -59,33 +64,69 @@ class _Inbox:
         return True
 
 
+def _baseline(inbox):
+    async def provider(session_id, **_kwargs):
+        return [
+            SessionSubscribedFrame(
+                session_id=session_id,
+                payload={"seq": 5, "events": [], "status": "idle", "has_more": False},
+            ).model_dump(mode="json"),
+            SessionQueueFrame(
+                session_id=session_id,
+                payload=await inbox.wire_snapshot(session_id),
+            ).model_dump(mode="json"),
+        ]
+
+    return provider
+
+
+def _control(inbox):
+    async def handler(_frame_type, _frame, data):
+        session_id = data["session_id"]
+        item_id = data["item_id"]
+        action = data["action"]
+        snapshot = await inbox.snapshot(session_id)
+        steering_ids = {item.request_id for item in snapshot.next_step}
+        if action["kind"] in {"edit", "remove"} and item_id in steering_ids:
+            return {"ok": False, "error": {"code": "steering-locked"}}
+        if action["kind"] == "steer":
+            await inbox.promote(session_id, item_id)
+        elif action["kind"] == "edit":
+            await inbox.edit(session_id, item_id, action["content"], None)
+        elif action["kind"] == "remove":
+            await inbox.remove(session_id, item_id)
+        return {"ok": True, "value": await inbox.wire_snapshot(session_id)}
+
+    return handler
+
+
 @pytest.mark.asyncio
 async def test_attach_reads_inbox_queue_and_status_baseline():
-    projection = SimpleNamespace(
-        snapshot=AsyncMock(return_value=[]),
-        session_event_snapshot=AsyncMock(return_value=[]),
-    )
     channel = WebSocketChannel(
         EventBus(),
-        session_projection=projection,
-        inbox_provider=_Inbox(),
-        status_provider=lambda _sid: "idle",
+        baseline_provider=_baseline(_Inbox()),
     )
     ws = FakeWebSocket()
     await channel._on_message(
         json.dumps({"type": "attach", "payload": {"session_id": "s1"}}), ws
     )
-    assert ws.sent[0]["type"] == "reply_snapshot"
+    # 基线两连：subscribed{seq, events, status} → queue 快照
+    assert len(ws.sent) == 2
+    assert ws.sent[0]["type"] == "session/subscribed"
+    assert ws.sent[0]["v"] == 1
+    assert ws.sent[0]["session_id"] == "s1"
+    assert ws.sent[0]["payload"]["seq"] == 5
+    assert ws.sent[0]["payload"]["status"] == "idle"
     assert ws.sent[1]["type"] == "session/queue"
     assert ws.sent[1]["payload"]["items"][0]["placement"] == "queued"
-    assert ws.sent[2]["type"] == "session/status"
     assert "frame_id" not in ws.sent[0]
 
 
 @pytest.mark.asyncio
 async def test_prompt_response_waits_for_bus_reply_and_uses_queue_envelope():
     bus = EventBus()
-    channel = WebSocketChannel(bus, inbox_provider=_Inbox())
+    inbox = _Inbox()
+    channel = WebSocketChannel(bus, snapshot_provider=inbox.wire_snapshot)
     ws = FakeWebSocket()
     received = asyncio.create_task(channel._on_message(
         json.dumps({
@@ -100,13 +141,17 @@ async def test_prompt_response_waits_for_bus_reply_and_uses_queue_envelope():
     bus.resolve_inbound(inbound.id, SimpleNamespace(accepted=True, session_id="s1"))
     await received
     assert ws.sent == [{
-        "type": "session/queue",
-        "request_id": "client-1",
-        "ok": True,
+        "v": 1,
+        "session_id": "s1",
+        "type": "rpc",
         "payload": {
-            "session_id": "s1",
-            "revision": 1,
-            "items": [{"id": "queued-1", "placement": "queued", "message": {"content": []}}],
+            "request_id": "client-1",
+            "ok": True,
+            "value": {
+                "session_id": "s1",
+                "revision": 1,
+                "items": [{"id": "queued-1", "placement": "queued", "message": {"content": []}}],
+            },
         },
     }]
 
@@ -120,13 +165,17 @@ async def test_prompt_without_request_id_is_rejected_before_bus():
         json.dumps({"type": "session.prompt", "payload": {"session_id": "s", "content": "x"}}),
         ws,
     )
-    assert ws.sent[0]["error"]["code"] == "missing_request_id"
+    # 拒绝也是 rpc 帧（payload.error）
+    assert ws.sent[0]["type"] == "rpc"
+    assert ws.sent[0]["payload"]["ok"] is False
+    assert ws.sent[0]["payload"]["error"]["code"] == "missing_request_id"
     assert bus._inbound_queue.empty()
 
 
 @pytest.mark.asyncio
 async def test_update_queue_steer_returns_latest_queue_snapshot():
-    channel = WebSocketChannel(EventBus(), inbox_provider=_Inbox())
+    inbox = _Inbox()
+    channel = WebSocketChannel(EventBus(), control_handler=_control(inbox))
     ws = FakeWebSocket()
     await channel._on_message(
         json.dumps({
@@ -141,13 +190,17 @@ async def test_update_queue_steer_returns_latest_queue_snapshot():
         ws,
     )
     assert ws.sent == [{
-        "type": "session/queue",
-        "request_id": "update-1",
-        "ok": True,
+        "v": 1,
+        "session_id": "s1",
+        "type": "rpc",
         "payload": {
-            "session_id": "s1",
-            "revision": 2,
-            "items": [{"id": "queued-1", "placement": "steering", "message": {"content": []}}],
+            "request_id": "update-1",
+            "ok": True,
+            "value": {
+                "session_id": "s1",
+                "revision": 2,
+                "items": [{"id": "queued-1", "placement": "steering", "message": {"content": []}}],
+            },
         },
     }]
 
@@ -155,7 +208,8 @@ async def test_update_queue_steer_returns_latest_queue_snapshot():
 @pytest.mark.asyncio
 async def test_steering_item_is_immutable_until_claim():
     """steering 已进入下一次 Reasoning 的交接区，不能被并发 edit/remove。"""
-    channel = WebSocketChannel(EventBus(), inbox_provider=_Inbox())
+    inbox = _Inbox()
+    channel = WebSocketChannel(EventBus(), control_handler=_control(inbox))
     ws = FakeWebSocket()
     await channel._on_message(
         json.dumps({
@@ -181,5 +235,7 @@ async def test_steering_item_is_immutable_until_claim():
         }),
         ws,
     )
-    assert ws.sent[-1]["ok"] is False
-    assert ws.sent[-1]["error"]["code"] == "steering-locked"
+    # 拒绝也是 rpc 帧（payload.ok=False + payload.error）
+    assert ws.sent[-1]["type"] == "rpc"
+    assert ws.sent[-1]["payload"]["ok"] is False
+    assert ws.sent[-1]["payload"]["error"]["code"] == "steering-locked"

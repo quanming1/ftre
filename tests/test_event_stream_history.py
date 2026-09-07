@@ -50,35 +50,28 @@ def test_persisted_msg_converts_without_event_replay():
 
 
 @pytest.mark.asyncio
-async def test_state_json_stores_msg_without_event_fields(tmp_path):
-    db_path = tmp_path / "sessions.db"
-    manager = SessionManager(str(db_path))
+async def test_session_json_stores_complete_msg_snapshot(tmp_path):
+    manager = SessionManager(str(tmp_path / "sessions.db"), snapshot_interval_ms=20)
     await manager.init()
     session_id = await manager.create_session("ws")
-    await manager.save_message(
+    await manager.append_event(
         session_id,
-        AssistantMsg(name=MsgName.DEFAULT, content="hello", id="reply-1"),
+        "assistant/message",
+        {
+            "message": AssistantMsg(
+                name=MsgName.DEFAULT, content="hello", id="reply-1"
+            ).model_dump(mode="json")
+        },
+        message_id="reply-1",
     )
+    await manager.flush_log(session_id)
     await manager.close()
 
-    state_path = tmp_path / "sessions" / session_id / "state.json"
-    payload = json.loads(state_path.read_text(encoding="utf-8"))
-
-    # Msg transcript 与 Inbox pending 分栏持久化。
-    assert set(payload) == {
-        "schema_version",
-        "session",
-        "messages",
-        "metadata",
-    }
-    assert payload["schema_version"] == 1
-    # messages[] 是完整 Msg 快照，不含流式 Event 字段
-    assert len(payload["messages"]) == 1
-    stored = payload["messages"][0]
-    assert stored["role"] == "assistant"
-    assert '"hello"' in json.dumps(stored["content"], ensure_ascii=False)
-    assert "type" not in stored
-    assert "data" not in stored
-    assert "reply_id" not in stored
-    # 不再创建 SQLite 库
-    assert not db_path.exists()
+    directory = tmp_path / "sessions" / session_id
+    payload = json.loads((directory / "session.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 5
+    assert payload["messages"][0]["id"] == "reply-1"
+    assert payload["messages"][0]["content"][0]["text"] == "hello"
+    assert not (directory / "session.jsonl").exists()
+    assert "assistant/chunk" not in json.dumps(payload, ensure_ascii=False)
+    assert not (tmp_path / "sessions.db").exists()

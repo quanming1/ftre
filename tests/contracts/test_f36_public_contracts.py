@@ -13,14 +13,14 @@ from ftre_agent import (
     ToolParameter,
     ToolView,
 )
-from ftre_agent.event import UserMessageEvent
+from ftre_agent.event import HintBlockEvent
 from ftre_agent.message import UserMsg
 
 
 def test_agent_contracts_are_core_free() -> None:
     assert Msg.__module__.startswith("ftre_agent.message")
     assert UserMsg.__module__.startswith("ftre_agent.message")
-    assert UserMessageEvent.__module__.startswith("ftre_agent.event")
+    assert HintBlockEvent.__module__.startswith("ftre_agent.event")
     assert LLM_ERROR_SPEC.name == "llm/error"
 
 

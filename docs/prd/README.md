@@ -25,6 +25,19 @@
 > `packages/` 下的五个 Package 保持独立发行边界；当前 Gateway 默认安装并装配 Inbox、Compaction、Messaging、Task、Team，业务 Package 仍可按配置禁用。分批实施提示词及其历史执行顺序见
 > [`docs/execution/prompts/F14/`](../execution/prompts/F14/README.md)。
 
+> **F41/F42/F43 已实现，F44 已验收（2026-09-07）**：会话数据面保留 DSH 化的
+> Event/Msg 分层，但 F43 的 JSONL 存储已被 F44 的单文件 Msg Snapshot 替代。
+> [PRD-F41](PRD-F41-downstream-wire-protocol.md) 的事件词汇和 6 种下行 wire 帧由
+> [PRD-F44](PRD-F44-session-snapshot-protocol.md) 收敛为统一 `seq` attach 协议；
+> [PRD-F43](PRD-F43-server-event-pipeline.md) 的 SessionLog/derive 运行时原则继续有效，
+> 其 JSONL、chunk row 和 repair 持久化方案已退场。
+> [PRD-F42](PRD-F42-client-session-lifecycle.md) 实现 desktop 的 ConversationAssembler
+> 消费端与五阶段 UI 生命周期。旧 `state.json` 会话不再恢复；存量 F43 JSONL 会在
+> 首次访问时一次性迁移到 `sessions/<sid>/session.json`，新会话的事实唯一载体是该
+> Msg Snapshot（Inbox 的 `inbox.json` 仍独立存在）；SessionProjection/SessionEventService/
+> `Msg.append_event` 折叠引擎全部退场。当前会话数据面契约以 F44 为准，下方 F12 契约中仍
+> 有效的仅剩队列 Owner 边界（Inbox/AgentService/SessionService 三 Owner 表）。
+
 > **F20 已验收（2026-08-24）**：
 > [`PRD-F20-default-package-install.md`](PRD-F20-default-package-install.md) 将仓内五个 Package
 > 纳入 `ftre` 默认发行依赖和 Composition 清单；extras 保留为裁剪安装兼容入口，不再是默认
@@ -47,19 +60,20 @@
 > 两个 PRD 已完成批次 00–06；Core Hook 7→5、全系统 17→15，两个可选 Package 通过
 > wheel/洁净 venv/生命周期验证。
 
-## 当前运行契约（F12）
+## 当前运行契约（F12 队列边界 + F41-F44 会话数据面）
 
 ```text
 WS/HTTP/Plugin
-    → EventBus
-    → AgentLoop（Command 旁路；普通输入交给 Inbox）
+    → MessageBusService（Command 旁路；普通输入交给 Inbox）
     → ftre-inbox.InboxService
         → next-step 全部候选 + next-turn 最多一条
         → inbox/before-claim
-        → 原子 claim
+        → 原子 claim（claim 前 append user/message 事件，F43 FR6）
         → AgentService.run(InboundMessage)
-        → Agent Core / agent/after-run
-    → session/queue + session/status
+        → ftre-agent-runtime → SessionLog.append(会话事件)（F43）
+    → Snapshot checkpoint 落盘 session.json + session/event 帧双投（F44）
+    → 下行 6 帧：session/event · session/subscribed · session/queue ·
+      session/projection · session/maintenance · rpc
 ```
 
 当前所有权只有三条：
@@ -68,13 +82,13 @@ WS/HTTP/Plugin
 |---|---|---|
 | `ftre-inbox` | 双队列、持久化、容量、幂等、claim、worker、Queue wire | Agent 算法、Command 解析、Session 历史 |
 | `AgentService` | 单条 `InboundMessage` 的 active Turn、取消和 Agent Hook | pending、QueueItem、capacity、queue snapshot |
-| `SessionService` | Session 身份、配置、正式消息历史和生命周期 Hook | Inbox pending、worker 和队列协议 |
+| `SessionService` | Session 身份、Msg Snapshot（session.json）、运行时 SessionLog、读侧 derive、session/event 转发和 attach Event[] | Inbox pending、worker 和队列协议 |
 
-客户端只理解 `session.prompt`、`session.updateQueue`、`session.cancel`、
-`session/queue`、`session/status` 和统一 error envelope。Inbox 操作成功通过同一
-`session/queue` Queue Operation Response 返回 `request_id`、`revision` 和完整 `items`；
-`session.cancel` 因不修改 Inbox 保留控制 ACK。`next-turn`、`next-step`、capacity、source
-和原始 `inbox.json` 不泄漏到 wire。
+客户端上行理解 `session.prompt`、`session.updateQueue`、`session.cancel`（rpc 帧结算）；
+下行消费 F44 的 6 种帧：attach 基线（subscribed Event[] + queue）、直播事件（session/event，
+透传完整事件信封）、派生快照（projection）、瞬时反馈（maintenance）与 rpc。断线恢复先
+重新拉取 `GET /api/sessions/:id/messages` 建立 Msg 基线，再发送带 `seq` 的 attach；不再提供
+`GET /api/sessions/:id/events?after_seq=`。
 
 ## 1. 历史阶段地图（非当前运行契约）
 

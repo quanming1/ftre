@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import Any
 
-from ftre_agent.event import AgentStreamEvent
 from ftre_agent.hooks import HookDispatcher
 from ftre_agent.message import Msg
 from ftre_agent.tracing import Tracer
@@ -94,12 +94,20 @@ class ReActAgent:
 
     async def run(
         self, message: str | Msg | list[Msg], runtime_context: dict | None = None
-    ) -> AsyncGenerator[AgentStreamEvent, None]:
+    ) -> AsyncGenerator[Any, None]:
         async for event in self._runner.run(message, runtime_context=runtime_context):
             yield event
 
     def cancel_nowait(self) -> None:
         self._runner.cancel_nowait()
+
+    def build_final_assistant_events(self):
+        """在 Turn 语义边界生成本次新增/变更的 whole-value 快照。"""
+        return self._runner.build_final_assistant_events()
+
+    def build_final_assistant_event(self):
+        """兼容只消费一条快照的宿主，返回最后一条。"""
+        return self._runner.build_final_assistant_event()
 
 
 __all__ = ["ReActAgent"]

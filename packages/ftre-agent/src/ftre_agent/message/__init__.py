@@ -1,7 +1,7 @@
-"""类型化消息内容块 + Msg 实体 —— AgentScope 消息协议的 ftre 适配版。
+"""类型化消息内容块 + Msg 实体。
 
 层次 A: ContentBlock + 状态机 + OpenAI dict 转换器
-层次 B: Msg 实体 + append_event 重建引擎 + 工厂函数
+层次 B: Msg 实体 + 工厂函数
 """
 from ._block import (
     # 数据源
@@ -10,8 +10,9 @@ from ._block import (
     ContentBlock,
     ContentBlockTypes,
     DataBlock,
+    ExtensionBlock,
     HintBlock,
-    # 6 种内容块
+    # 内容块（含未来扩展保留容器）
     TextBlock,
     ThinkingBlock,
     ToolCallBlock,
@@ -43,6 +44,7 @@ __all__ = [
     "ContentBlock",
     "ContentBlockTypes",
     "DataBlock",
+    "ExtensionBlock",
     "HintBlock",
     "Msg",
     "MsgName",

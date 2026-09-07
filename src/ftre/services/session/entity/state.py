@@ -1,36 +1,30 @@
-"""Session 的持久化状态模型。
+"""Session 单文件快照模型。
 
-队列已经迁移到独立的 ``ftre-inbox`` Package。这里仅保留 Session 身份、消息历史和
-metadata；旧 state.json 中的 ``mailbox`` 字段只在解析时丢弃，具体迁移由 Inbox 包完成。
+``session.json`` 同时保存会话元信息、可恢复的 Msg 快照和请求幂等索引。
+流式 Event 只存在于当前进程，不在这里逐条落盘；旧 schema 文件在读取时
+一次性迁移到统一的 ``seq`` 水位。
 """
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any
 
-from ftre_agent.message import Msg
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-CURRENT_SCHEMA_VERSION = 1
-_MSG_ALLOWED_KEYS = frozenset(Msg.model_fields)
-
-
-def _check_msg_shape(item: Any) -> None:
-    if isinstance(item, dict):
-        extra = set(item) - _MSG_ALLOWED_KEYS
-        if extra:
-            raise ValueError(f"messages 含非 Msg 字段: {sorted(extra)}")
+CURRENT_SCHEMA_VERSION = 5
+SUPPORTED_SCHEMA_VERSIONS = frozenset({2, 3, 4, CURRENT_SCHEMA_VERSION})
 
 
-class UnsupportedAgentStateVersion(ValueError):
-    """磁盘 state.json schema 版本超出当前代码支持范围。"""
+class UnsupportedSessionMetaVersion(ValueError):
+    """磁盘 session.json schema 版本超出当前代码支持范围。"""
+
     def __init__(self, version: Any):
         self.version = version
-        super().__init__(f"不支持的 AgentState schema_version: {version!r}")
+        super().__init__(f"不支持的 session.json schema_version: {version!r}")
 
 
 class SessionState(BaseModel):
-    """state.json 中的会话元信息，不包含消息和 mailbox 内容。"""
+    """会话身份与展示信息。"""
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -40,53 +34,64 @@ class SessionState(BaseModel):
     workspace: str = ""
     created_at: str
     updated_at: str
+    # 会话列表预览：最后一条真实用户消息摘要（反规范化，随 user/message 更新）
+    last_user_text: str = ""
 
 
-class AgentStateFile(BaseModel):
-    """一个 Session 的完整磁盘快照：元信息、消息和 metadata。"""
-    model_config = ConfigDict(extra="forbid")
+class SessionMetaFile(BaseModel):
+    """sessions/<sid>/session.json：元信息 + 完整 Msg Snapshot。"""
+    # 允许未来插件在顶层增加字段；读取/写回时不主动丢弃它们。
+    model_config = ConfigDict(extra="allow")
 
-    schema_version: Literal[1] = 1
+    schema_version: int = CURRENT_SCHEMA_VERSION
     session: SessionState
-    messages: list[Msg] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="before")
-    @classmethod
-    def drop_legacy_mailbox(cls, value: Any) -> Any:
-        """让旧 state 可以先被 SessionService 读取，再由 Inbox 包完成迁移。"""
-        if isinstance(value, dict) and "mailbox" in value:
-            value = dict(value)
-            value.pop("mailbox", None)
-        return value
-
-    @field_validator("messages", mode="before")
-    @classmethod
-    def reject_event_shapes(cls, value: Any) -> Any:
-        if isinstance(value, list):
-            for item in value:
-                _check_msg_shape(item)
-        return value
-
-    @field_validator("messages", mode="after")
-    @classmethod
-    def validate_no_duplicate_ids(cls, value: list[Msg]) -> list[Msg]:
-        ids = [m.id for m in value]
-        if len(ids) != len(set(ids)):
-            raise ValueError("duplicate Msg.id in session")
-        return value
+    # Session 内 Event/Msg 共用的持久单调水位。
+    seq: int = -1
+    # 完整 Msg.model_dump(mode="json")，不存 assistant/chunk 记录。
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    # request_id → message/run/status/fingerprint，支持跨重启幂等。
+    requests: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # 插件命名空间扩展数据。
+    extensions: dict[str, Any] = Field(default_factory=dict)
 
 
-def parse_agent_state(data: dict[str, Any]) -> AgentStateFile:
-    """校验 schema version 和字段形状后解析 AgentStateFile。"""
+def parse_session_meta(data: dict[str, Any]) -> SessionMetaFile:
+    """校验 schema version 后解析 SessionMetaFile。"""
     if not isinstance(data, dict):
-        raise ValueError("AgentState 必须是 JSON 对象")  # noqa: TRY004 legacy compatibility boundary reviewed in F1
-    version = data.get("schema_version")
+        raise ValueError("SessionMeta 必须是 JSON 对象")  # noqa: TRY004 协议边界
+    normalized = dict(data)
+    version = normalized.get("schema_version")
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
+        raise UnsupportedSessionMetaVersion(version)
     if version != CURRENT_SCHEMA_VERSION:
-        raise UnsupportedAgentStateVersion(version)
-    return AgentStateFile.model_validate(data)
+        # v4 以前把同一概念拆成 revision/cursor；只把 cursor 迁移为
+        # 持久 Event 水位，旧 revision 不再进入新模型或写回文件。
+        legacy_cursor = normalized.pop("cursor", None)
+        normalized.pop("revision", None)
+        if "seq" not in normalized:
+            normalized["seq"] = (
+                int(legacy_cursor) if isinstance(legacy_cursor, (int, float)) else -1
+            )
+        normalized["schema_version"] = CURRENT_SCHEMA_VERSION
+    else:
+        # 即使 schema 已标成 v5，也不允许历史字段继续污染新快照。
+        normalized.pop("revision", None)
+        normalized.pop("cursor", None)
+    return SessionMetaFile.model_validate(normalized)
 
 
-def parse_agent_state_json(payload: str | bytes) -> AgentStateFile:
-    """从 JSON 文本解析当前版本 AgentStateFile。"""
-    return parse_agent_state(json.loads(payload))
+def parse_session_meta_json(payload: str | bytes) -> SessionMetaFile:
+    """从 JSON 文本解析当前版本 SessionMetaFile。"""
+    return parse_session_meta(json.loads(payload))
+
+
+__all__ = [
+    "CURRENT_SCHEMA_VERSION",
+    "SUPPORTED_SCHEMA_VERSIONS",
+    "SessionMetaFile",
+    "SessionState",
+    "UnsupportedSessionMetaVersion",
+    "parse_session_meta",
+    "parse_session_meta_json",
+]

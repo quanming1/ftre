@@ -40,11 +40,9 @@ from .errors import (
     ServiceClosedError,
 )
 from .event import (
-    AgentStreamEvent,
     EventBase,
-    ReplyEndEvent,
-    ReplyStartEvent,
-    UserMessageEvent,
+    HintBlockEvent,
+    UserConfirmResultEvent,
 )
 from .hooks import (
     AGENT_AFTER_RUN,
@@ -148,7 +146,6 @@ __all__ = [
     "AgentServiceError",
     "AgentStatus",
     "AgentStreamEnvelope",
-    "AgentStreamEvent",
     "AgentSubject",
     "AgentView",
     "AllowRun",
@@ -164,6 +161,7 @@ __all__ = [
     "FactoryNotRegisteredError",
     "FactoryRegistration",
     "FactoryRegistrationMismatchError",
+    "HintBlockEvent",
     "HookScopeCarrier",
     "Injected",
     "InvalidFactoryError",
@@ -179,9 +177,7 @@ __all__ = [
     "PermissionRequest",
     "PermissionRule",
     "RejectRun",
-    "ReplyEndEvent",
     "ReplyFinishedReason",
-    "ReplyStartEvent",
     "RequestErrorPayload",
     "RetryRequest",
     "RunConflictError",
@@ -209,7 +205,7 @@ __all__ = [
     "TraceRunStatus",
     "TraceSpan",
     "Tracer",
-    "UserMessageEvent",
+    "UserConfirmResultEvent",
     "UserMsg",
     "build_llm_config",
     "from_openai_message",

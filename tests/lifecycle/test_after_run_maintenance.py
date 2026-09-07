@@ -1,9 +1,13 @@
-"""验证 agent/after-run 维护 Hook 的配置和 compacting 屏障接线。"""
+"""验证 agent/after-run 维护 Hook 的配置和 compacting 屏障接线。
+
+compacting 展示由 compaction 包的 session/maintenance 帧承担；
+本文件断言 _maintenance 屏障在 after-run 后被清理。
+"""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock
 
 import pytest
 from ftre_agent import (
@@ -33,7 +37,6 @@ async def test_after_run_wires_config_and_maintenance_barrier() -> None:
     loop._direct_reservations = set()
     loop._maintenance = {}
     loop.agent_registry = AgentRegistry()
-    loop._publish_session_status_async = AsyncMock()
     loop.completions = SimpleNamespace(complete=AsyncMock())
     loop._validate_inbound = AsyncMock(return_value=None)
     loop._persist_inbound_user_message = AsyncMock(return_value="user-1")
@@ -78,9 +81,7 @@ async def test_after_run_wires_config_and_maintenance_barrier() -> None:
 
     assert loop._maintenance == {}
     assert loop.get_session_status("session-1") == "idle"
-    loop._publish_session_status_async.assert_has_calls(
-        [call("session-1", "running"), call("session-1", "compacting"), call("session-1", "idle")]
-    )
+    assert loop.is_active_session("session-1") is False
 
 
 @pytest.mark.asyncio

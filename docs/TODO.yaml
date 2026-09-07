@@ -1841,3 +1841,144 @@ stages:
           - id: F40.4
             title: 跨仓 UI、回归与生命周期验收
             status: done
+      - id: F41
+        title: 会话事件日志下行协议
+        status: in_progress
+        date: 2026-09-04
+        prd: docs/prd/PRD-F41-downstream-wire-protocol.md
+        prd_status: 开发中（兼容字段回归）
+        depends_on:
+          - F36
+        implementation_boundary: 仅收敛 SessionLog 事件词汇、下行帧、seq 恢复和生成的 TypeScript 契约；不恢复旧 Projection/旧帧，不修改 Agent/LLM/Tool 业务语义
+        modules:
+          - packages/ftre-agent/src/ftre_agent/session/
+          - src/ftre/services/messaging/wire.py
+          - src/ftre/services/messaging/channel/
+          - src/ftre/plugins/builtin/channels/websocket/
+          - scripts/gen_wire_types.py
+          - tests/contracts/test_session_events.py
+          - tests/contracts/test_wire_frames.py
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/types/wire.gen.ts
+        acceptance: 13 种事件、6 种下行帧、seq 严格连续且可 tail-page 恢复；未知事件按客户端忽略/日志拒绝规则处理；Pydantic 与 TS 生成产物一致；旧 Projection/旧帧无生产引用
+        tasks:
+          - id: F41.1
+            title: Session 事件与下行帧契约
+            status: done
+          - id: F41.2
+            title: seq 游标、tail-page 与 TypeScript 生成
+            status: done
+          - id: F41.3
+            title: 双投、未知事件和跨仓 golden 回归
+            status: done
+          - id: F41.4
+            title: 兼容字段与文档一致性审计
+            status: in_progress
+      - id: F42
+        title: 客户端会话状态机与事件 fold
+        status: in_progress
+        date: 2026-09-04
+        prd: docs/prd/PRD-F42-client-session-lifecycle.md
+        prd_status: 开发中（缺陷修复回归）
+        depends_on:
+          - F41
+        paired_stage: E:\\binn\\ftre-desktop
+        implementation_boundary: 仅修改客户端事件消费、ConversationAssembler、seq 恢复和消息投影；UI 状态语义沿用既有契约，不引入第二套消息转换器或服务端 Projection
+        modules:
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/stores/conversationAssembler.ts
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/stores/sessionEventClient.ts
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/stores/clientSessionProjection.ts
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/stores/chatProjection.ts
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/stores/chat.ts
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/types/wire.gen.ts
+        acceptance: HTTP 历史与直播共享唯一 Msg 投影；事件 seq 幂等、跳号可补齐、消息/工具/确认/压缩状态不重复；golden 与后端 derive 对拍；客户端类型检查和回归通过
+        tasks:
+          - id: F42.1
+            title: ConversationAssembler 与唯一 Msg 投影
+            status: done
+          - id: F42.2
+            title: subscribed/tail-page 恢复与历史分页
+            status: done
+          - id: F42.3
+            title: 状态机、Token 投影与 UI 回归
+            status: done
+          - id: F42.4
+            title: 跨仓协议与历史注释审计
+            status: in_progress
+      - id: F43
+        title: 服务端会话事件管道与持久化
+        status: done
+        date: 2026-09-04
+        prd: docs/prd/PRD-F43-server-event-pipeline.md
+        prd_status: 已完成的历史实现；持久化部分由 F44 替代
+        superseded_by: F44
+        superseded_scope: session.jsonl、chunk_rows、repair 和跨进程 seq 恢复
+        depends_on:
+          - F41
+          - F42
+        implementation_boundary: 仅修改 SessionService/SessionLog 的事件提交、write-behind、repair、derive 和 Token/压缩水位；不恢复旧 state.json、Projection、双写开关或独立旧持久化 Owner
+        modules:
+          - packages/ftre-agent/src/ftre_agent/session/
+          - src/ftre/services/session/service.py
+          - src/ftre/services/session/persistence/jsonl.py
+          - src/ftre/services/session/persistence/chunk_rows.py
+          - src/ftre/services/session/repair.py
+          - src/ftre/services/session/router.py
+          - packages/ftre-agent-runtime/src/ftre_agent_runtime/
+          - tests/test_event_log_pipeline.py
+          - tests/test_session_event_log_repository.py
+          - tests/test_session_fork.py
+        acceptance: JSONL chunk 无损压缩、torn-tail/repair 原子且幂等、flush 失败不假成功、Assistant 快照和 Token 作用域正确；fork 先 repair；SessionLog 是唯一事实源；全量测试/Ruff/diff check 通过
+        tasks:
+          - id: F43.1
+            title: SessionLog、derive 与 JSONL 持久化
+            status: done
+          - id: F43.2
+            title: repair、checkpoint 边界与 Token/压缩水位
+            status: done
+          - id: F43.3
+            title: 客户端/跨仓协议回归
+            status: done
+          - id: F43.4
+            title: 恢复、fork 与生成物收尾审计
+            status: done
+      - id: F44
+        title: 会话快照协议与流式消息持久化收敛
+        status: done
+        date: 2026-09-07
+        prd: docs/prd/PRD-F44-session-snapshot-protocol.md
+        prd_status: 已验收：统一 seq attach 恢复
+        depends_on:
+          - F41
+          - F42
+          - F43
+        paired_stage: E:\\binn\\ftre-desktop
+        implementation_boundary: SessionService/SessionLog 的持久化与恢复、统一 seq attach wire 帧和客户端 hydrate；保留 live Event 语义，不修改 Inbox/Agent/LLM 业务策略
+        modules:
+          - src/ftre/services/session/entity/state.py
+          - src/ftre/services/session/persistence/snapshot.py
+          - src/ftre/services/session/persistence/repository.py
+          - src/ftre/services/session/persistence/json_store.py
+          - src/ftre/services/session/service.py
+          - src/ftre/services/session/router.py
+          - src/ftre/services/messaging/wire.py
+          - src/ftre/plugins/builtin/channels/websocket/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/stores/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/services/
+          - tests/
+        acceptance: 每个 Session 目录仅有 session.json；chunk 不独立持久化；旧 JSONL 可一次迁移；HTTP Msg 基线、统一 seq、attach Event[] 和实时事件折叠后消息、工具、压缩、权限、插入用户消息和回滚内容一致；Gateway 重启后 seq 不归零；后端、客户端、Ruff、typecheck 和 portable 包启动健康检查均通过
+        tasks:
+          - id: F44.1
+            title: schema v5 Snapshot 与原子 checkpoint
+            status: done
+          - id: F44.2
+            title: 旧 JSONL 一次迁移与生产路径清理
+            status: done
+          - id: F44.3
+            title: HTTP Msg 基线、seq attach Event[] 与客户端 hydrate
+            status: done
+          - id: F44.4
+            title: 跨功能回归、审计、打包和启动验收
+            status: done
+          - id: F44.5
+            title: 统一 seq、attach Event[] 与旧恢复路径清理
+            status: done

@@ -26,7 +26,6 @@ inject = (
     "process",
     "system_prompt",
     "hook_runtime",
-    "session_events",
     "llm",
 )
 provide = ()
@@ -48,7 +47,6 @@ def apply(ctx: Context, config=None):
         system_prompt=ctx.system_prompt,
         hook_runtime=ctx.hook_runtime,
         traces=ctx.get("traces", strict=False),
-        session_events=ctx.session_events,
         llm_service=ctx.llm,
     )
     factory = AgentLoopFactory(loop)

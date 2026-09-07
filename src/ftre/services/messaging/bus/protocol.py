@@ -9,7 +9,8 @@ Inbound（外部 → Bus → Agent）：
     metadata : InboundMetadata  请求/执行标记（request_id、agent_id、agent_ref）
 
 Outbound（Agent → Bus → 外部）：
-    data     : dict             事件 dump（Agent Event 形状，由 ftre-agent 定义）
+    type     : "downstream_frame"（下行帧定义见 messaging/wire.py，PRD-F41 §4.4）
+    data     : dict             DownstreamFrame dump（由 ftre.services.messaging.wire 定义）
     metadata : OutboundMetadata 序列化到 ws 帧时由 InboundMetadata 透传字段
                                 + channel_id/session_id 组成
 
@@ -23,18 +24,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# BusMessage.type 全集。新增消息类型必须先改这里。
+# BusMessage.type 全集（PRD-F43 §3.7 收缩后）。新增消息类型必须先改这里。
+# 下行一律走 downstream_frame（帧定义见 messaging/wire.py，PRD-F41 §4.4）。
 MessageType = Literal[
     "user_message",
-    "agent_event",
-    "global_event",
-    "session_event",
-    "agent_event:stream",
-    "agent_event:complete",
-    "session_event:command_message",
-    "session/queue",
-    "session/status",
     "turn_cancel",
+    "downstream_frame",
 ]
 
 # ``session.prompt`` 的队列意图是线协议的一部分。默认 queue 保持旧客户端兼容，

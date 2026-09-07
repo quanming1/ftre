@@ -58,7 +58,7 @@ def default_manifests() -> list[PluginManifest]:
         PluginManifest("tool-audit", "ftre.plugins.builtin.tool_audit.plugin:apply", "builtin", False, True, description="tool call audit log"),
         # Agent Service 与 Agent Runtime 必须由两个 Provider 装载：前者是唯一
         # agents Owner，后者只注册 Runtime Factory。Inbox 在 Runtime 之后接管
-        # pending/worker，但不提供 Agent Service 或 AgentLoop。
+        # pending/claim，但不提供 Agent Service 或 AgentLoop。
         PluginManifest("agents", "ftre_agent.plugin:apply", "builtin", True, True, description="public agent service"),
         PluginManifest("agent-runtime", "ftre_agent_runtime.plugin:apply", "builtin", True, True, description="private agent runtime factory"),
         # 当前 Gateway 的基础数据面必须有 Inbox；缺失时由 required Plugin 门禁

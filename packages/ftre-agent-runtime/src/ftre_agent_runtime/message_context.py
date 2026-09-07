@@ -202,6 +202,7 @@ class MessageContext:
         name: str,
         content: str,
         state: ToolResultState = ToolResultState.SUCCESS,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """把工具结果追加到其所属 AssistantMsg。
 
@@ -213,6 +214,7 @@ class MessageContext:
             name=name,
             output=content,
             state=state,
+            metadata=dict(metadata or {}),
         )
         MessageContext.append_reply_blocks(context, message_id, [block])
 

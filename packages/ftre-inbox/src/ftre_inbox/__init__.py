@@ -28,8 +28,6 @@ __all__ = [
     "INBOX_ERROR_SPEC",
     "INBOX_FAILED",
     "INBOX_FAILED_SPEC",
-    "INBOX_STATUS_CHANGED",
-    "INBOX_STATUS_CHANGED_SPEC",
     "AllowAdmission",
     "BeforeAdmissionPayload",
     "BeforeClaimPayload",
@@ -45,7 +43,6 @@ __all__ = [
     "InboxFailedPayload",
     "InboxService",
     "InboxSnapshot",
-    "InboxStatusPayload",
     "QueueItem",
     "QueueTarget",
     "RejectAdmission",
@@ -92,10 +89,7 @@ def __getattr__(name: str):
         "INBOX_FAILED_SPEC",
         "INBOX_DISCARDED",
         "INBOX_DISCARDED_SPEC",
-        "INBOX_STATUS_CHANGED",
-        "INBOX_STATUS_CHANGED_SPEC",
         "InboxChangedPayload",
-        "InboxStatusPayload",
         "RejectClaim",
     }:
         from .hooks import (
@@ -119,8 +113,6 @@ def __getattr__(name: str):
             INBOX_ERROR_SPEC,
             INBOX_FAILED,
             INBOX_FAILED_SPEC,
-            INBOX_STATUS_CHANGED,
-            INBOX_STATUS_CHANGED_SPEC,
             AllowAdmission,
             BeforeAdmissionPayload,
             BeforeClaimPayload,
@@ -133,7 +125,6 @@ def __getattr__(name: str):
             InboxDiscardedPayload,
             InboxErrorPayload,
             InboxFailedPayload,
-            InboxStatusPayload,
             RejectAdmission,
             RejectClaim,
         )
@@ -171,10 +162,7 @@ def __getattr__(name: str):
             "INBOX_FAILED_SPEC": INBOX_FAILED_SPEC,
             "INBOX_DISCARDED": INBOX_DISCARDED,
             "INBOX_DISCARDED_SPEC": INBOX_DISCARDED_SPEC,
-            "INBOX_STATUS_CHANGED": INBOX_STATUS_CHANGED,
-            "INBOX_STATUS_CHANGED_SPEC": INBOX_STATUS_CHANGED_SPEC,
             "InboxChangedPayload": InboxChangedPayload,
-            "InboxStatusPayload": InboxStatusPayload,
             "RejectClaim": RejectClaim,
         }[name]
     raise AttributeError(name)

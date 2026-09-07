@@ -24,7 +24,6 @@ from ftre_agent.message import AssistantMsg
 from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
 from ftre_inbox.protocol import InboundMessage
 
-from ftre.services.messaging.bus import BusMessage
 from ftre.services.messaging.channel.names import SUBAGENT_CHANNEL_ID
 
 # kind=invoke 时拼到 content 头部的来源标注模板
@@ -158,19 +157,11 @@ def _do_notify(
     caller_channel: str,
     caller_session: str,
 ) -> None:
-    event_data = {
-        "content": content,
-        "from_session": caller_session,
-        "from_channel": caller_channel,
-    }
-    msg = BusMessage(
-        type="agent_event",
-        from_channel=caller_channel,
-        to_channel=target_channel_id,
-        from_session=caller_session,
-        to_session=target_session_id,
-        data={"type": "external_message", "data": event_data},
-    )
+    """跨会话投递：whole-value assistant/message 事件进 SessionLog。
+
+    持久化与帧转发由 SessionLog 的订阅方自动完成。
+    """
+    del bus, target_channel_id
     persisted_message = AssistantMsg(
         name="default",
         content=content,
@@ -180,15 +171,10 @@ def _do_notify(
             "from_channel": caller_channel,
         },
     )
-    # 1) 持久化到目标 session 历史，前端切换/刷新可见
     asyncio.run_coroutine_threadsafe(
-        session_manager.save_message(target_session_id, persisted_message),
+        session_manager.append_external_message(target_session_id, persisted_message),
         event_loop,
     ).result(timeout=10)
-    # 2) outbound 推送给前端（连接活跃时实时显示）
-    asyncio.run_coroutine_threadsafe(bus.publish_outbound(msg), event_loop).result(
-        timeout=10
-    )
 
 
 # ============================================================

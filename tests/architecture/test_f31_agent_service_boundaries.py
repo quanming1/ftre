@@ -83,11 +83,13 @@ def _provider_files() -> list[Path]:
 
 
 def test_f31_service_provider_entries_have_one_owner() -> None:
-    """F31 依赖图必须仍由 Composition + Provider Plugin 唯一声明。"""
+    """F31 依赖图必须仍由 Composition + Provider Plugin 唯一声明。
+
+    事件日志是 sessions 的内部实现，不作为独立 Service 声明。
+    """
     expected = {
         "agents": "ftre-agent/src/ftre_agent/plugin.py",
         "sessions": "session",
-        "session_events": "session",
         "message_bus": "bus",
         "tools": "tools",
         "system_prompt": "system_prompt",
@@ -105,7 +107,6 @@ def test_f31_service_provider_entries_have_one_owner() -> None:
         manifest_id = {
             "agents": "agents",
             "sessions": "sessions",
-            "session_events": "sessions",
             "message_bus": "message-bus",
             "tools": "tools",
             "system_prompt": "system-prompt",
@@ -183,15 +184,20 @@ def test_f32_runtime_has_no_private_owner_imports() -> None:
 
 
 def test_f32_runtime_uses_public_bus_and_session_exits() -> None:
-    """Runtime 只能调用 Service 窄出口，不能把底层 EventBus 当作依赖。"""
+    """Runtime 只能调用 Service 窄出口，不能把底层 EventBus 当作依赖。
+
+    事件出口是 sessions.append_event（SessionLog 唯一事实源）；
+    不存在 publish_session_status / finish_open_replies 出口。
+    """
     runtime_sources = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (RUNTIME / "engine.py", RUNTIME / "turn_executor.py")
     )
     assert "EventBus" not in runtime_sources
     assert "message_bus.bus" not in runtime_sources
-    assert "publish_session_status(" in runtime_sources
-    assert "finish_open_replies(" in runtime_sources
+    assert "await self.sessions.append_event(" in runtime_sources
+    assert "publish_session_status(" not in runtime_sources
+    assert "finish_open_replies(" not in runtime_sources
 
 
 def test_f32_turn_input_and_runtime_creation_have_single_owner() -> None:
@@ -270,6 +276,6 @@ def test_f31_llm_request_publisher_and_channel_boundary_are_real() -> None:
     assert '"agent/request"' in llm_source
     assert '"agent/request"' not in runtime_sources
     assert "RuntimeInput" in (RUNTIME / "engine.py").read_text(encoding="utf-8")
-    # F33：Runtime 经 MessageBusService 窄出口发布状态，不 import BusMessage。
+    # Runtime 不 import BusMessage；事件经 sessions.append_event 提交。
     assert "BusMessage" not in runtime_sources
-    assert "publish_session_status(" in (RUNTIME / "engine.py").read_text(encoding="utf-8")
+    assert "await self.sessions.append_event(" in (RUNTIME / "engine.py").read_text(encoding="utf-8")

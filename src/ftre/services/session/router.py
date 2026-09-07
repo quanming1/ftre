@@ -3,7 +3,7 @@
 Handlers capture the Session and Agent Service instances supplied by
 Composition.  No module-level setter or aggregate API router is involved.
 """
-# 中文说明：Session HTTP 路由：通过 SessionService/AgentService 查询和修改会话，不直接触碰 state.json。
+# 中文说明：Session HTTP 路由：通过 SessionService/AgentService 查询和修改会话，不直接触碰会话磁盘文件。
 
 from __future__ import annotations
 
@@ -15,6 +15,10 @@ from fastapi import APIRouter, HTTPException, Request
 def build_router(sessions, agents, inbox) -> APIRouter:
     """Build the session HTTP surface from public Service handles."""
     router = APIRouter()
+
+    def session_activity(session_id: str) -> str:
+        """Return the Agent-owned lifecycle status."""
+        return agents.get_session_status(session_id)
 
     @router.post("/sessions")
     async def create_session(channel_id: str, title: str = "", workspace: str = ""):
@@ -39,7 +43,7 @@ def build_router(sessions, agents, inbox) -> APIRouter:
         agent_service = agents
         for item in items:
             item["running"] = agent_service.is_session_busy(item["id"])
-            item["activity"] = agent_service.get_session_status(item["id"])
+            item["activity"] = session_activity(item["id"])
         return {"sessions": items, "total": total, "limit": limit, "offset": offset}
 
     @router.get("/sessions/search")
@@ -92,16 +96,31 @@ def build_router(sessions, agents, inbox) -> APIRouter:
         limit_turns: int | None = None,
         before_ts: float | None = None,
     ):
-        agent_service = agents
         inbox_service = inbox
-        status = agent_service.get_session_status(session_id)
+        status = session_activity(session_id)
         queue = await inbox_service.wire_snapshot(session_id) if inbox_service is not None else None
         session = await sessions.get_session(session_id)
         metadata = session["metadata"] if session else {}
         if limit_turns is not None and limit_turns > 0:
-            messages, has_more = await sessions.get_recent_messages_by_turns(session_id, limit_turns, before_ts=before_ts)
-            return {"messages": messages, "has_more": has_more, "status": status, "queue": queue, "metadata": metadata}
-        return {"messages": await sessions.get_messages_by_session(session_id), "status": status, "queue": queue, "metadata": metadata}
+            messages, has_more, seq = await sessions.get_messages_snapshot(
+                session_id, limit_turns=limit_turns, before_ts=before_ts
+            )
+            return {
+                "messages": messages,
+                "has_more": has_more,
+                "status": status,
+                "queue": queue,
+                "metadata": metadata,
+                "seq": seq,
+            }
+        messages, _, seq = await sessions.get_messages_snapshot(session_id)
+        return {
+            "messages": messages,
+            "status": status,
+            "queue": queue,
+            "metadata": metadata,
+            "seq": seq,
+        }
 
     @router.get("/sessions/{session_id}/state")
     async def get_session_state(

@@ -9,7 +9,7 @@
   decide()               纯决策函数，只读状态，返回动作类型
   ReasoningExecutor      执行 Reasoning 动作：调 LLM + 流式 + 重试
   ActingExecutor         执行 Acting 动作：工具并发 + 成组写入 Memory
-  ExitExecutor           执行 Exit 动作：stop-decision Hook + 产出 ReplyEnd
+  ExitExecutor           执行 Exit 动作：stop-decision Hook + 设置终态
 
 主循环 _loop() 只做 match 分发：
 
@@ -22,7 +22,7 @@
 
 取消协议：
   外部调用 cancel_nowait() → Task.cancel() → CancelledError 沿调用栈传播
-  → _loop 的 except 捕获 → _finalize(INTERRUPTED) → yield ReplyEnd(INTERRUPTED)
+  → _loop 的 except 捕获 → _finalize(INTERRUPTED) → 终止事件流
   不引入 CancellationToken，纯依赖 asyncio 协作式取消。
 
 运行锁：
@@ -32,24 +32,26 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
-from ftre_agent.event import (
-    AgentStreamEvent,
-    ReplyEndEvent,
-    ReplyStartEvent,
-    RequireUserConfirmEvent,
-    UserConfirmResultEvent,
-)
+from ftre_agent.event import UserConfirmResultEvent
 from ftre_agent.hooks import (
     AGENT_BEFORE_REASONING_SPEC,
     BeforeReasoningPayload,
     BeforeReasoningResult,
 )
-from ftre_agent.message import ToolCallBlock, ToolCallState
+from ftre_agent.message import Msg, ToolCallBlock, ToolCallState
+from ftre_agent.message._msg import MsgToken, TokenUsage
+from ftre_agent.session.events import (
+    ApprovalAsked,
+    AssistantMessage,
+    AssistantMessageData,
+)
 from ftre_agent.tracing import RunStatus as TraceRunStatus
 from ftre_agent.tracing import RunType
 from ftre_agent.types import ReplyFinishedReason
@@ -215,6 +217,10 @@ class ReActRunner:
         self.state = RunState()
         # 当前 run() 对应的 asyncio.Task，用于取消和并发锁检查
         self._run_task: asyncio.Task | None = None
+        # 每次 run 开始时记录已有 assistant 快照；收尾只发布本次新增或
+        # 内容发生变化的消息，避免 steering/工具步骤把同一 whole-value 重复落盘。
+        self._assistant_baseline: dict[str, str] = {}
+        self._final_assistant_emitted: set[str] = set()
         # LLM 适配器（B2：协议注册表工厂按 api_type 分发，消费方零协议感知）。
         # 宿主通过统一 LLM Service 注入适配器；Runtime 不自行创建 Provider。
         if llm is None:
@@ -257,34 +263,20 @@ class ReActRunner:
         self,
         message,
         runtime_context: dict | None = None,
-    ) -> AsyncGenerator[AgentStreamEvent, None]:
+    ) -> AsyncGenerator[Any, None]:
         """启动一次 ReAct 执行，或从权限挂起中恢复。
+
+        turn/start 与 turn/end 由 Host 侧 TurnExecutor 写 SessionLog；
+        本方法只驱动主循环，不再产出 Reply 生命周期事件。
 
         按输入 message 的类型分流：
           - UserConfirmResultEvent → 恢复路径：不重置状态、不写用户消息、
             复用挂起时的 reply_id，处理确认后继续；
           - 其它（str / 消息列表）→ 新回复路径：完整生命周期。
-
-        新回复的生命周期：
-          1. 并发锁检查 + 记录当前 Task
-          2. 初始化 RunState（start()）
-          3. 开启 Tracing 根 span
-          4. 写入用户消息到 Memory
-          5. 产出 ReplyStartEvent（只产一次）
-          6. 驱动 _loop() 主循环
-          7. 异常/取消/正常退出路径统一经过 _finalize()
-          8. finally 中关闭 Tracing span + 释放运行锁
-
-        Args:
-            message: 用户消息（字符串或消息列表），或 UserConfirmResultEvent（恢复）。
-            runtime_context: 调用方上下文（session_id、tracing 元数据等）。
-
-        Yields:
-            AgentStreamEvent: 回复过程中的所有流式事件。
         """
         # ── 准备阶段：按输入类型分流，产出 prologue（主循环前的前置事件流）──
         # prologue 为 None 表示无前置事件；恢复路径下它是整批工具收尾的事件流。
-        prologue: AsyncGenerator[AgentStreamEvent, None] | None = None
+        prologue: AsyncGenerator[Any, None] | None = None
 
         if isinstance(message, UserConfirmResultEvent):
             # 恢复路径：先装配运行状态（供 tracing / session_id 使用），
@@ -294,6 +286,7 @@ class ReActRunner:
             self.state.runtime_context.setdefault(
                 "max_iterations", self.agent.max_iterations,
             )
+            self._capture_assistant_baseline()
             # 处理确认（纯同步）。返回 False 表示仍有未决 ASKING，
             # 继续挂起、本次调用不进主循环。
             confirmation_complete = self._accept_confirmation(message)
@@ -309,81 +302,32 @@ class ReActRunner:
             )
             prologue = acting_executor.resume_execute()
         else:
-            # 新回复路径：入口校验 + 初始化状态 + 写用户消息 + 产 ReplyStart。
+            # 新回复路径：入口校验 + 初始化状态 + 写用户消息。
             self._prepare_new_reply(message, runtime_context)
-            reply_metadata = {
-                "request_id": str(self.state.runtime_context.get("request_id") or ""),
-                "run_id": str(
-                    self.state.runtime_context.get("turn_id") or self.state.turn_id or ""
-                ),
-            }
-            reply_metadata = {
-                key: value for key, value in reply_metadata.items() if value
-            }
-            yield ReplyStartEvent(
-                session_id=self.state.runtime_context.get("session_id", ""),
-                reply_id=self.state.reply_id,
-                message_id=self.state.message_id,
-                name=self.agent.model,
-                metadata=reply_metadata,
-            )
 
         # ── 主循环 + 统一异常/收尾处理（新回复与恢复共用这一处）──
-        session_id = self.state.runtime_context.get("session_id", "")
-        reply_id = self.state.reply_id
         try:
             if prologue is not None:
                 async for event in prologue:
-                    yield self._annotate_event(event)
+                    yield event
 
             async for event in self._loop():
                 yield event
 
         except asyncio.CancelledError:
-            # 取消路径：_finalize 设置 INTERRUPTED 状态，产出 ReplyEnd
+            # 取消路径：_finalize 设置 INTERRUPTED 状态（turn/end 由 Host 产出）
             self._finalize(ReplyFinishedReason.INTERRUPTED)
-            yield ReplyEndEvent(
-                session_id=session_id, reply_id=reply_id,
-                message_id=self.state.message_id,
-                finished_reason=ReplyFinishedReason.INTERRUPTED,
-            )
 
         except Exception:
-            # 异常路径：_finalize 设置 ERROR 状态，产出 ReplyEnd
+            # 异常路径：_finalize 设置 ERROR 状态（turn/end 由 Host 产出）
             self._finalize(ReplyFinishedReason.ERROR)
-            yield ReplyEndEvent(
-                session_id=session_id, reply_id=reply_id,
-                message_id=self.state.message_id,
-                finished_reason=ReplyFinishedReason.ERROR,
-                error={"message": str(self.state.error or "Unknown error")},
-            )
             raise
-
-        finally:
-            # Tracing 收尾：依据 RunState.status 映射 trace 状态并关闭根 span。
-            # PAUSED 例外——权限挂起不是终态，span 要保持开着供恢复阶段复用，不在此关闭。
-            if (
-                self.state.status != RunStatus.PAUSED
-                and self.state.trace_span
-                and not self.state.trace_span.ended
-            ):
-                self.state.trace_span.end(
-                    status=_TRACE_STATUS.get(self.state.status, TraceRunStatus.ERROR),
-                    outputs={
-                        "success": self.state.status == RunStatus.COMPLETED,
-                        "done_reason": self.state.done_reason,
-                        "iterations": self.state.iteration,
-                    },
-                    error=self.state.error if self.state.status == RunStatus.ERROR else None,
-                )
-            # 释放运行锁。挂起时也释放，使恢复调用能重新获取（恢复走独立入口）。
-            self._run_task = None
 
     def _prepare_new_reply(self, message, runtime_context: dict | None) -> None:
         """新回复的准备阶段（纯同步）：入口校验、初始化状态、开 span、写用户消息。
 
         完成后 self.state 已 start()、trace_span 已开启、用户消息已写入 context、
-        reply_id 已生成。ReplyStartEvent 由调用方 run() 负责产出。
+        reply_id 与首个 message_id 已生成。
         """
         # ── 入口校验：处于挂起态时，非确认输入一律拒绝 ──
         # 只要 context 里还有 ASKING 的工具调用，就必须先用 UserConfirmResultEvent
@@ -442,9 +386,27 @@ class ReActRunner:
             for msg in message:
                 MessageContext.add_raw(self.agent.state.context, msg)
 
+        # 列表输入是 Host 已经组装好的历史上下文，不是本轮新增的
+        # Assistant 输出。必须在回灌完成后记录基线，否则这些历史 Assistant
+        # 会被最终快照收口误判为本轮新增消息，并再次发出 assistant/message。
+        self._capture_assistant_baseline()
+
         # ── 生成稳定 run reply_id 与首个 Assistant message_id ──
         self.state.reply_id = uuid.uuid4().hex[:16]
         self.state.message_id = uuid.uuid4().hex[:16]
+
+    def _capture_assistant_baseline(self) -> None:
+        """记录 run 入口的 assistant 内容，用于最终快照增量判定。"""
+        self._assistant_baseline = {
+            message.id: json.dumps(
+                message.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            for message in self.agent.state.context
+            if message.role == "assistant"
+        }
+        self._final_assistant_emitted.clear()
 
     def _accept_confirmation(self, event: UserConfirmResultEvent) -> bool:
         """处理一条用户确认结果（纯同步，不产事件）。
@@ -529,25 +491,88 @@ class ReActRunner:
         """外部调用：取消当前执行。
 
         对 self._run_task 执行 Task.cancel()，CancelledError 会沿
-        await 调用栈传播到 _loop() 或 _execute_reasoning / _execute_acting
-        中的当前 await 点，最终被 run() 的 except 捕获并转换为
-        INTERRUPTED 结果。
+        await 调用栈传播到 _loop() 或执行器中的当前 await 点，最终被
+        run() 的 except 捕获并转换为 INTERRUPTED 状态。
         """
         if self._run_task is not None and not self._run_task.done():
             self._run_task.cancel()
 
-    def _annotate_event(self, event: AgentStreamEvent) -> AgentStreamEvent:
-        """给流事件补上当前 AssistantMsg 坐标。
+    def build_final_assistant_events(self) -> list[AssistantMessage]:
+        """构造本次 run 新增/变更的 Assistant whole-value 快照。
 
-        ``reply_id`` 贯穿整个 run；事件实际落到哪个 AssistantMsg 由
-        ``message_id`` 决定。统一在 Runner 出口补字段，避免每个执行器重复
-        传递同一个短生命周期坐标。
+        一个 Turn 在 steering 或权限恢复后可能包含多个 AssistantMsg；每个
+        message_id 各发布一次，历史中未变化的消息不会被重新写入。
         """
-        if getattr(event, "reply_id", None):
-            return event.model_copy(
-                update={"message_id": self.state.message_id or event.reply_id}
+        emitted = getattr(self, "_final_assistant_emitted", set())
+        baseline = getattr(self, "_assistant_baseline", {})
+        candidates: list[tuple[Msg, bool]] = []
+        for context_message in self.agent.state.context:
+            if context_message.role != "assistant" or not context_message.content:
+                continue
+            fingerprint = json.dumps(
+                context_message.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
             )
-        return event
+            if (
+                context_message.id in emitted
+                or baseline.get(context_message.id) == fingerprint
+            ):
+                continue
+            # 只有当前消息接收本次 run 的 token；同一 Turn 的其它 assistant
+            # 快照保留其已有 token，避免把累计用量复制到多个消息。
+            candidates.append((context_message, context_message.id == self.state.message_id))
+
+        events: list[AssistantMessage] = []
+        finished_at = datetime.now(UTC).isoformat()
+        done_reason = getattr(self.state.done_reason, "value", None)
+        for context_message, attach_usage in candidates:
+            payload = context_message.model_copy(deep=True)
+            metadata = dict(payload.metadata or {})
+            if self.agent.model:
+                metadata["model"] = self.agent.model
+
+            # 每个本次新增/变更的 assistant 都要离开 streaming 状态；
+            # paused 没有 Msg.finished_reason 的合法枚举值，turn/end 会单独
+            # 给当前消息写入 paused，其余消息只补 finished_at。
+            final_fields = {"metadata": metadata}
+            if payload.finished_at is None:
+                final_fields["finished_at"] = finished_at
+            if payload.finished_reason is None and done_reason in {
+                "completed", "interrupted", "exceed_max_iters", "error"
+            }:
+                final_fields["finished_reason"] = done_reason
+            payload = payload.model_copy(update=final_fields)
+
+            last_call = self.state.last_call_usage
+            if (
+                attach_usage
+                and isinstance(last_call, dict)
+                and last_call.get("total_tokens") is not None
+            ):
+                payload = payload.model_copy(update={
+                    "token": MsgToken(
+                        usage=TokenUsage(**self.state.token_usage),
+                        last_call_usage=TokenUsage(**last_call),
+                    ),
+                })
+            else:
+                payload = payload.model_copy(update={"metadata": metadata})
+
+            emitted.add(context_message.id)
+            events.append(
+                AssistantMessage(
+                    data=AssistantMessageData(message=payload.model_dump(mode="json")),
+                    message_id=context_message.id,
+                )
+            )
+        self._final_assistant_emitted = emitted
+        return events
+
+    def build_final_assistant_event(self) -> AssistantMessage | None:
+        """兼容单消息调用方，返回本次待发布快照中的最后一条。"""
+        events = self.build_final_assistant_events()
+        return events[-1] if events else None
 
     async def _dispatch_before_reasoning(self) -> BeforeReasoningResult:
         """在每次真实 LLM Reasoning 前消费宿主贡献的上下文。
@@ -583,25 +608,16 @@ class ReActRunner:
             raise asyncio.CancelledError
         return result
 
-    async def _loop(self) -> AsyncGenerator[AgentStreamEvent, None]:
+    async def _loop(self) -> AsyncGenerator[Any, None]:
         """ReAct 主循环：Reason → Act → Observe。
-
-        循环逻辑：
-          1. 调用 _decide(state, prev) 获取下一步动作
-          2. 根据动作类型分发到对应执行器
-          3. Reasoning → 递增 iteration，调 LLM，更新 prev
-          4. Acting    → 执行工具，清除 prev（下一轮重新推理）
-          5. Exit      → 通过 stop-decision 决策后产出结束事件，return
 
         iteration 计数规则：
           只在 Reasoning 时递增。一次"迭代"= 一次 LLM 调用，
           可能后跟一次 Acting（工具执行），但不额外计数。
-          这样 max_iterations=N 表示最多调用 N 次 LLM。
 
         Exit + should_continue 的特殊路径：
-          stop-decision 返回 ContinueTurn 时，ExitExecutor 产出 HintBlockEvent
-          但不产 ReplyEndEvent，返回 ExitOutcome(should_continue=True)。
-          主循环注入续写提示到 Memory，清除 prev，继续循环。
+          stop-decision 返回 ContinueTurn 时，ExitExecutor 产出 hint/message
+          并返回 ExitOutcome(should_continue=True)。主循环清除 prev 继续。
         """
         prev: TurnResult | None = None
         # 创建三个执行器实例（循环内复用）
@@ -648,23 +664,22 @@ class ReActRunner:
                         self.state.message_id = uuid.uuid4().hex[:16]
                     # 执行 LLM 调用 + 流式消费 + 重试
                     async for event in reasoning_executor.stream(action):
-                        yield self._annotate_event(event)
+                        yield event
                     # 获取本轮推理的结构化产物，供下一轮 _decide() 消费
                     prev = reasoning_executor.result
 
                 elif isinstance(action, Acting):
                     # ── Acting：执行工具（或因权限挂起）──
-                    # 并发执行所有工具调用，成组写入 Memory。
-                    # 若本轮存在 ASK/DENY，stream 会 yield RequireUserConfirmEvent
+                    # 若本轮存在 ASK/DENY，stream 会 yield approval/asked
                     # 表示整批挂起、未执行任何工具。
                     paused = False
                     async for event in acting_executor.stream(action):
-                        yield self._annotate_event(event)
-                        if isinstance(event, RequireUserConfirmEvent):
+                        yield event
+                        if isinstance(event, ApprovalAsked):
                             paused = True
                     if paused:
                         # 权限挂起：置 PAUSED 状态后跳出循环。
-                        # 【不】finalize、【不】产 ReplyEnd——挂起不是回复结束。
+                        # 【不】finalize——挂起不是回复结束；
                         # 待恢复清单已随 ASKING 状态写入 context，恢复时从 context 重建，
                         # 不在实例内存里保存动作（进程重启后也能恢复）。
                         self.state.status = RunStatus.PAUSED
@@ -675,7 +690,7 @@ class ReActRunner:
                 elif isinstance(action, Exit):
                     # ── Exit：结束（或暂停）当前回复 ──
                     async for event in exit_executor.stream(action):
-                        yield self._annotate_event(event)
+                        yield event
                     # ContinueTurn 返回时不退出
                     if exit_executor.outcome.should_continue:
                         # 注入续写提示已在 ExitExecutor 中完成
@@ -686,12 +701,6 @@ class ReActRunner:
         except CancelledError:
             # 内部取消异常（来自 _execute_acting 的 cancelled=True 路径）
             self._finalize(ReplyFinishedReason.INTERRUPTED)
-            yield ReplyEndEvent(
-                session_id=self.state.runtime_context.get("session_id", ""),
-                reply_id=self.state.reply_id,
-                message_id=self.state.message_id,
-                finished_reason=ReplyFinishedReason.INTERRUPTED,
-            )
 
     def _finalize(self, reason: ReplyFinishedReason) -> None:
         """统一终态写入。

@@ -21,6 +21,7 @@ from ._block import (
     Base64Source,
     ContentBlock,
     DataBlock,
+    ExtensionBlock,
     HintBlock,
     TextBlock,
     ThinkingBlock,
@@ -166,6 +167,10 @@ def to_openai_part(block: ContentBlock) -> dict:
     if isinstance(block, ToolResultBlock):
         # ToolResultBlock 不属于 content part，降级为文本
         return {"type": "text", "text": _tool_result_content(block.output)}
+
+    if isinstance(block, ExtensionBlock):
+        # 未知扩展不阻断下一次 LLM 调用；把原始 JSON 作为可读文本保留。
+        return {"type": "text", "text": json.dumps(block.data, ensure_ascii=False)}
 
     return {"type": "text", "text": str(block)}
 

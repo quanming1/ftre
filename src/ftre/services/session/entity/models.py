@@ -1,10 +1,10 @@
 """Session 对外数据模型（TypedDict 投影）。
 
-这些是 state.json 存储结构面向调用方的只读投影形状：
+这些是会话单文件 Snapshot 面向调用方的只读投影形状：
 - SessionModel: 会话元信息（时间戳转为 epoch）
 - MessageModel: 持久化 Msg 快照
 - ExternalSessionModel: 外部平台会话绑定信息
-- StatePageModel: state.json 分页只读视图
+- StatePageModel: 派生消息 + 元信息的分页只读视图
 
 纯数据结构定义，不含行为。
 """
@@ -35,6 +35,7 @@ class MessageModel(TypedDict):
     content: list[dict[str, Any]]
     metadata: dict[str, Any]
     created_at: str
+    seq: int             # 该 Msg 最后一次被 Event 修改的 Session 序号
     token: dict[str, Any] | None
     finished_at: str | None
     finished_reason: str | None
@@ -54,7 +55,7 @@ class ExternalSessionModel(TypedDict):
 
 
 class StatePageModel(TypedDict):
-    """state.json 的分页只读视图。messages 保持原始 Msg 结构。"""
+    """会话派生状态的分页只读视图。messages 保持原始 Msg 结构。"""
 
     schema_version: int
     file_path: str
