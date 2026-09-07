@@ -62,38 +62,42 @@ def search_sessions(
 
     results: list[dict[str, Any]] = []
     for sid, state in states:
-        ws = state.session.workspace or ""
+        session = state.session
+        ws = session.workspace or ""
         if workspace is not None and ws != workspace:
             continue
-        title = state.session.title or ""
+        title = session.title or ""
         title_matched = q_lower in (title.lower() if fold_case else title)
 
         # 检索面：last_user_text 反规范化预览（用户输入），最多 1 条命中
-        preview = state.session.last_user_text or ""
-        hits: list[dict[str, Any]] = []
-        if preview:
-            matched = q_lower in (preview.lower() if fold_case else preview)
-            if matched:
-                hits.append(
-                    {"mid": "", "role": "user", "snippet": _snippet(preview, q_lower)}
-                )
+        preview = session.last_user_text or ""
+        preview_matched = bool(
+            preview and q_lower in (preview.lower() if fold_case else preview)
+        )
 
-        if not title_matched and not hits:
+        if not title_matched and not preview_matched:
             continue
+        hits = (
+            [{"mid": "", "role": "user", "snippet": _snippet(preview, q_lower)}]
+            if preview_matched
+            else []
+        )
         results.append(
             {
                 "session_id": sid,
                 "title": title,
                 "workspace": ws,
                 "channel": state.session.channel_id,
-                "updated_at": state.session.updated_at,
+                "updated_at": session.updated_at,
                 "title_matched": title_matched,
                 "hits": hits,
             }
         )
 
-    results.sort(key=lambda r: r["updated_at"], reverse=True)
-    results.sort(key=lambda r: r["title_matched"], reverse=True)
+    results.sort(
+        key=lambda r: (r["title_matched"], r["updated_at"]),
+        reverse=True,
+    )
     total = len(results)
     page_limit = max(1, min(limit, 100))
     page_offset = max(0, offset)
