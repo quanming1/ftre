@@ -12,6 +12,7 @@ import asyncio
 import inspect
 import logging
 import uuid
+from dataclasses import replace
 
 from ftre_agent import (
     AGENT_AFTER_RUN_SPEC,
@@ -23,9 +24,7 @@ from ftre_agent import (
     BeforeRunPayload,
     RejectRun,
 )
-from ftre_agent.event import UserMessageEvent
 from ftre_agent.hooks import HookSpec
-from ftre_agent.message import from_openai_message
 from ftre_agent.tracing import Tracer
 
 from .completion import CompletionRegistry
@@ -62,7 +61,6 @@ class AgentLoop:
         system_prompt=None,
         hook_runtime=None,
         traces=None,
-        session_events=None,
         llm_service=None,
         config: AgentConfig | None = None,
     ):
@@ -80,7 +78,6 @@ class AgentLoop:
         # 提供的同一实例，不在缺失时偷偷创建第二个 Registry Owner。
         self.agent_registry = agent_service.registry
         self.system_prompt = system_prompt
-        self.session_events = session_events
         # LLM Service 由 Host Provider 注入；Agent Runtime 通过 ServiceAdapter 消费它。
         self.llm_service = llm_service
         self.hooks = hook_runtime
@@ -198,10 +195,10 @@ class AgentLoop:
         """取消 active Turn 并等待其所有收尾持久化完成。
 
         普通 ``session.cancel`` 需要快速返回 ACK，因此 ``cancel_session`` 保持
-        "发出取消即返回" 的协议语义。删除 Session 则不同：如果此时直接删掉
-        state.json，正在收尾的 Reply 仍可能执行 ``update_message``，最终把已
-        完成的助手消息变成 ``message 不存在``。删除路径必须使用这个等待版本，
-        确认 Turn 的 ``PIPELINE_END``、Hook 和消息投影都结束后再删除历史。
+        "发出取消即返回" 的协议语义。删除 Session 则不同：如果目录在 Turn
+        收尾前被删除，正在追加的 turn/end 事件会写入一个即将消失的 SessionLog。
+        删除路径必须使用这个等待版本，确认 Turn 的收尾事件、Hook 全部结束
+        后再删除会话目录。
         """
         task = self._direct_tasks.get(session_id)
         if task is None:
@@ -289,7 +286,13 @@ class AgentLoop:
                     error=validation_error,
                 )
             config, profile = await self._executor.resolve_inbound_config(inbound, turn_id=turn_id)
-            agent_id = str(metadata_values.get("agent_id") or "default")
+            agent_id = await self._resolve_inbound_agent_id(inbound, profile)
+            # RuntimeInput 保持不可变；创建带最终作用域的本轮快照，避免
+            # 让 frozen 对象内部的 metadata 被隐式改写。
+            inbound = replace(
+                inbound,
+                metadata={**dict(inbound.metadata or {}), "agent_id": agent_id},
+            )
             current = self.agent_registry.ensure(agent_id)
             step_decision = await self._dispatch_agent_hook(
                 AGENT_BEFORE_RUN_SPEC,
@@ -337,7 +340,6 @@ class AgentLoop:
             executed = True
             self._direct_tasks[session_id] = task
             self._direct_signals[session_id] = cancellation
-            await self._publish_session_status_async(session_id, "running")
             outcome = await task
             if message.request_id:
                 await self.completions.complete(session_id, message.request_id, outcome)
@@ -372,7 +374,7 @@ class AgentLoop:
             self._direct_signals.pop(session_id, None)
             if executed:
                 try:
-                    final_agent_id = str(metadata_values.get("agent_id") or "default")
+                    final_agent_id = agent_id
                     record = self.agent_registry.ensure(final_agent_id)
                     await self._dispatch_agent_hook(
                         AGENT_AFTER_RUN_SPEC,
@@ -383,6 +385,7 @@ class AgentLoop:
                             request_id=message.request_id,
                             status=(outcome.status if "outcome" in locals() else "cancelled"),
                             cancellation=cancellation,
+                            paused=bool(getattr(outcome, "paused", False)) if "outcome" in locals() else False,
                             channel_id=message.channel_id,
                             config=config,
                             set_maintenance=self._set_maintenance_status(session_id),
@@ -392,12 +395,11 @@ class AgentLoop:
                 except Exception:
                     logger.exception("[agent-loop] direct agent/after-run failed session=%s", session_id)
             try:
-                # 维护 Hook 已经等待完成；这里清掉兜底状态后再对外发布 idle，
-                # 防止异常 Hook 留下一个永远 compacting 的 Session。
+                # 维护 Hook 已经等待完成；这里清掉兜底状态。
+                # （compacting 展示由 compaction 包的 maintenance 帧承担。）
                 self._maintenance.pop(session_id, None)
-                await self._publish_session_status_async(session_id, "idle")
             except Exception:
-                logger.debug("[agent-loop] status idle publish failed", exc_info=True)
+                logger.debug("[agent-loop] maintenance cleanup failed", exc_info=True)
             completion.set()
             if self._direct_completion_events.get(session_id) is completion:
                 self._direct_completion_events.pop(session_id, None)
@@ -447,19 +449,15 @@ class AgentLoop:
         *,
         turn_id: str,
     ) -> str:
-        """Commit the admitted user input before the TurnExecutor starts.
+        """AgentLoop 兜底：Inbox claim 路径之外的 UserMsg 幂等提交。
 
-        Session history is a data-plane fact owned by the Session projection;
-        the AgentLoop only coordinates the existing event sink. Keeping this
-        boundary here means TurnExecutor remains a pure Turn/Reply/Tool state
-        machine and cannot accidentally persist the same input twice.
+        正常路径由 Inbox 在 claim 前调用 sessions.append_user_message_if_absent；
+        这里只在历史缺失时补写（同 request_id 幂等跳过）。
         """
         session_id = inbound.session_id
         content = inbound.content
         if not session_id or not content:
             return ""
-        # Steering 在 before-reasoning 边界已由 Inbox 先写入 Session；idle fallback
-        # 会重新进入独立 Turn，此处复用同一 UserMsg id，不能再广播第二条历史消息。
         metadata = dict(inbound.metadata or {})
         existing_message_id = str(metadata.get("history_message_id") or "")
         if existing_message_id:
@@ -471,33 +469,24 @@ class AgentLoop:
         }
         if inbound.request_id:
             user_metadata["request_id"] = inbound.request_id
-        # 多模态 content 组装/归一由 SessionService 窄方法完成：转换规则是
-        # Session wire 的一部分，Runtime 不 import Host 的转换模块。
         persisted_content = self.sessions.build_user_content(
             self.sessions.normalize_stored_user_content(content),
             attachments,
             include_images=True,
         )
-        user_event = UserMessageEvent(
-            reply_id=turn_id,
-            content=from_openai_message({"role": "user", "content": persisted_content}),
-            message_metadata=user_metadata,
-            data={
-                "session_id": inbound.session_id,
-                "content": inbound.content,
-                "attachments": [dict(item) for item in inbound.attachments],
-                "source": inbound.source,
-            },
-        )
-        result = await self.emit_session_event(
+        if isinstance(persisted_content, str):
+            content_parts = [{"type": "text", "text": persisted_content}]
+        else:
+            content_parts = list(persisted_content)
+        event = await self.sessions.append_user_message_if_absent(
             session_id,
-            inbound.channel_id,
-            user_event,
-            metadata=metadata,
+            request_id=inbound.request_id or turn_id,
+            content=content_parts,
+            metadata=user_metadata,
         )
-        if not result.persisted_messages:
-            raise RuntimeError("Session 未返回已持久化的 UserMessage")
-        return result.persisted_messages[0].id
+        if event is None:
+            return ""
+        return str(event.get("message_id") or "")
 
     async def _validate_inbound(self, message: RuntimeInput) -> dict | None:
         """Validate the public delivery boundary before writing history."""
@@ -530,7 +519,7 @@ class AgentLoop:
                     member_ids.extend(str(sid) for sid in team["members"])
         # AgentService 只拥有 active Turn；pending 的清理由 ftre-inbox Package
         # 在 Session 删除事件中负责。这里必须先取消并等待当前 active 完整收尾，
-        # 再删除历史，否则 Reply 的最终 update_message 会访问已删除的索引。
+        # 再删除历史，否则 Turn 的收尾事件会追加进已删除的 SessionLog。
         for member_id in (session_id, *member_ids):
             await self._cancel_session_and_wait(member_id)
         await self.sessions.delete_session(session_id)
@@ -556,25 +545,25 @@ class AgentLoop:
         """读取当前生效的配置（委托给 TurnExecutor）。"""
         return self._executor._load_current_config()
 
-    async def emit_session_event(
+    async def append_session_event(
         self,
         session_id: str,
-        channel_id: str,
         event,
-        *,
-        metadata=None,
-    ):
-        """Delegate Session event persistence and broadcast to its sole Owner."""
+    ) -> None:
+        """把 Runtime 产出的会话事件提交进 SessionLog（唯一出口）。
+
+        SessionService 的订阅方负责 live Event 转发，Snapshot checkpoint 由
+        SessionService 统一调度；Runtime 不知道磁盘格式，也不在每次调用前强制写盘；
+        stream 队列（task 工具进程内消费）在此一并投递。
+        """
         queue = getattr(self, "_stream_queues", {}).get(session_id)
         if queue is not None:
             await queue.put(event)
-        if self.session_events is None:
-            raise RuntimeError("SessionEventService is not available")
-        return await self.session_events.emit(
+        await self.sessions.append_event(
             session_id,
-            channel_id,
-            event,
-            metadata=metadata,
+            event.type,
+            event.data,
+            message_id=getattr(event, "message_id", None),
         )
 
     async def resume_confirmation(
@@ -617,6 +606,12 @@ class AgentLoop:
         turn_id = f"confirm_{uuid.uuid4().hex[:12]}"
         cancellation = asyncio.Event()
         config, profile = await self._executor.resolve_inbound_config(inbound, turn_id=turn_id)
+        agent_id = await self._resolve_inbound_agent_id(inbound, profile)
+        inbound = replace(
+            inbound,
+            metadata={**dict(inbound.metadata or {}), "agent_id": agent_id},
+        )
+        outcome = None
         task = asyncio.create_task(
             self._executor.execute(
                 inbound,
@@ -631,42 +626,50 @@ class AgentLoop:
         self._direct_tasks[session_id] = task
         self._direct_signals[session_id] = cancellation
         try:
-            return await task
+            outcome = await task
+            return outcome
         except asyncio.CancelledError:
-            return AgentRunResult(session_id=session_id, turn_id=turn_id, status="cancelled")
+            outcome = AgentRunResult(session_id=session_id, turn_id=turn_id, status="cancelled")
+            return outcome
         finally:
             self._direct_tasks.pop(session_id, None)
             self._direct_signals.pop(session_id, None)
             try:
-                await self._publish_session_status_async(session_id, "idle")
+                final_agent_id = agent_id
+                record = self.agent_registry.ensure(final_agent_id)
+                await self._dispatch_agent_hook(
+                    AGENT_AFTER_RUN_SPEC,
+                    AfterRunPayload(
+                        agent=AgentSubject(final_agent_id, record.identity),
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        request_id=inbound.request_id,
+                        status=(outcome.status if outcome is not None else "cancelled"),
+                        cancellation=cancellation,
+                        paused=bool(getattr(outcome, "paused", False)) if outcome is not None else False,
+                        channel_id=channel_id,
+                        config=config,
+                        set_maintenance=self._set_maintenance_status(session_id),
+                    ),
+                    agent_id=final_agent_id,
+                )
             except Exception:
-                logger.debug("[agent-loop] confirmation idle status publish failed", exc_info=True)
+                logger.exception("[agent-loop] confirmation agent/after-run failed session=%s", session_id)
 
-    async def _publish_session_status_async(self, session_id: str, status: str) -> None:
-        """发布独立于 pending 的 Session activity 状态。
-
-        总线信封由 MessageBusService 的窄公开方法构造；Runtime 不 import
-        Host 的消息协议类型（PRD-F33 §5.4）。
-        """
-        session = await self.sessions.get_session(session_id)
-        if not session:
-            # 删除 Session 后，active Turn 的 finally 仍可能运行到这里；历史已
-            # 经不存在时没有合法的目标 Channel，也不应向空 to_channel 投递消息。
-            logger.debug(
-                "[agent-loop] skip session status for deleted session=%s status=%s",
-                session_id,
-                status,
-            )
-            return
-        channel_id = session.get("channel_id", "")
-        if not channel_id:
-            logger.debug(
-                "[agent-loop] skip session status without channel session=%s status=%s",
-                session_id,
-                status,
-            )
-            return
-        await self.message_bus.publish_session_status(session_id, channel_id, status)
+    async def _resolve_inbound_agent_id(self, inbound: RuntimeInput, profile) -> str:
+        """Resolve lifecycle Hook scope through TurnExecutor's Session-aware rule."""
+        resolver = getattr(self._executor, "resolve_inbound_agent_id", None)
+        if callable(resolver):
+            value = resolver(inbound, profile=profile)
+            if inspect.isawaitable(value):
+                value = await value
+            if value:
+                return str(value)
+        profile_agent_id = getattr(profile, "agent_id", None)
+        if isinstance(profile, dict):
+            profile_agent_id = profile.get("agent_id") or profile_agent_id
+        metadata_agent_id = dict(inbound.metadata or {}).get("agent_id")
+        return str(profile_agent_id or metadata_agent_id or "default")
 
     def _set_maintenance_status(self, session_id: str):
         """Return the callback used by after-run maintenance Hooks.
@@ -682,10 +685,7 @@ class AgentLoop:
                 # 当前公开维护状态只有 compacting；reason 保留给日志和未来的
                 # 其它维护 Hook，不把任意字符串泄漏成新的状态协议。
                 del reason
-                previous = self._maintenance.get(session_id)
                 self._maintenance[session_id] = "compacting"
-                if previous != "compacting":
-                    await self._publish_session_status_async(session_id, "compacting")
                 return
             self._maintenance.pop(session_id, None)
 

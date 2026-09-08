@@ -69,6 +69,9 @@ class Turn:
 
     # ── Agent 执行上下文（_build 写入，_run 读取）──
     agent_profile: Any | None = None  # 本轮选定的 Agent Profile 快照值
+    # _resolve_turn_config 计算出的最终 Agent 作用域；即使没有 profile，
+    # 也必须让 Prompt/Tool/Hook 使用和 Session 一致的 agent_id。
+    resolved_agent_id: str = ""
     config: AgentConfig | None = None  # 本轮实际使用的有效配置快照
     agent: ReActAgent | None = None  # 创建的 Agent 实例，None 表示未进入执行
     messages: list = field(default_factory=list)  # 发给 LLM 的消息列表
@@ -79,6 +82,10 @@ class Turn:
     continuation_count: int = 0
     max_continuations: int = 3
     paused: bool = False
+    # 真正的 whole-value assistant/message 是否已经提交；最终收口只允许一次。
+    assistant_message_emitted: bool = False
+    # 本 Turn 已提交的 assistant message_id；steering 可能产生多个消息。
+    assistant_message_ids_emitted: set[str] = field(default_factory=set)
     # 每个 Turn 独占一个取消信号；控制型 Agent Hook 只能观察这一个实例。
     cancellation: asyncio.Event = field(default_factory=asyncio.Event)
 

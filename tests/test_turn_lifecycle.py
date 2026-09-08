@@ -1,36 +1,50 @@
-import asyncio
+"""Turn 状态机生命周期测试（SessionLog 事件流）。
+
+验证：turn/start → 事件流 → turn/end 的完整生命周期，
+以及 outcome 映射（completed/error/cancelled/paused）与 usage 汇总。
+"""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-import pytest
-from ftre_agent import AgentConfig, AgentRegistry, LLMConfig
-from ftre_agent.event import (
-    ReplyEndEvent,
-    ReplyFinishedReason,
-    ReplyStartEvent,
-    TextBlockDeltaEvent,
-    TextBlockEndEvent,
-    TextBlockStartEvent,
+from ftre_agent import AgentConfig, LLMConfig
+from ftre_agent.message import AssistantMsg
+from ftre_agent.session import SessionLog
+from ftre_agent.session.events import (
+    AssistantChunk,
+    AssistantChunkData,
+    AssistantMessage,
+    AssistantMessageData,
 )
-from ftre_agent.message import Msg
-from ftre_agent_runtime import AgentLoop, TurnExecutor
+from ftre_agent.types import ReplyFinishedReason
+from ftre_agent_runtime import TurnExecutor
 from ftre_agent_runtime.protocol import RuntimeInput
 from ftre_agent_runtime.run_state import RunState, RunStatus
 
-from ftre.services.messaging.bus import EventBus, MessageBusService
-from ftre.services.session.events import SessionEventService
-from ftre.services.session.projection import SessionProjection
+
+class FakeSessions:
+    """最小 SessionService 曦身：SessionLog 装配 + 事件记录。"""
+
+    def __init__(self):
+        self.logs: dict[str, SessionLog] = {}
+        self.flush_log = AsyncMock()
+
+    async def log(self, session_id: str) -> SessionLog:
+        if session_id not in self.logs:
+            self.logs[session_id] = SessionLog(session_id)
+        return self.logs[session_id]
+
+    async def append_event(self, session_id, type_, data, *, message_id=None):
+        log = await self.log(session_id)
+        return log.append(type_, data, message_id=message_id)
 
 
 class FakeAgent:
-    def __init__(self, *, stream=False, fail_after_delta=False):
-        self.stream = stream
-        self.fail_after_delta = fail_after_delta
-        self._captured_runtime_context = None
-        self.tool_registry = Mock()
+    def __init__(self, *, events=None, status=RunStatus.COMPLETED,
+                 done_reason=ReplyFinishedReason.COMPLETED):
+        self._events = events or []
         self.run_state = RunState()
-        self.run_state.done_reason = ReplyFinishedReason.COMPLETED
-        self.run_state.status = RunStatus.COMPLETED
+        self.run_state.done_reason = done_reason
+        self.run_state.status = status
         self.run_state.iteration = 1
         self.run_state.token_usage = {
             "prompt_tokens": 10,
@@ -41,351 +55,165 @@ class FakeAgent:
         self.run_state.error_code = None
 
     async def run(self, messages, runtime_context=None):
-        self._captured_runtime_context = runtime_context
-        if not self.stream:
-            return
-        reply_id = runtime_context["reply_id"]
-        yield ReplyStartEvent(
-            session_id="test-session",
-            reply_id=reply_id,
-            name="assistant",
-        )
-        yield TextBlockStartEvent(reply_id=reply_id, block_id="text-block")
-        yield TextBlockDeltaEvent(
-            reply_id=reply_id,
-            block_id="text-block",
-            delta="hello",
-        )
-        if self.fail_after_delta:
-            raise RuntimeError("boom")
-        yield TextBlockEndEvent(reply_id=reply_id, block_id="text-block")
-        yield ReplyEndEvent(
-            session_id="test-session",
-            reply_id=reply_id,
-            finished_reason=ReplyFinishedReason.COMPLETED,
+        for event in self._events:
+            yield event
+
+
+def _mk_harness(agent, model="test-model"):
+    """构造 (executor, sessions)：executor.execute 直接驱动已构造的 FakeAgent。"""
+    sessions = FakeSessions()
+    loop = Mock()
+    loop.sessions = sessions
+    loop.agent_subject = lambda agent_id: Mock()
+
+    async def append_session_event(session_id, event):
+        await sessions.append_event(
+            session_id, event.type, event.data,
+            message_id=getattr(event, "message_id", None),
         )
 
-    def cancel_nowait(self):
-        pass
-
-
-def _make_executor(agent: FakeAgent) -> TurnExecutor:
-    loop = object.__new__(AgentLoop)
-    config = AgentConfig()
-    config.llm = LLMConfig()
-    loop._injected_config = config
-    loop._event_loop = asyncio.get_running_loop()
-    loop.hooks = None
-    loop.agent_registry = AgentRegistry()
-    loop.sessions = AsyncMock()
-    loop.sessions.get_session = AsyncMock(
-        return_value={"channel_id": "ws", "workspace": "/tmp"}
-    )
-    # F33：消息格式转换改为 SessionService 窄方法；fake 用真实实现保持 wire 保真。
-    from ftre.services.session.message.converter import _as_msg, to_openai
-    from ftre.services.session.message.multimodal import (
-        build_user_content,
-        normalize_stored_user_content,
-    )
-
-    loop.sessions.build_user_content = build_user_content
-    loop.sessions.normalize_stored_user_content = normalize_stored_user_content
-    loop.sessions.record_to_msg = _as_msg
-    loop.sessions.to_openai_messages = (
-        lambda records, *, vision: to_openai(list(records), config={"llm": {"vision": vision}})
-    )
-    loop.message_bus = MessageBusService(bus=AsyncMock(spec=EventBus))
-    loop.message_bus.publish_outbound = AsyncMock()
-    loop.agent_service = None
-    loop.tools = SimpleNamespace(prepare_view=AsyncMock(return_value=Mock()))
-    loop.profiles = SimpleNamespace(
-        resolve_for_inbound=AsyncMock(return_value=SimpleNamespace(value=None))
-    )
-    loop.workspaces = SimpleNamespace(
-        create_accessor=Mock(return_value=SimpleNamespace(get=lambda: "/tmp", set=lambda value: value)),
-        ensure_extension_layout=AsyncMock(),
-    )
-    loop.process_service = object()
-    loop.config_service = None
-    loop.tracer = Mock()
-
-    loop.session_projection = SessionProjection(loop.sessions)
-    loop.session_events = SessionEventService(
-        SimpleNamespace(projection=loop.session_projection),
-        loop.message_bus,
-    )
-
-    async def finish_open_replies(session_id, reason, *, error=None):
-        return await loop.session_projection.finish_open(session_id, reason, error=error)
-
-    loop.sessions.finish_open_replies.side_effect = finish_open_replies
+    loop.append_session_event = append_session_event
 
     executor = TurnExecutor(
         loop,
-        sessions=loop.sessions,
-        agents=None,
-        tools=loop.tools,
-        profiles=loop.profiles,
-        workspaces=loop.workspaces,
-        process_service=loop.process_service,
-        config_service=None,
-        llm_service=None,
+        sessions=sessions,
+        agents=Mock(),
+        attachments=None,
+        system_prompt=None,
+        hooks=None,
+        agent_registry=Mock(),
+        tools=None,
+        profiles=None,
+        workspaces=None,
     )
-    executor._runtime_factory = Mock(return_value=agent)
-    executor._build_messages = AsyncMock(
-        return_value=([{"role": "user", "content": "hi"}], config)
-    )
-    executor._publish_session_status_async = AsyncMock()
-    loop._executor = executor
-    return executor
+
+    config = AgentConfig(llm=LLMConfig(provider="p", model=model, api_key="k", api_base=""))
+
+    original_execute = executor.execute
+
+    async def execute(inbound, **kwargs):
+        # 拦截 _drive 前的 agent 注入：构造 Turn 后绕过 _build
+        async def patched_run(msgs, runtime_context=None):
+            async for event in agent.run(msgs, runtime_context=runtime_context):
+                yield event
+
+        original_build = executor._build
+
+        async def build(turn):
+            turn.agent = SimpleNamespace(
+                run=patched_run,
+                run_state=agent.run_state,
+            )
+            turn.messages = []
+            turn.runtime_context = {
+                "session_id": turn.session_id,
+                "request_id": turn.inbound.request_id,
+                "turn_id": turn.turn_id,
+                "log_flush": sessions.flush_log,
+            }
+            from ftre_agent_runtime.state import TurnStatus
+
+            return TurnStatus.RUNNING
+
+        executor._build = build
+        try:
+            return await original_execute(inbound, config=config, **kwargs)
+        finally:
+            executor._build = original_build
+
+    return SimpleNamespace(execute=execute, sessions=sessions)
 
 
-def _inbound():
+def _runtime_input(session_id="ws_sess_t") -> RuntimeInput:
     return RuntimeInput(
-        session_id="test-session",
-        request_id="request-test",
+        session_id=session_id,
+        request_id="req_1",
         channel_id="ws",
         content="hello",
-        metadata={},
+        source="user",
     )
 
 
-async def _execute_admitted(executor, inbound=None):
-    """Mirror the AgentLoop delivery boundary used by production code."""
-    inbound = inbound or _inbound()
-    turn_id = "turn_test"
-    user_message_id = await executor._loop._persist_inbound_user_message(
-        inbound,
-        turn_id=turn_id,
-    )
-    return await executor.execute(
-        inbound,
-        turn_id=turn_id,
-        user_message_id=user_message_id,
+def _chunk(delta: str, message_id: str = "m1") -> AssistantChunk:
+    return AssistantChunk(
+        data=AssistantChunkData(kind="text", delta=delta, block_id="b1"),
+        message_id=message_id,
     )
 
 
-def _saved_messages(executor):
-    """所有通过 SessionProjection 持久化的消息。"""
-    projected = [
-        call.args[1]
-        for call in executor._loop.sessions.upsert_message.call_args_list
-    ]
-    appended = [
-        call.args[1]
-        for call in executor._loop.sessions.save_message.call_args_list
-    ]
-    return projected + appended
-
-def _updated_messages(executor):
-    """所有通过 update_message 更新的消息。"""
-    return [
-        call.args[0]
-        for call in executor._loop.sessions.update_message.call_args_list
-    ]
-
-
-@pytest.mark.asyncio
-async def test_user_msg_is_persisted_before_agent_run():
-    agent = FakeAgent()
-    executor = _make_executor(agent)
-    await _execute_admitted(executor)
-
-    saved = _saved_messages(executor)
-    assert len(saved) == 1
-    assert isinstance(saved[0], Msg)
-    assert saved[0].role == "user"
-    assert saved[0].get_text_content() == "hello"
-    assert agent._captured_runtime_context["reply_id"].startswith("turn_")
-
-
-@pytest.mark.asyncio
-async def test_turn_context_exposes_injected_process_service_to_tools():
-    agent = FakeAgent()
-    executor = _make_executor(agent)
-
-    await _execute_admitted(executor)
-
-    assert agent._captured_runtime_context["process"] is executor._process_service
-
-
-@pytest.mark.asyncio
-async def test_turn_executor_does_not_drop_message_when_maintenance_is_external(caplog):
-    agent = FakeAgent()
-    executor = _make_executor(agent)
-
-    with caplog.at_level("WARNING"):
-        await _execute_admitted(executor)
-
-    assert len(_saved_messages(executor)) == 1
-    assert agent._captured_runtime_context is not None
-    assert "正在压缩，丢弃新消息" not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_user_message_is_projected_before_frontend_echo():
-    executor = _make_executor(FakeAgent())
-    order: list[str] = []
-
-    async def record_upsert(*args, **kwargs):
-        order.append("persist")
-
-    async def record_publish(message):
-        payload = (
-            message.data.model_dump(mode="json")
-            if hasattr(message.data, "model_dump")
-            else message.data
-        )
-        if payload.get("type") == "USER_MESSAGE":
-            order.append("broadcast")
-
-    executor._loop.sessions.upsert_message.side_effect = record_upsert
-    executor._loop.message_bus.publish_outbound.side_effect = record_publish
-
-    await _execute_admitted(executor)
-
-    assert order == ["persist", "broadcast"]
-
-
-@pytest.mark.asyncio
-async def test_claimed_request_identity_is_persisted_on_user_message():
-    executor = _make_executor(FakeAgent())
-    inbound = _inbound()
-    inbound = RuntimeInput(
-        session_id="test-session",
-        request_id="request-a",
-        channel_id="ws",
-        content="hello",
-        metadata={"request_id": "request-a"},
+def _assistant_message(message_id: str = "m1") -> AssistantMessage:
+    msg = AssistantMsg(id=message_id, content="hello world")
+    return AssistantMessage(
+        data=AssistantMessageData(message=msg.model_dump(mode="json")),
+        message_id=message_id,
     )
 
-    await _execute_admitted(executor, inbound)
 
-    user = _saved_messages(executor)[0]
-    assert user.metadata["request_id"] == "request-a"
+async def test_completed_turn_emits_start_events_end():
+    events = [_chunk("hello"), _assistant_message()]
+    harness = _mk_harness(FakeAgent(events=events))
+    result = await harness.execute(_runtime_input(), turn_id="turn_t")
 
+    log = harness.sessions.logs["ws_sess_t"]
+    types = [e["type"] for e in log.events]
+    assert types[0] == "turn/start"
+    assert types[-1] == "turn/end"
+    assert "assistant/chunk" in types
+    assert "assistant/message" in types
 
-@pytest.mark.asyncio
-async def test_channel_mismatch_is_failed_instead_of_false_completed():
-    """防串台拒绝必须成为失败的 Turn 结果，不能伪装成 completed。"""
-    executor = _make_executor(FakeAgent())
-    inbound = _inbound()
-    inbound = RuntimeInput(
-        session_id="test-session",
-        request_id="request-channel",
-        channel_id="cron",
-        content="hello",
-    )
-
-    error = await executor._loop._validate_inbound(
-        RuntimeInput(
-            session_id="test-session",
-            request_id="request-channel",
-            channel_id=inbound.channel_id,
-            content="hello",
-        )
-    )
-
-    assert error is not None
-    assert error["code"] == "channel_mismatch"
-    executor._runtime_factory.assert_not_called()
+    turn_end = log.events[-1]
+    assert turn_end["data"]["outcome"] == "completed"
+    assert turn_end["data"]["usage"]["total_tokens"] == 15
+    assert turn_end["message_id"] == "m1"
+    assert result.status == "completed"
+    assert result.final_content == "hello world"
 
 
-@pytest.mark.asyncio
-async def test_turn_executor_has_no_critical_path_compaction_owner():
-    executor = _make_executor(FakeAgent())
+async def test_turn_start_carries_trigger_and_model():
+    harness = _mk_harness(FakeAgent(events=[_assistant_message()]), model="deepseek-chat")
+    await harness.execute(_runtime_input(), turn_id="turn_t")
 
-    await _execute_admitted(executor)
-
-    executor._publish_session_status_async.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_compact_decisions_use_selected_agent_context_window():
-    executor = _make_executor(FakeAgent())
-    coder_llm = LLMConfig(
-        model="kiro/gpt-5.6-sol",
-        context_window=1_050_000,
-    )
-    executor._loop.profiles.resolve_for_inbound.return_value = SimpleNamespace(value=SimpleNamespace(
-        agent_id="coder",
-        llm=coder_llm,
-        agent_dir="",
-        mcp_config={},
-        tools_config=None,
-        soul_prompt="",
-        user_prompt_md="",
-    ))
-    inbound = RuntimeInput(
-        session_id="test-session",
-        request_id="request-coder",
-        channel_id="ws",
-        content="hello",
-        metadata={"agent_id": "coder"},
-    )
-
-    await _execute_admitted(executor, inbound)
-
-    decision_config = executor._build_messages.await_args.args[3]
-    assert decision_config.llm.model == "kiro/gpt-5.6-sol"
-    assert decision_config.llm.context_window == 1_050_000
+    turn_start = harness.sessions.logs["ws_sess_t"].events[0]
+    assert turn_start["type"] == "turn/start"
+    assert turn_start["data"]["trigger"] == "user"
+    assert turn_start["data"]["model"] == "deepseek-chat"
+    assert turn_start["data"]["request_id"] == "req_1"
 
 
+async def test_error_turn_outcome():
+    agent = FakeAgent(events=[])
+    agent.run_state.status = RunStatus.ERROR
+    agent.run_state.done_reason = ReplyFinishedReason.ERROR
+    agent.run_state.error = "LLM exploded"
+    agent.run_state.error_code = "provider_error"
+    harness = _mk_harness(agent)
+    result = await harness.execute(_runtime_input(), turn_id="turn_t")
 
-@pytest.mark.asyncio
-async def test_delta_is_live_only_and_reply_persists_as_one_msg():
-    executor = _make_executor(FakeAgent(stream=True))
-    await _execute_admitted(executor)
-
-    saved = _saved_messages(executor)
-    # user msg + assistant msg (REPLY_START 时 save)
-    assert [message.role for message in saved] == ["user", "assistant"]
-
-    # 最终状态通过 update_message 写入
-    updated = _updated_messages(executor)
-    assert len(updated) >= 1
-    assistant_final = updated[-1]
-    assert assistant_final.get_text_content() == "hello"
-    assert assistant_final.finished_reason == ReplyFinishedReason.COMPLETED
-
-    outbound = []
-    for call in executor._loop.message_bus.publish_outbound.call_args_list:
-        if not call.args or getattr(call.args[0], "type", "") not in {"agent_event", "session_event"}:
-            continue
-        payload = call.args[0].data
-        outbound.append(payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload)
-    assert any(frame.get("type") == "TEXT_BLOCK_DELTA" for frame in outbound)
-    turn_end = next(
-        frame
-        for frame in outbound
-        if frame.get("type") == "PIPELINE_EVENT" and frame.get("name") == "TURN_END"
-    )
-    assert turn_end["value"]["success"] is True
-    assert turn_end["value"]["reason"] == "completed"
-    assert turn_end["value"]["iterations"] == 1
-    assert turn_end["value"]["token_usage"]["total_tokens"] == 15
-
-    pipeline_end = next(
-        frame
-        for frame in outbound
-        if frame.get("type") == "PIPELINE_EVENT" and frame.get("name") == "PIPELINE_END"
-    )
-    assert pipeline_end["value"]["success"] is True
+    turn_end = harness.sessions.logs["ws_sess_t"].events[-1]
+    assert turn_end["type"] == "turn/end"
+    assert turn_end["data"]["outcome"] == "error"
+    assert turn_end["data"]["error"]["code"] == "provider_error"
+    assert result.status == "failed"
 
 
-@pytest.mark.asyncio
-async def test_partial_reply_is_saved_as_error_msg():
-    executor = _make_executor(FakeAgent(stream=True, fail_after_delta=True))
-    await _execute_admitted(executor)
+async def test_cancelled_turn_outcome():
+    agent = FakeAgent(events=[])
+    agent.run_state.status = RunStatus.CANCELLED
+    agent.run_state.done_reason = ReplyFinishedReason.INTERRUPTED
+    harness = _mk_harness(agent)
+    result = await harness.execute(_runtime_input(), turn_id="turn_t")
 
-    saved = _saved_messages(executor)
-    # user msg + assistant msg (REPLY_START 时 save)
-    assert [message.role for message in saved] == ["user", "assistant"]
+    turn_end = harness.sessions.logs["ws_sess_t"].events[-1]
+    assert turn_end["data"]["outcome"] == "cancelled"
+    assert result.status == "cancelled"
 
-    # 异常终态通过 update_message 写入
-    updated = _updated_messages(executor)
-    assert len(updated) >= 1
-    assistant_final = updated[-1]
-    assert assistant_final.get_text_content() == "hello"
-    assert assistant_final.finished_reason == ReplyFinishedReason.ERROR
-    assert assistant_final.error == {"message": "Agent 执行异常", "code": "unknown"}
+
+async def test_paused_turn_outcome():
+    agent = FakeAgent(events=[])
+    agent.run_state.status = RunStatus.PAUSED
+    harness = _mk_harness(agent)
+    result = await harness.execute(_runtime_input(), turn_id="turn_t")
+
+    turn_end = harness.sessions.logs["ws_sess_t"].events[-1]
+    assert turn_end["data"]["outcome"] == "paused"
+    assert result.paused is True

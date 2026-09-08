@@ -14,6 +14,12 @@
 
 > 本版本是对原 F38 草案的范围收缩。当前阶段只修复已复现的重复投递、错误消费、消息时间覆盖、运行幂等和存储路径问题；不提前引入独立 RequestLedger、SQLite 或新的调度器。Inbox 的最终实现进一步收敛为“接纳、排队、claim、交给 AgentService”，不保留 delivery lease 或回退状态机。
 
+> **2026-09-07 维护修订**：实现已移除 Inbox 自主调度循环、`blocked_reason` 和 Agent
+> 状态订阅。当前消费边界以 `PRD-F12-session-inbox-protocol.md` 为准：
+> `agent/before-reasoning` 消费 `next-step`，`agent/after-run(status=completed)`
+> 触发一条 `next-turn`；failed/cancelled/interrupted/paused 不自动派发。本文第 2 节及
+> 变更记录中的 worker/resume 仅描述历史故障，不是当前 API。
+
 ## 1. 背景与目标
 
 ### 1.1 已复现故障
@@ -55,7 +61,7 @@ Inbox 不写入安装目录，工作区与发行包使用同一个用户数据�
 
 ```text
 InboxRepository  -> Inbox 持久化、claim、snapshot
-InboxService     -> admission、worker、AgentService 调用、队列 Hook
+InboxService     -> admission、一次性 Hook 交付、AgentService 调用、队列 Hook
 AgentService     -> Agent Run、状态和 request/run 幂等
 SessionService   -> UserMessage/Assistant 持久化与 Projection
 WebSocket        -> queue/status/event wire 协议
@@ -75,24 +81,25 @@ Inbox 不维护 REMOVED/Agent 运行状态，也不存在 `repository.release()`
 
 ### 2.3 不用 `idle` 作为消费触发器
 
-Inbox 不把 `idle` 当作消费事件。worker 只在上一项 `AgentService.run()` 正常完成后继续取下一项；Agent 状态只作为交付前的接收门禁，不由 Inbox 持有或改变：
+Inbox 不把 `idle` 当作消费事件。只有 Agent 生命周期 Hook 明确通知正常完成时，
+Inbox 才领取下一项；Agent 状态只作为交付前的接收门禁，不由 Inbox 持有或改变：
 
 ```text
-RunCompleted  -> 唤醒 FIFO，消费 Session 队首 next-step/next-turn
-RunCancelled  -> worker 停止，pending 保留
-RunFailed     -> worker 停止，pending 保留
-RunInterrupted-> worker 停止，pending 保留
-RunPaused     -> worker 停止，pending 保留
+RunCompleted  -> `agent/after-run` 领取 Session 队首 next-step/next-turn
+RunCancelled  -> 不触发交付，pending 保留
+RunFailed     -> 不触发交付，pending 保留
+RunInterrupted-> 不触发交付，pending 保留
+RunPaused     -> 不触发交付，pending 保留
 ```
 
-暂停、失败、取消和中断都会让 worker 停止；它们不会触发自动回退或重投。需要继续时由上层显式调用 `resume_pending()` 或提交新的 request。
+暂停、失败、取消和中断都不会触发下一条队列交付；pending 保留，等待新的正常生命周期边界。
 
 ## 3. 功能需求
 
 ### FR1：执行后请求不可重新入队
 
 - [x] A 被 claim 后，无论 Agent 尚未开始、已写入 UserMessage、已执行 Tool 还是已产生 Assistant 输出，都不回 pending。
-- [x] 终态请求保留 request_id/run_id 和 terminal reason，不能被普通 worker 再次 claim。
+- [x] 终态请求保留 request_id/run_id 和 terminal reason，不能被旧调度器再次 claim。
 - [x] 旧 inflight 在进程关闭时不得无条件回排；恢复必须依赖 Session/Assistant 证据。
 
 ### FR2：普通队列只在正常完成后消费
@@ -100,7 +107,8 @@ RunPaused     -> worker 停止，pending 保留
 - [x] 新会话首次显式发送仍可启动第一条消息。
 - [x] active Run 期间新增普通消息只进入 pending。
 - [x] `RunCompleted` 后由现有 FIFO 消费 Session 队首；next-step 优先，next-turn 作为普通队列项继续推进。
-- [x] next-step 不绑定 Run；当前 Run 没有新的 reasoning 边界时，正常完成后的 FIFO worker 会把它交给后续 Run。
+- [x] next-step 不绑定 Run；当前 Run 没有新的 reasoning 边界时，正常完成后的
+  `agent/after-run(status=completed)` 会把它交给后续 Run。
 - [x] cancel、pause、failed、interrupted、Gateway 恢复和普通 idle 不得自动发送 pending。
 - [x] Agent 终态后新消息保留；显式恢复或新 request 不得被旧消息抢占。
 
@@ -129,7 +137,8 @@ RunPaused     -> worker 停止，pending 保留
 
 - [x] Steer 只绑定 `session_id + request_id`，不绑定某一次 Run。
 - [x] 同一 Session 的 `agent/before-reasoning` 边界可以消费该 Session 的 next-step 队列。
-- [x] 当前 Run 在 reasoning 边界前正常结束时，未消费的 next-step 由现有 FIFO worker 交给后续 Run。
+- [x] 当前 Run 在 reasoning 边界前正常结束时，未消费的 next-step 仍留在 Session pending；
+  后续 Run 只由 `agent/before-reasoning` 领取。
 - [x] cancel、pause、failed、interrupted 不会单独触发消费；不同 Session 的队列始终隔离。
 
 ## 4. 数据模型与状态约束
@@ -251,9 +260,9 @@ message = await session_events.emit_user_message_if_absent(
 
 1. claim 前只做 admission、Hook 和持久化校验。
 2. claim 后直接调用 AgentService，不再 release 或 ack。
-3. 删除基于普通 idle 的 worker 唤醒；仅正常完成后继续 next-turn。
-4. 取消、暂停、失败、中断后 worker 停止且 pending 不被改写。
-5. 同一请求重复进入 worker 时先查询已有 request/run 事实，禁止第二次 Agent.run。
+3. 删除基于普通 idle 的调度唤醒；仅 `agent/after-run(status=completed)` 触发 next-turn。
+4. 取消、暂停、失败、中断后不触发交付且 pending 不被改写。
+5. 同一请求重复进入交付边界时先查询已有 request/run 事实，禁止第二次 Agent.run。
 
 **验收**：
 

@@ -12,6 +12,7 @@ from ftre_llm.contracts import LlmStreamPayload as LLMStreamPayload
 
 from .config import AgentConfig
 from .contracts import AgentRunRequest
+from .message import Msg
 from .tool import ToolExecutionResult
 
 
@@ -365,6 +366,61 @@ AGENT_BEFORE_REASONING_SPEC = HookSpec(
 )
 
 
+# ── Agent context build contract ──────────────────────────────────────
+
+AGENT_CONTEXT_BUILD = "agent/context-build"
+
+
+@dataclass(frozen=True, slots=True)
+class ContextBuildPayload:
+    """一次 Reasoning 交给 Provider 前的完整、可替换上下文快照。
+
+    ``messages`` 已经包含 ``agent/before-reasoning`` 的追加结果，但仍是
+    Provider 无关的 ``Msg``。Runtime 会传入深拷贝，Plugin 对它的修改只影响
+    本次请求，不会回写 AgentState 或 Session Snapshot。
+    """
+
+    session_id: str
+    turn_id: str
+    request_id: str
+    iteration: int
+    model: str
+    messages: tuple[Msg, ...]
+    context_limit: int | None
+    cancellation: asyncio.Event
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "messages", tuple(self.messages))
+
+
+@dataclass(frozen=True, slots=True)
+class ContextBuildResult:
+    """Context-build Hook 返回的本次 Provider 上下文视图。"""
+
+    messages: tuple[Msg, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "messages", tuple(self.messages))
+
+
+async def _identity_context(payload: ContextBuildPayload) -> ContextBuildResult:
+    """没有 Context Plugin 时原样透传完整 Msg。"""
+
+    return ContextBuildResult(payload.messages)
+
+
+AGENT_CONTEXT_BUILD_SPEC = HookSpec(
+    AGENT_CONTEXT_BUILD,
+    "agent",
+    HookMode.WATERFALL,
+    failure_policy=HookFailurePolicy.OBSERVE,
+    payload_type=ContextBuildPayload,
+    result_type=ContextBuildResult,
+    default=_identity_context,
+    scope=HookScope.AGENT,
+)
+
+
 # ── Agent stop-decision contract ───────────────────────────────────────
 
 AGENT_STOP_DECISION = "agent/stop-decision"
@@ -484,7 +540,7 @@ class DeferRun:
 
 @dataclass(frozen=True, slots=True)
 class AfterRunPayload:
-    """Run 完成后的可等待维护边界。"""
+    """Run 完成后的可等待维护边界；``paused`` 表示权限挂起而非自然完成。"""
 
     agent: AgentSubject
     session_id: str
@@ -492,6 +548,7 @@ class AfterRunPayload:
     request_id: str
     status: str
     cancellation: asyncio.Event
+    paused: bool = False
     channel_id: str = ""
     config: AgentConfig | None = None
     set_maintenance: Callable[[bool, str], Awaitable[None]] | None = None
@@ -580,6 +637,8 @@ __all__ = [
     "AGENT_BEFORE_REASONING_SPEC",
     "AGENT_BEFORE_RUN",
     "AGENT_BEFORE_RUN_SPEC",
+    "AGENT_CONTEXT_BUILD",
+    "AGENT_CONTEXT_BUILD_SPEC",
     "AGENT_RUN_ERROR",
     "AGENT_RUN_ERROR_SPEC",
     "AGENT_STOP_DECISION",
@@ -596,6 +655,8 @@ __all__ = [
     "BeforeReasoningPayload",
     "BeforeReasoningResult",
     "BeforeRunPayload",
+    "ContextBuildPayload",
+    "ContextBuildResult",
     "ContinueTurn",
     "DeferRun",
     "HookDispatcher",

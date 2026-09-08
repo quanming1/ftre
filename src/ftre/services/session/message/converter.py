@@ -178,9 +178,9 @@ def to_openai(
 ) -> list[dict[str, Any]]:
     """Convert persisted Msg snapshots to OpenAI Chat Completions messages.
 
-    上下文裁剪（只保留最后一条 compact Msg 及其后的消息）已由
-    ``SessionManager.get_context_messages()`` 完成，本函数只负责把每条
-    Msg 转成 provider 消息，不再做二次 clear。
+    本函数只负责把传入的 Msg 逐条转换为 provider 消息；上下文裁剪由
+    ``agent/context-build`` Hook 的业务 Plugin 完成，这里不读取 Session、
+    不解释 compact marker，也不做二次裁剪。
     """
     llm_config = (config or {}).get("llm") or {}
     include_images = bool(llm_config.get("vision", False))

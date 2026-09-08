@@ -15,7 +15,6 @@ from .base import Channel
 logger = logging.getLogger(__name__)
 
 WS_CHANNEL_ID = "ws"
-MIRROR_TO_WS_CHANNELS = {"cron"}
 
 
 class ChannelManager:
@@ -68,8 +67,9 @@ class ChannelManager:
     async def _dispatch_loop(self) -> None:
         """从 Bus 消费 outbound，按 to_channel 分发。
 
-        to_channel == GLOBAL_CHANNEL 时为全局广播：分发给所有已注册 Channel，
-        由各 Channel 的 send() 自行决定如何扇出给它管理的连接。
+        - ``downstream_frame``：双投——owner channel + ws 观察面（PRD-F41 FR5，
+          跨 channel 实时观察）。ws 按 attach 集合扇出，未 attach 自然不发送。
+        - ``to_channel == GLOBAL_CHANNEL``：全局广播，分发给所有已注册 Channel。
         """
         try:
             async for msg in self.bus.subscribe_outbound():
@@ -78,12 +78,15 @@ class ChannelManager:
                         await channel.send(msg)
                     continue
                 channel = self._channels.get(msg.to_channel)
+                if msg.type == "downstream_frame":
+                    ws_channel = self._channels.get(WS_CHANNEL_ID)
+                    if channel is not None:
+                        await channel.send(msg)
+                    if ws_channel is not None and ws_channel is not channel:
+                        await ws_channel.send(msg)
+                    continue
                 if channel:
                     await channel.send(msg)
-                    if msg.to_channel in MIRROR_TO_WS_CHANNELS:
-                        ws_channel = self._channels.get(WS_CHANNEL_ID)
-                        if ws_channel is not None and ws_channel is not channel:
-                            await ws_channel.send(msg)
                 else:
                     logger.warning(
                         f"[channel-manager] 未知 to_channel: {msg.to_channel}"

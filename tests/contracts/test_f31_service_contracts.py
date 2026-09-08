@@ -110,14 +110,19 @@ def test_agent_service_public_boundary_accepts_msg_run_request() -> None:
 
 
 def test_session_and_message_bus_public_methods_are_stable() -> None:
-    """Session/MessageBus 只冻结真实存在的方法；F32 的新出口另有明确输入。"""
+    """Session/MessageBus 只冻结真实存在的方法；F32 的新出口另有明确输入。
+
+    消息写入统一为 append_event（whole-value）/
+    append_user_message_if_absent（幂等种子）。
+    """
     assert {
         "get_session",
         "get_session_metadata",
+        "get_full_messages",
         "get_context_messages",
-        "save_message",
-        "update_message",
-        "upsert_message",
+        "set_context_view_builder",
+        "append_event",
+        "append_user_message_if_absent",
     } <= _method_names(SessionService)
     assert {"publish_inbound", "request_inbound", "stop_inbound", "start", "close"} <= _method_names(
         MessageBusService

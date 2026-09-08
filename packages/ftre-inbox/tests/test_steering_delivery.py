@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from ftre_inbox.protocol import InboundMessage
 from ftre_inbox.repository import InboxRepository
@@ -8,17 +10,41 @@ from ftre_inbox.service import InboxService
 from ftre.services.messaging.bus import BusMessage, InboundData
 
 
-class RecordingSessionEvents:
+class RecordingSessions:
+    """SessionService 桩：记录 user/message 幂等写入（FR6 顺序断言用）。"""
+
     def __init__(self, order: list[str]) -> None:
         self.order = order
 
-    async def emit_user_message_if_absent(self, *args, **kwargs):
-        del args, kwargs
+    async def log(self, session_id: str):
+        del session_id
+        return SimpleNamespace(events=[])
+
+    async def append_user_message_if_absent(
+        self,
+        session_id: str,
+        *,
+        request_id: str,
+        content,
+        metadata=None,
+        previous_assistant_message_id=None,
+    ):
+        del session_id, content, metadata, previous_assistant_message_id
         self.order.append("persist")
+        return {"message_id": f"user_{request_id}", "type": "user/message"}
+
+    async def append_event(self, session_id, type_, data, *, message_id=None):
+        del session_id, type_, data, message_id
 
 
-class FailingSessionEvents:
-    async def emit_user_message_if_absent(self, *args, **kwargs):
+class FailingSessions:
+    """SessionService 桩：SessionLog 写入持续失败。"""
+
+    async def log(self, session_id: str):
+        del session_id
+        return SimpleNamespace(events=[])
+
+    async def append_user_message_if_absent(self, *args, **kwargs):
         del args, kwargs
         raise RuntimeError("session store unavailable")
 
@@ -28,7 +54,7 @@ async def test_plugin_inject_is_not_written_to_user_history(tmp_path) -> None:
     order: list[str] = []
     service = InboxService(
         InboxRepository(tmp_path),
-        session_events=RecordingSessionEvents(order),
+        sessions=RecordingSessions(order),
     )
     await service.inject(InboundMessage("s1", "plugin-1", "plugin", "内部上下文", source="plugin"))
 
@@ -67,7 +93,7 @@ def test_inbound_data_preserves_prompt_mode() -> None:
 
     assert data.mode == "steer"
     assert data.model_dump()["mode"] == "steer"
-    assert InboundData.coerce({"content": "legacy"}).mode == "queue"
+    assert InboundData.coerce({"content": "text"}).mode == "queue"
 
 
 @pytest.mark.asyncio
@@ -125,7 +151,7 @@ async def test_steering_persists_before_claim(tmp_path) -> None:
     repository = InboxRepository(tmp_path)
     service = InboxService(
         repository,
-        session_events=RecordingSessionEvents(order),
+        sessions=RecordingSessions(order),
     )
     await service.steer(InboundMessage("s1", "r1", "ws", "steer"))
 
@@ -148,7 +174,7 @@ async def test_steering_persists_before_claim(tmp_path) -> None:
 async def test_steering_history_failure_keeps_pending(tmp_path) -> None:
     service = InboxService(
         InboxRepository(tmp_path),
-        session_events=FailingSessionEvents(),
+        sessions=FailingSessions(),
     )
     await service.steer(InboundMessage("s1", "r1", "ws", "steer"))
 
@@ -165,7 +191,7 @@ async def test_promoted_plugin_message_becomes_persisted_user_input(tmp_path) ->
     order: list[str] = []
     service = InboxService(
         InboxRepository(tmp_path),
-        session_events=RecordingSessionEvents(order),
+        sessions=RecordingSessions(order),
     )
     await service.followup(
         InboundMessage("s1", "cron-1", "cron", "来自定时任务", source="plugin")

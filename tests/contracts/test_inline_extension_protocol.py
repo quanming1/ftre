@@ -459,6 +459,32 @@ def test_skill_service_supports_codex_and_agents_skill_roots(tmp_path: Path) -> 
     assert service.get("agent-skill").content == "body\n"
 
 
+def test_skill_service_lookup_accepts_display_and_reference_aliases(tmp_path: Path) -> None:
+    service = SkillService({"global": tmp_path / "global", "agent": tmp_path / "agent"})
+    service.create(
+        "refactor-cleanup-audit",
+        "body\n",
+        "Audit refactors",
+        "file",
+    )
+
+    for name in (
+        "refactor-cleanup-audit",
+        "Refactor Cleanup Audit",
+        "$refactor-cleanup-audit",
+        "/refactor-cleanup-audit",
+        "`refactor-cleanup-audit`",
+        "ftre://v1/skill/refactor-cleanup-audit?path=references",
+    ):
+        record = service.get(name)
+        assert record is not None
+        assert record.name == "refactor-cleanup-audit"
+        assert record.content.strip() == "body"
+
+    assert service.get("ftre://v2/skill/refactor-cleanup-audit") is None
+    assert service.get("https://example.com/refactor-cleanup-audit") is None
+
+
 @pytest.mark.asyncio
 async def test_load_skill_tool_uses_the_active_agent_scope(tmp_path: Path) -> None:
     agent_root = tmp_path / "agent"
@@ -484,6 +510,28 @@ async def test_load_skill_tool_uses_the_active_agent_scope(tmp_path: Path) -> No
     )
 
     assert result.output == "private body\n"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_tool_accepts_the_display_title_from_the_catalog(tmp_path: Path) -> None:
+    service = SkillService({"global": tmp_path / "global", "agent": tmp_path / "agent"})
+    service.create("refactor-cleanup-audit", "body\n", "Audit refactors", "file")
+    tools = ToolService()
+    tools.register(build_load_skill_tool(service), owner="skill")
+    view = await tools.prepare_view("default", "session-1")
+
+    result = await view.execute(
+        "loadSkill",
+        {"name": "Refactor Cleanup Audit"},
+        ToolContext(
+            call_id="call-1",
+            name="loadSkill",
+            arguments={"name": "Refactor Cleanup Audit"},
+            metadata={"agent_id": "default", "workspace": ""},
+        ),
+    )
+
+    assert result.output.strip() == "body"
 
 
 def test_skill_service_crud_rejects_invalid_shape(tmp_path: Path) -> None:
@@ -571,10 +619,13 @@ class _RouterRegistry:
 
 
 class _Sessions:
+    """SessionService 替身：注入持久化走 append_event("hint/message")，
+    去重标记走 mutate_session_metadata。"""
+
     def __init__(self, message: UserMsg):
         self.message = message
-        self.updated: list[UserMsg] = []
-        self.upserted: list[tuple[str, dict]] = []
+        self.appended: list[tuple[str, str | None, dict]] = []
+        self.metadata: dict = {}
 
     async def get_messages_by_session(self, _session_id):
         return [self.message]
@@ -582,17 +633,18 @@ class _Sessions:
     def record_to_msg(self, record):
         return record
 
-    async def update_message(self, message):
-        self.updated.append(message)
-
-    async def upsert_message(self, session_id, message):
-        self.upserted.append((session_id, message))
+    async def append_event(self, _session_id, type_, data, *, message_id=None):
+        self.appended.append((type_, message_id, data))
 
     async def get_session(self, _session_id):
         return {"agent_id": "default", "workspace": ""}
 
     async def get_session_metadata(self, _session_id):
-        return {}
+        return dict(self.metadata)
+
+    async def mutate_session_metadata(self, _session_id, key, updater):
+        self.metadata[key] = updater(self.metadata.get(key))
+        return dict(self.metadata)
 
 
 @pytest.mark.asyncio
@@ -642,11 +694,16 @@ async def test_skill_plugin_parses_and_injects_once_at_first_reasoning(tmp_path:
     assert len(first.messages) == 1
     assert first.messages[0]["metadata"]["source"] == "extension-invocation"
     assert list(second.messages) == []
-    assert sessions.updated == [user]
-    assert len(sessions.upserted) == 1
-    assert sessions.upserted[0][1]["id"].startswith("extension_")
-    assert user.metadata["extensions"][0]["name"] == "review-code"
-    assert len(user.metadata["extension_invocations"]) == 1
+    # 注入持久化 = hint/message 事件（whole-value 进 SessionLog）
+    assert len(sessions.appended) == 1
+    event_type, event_message_id, event_data = sessions.appended[0]
+    assert event_type == "hint/message"
+    assert (event_message_id or "").startswith("extension_")
+    assert event_data["source"] == "skill-extension"
+    assert first.messages[0]["id"].startswith("extension_")
+    # 去重标记持久化在 session metadata（用户消息事件数据不可变，
+    # 不回写 message.metadata）
+    assert len(sessions.metadata["extension_invocations"]) == 1
     extensions = context.get("inline_extensions")
     assert extensions.handler_for("skill") is not None
     prompt_service = context.get("system_prompt")

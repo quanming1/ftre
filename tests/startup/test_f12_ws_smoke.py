@@ -1,5 +1,8 @@
-"""F12 后端 WebSocket 协议 smoke：不依赖真实 LLM 或桌面客户端。"""
+"""WebSocket 协议 smoke：不依赖真实 LLM 或桌面客户端（PRD-F41 S 场景）。
 
+帧形状契约：attach 基线 = session/subscribed（含 Event[]） + session/queue（两帧）；
+ prompt/updateQueue/cancel 结算 = rpc 帧 {v, session_id, type:"rpc", payload}。
+"""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -52,6 +55,22 @@ class FakeInbox:
         return SimpleNamespace(next_turn=(self.item,), next_step=())
 
 
+async def baseline_provider(session_id: str, **_kwargs):
+    from ftre.services.messaging.wire import SessionQueueFrame, SessionSubscribedFrame
+
+    inbox = baseline_provider.inbox
+    return [
+        SessionSubscribedFrame(
+            session_id=session_id,
+            payload={"seq": 5, "events": [], "status": "idle", "has_more": False},
+        ).model_dump(mode="json"),
+        SessionQueueFrame(
+            session_id=session_id,
+            payload=await inbox.wire_snapshot(session_id),
+        ).model_dump(mode="json"),
+    ]
+
+
 def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
     bus = EventBus()
     inbound_modes: list[tuple[str, str]] = []
@@ -69,11 +88,30 @@ def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
 
     bus.request_inbound = request_inbound
     inbox = FakeInbox()
+    baseline_provider.inbox = inbox
+
+    async def control_handler(_frame_type, _frame, data):
+        action = data["action"]
+        if action["kind"] == "edit":
+            accepted = await inbox.edit(
+                data["session_id"], data["item_id"], action["content"], None
+            )
+        elif action["kind"] == "remove":
+            accepted = await inbox.remove(data["session_id"], data["item_id"])
+        elif action["kind"] == "steer":
+            accepted = await inbox.promote(data["session_id"], data["item_id"])
+        else:
+            return {"ok": False, "error": {"code": "invalid_queue_action"}}
+        if not accepted:
+            return {"ok": False, "error": {"code": "item-not-pending"}}
+        return {"ok": True, "value": await inbox.wire_snapshot(data["session_id"])}
+
     channel = WebSocketChannel(
         bus,
         app=FastAPI(title="ftre-test"),
-        inbox_provider=inbox,
-        status_provider=lambda _session_id: "idle",
+        control_handler=control_handler,
+        baseline_provider=baseline_provider,
+        snapshot_provider=inbox.wire_snapshot,
     )
 
     with TestClient(channel.app) as client:
@@ -82,10 +120,15 @@ def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
                 "type": "attach",
                 "payload": {"session_id": "s1"},
             })
-            baseline = [websocket.receive_json() for _ in range(3)]
+            # 基线两连：subscribed{seq,events,status} → queue 快照
+            baseline = [websocket.receive_json() for _ in range(2)]
             assert [frame["type"] for frame in baseline] == [
-                "reply_snapshot", "session/queue", "session/status",
+                "session/subscribed", "session/queue",
             ]
+            assert baseline[0]["v"] == 1
+            assert baseline[0]["session_id"] == "s1"
+            assert baseline[0]["payload"]["seq"] == 5
+            assert baseline[0]["payload"]["status"] == "idle"
             assert baseline[1]["payload"]["items"][0]["placement"] == "queued"
 
             websocket.send_json({
@@ -98,11 +141,11 @@ def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
                 },
             })
             prompt_response = websocket.receive_json()
-            assert prompt_response["type"] == "session/queue"
-            assert prompt_response["request_id"] == "prompt-1"
-            assert prompt_response["ok"] is True
-            assert prompt_response["payload"]["session_id"] == "s1"
-            assert "revision" in prompt_response["payload"]
+            assert prompt_response["type"] == "rpc"
+            assert prompt_response["payload"]["request_id"] == "prompt-1"
+            assert prompt_response["payload"]["ok"] is True
+            assert prompt_response["payload"]["value"]["session_id"] == "s1"
+            assert "revision" in prompt_response["payload"]["value"]
             assert inbound_modes == [("prompt-1", "queue")]
 
             websocket.send_json({
@@ -115,8 +158,9 @@ def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
                 },
             })
             edit_response = websocket.receive_json()
-            assert edit_response["type"] == "session/queue"
-            assert edit_response["payload"]["items"][0]["message"]["content"][0]["text"] == "edited"
+            assert edit_response["type"] == "rpc"
+            assert edit_response["payload"]["ok"] is True
+            assert edit_response["payload"]["value"]["items"][0]["message"]["content"][0]["text"] == "edited"
             assert inbox.edited == [("queued-1", "edited")]
 
             websocket.send_json({
@@ -129,9 +173,9 @@ def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
                 },
             })
             steer_response = websocket.receive_json()
-            assert steer_response["type"] == "session/queue"
-            assert steer_response["request_id"] == "steer-1"
-            assert steer_response["ok"] is True
+            assert steer_response["type"] == "rpc"
+            assert steer_response["payload"]["request_id"] == "steer-1"
+            assert steer_response["payload"]["ok"] is True
             assert inbound_modes[-1] == ("steer-1", "steer")
 
             websocket.send_json({
@@ -144,8 +188,8 @@ def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
                 },
             })
             remove_response = websocket.receive_json()
-            assert remove_response["type"] == "session/queue"
-            assert remove_response["payload"]["items"] == []
+            assert remove_response["type"] == "rpc"
+            assert remove_response["payload"]["value"]["items"] == []
             assert inbox.removed == ["queued-1"]
 
             websocket.send_json({
@@ -153,18 +197,19 @@ def test_real_websocket_attach_prompt_queue_mutation_cancel_and_reconnect():
                 "request_id": "cancel-1",
                 "payload": {"session_id": "s1"},
             })
-            assert websocket.receive_json() == {
-                "request_id": "cancel-1",
-                "ok": True,
-                "value": {"accepted": True, "session_id": "s1"},
-            }
+            cancel_response = websocket.receive_json()
+            assert cancel_response["type"] == "rpc"
+            assert cancel_response["payload"]["request_id"] == "cancel-1"
+            assert cancel_response["payload"]["ok"] is True
+            assert cancel_response["payload"]["value"]["accepted"] is True
 
-        # 新连接再次 attach，仍能获得完整权威 baseline，而不是依赖旧连接状态。
+        # 新连接再次 attach，仍能获得完整权威 baseline（多端同步语义）。
         with client.websocket_connect("/") as websocket:
             websocket.send_json({
                 "type": "attach",
                 "payload": {"session_id": "s1"},
             })
-            reconnect = [websocket.receive_json() for _ in range(3)]
+            reconnect = [websocket.receive_json() for _ in range(2)]
+            assert reconnect[0]["type"] == "session/subscribed"
             assert reconnect[1]["type"] == "session/queue"
             assert reconnect[1]["payload"]["session_id"] == "s1"

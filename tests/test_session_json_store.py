@@ -1,40 +1,38 @@
-"""JsonStateStore 文件安全测试（设计文档 §18.2）。
+"""JsonStateStore 文件安全测试（session.json Snapshot，PRD-F44）。
 
-验收标准：
-- 并发保存两条消息不丢失（配合 per-session lock，见 manager 测试）；
-- 模拟写入失败后旧 state.json 保持完整；
+session.json 存 SessionMetaFile（schema_version=5，包含 Msg Snapshot）；schema_version
+不匹配的文件按损坏隔离。
+
+验收标准（语义不变）：
+- 模拟写入失败后旧 session.json 保持完整；
 - 进程重启后状态可恢复；
-- 损坏文件明确报错并隔离，不影响其他 Session。
+- 损坏文件明确报错并隔离，不影响其他 Session；
+- 残留 .tmp 不覆盖正式文件；删除只影响精确目标。
 """
 import json
 import os
 
 import pytest
 import pytest_asyncio
-from ftre_agent.message import UserMsg
 
-from ftre.services.session.entity.state import AgentStateFile
+from ftre.services.session.entity.state import SessionMetaFile, SessionState
 from ftre.services.session.persistence.json_store import (
     JsonStateStore,
     validate_session_id,
 )
 
 
-def _state(session_id: str, *texts: str) -> AgentStateFile:
-    return AgentStateFile(
-        session={
-            "id": session_id,
-            "agent_id": "default",
-            "channel_id": session_id.split("_sess_")[0],
-            "title": "",
-            "workspace": "",
-            "created_at": "2026-07-27T18:00:00+08:00",
-            "updated_at": "2026-07-27T18:00:00+08:00",
-        },
-        messages=[
-            UserMsg(name="default", content=text, id=f"msg_{i}")
-            for i, text in enumerate(texts)
-        ],
+def _meta(session_id: str, title: str = "") -> SessionMetaFile:
+    return SessionMetaFile(
+        session=SessionState(
+            id=session_id,
+            agent_id="default",
+            channel_id=session_id.split("_sess_")[0],
+            title=title,
+            workspace="",
+            created_at="2026-07-27T18:00:00+08:00",
+            updated_at="2026-07-27T18:00:00+08:00",
+        ),
     )
 
 
@@ -74,43 +72,43 @@ def test_validate_session_id_function():
 
 @pytest.mark.asyncio
 async def test_write_and_reload_recovers_state(store):
-    state = _state("ws_sess_1", "第一条", "第二条")
+    state = _meta("ws_sess_1", title="会话标题")
     await store.write(state)
 
     # 文件可读（人类可读 JSON），目录名即 session_id
     raw = json.loads(store.state_path("ws_sess_1").read_text(encoding="utf-8"))
     assert set(raw) == {
-        "schema_version",
-        "session",
-        "messages",
-        "metadata",
+        "schema_version", "session", "metadata", "seq",
+        "messages", "requests", "extensions",
     }
-    assert raw["messages"][0]["content"][0]["text"] == "第一条"
-    assert (store.root / "ws_sess_1" / "state.json").exists()
+    assert raw["schema_version"] == 5
+    assert raw["session"]["title"] == "会话标题"
+    assert (store.root / "ws_sess_1" / "session.json").exists()
 
     # 模拟进程重启
     store2 = JsonStateStore(store.root)
     await store2.load_all()
     assert "ws_sess_1" in store2.states
-    assert [m.id for m in store2.states["ws_sess_1"].messages] == ["msg_0", "msg_1"]
+    assert store2.states["ws_sess_1"].session.id == "ws_sess_1"
+    assert store2.states["ws_sess_1"].session.title == "会话标题"
 
 
 @pytest.mark.asyncio
 async def test_failed_write_keeps_old_file(store, monkeypatch):
-    await store.write(_state("ws_sess_1", "old"))
+    await store.write(_meta("ws_sess_1", title="old"))
 
     def boom(*args, **kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(os, "replace", boom)
     with pytest.raises(OSError):
-        await store.write(_state("ws_sess_1", "new"))
+        await store.write(_meta("ws_sess_1", title="new"))
 
     monkeypatch.undo()
     # 正式文件仍是旧内容（.tmp 残留不影响）
     store2 = JsonStateStore(store.root)
     await store2.load_all()
-    assert store2.states["ws_sess_1"].messages[0].get_text_content() == "old"
+    assert store2.states["ws_sess_1"].session.title == "old"
 
 
 @pytest.mark.asyncio
@@ -128,22 +126,22 @@ async def test_replace_uses_unique_tmp_and_retries_sharing_violation(store, monk
 
     monkeypatch.setattr(os, "replace", flaky_replace)
     monkeypatch.setattr("ftre.services.session.persistence.json_store.time.sleep", lambda _: None)
-    await store.write(_state("ws_sess_1", "saved"))
+    await store.write(_meta("ws_sess_1", title="saved"))
 
     assert calls == 3
     assert store.state_path("ws_sess_1").exists()
-    assert not list(store.state_path("ws_sess_1").parent.glob("state.json.tmp-*"))
+    assert not list(store.state_path("ws_sess_1").parent.glob("session.json.tmp-*"))
 
 
 @pytest.mark.asyncio
 async def test_leftover_tmp_does_not_override(store):
-    await store.write(_state("ws_sess_1", "official"))
+    await store.write(_meta("ws_sess_1", title="official"))
     tmp = store.state_path("ws_sess_1").with_suffix(".json.tmp")
-    tmp.write_text('{"schema_version": 1, "session": {"id": "fake"}}', encoding="utf-8")
+    tmp.write_text('{"schema_version": 2, "session": {"id": "fake"}}', encoding="utf-8")
 
     store2 = JsonStateStore(store.root)
     await store2.load_all()
-    assert store2.states["ws_sess_1"].messages[0].get_text_content() == "official"
+    assert store2.states["ws_sess_1"].session.title == "official"
 
 
 # ─── 损坏处理 ──────────────────────────────────────────────────
@@ -151,10 +149,10 @@ async def test_leftover_tmp_does_not_override(store):
 
 @pytest.mark.asyncio
 async def test_corrupt_file_quarantined_and_reported(store):
-    await store.write(_state("ws_good", "ok"))
+    await store.write(_meta("ws_good", title="ok"))
     bad_dir = store.session_dir("ws_bad")
     bad_dir.mkdir(parents=True)
-    bad_file = bad_dir / "state.json"
+    bad_file = bad_dir / "session.json"
     bad_file.write_text("{not valid json", encoding="utf-8")
 
     store2 = JsonStateStore(store.root)
@@ -166,15 +164,22 @@ async def test_corrupt_file_quarantined_and_reported(store):
     assert "ws_bad" in store2.corrupt
     # 原文件被隔离，不存在新覆盖
     assert not bad_file.exists()
-    assert list(bad_dir.glob("state.json.corrupt-*"))
+    assert list(bad_dir.glob("session.json.corrupt-*"))
 
 
 @pytest.mark.asyncio
 async def test_unsupported_schema_version_quarantined(store):
+    """schema_version=1（含 messages 的旧格式）按损坏隔离。"""
     bad_dir = store.session_dir("ws_future")
     bad_dir.mkdir(parents=True)
-    (bad_dir / "state.json").write_text(
-        json.dumps({"schema_version": 99, "session": {"id": "ws_future"}}),
+    (bad_dir / "session.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session": {"id": "ws_future"},
+                "messages": [],
+            }
+        ),
         encoding="utf-8",
     )
     store2 = JsonStateStore(store.root)
@@ -187,8 +192,8 @@ async def test_unsupported_schema_version_quarantined(store):
 
 @pytest.mark.asyncio
 async def test_delete_only_removes_exact_target(store):
-    await store.write(_state("ws_a", "1"))
-    await store.write(_state("ws_a2", "2"))
+    await store.write(_meta("ws_a", title="1"))
+    await store.write(_meta("ws_a2", title="2"))
 
     assert await store.delete("ws_a") is True
     assert not store.state_path("ws_a").exists()

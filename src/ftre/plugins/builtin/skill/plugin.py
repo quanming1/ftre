@@ -94,11 +94,6 @@ async def apply(ctx: Context, config=None):
             if not isinstance(metadata.get("extensions"), list):
                 metadata["extensions"] = extensions
                 metadata_changed = True
-            seen_invocations = {
-                str(value)
-                for value in metadata.get("extension_invocations", [])
-                if isinstance(value, str)
-            }
 
             session = await ctx.sessions.get_session(payload.session_id)
             session_metadata = await ctx.sessions.get_session_metadata(payload.session_id)
@@ -107,6 +102,15 @@ async def apply(ctx: Context, config=None):
                 or (session or {}).get("agent_id")
                 or "default"
             )
+            # 用户消息 metadata 来自不可变事件数据（不可回写）；去重标记的
+            # 持久化源是 session.json 的 extension_invocations（写入见下方
+            # mutate_session_metadata），读取必须同源——否则重复 dispatch 会
+            # 重复注入。
+            seen_invocations = {
+                str(value)
+                for value in (session_metadata or {}).get("extension_invocations", [])
+                if isinstance(value, str)
+            }
             workspace = str((session or {}).get("workspace") or "")
             injected = []
             for ref in refs:
@@ -132,17 +136,29 @@ async def apply(ctx: Context, config=None):
                         f"extension_{resolution.invocation_id}"
                     )
                     injected.append(injected_message)
-                    await ctx.sessions.upsert_message(
+                    # 扩展注入消息直接作为事件进入 SessionLog（hint 语义）
+                    await ctx.sessions.append_event(
                         payload.session_id,
-                        injected_message,
+                        "hint/message",
+                        {
+                            "hint": injected_message.get("content") or [],
+                            "source": "skill-extension",
+                        },
+                        message_id=str(injected_message.get("id") or ""),
                     )
                     if resolution.invocation_id:
                         seen_invocations.add(resolution.invocation_id)
                         metadata_changed = True
             if metadata_changed:
-                metadata["extension_invocations"] = sorted(seen_invocations)
-                message.metadata = metadata
-                await ctx.sessions.update_message(message)
+                seen_now = sorted(seen_invocations)
+                metadata["extension_invocations"] = seen_now
+                # 会话 metadata 持久化在 session.json（事件数据本身不可变）
+                await ctx.sessions.mutate_session_metadata(
+                    payload.session_id,
+                    "extension_invocations",
+                    lambda _old, seen=seen_now: seen,
+                )
+                del message
             if not injected:
                 return result
             return BeforeReasoningResult((*result.messages, *injected))

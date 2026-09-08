@@ -12,6 +12,7 @@ import inspect
 
 from ftre.kernel.hooks import HookRuntime
 
+from ..wire import FrameBase, SessionMaintenanceFrame, SessionProjectionFrame
 from .bus import EventBus
 from .ingress import MESSAGING_ROUTE_SPEC, IngressResult
 from .message import BusMessage
@@ -34,24 +35,54 @@ class MessageBusService:
         """Publish an existing BusMessage without exposing the underlying EventBus."""
         await self.bus.publish_outbound(message)
 
-    async def publish_session_status(
-        self, session_id: str, channel_id: str, status: str
+    async def publish_frame(
+        self,
+        session_id: str,
+        channel_id: str,
+        frame: FrameBase,
+        *,
+        global_broadcast: bool = False,
     ) -> None:
-        """发布 ``session/status`` activity 事件（Runtime 的窄公开出口）。
+        """发布一个下行 Wire 帧（唯一帧铸造入口，PRD-F41 FR4/FR5）。
 
-        Agent Runtime（ftre-agent-runtime）不 import Host 的 BusMessage 协议
-        类型；它通过该方法把 session 的 running/idle/compacting 状态交给总线，
-        信封构造留在本 Owner 内（PRD-F33 §5.4）。
+        帧以 ``downstream_frame`` 主题进入 Bus；ChannelManager 对该主题执行
+        owner channel + ws 观察面双投。``global_broadcast=True`` 时投递给所有
+        channel（会话列表级广播预留）。
         """
         await self.bus.publish_outbound(
             BusMessage(
-                type="session/status",
+                type="downstream_frame",
                 from_channel=channel_id,
-                to_channel=channel_id,
+                to_channel="*" if global_broadcast else channel_id,
                 from_session=session_id,
-                to_session=session_id,
-                data={"session_id": session_id, "status": status},
+                to_session="*" if global_broadcast else session_id,
+                data=frame.model_dump(mode="json"),
             )
+        )
+
+    async def publish_maintenance(
+        self, session_id: str, channel_id: str, name: str, value: dict
+    ) -> None:
+        """便捷出口：session/maintenance 帧（指令反馈 / compaction 瞬态）。"""
+        await self.publish_frame(
+            session_id,
+            channel_id,
+            SessionMaintenanceFrame(
+                session_id=session_id, payload={"name": name, "value": value}
+            ),
+        )
+
+    async def publish_projection(
+        self, session_id: str, channel_id: str, key: str, value, seq: int
+    ) -> None:
+        """便捷出口：session/projection 帧（todo/plan/title/token 快照）。"""
+        await self.publish_frame(
+            session_id,
+            channel_id,
+            SessionProjectionFrame(
+                session_id=session_id,
+                payload={"key": key, "value": value, "seq": seq},
+            ),
         )
 
     async def request_inbound(self, message):

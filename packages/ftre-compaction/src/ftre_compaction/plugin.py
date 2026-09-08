@@ -12,30 +12,50 @@ from cordis import Context
 
 from .commands import register_commands
 from .config import CompactionConfig
+from .context import build_context_view
 from .hooks import register_hooks
 from .service import CompactionService
 
 # config 是公开 ConfigService，不是 AgentConfig。压缩包通过 snapshot() 读取
 # 自己拥有的配置字段；sessions/hook_runtime/commands 则分别对应持久化、Hook
 # 调度和 Command Plane 的稳定契约。
-inject = ("config", "sessions", "session_events", "hook_runtime", "commands", "inbox", "llm")
+inject = ("config", "sessions", "message_bus", "hook_runtime", "commands", "inbox", "llm")
 provide = ("compaction",)
 
 
 def apply(ctx: Context, config=None):
     """发布压缩 Service，并可逆地注册 Hook 与命令。
 
-    ``config`` 是 Plugin Manifest 的局部覆盖（例如测试或单独部署时设置
-    ``threshold``）；``ctx.config`` 才是运行期配置的 Owner。两者不混用：
-    局部覆盖只作为默认值，Hook 每次执行会从 ConfigService 创建不可变快照。
+    维护事件路由（PRD-F43 FR13）：
+    - context_compact_start / failed → session/maintenance 帧（瞬态，不进日志）
+    - context_compact_done → sessions.append_event(compact/message)（进日志，
+      帧由 SessionLog 转发器自动透传）
     """
     service = ctx.get("compaction", strict=False)
     if service is None:
         options = config if isinstance(config, dict) else {}
+
+        async def emit_maintenance(session_id, channel_id, name, value):
+            from .events import CompactEventName
+
+            if name == CompactEventName.DONE:
+                import uuid
+
+                await ctx.sessions.append_event(
+                    session_id,
+                    "compact/message",
+                    dict(value or {}),
+                    message_id=f"c_{uuid.uuid4().hex[:15]}",
+                )
+            else:
+                await ctx.message_bus.publish_maintenance(
+                    session_id, channel_id, str(name), dict(value or {})
+                )
+
         service = CompactionService(
             session_manager=ctx.sessions,
             llm=ctx.llm,
-            emit_maintenance=ctx.session_events.emit_maintenance,
+            emit_maintenance=emit_maintenance,
             threshold=float(options.get("threshold", 0.8)),
             config_service=ctx.config,
             default_config=CompactionConfig(
@@ -44,6 +64,17 @@ def apply(ctx: Context, config=None):
         )
         ctx.provide("compaction", service)
         ctx.effect(lambda: service.close, label="ftre-compaction:close")
+
+    # Token 统计等 Host 读接口也需要同一套 ContextView 口径，但投影函数仍
+    # 属于本包；SessionService 只保存可逆的通用回调，不知道 compact marker。
+    set_context_view = getattr(ctx.sessions, "set_context_view_builder", None)
+    if callable(set_context_view):
+        context_disposer = set_context_view(build_context_view)
+        if callable(context_disposer):
+            ctx.effect(
+                lambda disposer=context_disposer: disposer,
+                label="ftre-compaction:context-view",
+            )
 
     # HookRuntime 已把每个 receipt 绑定到当前 Plugin Fiber；Plugin 不重复注册 disposer。
     register_hooks(ctx, service)

@@ -27,6 +27,11 @@ F6/F7 建立了类型化 HookSpec、Cordis 作用域、Waterfall、失败策略�
 
 当前代码共有 **29 个唯一 Hook 名称**：
 
+> 上述数字和下表是 F15 开工时的历史基线。2026-09-07 的 Inbox 收口删除了
+> `inbox/status-changed`，当前事实快照由 `tests/architecture/test_f15_hook_surface.py`
+> 校验为 23 个名称；当前 Inbox 消费边界以 F12 的 `agent/before-reasoning` /
+> `agent/after-run` 方案为准。
+
 | Owner | 数量 | 当前 Hook |
 |---|---:|---|
 | Agent Core / Tool | 4 | `tools/pre-execute`、`tools/execute`、`tools/post-execute`、`tools/result` |
@@ -207,7 +212,6 @@ inbox/status-changed
 | `system-prompt/assemble` | SystemPromptService | WATERFALL | AGENT | PROPAGATE | `PromptAssemblyPayload → PromptAssembly` | 结构化组装 System Prompt |
 | `inbox/before-claim` | ftre-inbox | WATERFALL | GLOBAL | PROPAGATE | `BeforeClaimPayload → EnterClaim \| RejectClaim` | pending 仍未领取时执行压缩等门控 |
 | `inbox/changed` | ftre-inbox | PARALLEL | GLOBAL | OBSERVE | `InboxChangedPayload → None` | 队列事实已提交；等待协议适配器读取权威快照 |
-| `inbox/status-changed` | ftre-inbox | PARALLEL | GLOBAL | OBSERVE | `InboxStatusPayload → None` | Inbox 自有 blocked/idle 状态变化；与快照独立 |
 
 ## 4. 当前到目标的迁移表
 

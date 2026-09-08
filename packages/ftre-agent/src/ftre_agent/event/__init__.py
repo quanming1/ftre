@@ -1,57 +1,12 @@
-"""Agent 事件包（纯 AgentScope 对齐协议）。
+"""Runtime 跨边界输入协议事件包。
 
-旧 ftre 事件已删除，不再兼容。所有事件继承 EventBase（pydantic，model_dump 扁平）。
+日志事件模型（13 种，wire 契约）定义在 ``ftre_agent.session.events``；
+本包只承载 Runtime 的输入侧协议类（不进 SessionLog）。
 """
-from ..types import ReplyFinishedReason
-from ._event import (
-    AgentStreamEvent,
-    EventBase,
-    HintBlockEvent,
-    ModelCallEndEvent,
-    ModelCallStartEvent,
-    ReplyEndEvent,
-    ReplyStartEvent,
-    RequireUserConfirmEvent,
-    RetryEvent,
-    TextBlockDeltaEvent,
-    TextBlockEndEvent,
-    TextBlockStartEvent,
-    ThinkingBlockDeltaEvent,
-    ThinkingBlockEndEvent,
-    ThinkingBlockStartEvent,
-    ToolCallDeltaEvent,
-    ToolCallEndEvent,
-    ToolCallStartEvent,
-    ToolResultEndEvent,
-    ToolResultStartEvent,
-    ToolResultTextDeltaEvent,
-    UserConfirmResultEvent,
-    UserMessageEvent,
-)
+from ._event import EventBase, HintBlockEvent, UserConfirmResultEvent
 
 __all__ = [
-    "AgentStreamEvent",
     "EventBase",
     "HintBlockEvent",
-    "ModelCallEndEvent",
-    "ModelCallStartEvent",
-    "ReplyEndEvent",
-    "ReplyFinishedReason",
-    "ReplyStartEvent",
-    "RequireUserConfirmEvent",
-    "RetryEvent",
-    "TextBlockDeltaEvent",
-    "TextBlockEndEvent",
-    "TextBlockStartEvent",
-    "ThinkingBlockDeltaEvent",
-    "ThinkingBlockEndEvent",
-    "ThinkingBlockStartEvent",
-    "ToolCallDeltaEvent",
-    "ToolCallEndEvent",
-    "ToolCallStartEvent",
-    "ToolResultEndEvent",
-    "ToolResultStartEvent",
-    "ToolResultTextDeltaEvent",
     "UserConfirmResultEvent",
-    "UserMessageEvent",
 ]

@@ -1,6 +1,7 @@
 # 进行中 Reply 快照持久化与 Session Attach 恢复实施方案
 
-> 状态：待实施  
+> 状态：历史方案，已由 [PRD-F44](prd/PRD-F44-session-snapshot-protocol.md) 替代；本文中的
+> `state.json`、逐事件快照和旧恢复路径不适用于当前实现。
 > 日期：2026-07-28  
 > 涉及仓库：`ftre`、`ftre-desktop`  
 > 兼容策略：测试阶段破坏性升级；可删除 `C:\Users\蒋全明\.ftre\sessions`，不迁移旧 Event 回放数据。

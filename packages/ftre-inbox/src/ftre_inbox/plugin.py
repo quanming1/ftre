@@ -19,7 +19,7 @@ from .service import InboxService
 # send_message/task/team are deliberately not dependencies here. They are three
 # independent business Packages which consume ``inbox``; using Inbox does not
 # make them Inbox-owned.
-inject = ("sessions", "agents", "hook_runtime", "session_events")
+inject = ("sessions", "agents", "hook_runtime")
 provide = ("inbox",)
 
 
@@ -47,13 +47,8 @@ async def apply(ctx: Context, config=None):
                 "Inbox Plugin requires an explicit inbox_dir or SessionService.sessions_root()"
             )
     exists = None
-    request_seen = None
     if sessions is not None and hasattr(sessions, "has_session"):
         exists = sessions.has_session
-    if sessions is not None and hasattr(sessions, "has_request_id"):
-        request_seen = sessions.has_request_id
-    sessions_root = getattr(sessions, "sessions_root", None)
-    legacy_root = sessions_root() if callable(sessions_root) else None
     try:
         capacity = max(
             1,
@@ -73,16 +68,13 @@ async def apply(ctx: Context, config=None):
         root,
         capacity=capacity,
         session_exists=exists,
-        request_seen=request_seen,
-        legacy_root=legacy_root,
     )
     service = InboxService(
         repository,
         ctx.agents,
         hook_runtime=ctx.hook_runtime,
-        # session_events 已在 inject 中声明；直接读取注入属性，避免必选依赖
-        # 又退回动态 Service Locator，保证 Owner 图可静态追踪。
-        session_events=ctx.session_events,
+        # UserMsg 持久化走 SessionService（SessionLog 幂等入口）。
+        sessions=sessions,
     )
     ctx.provide("inbox", service)
 
@@ -108,6 +100,7 @@ async def apply(ctx: Context, config=None):
     hook_runtime = ctx.hook_runtime
     if hook_runtime is not None:
         from ftre_agent import (
+            AGENT_AFTER_RUN_SPEC,
             AGENT_BEFORE_REASONING_SPEC,
             BeforeReasoningResult,
         )
@@ -148,6 +141,25 @@ async def apply(ctx: Context, config=None):
             all_agent_scopes=True,
         )
         del before_reasoning_receipt
+
+        async def on_after_run(payload, next_):
+            """正常完成才允许把一条 next-turn 交给 Agent。"""
+            result = await next_()
+            service.handle_after_run(
+                payload.session_id,
+                payload.status,
+                paused=bool(getattr(payload, "paused", False)),
+            )
+            return result
+
+        after_run_receipt = hook_runtime.register(
+            AGENT_AFTER_RUN_SPEC,
+            on_after_run,
+            owner="ftre-inbox",
+            context=ctx,
+            all_agent_scopes=True,
+        )
+        del after_run_receipt
 
         async def on_session_disposed(payload):
             await service.delete_session(payload.session_id)

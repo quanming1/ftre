@@ -29,7 +29,7 @@ class RunStatus(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
     # PAUSED：因权限 ASK 挂起，等待用户确认。非终态——收到确认后可恢复继续。
-    # 不产 ReplyEnd、不 finalize，reply_id 保留在 RunState 供恢复复用。
+    # 不 finalize，reply_id 保留在 RunState 供恢复复用。
     PAUSED = "paused"
     COMPLETED = "completed"
     ERROR = "error"
@@ -71,6 +71,8 @@ class RunState:
         "completion_tokens": 0,
         "total_tokens": 0,
     })
+    # 最近一次成功 LLM 调用的用量；与 token_usage（整轮累计）严格分开。
+    last_call_usage: dict | None = None
 
     @property
     def is_cancelled(self) -> bool:
@@ -99,6 +101,7 @@ class RunState:
             "completion_tokens": 0,
             "total_tokens": 0,
         }
+        self.last_call_usage = None
 
 
 # ═══════════════════════════════════════════════════════════════

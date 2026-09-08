@@ -1,6 +1,6 @@
 [project]
 name = "ftre"
-version = "0.3.2"
+version = "0.3.3"
 description = "ftre - AI 编程助手"
 requires-python = ">=3.12"
 license = {text = "MIT"}
@@ -71,6 +71,7 @@ build-backend = "setuptools.build_meta"
 ftre = "ftre.main:app"
 
 [tool.pytest.ini_options]
+asyncio_mode = "auto"
 pythonpath = [
     "src",
     "packages/ftre-agent/src",

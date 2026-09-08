@@ -3,7 +3,7 @@
 Handlers capture the Session and Agent Service instances supplied by
 Composition.  No module-level setter or aggregate API router is involved.
 """
-# 中文说明：Session HTTP 路由：通过 SessionService/AgentService 查询和修改会话，不直接触碰 state.json。
+# 中文说明：Session HTTP 路由：通过 SessionService/AgentService 查询和修改会话，不直接触碰会话磁盘文件。
 
 from __future__ import annotations
 
@@ -11,10 +11,21 @@ import json
 
 from fastapi import APIRouter, HTTPException, Request
 
+from .service import (
+    ForkBusyError,
+    ForkTargetError,
+    RollbackBusyError,
+    RollbackTargetError,
+)
+
 
 def build_router(sessions, agents, inbox) -> APIRouter:
     """Build the session HTTP surface from public Service handles."""
     router = APIRouter()
+
+    def session_activity(session_id: str) -> str:
+        """Return the Agent-owned lifecycle status."""
+        return agents.get_session_status(session_id)
 
     @router.post("/sessions")
     async def create_session(channel_id: str, title: str = "", workspace: str = ""):
@@ -39,7 +50,7 @@ def build_router(sessions, agents, inbox) -> APIRouter:
         agent_service = agents
         for item in items:
             item["running"] = agent_service.is_session_busy(item["id"])
-            item["activity"] = agent_service.get_session_status(item["id"])
+            item["activity"] = session_activity(item["id"])
         return {"sessions": items, "total": total, "limit": limit, "offset": offset}
 
     @router.get("/sessions/search")
@@ -80,11 +91,99 @@ def build_router(sessions, agents, inbox) -> APIRouter:
         return {"status": "deleted", "session_id": session_id}
 
     @router.post("/sessions/{session_id}/fork")
-    async def fork_session(session_id: str):
+    async def fork_session(session_id: str, request: Request):
         if await sessions.get_session(session_id) is None:
             raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
-        result = await sessions.fork_session(session_id)
-        return {"fork_session_id": result.fork_session_id, "title": result.title, "workspace": result.workspace}
+        is_busy = getattr(agents, "is_session_busy", None)
+        if callable(is_busy) and is_busy(session_id):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "session_busy", "message": "会话正在运行或维护中"},
+            )
+        try:
+            raw = await request.body()
+            payload = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=400, detail=f"非法 JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
+        through_message_id = payload.get("through_message_id")
+        if through_message_id is not None and not isinstance(through_message_id, str):
+            raise HTTPException(status_code=400, detail="through_message_id 必须是字符串")
+        try:
+            result = await sessions.fork_session(
+                session_id,
+                through_message_id=through_message_id or None,
+            )
+        except ForkBusyError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "session_busy", "message": str(exc)},
+            ) from exc
+        except ForkTargetError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "fork_target_invalid", "message": str(exc)},
+            ) from exc
+        return {
+            "fork_session_id": result.fork_session_id,
+            "parent_session_id": result.parent_session_id,
+            "through_message_id": result.through_message_id,
+            "seq": result.seq,
+            "title": result.title,
+            "workspace": result.workspace,
+        }
+
+    @router.post("/sessions/{session_id}/rollback")
+    async def rollback_session(session_id: str, request: Request):
+        if await sessions.get_session(session_id) is None:
+            raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
+        is_busy = getattr(agents, "is_session_busy", None)
+        if callable(is_busy) and is_busy(session_id):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "session_busy", "message": "会话正在运行或维护中"},
+            )
+        if inbox is not None:
+            queue = await inbox.wire_snapshot(session_id)
+            if queue.get("items"):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "session_busy", "message": "会话还有排队消息"},
+                )
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"非法 JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
+        through_message_id = payload.get("through_message_id")
+        if not isinstance(through_message_id, str) or not through_message_id:
+            raise HTTPException(status_code=400, detail="through_message_id 必须是非空字符串")
+        try:
+            result = await sessions.rollback_session(
+                session_id,
+                through_message_id=through_message_id,
+            )
+        except RollbackBusyError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "session_busy", "message": str(exc)},
+            ) from exc
+        except RollbackTargetError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "rollback_target_invalid", "message": str(exc)},
+            ) from exc
+        return {
+            "session_id": result.session_id,
+            "through_message_id": result.through_message_id,
+            "seq": result.seq,
+            "removed_message_ids": result.removed_message_ids,
+            "prefill_content": result.prefill_content,
+            "title": result.title,
+            "workspace": result.workspace,
+        }
 
     @router.get("/sessions/{session_id}/messages")
     async def get_messages(
@@ -92,16 +191,31 @@ def build_router(sessions, agents, inbox) -> APIRouter:
         limit_turns: int | None = None,
         before_ts: float | None = None,
     ):
-        agent_service = agents
         inbox_service = inbox
-        status = agent_service.get_session_status(session_id)
+        status = session_activity(session_id)
         queue = await inbox_service.wire_snapshot(session_id) if inbox_service is not None else None
         session = await sessions.get_session(session_id)
         metadata = session["metadata"] if session else {}
         if limit_turns is not None and limit_turns > 0:
-            messages, has_more = await sessions.get_recent_messages_by_turns(session_id, limit_turns, before_ts=before_ts)
-            return {"messages": messages, "has_more": has_more, "status": status, "queue": queue, "metadata": metadata}
-        return {"messages": await sessions.get_messages_by_session(session_id), "status": status, "queue": queue, "metadata": metadata}
+            messages, has_more, seq = await sessions.get_messages_snapshot(
+                session_id, limit_turns=limit_turns, before_ts=before_ts
+            )
+            return {
+                "messages": messages,
+                "has_more": has_more,
+                "status": status,
+                "queue": queue,
+                "metadata": metadata,
+                "seq": seq,
+            }
+        messages, _, seq = await sessions.get_messages_snapshot(session_id)
+        return {
+            "messages": messages,
+            "status": status,
+            "queue": queue,
+            "metadata": metadata,
+            "seq": seq,
+        }
 
     @router.get("/sessions/{session_id}/state")
     async def get_session_state(

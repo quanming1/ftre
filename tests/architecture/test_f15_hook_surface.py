@@ -1,7 +1,7 @@
 """F16 Hook 面终局基线与目标门禁。
 
-该测试从实际导出的 ``HookSpec`` 读取事实，而不是复制生产表格。Inbox 生命周期 Hook
-扩展后，全系统 24 个名称仍必须唯一，门禁会阻止旧 Hook 以 alias 或第二份 Spec 偷渡回来。
+该测试从实际导出的 ``HookSpec`` 读取事实，而不是复制生产表格。Agent ContextView Hook
+加入后，全系统 24 个名称仍必须唯一，门禁会阻止已删除的状态 Hook 以 alias 或第二份 Spec 偷渡回来。
 """
 
 from __future__ import annotations
@@ -22,13 +22,14 @@ HOST_MODULES = (
 )
 PACKAGE_MODULES = ("ftre_inbox.hooks",)
 
-# F16/F35.4/F35.6 完成后的目标快照；Agent 契约 6 项与 Host/Package 18 项均必须唯一。
+# F16/F35.4/F35.6/F45 完成后的目标快照；Agent 契约 7 项与 Host/Package 17 项均必须唯一。
 CURRENT_HOOK_NAMES = {
     "tool/before",
     "tool/after",
     "llm/stream",
     "llm/error",
     "agent/before-reasoning",
+    "agent/context-build",
     "agent/stop-decision",
     "agent/before-run",
     "agent/after-run",
@@ -47,7 +48,6 @@ CURRENT_HOOK_NAMES = {
     "inbox/failed",
     "inbox/discarded",
     "inbox/changed",
-    "inbox/status-changed",
 }
 
 F16_TARGET_HOOK_NAMES = {
@@ -56,6 +56,7 @@ F16_TARGET_HOOK_NAMES = {
     "llm/stream",
     "llm/error",
     "agent/before-reasoning",
+    "agent/context-build",
     "agent/stop-decision",
     "agent/before-run",
     "agent/after-run",
@@ -74,7 +75,6 @@ F16_TARGET_HOOK_NAMES = {
     "inbox/failed",
     "inbox/discarded",
     "inbox/changed",
-    "inbox/status-changed",
 }
 
 
@@ -108,7 +108,7 @@ def _fact_snapshot() -> dict[str, list[tuple[str, str, str, str]]]:
     return snapshot
 
 
-def test_f16_target_snapshot_has_exactly_16_unique_hook_names():
+def test_f16_target_snapshot_has_exactly_24_unique_hook_names():
     snapshot = _fact_snapshot()
     names = [item[0] for group in snapshot.values() for item in group]
     # Agent Host 为了稳定导入面重导出两项公共 Spec；事实门禁按唯一名称计数，
@@ -125,10 +125,11 @@ def test_f16_target_set_is_explicit_and_core_boundary_is_frozen():
         "llm/stream",
         "llm/error",
         "agent/before-reasoning",
+        "agent/context-build",
         "agent/stop-decision",
     }
     assert core_names <= F16_TARGET_HOOK_NAMES
-    assert len(F16_TARGET_HOOK_NAMES - core_names) == 18
+    assert len(F16_TARGET_HOOK_NAMES - core_names) == 17
 
 
 @pytest.mark.parametrize("name", sorted(CURRENT_HOOK_NAMES))
@@ -175,7 +176,12 @@ def test_production_hook_registration_uses_context_and_single_runtime_owner():
 
 
 def test_retired_host_hook_names_are_absent_from_production_sources():
-    """删除的时机不能只从导出表消失，生产源码也不得继续发布或引用它们。"""
+    """删除的时机不能只从导出表消失，生产源码也不得继续发布或引用它们。
+
+    注："session/event" 不在本名单——它是下行 wire 帧类型
+    （messaging/wire.py SessionEventFrame），与 Host Hook 名是不同
+    命名空间；名单中的退役 Hook 名仍禁止出现在生产源码。
+    """
 
     root = Path(__file__).parents[2]
     retired = (
@@ -187,7 +193,6 @@ def test_retired_host_hook_names_are_absent_from_production_sources():
         "agent/" + "error",
         "agent/" + "session-start",
         "agent/" + "status",
-        "session/" + "event",
         "session/" + "flush",
         "messaging/" + "inbound",
         "inbox/" + "inserted",

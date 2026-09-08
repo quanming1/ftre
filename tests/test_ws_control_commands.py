@@ -1,4 +1,9 @@
-"""现代 WebSocket 输入协议：Command 仍在接入层旁路，Cancel 不伪装成消息。"""
+"""现代 WebSocket 输入协议：Command 仍在接入层旁路，Cancel 不伪装成消息。
+
+wire 帧形状（PRD-F41；模板见 tests/startup/test_f12_ws_smoke.py）：
+- prompt/cancel/updateQueue 结算 = rpc 帧 {v, session_id, type:"rpc",
+  payload:{request_id, ok, value?|error?}}，对发起连接直回。
+"""
 
 import asyncio
 import json
@@ -24,7 +29,7 @@ async def test_prompt_command_text_is_forwarded_to_command_plane():
     async def wire_snapshot(session_id):
         return {"session_id": session_id, "revision": 0, "items": []}
 
-    channel = WebSocketChannel(EventBus(), inbox_provider=SimpleNamespace(wire_snapshot=wire_snapshot))
+    channel = WebSocketChannel(EventBus(), snapshot_provider=wire_snapshot)
     ws = FakeWebSocket()
     received = asyncio.create_task(channel._on_message(
         json.dumps({
@@ -40,8 +45,11 @@ async def test_prompt_command_text_is_forwarded_to_command_plane():
     assert message.type == "user_message"
     assert message.data["content"] == "/allow call_1"
     assert message.metadata.request_id == "f1"
-    assert ws.sent[-1]["type"] == "session/queue"
-    assert ws.sent[-1]["payload"]["revision"] == 0
+    # 接纳结算 = rpc 帧（ok + 最新 queue 快照）
+    assert ws.sent[-1]["type"] == "rpc"
+    assert ws.sent[-1]["payload"]["request_id"] == "f1"
+    assert ws.sent[-1]["payload"]["ok"] is True
+    assert ws.sent[-1]["payload"]["value"]["revision"] == 0
 
 
 @pytest.mark.asyncio
@@ -60,15 +68,21 @@ async def test_session_cancel_is_control_message_not_inbox_input():
     assert message.type == "turn_cancel"
     channel.bus.resolve_inbound(message.id, SimpleNamespace(created=True))
     await received
+    # cancel 控制 ACK 也是 rpc 帧（value.accepted 由 turn_cancel ack 派生）
     assert ws.sent[-1] == {
-        "request_id": "stop-1",
-        "ok": True,
-        "value": {"accepted": True, "session_id": "s1"},
+        "v": 1,
+        "session_id": "s1",
+        "type": "rpc",
+        "payload": {
+            "request_id": "stop-1",
+            "ok": True,
+            "value": {"accepted": True, "session_id": "s1"},
+        },
     }
 
 
 @pytest.mark.asyncio
-async def test_legacy_confirmation_frame_is_ignored():
+async def test_unknown_confirmation_frame_is_ignored():
     channel = WebSocketChannel(EventBus())
     await channel._on_message(
         json.dumps({"type": "user_confirm_result", "payload": {"session_id": "s1"}}),

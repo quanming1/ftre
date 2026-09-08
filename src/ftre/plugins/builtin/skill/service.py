@@ -11,6 +11,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import yaml
 from yaml import YAMLError
@@ -175,7 +176,15 @@ class SkillService:
     ) -> SkillRecord | None:
         """Return the highest-priority Skill winner, including its body."""
         disabled = self._disabled_names(agent_id)
-        item = next((item for item in self._resolve(agent_id, workspace) if item.name == name), None)
+        lookup_names = self._lookup_names(name)
+        item = next(
+            (
+                item
+                for item in self._resolve(agent_id, workspace)
+                if item.name.casefold() in lookup_names
+            ),
+            None,
+        )
         if item is None:
             return None
         if item.owner == "filesystem" and item.path:
@@ -190,7 +199,8 @@ class SkillService:
             if loaded is None:
                 return None
             item = loaded
-        if item.disabled == (name in disabled):
+        effective_disabled = item.disabled or item.name in disabled
+        if item.disabled == effective_disabled:
             return item
         return SkillRecord(
             name=item.name,
@@ -202,7 +212,7 @@ class SkillService:
             description=item.description,
             kind=item.kind,
             updated_at=item.updated_at,
-            disabled=name in disabled,
+            disabled=effective_disabled,
             user_invocable=item.user_invocable,
             model_invocable=item.model_invocable,
             path=item.path,
@@ -246,7 +256,11 @@ class SkillService:
 
     def sources(self, name: str, agent_id: str = "default", workspace: str | None = None) -> dict[str, Any]:
         """Expose all candidates so callers can explain shadowing decisions."""
-        candidates = [item for item in self._all(agent_id, workspace) if item.name == name]
+        lookup_names = self._lookup_names(name)
+        candidates = [
+            item for item in self._all(agent_id, workspace)
+            if item.name.casefold() in lookup_names
+        ]
         ordered = sorted(candidates, key=lambda item: (item.priority, item.owner))
         return {
             "candidates": [item.__dict__ for item in ordered],
@@ -517,16 +531,78 @@ class SkillService:
     def _disabled_names(self, agent_id: str) -> set[str]:
         values = self._config.snapshot().value if self._config is not None else load_config_file()
         names = values.get("disabled_skills", []) if isinstance(values, dict) else []
-        disabled = {str(item) for item in names if isinstance(item, str)}
+        disabled: set[str] = set()
+        for item in names:
+            if isinstance(item, str):
+                disabled.update(self._lookup_names(item))
         profile_service = self._agent_profiles
         if profile_service is not None:
             try:
                 profile = profile_service.get(agent_id)
                 profile_value = getattr(profile, "value", profile)
-                disabled.update(str(item) for item in getattr(profile_value, "disabled_skills", []))
+                for item in getattr(profile_value, "disabled_skills", []):
+                    if isinstance(item, str):
+                        disabled.update(self._lookup_names(item))
             except (AttributeError, FileNotFoundError, TypeError, ValueError):
                 pass
         return disabled
+
+    @staticmethod
+    def _lookup_names(value: Any) -> set[str]:
+        """Return safe aliases accepted by Skill lookup without touching the filesystem.
+
+        The catalog exposes the YAML ``name`` as the canonical id. Models may still
+        repeat the UI title, a Markdown code span, a slash/$ reference, or the
+        portable ``ftre://`` URI. All aliases are matched against the already
+        resolved catalog, so this helper cannot turn user input into a filesystem
+        path or bypass scope/permission checks.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return set()
+
+        aliases: set[str] = set()
+
+        def add(candidate: str) -> None:
+            candidate = candidate.strip().casefold()
+            if candidate:
+                aliases.add(candidate)
+                kebab = re.sub(r"[^a-z0-9]+", "-", candidate).strip("-")
+                if kebab and _SAFE_NAME.fullmatch(kebab):
+                    aliases.add(kebab)
+
+        for raw in (text, text.strip("`'\"")):
+            if not raw:
+                continue
+            try:
+                parsed = urlsplit(raw)
+            except ValueError:
+                parsed = None
+            if (
+                parsed is not None
+                and parsed.scheme.casefold() == "ftre"
+                and parsed.netloc.casefold() == "v1"
+            ):
+                parts = [unquote(part) for part in parsed.path.split("/") if part]
+                if len(parts) == 2 and parts[0].casefold() == "skill":
+                    add(parts[1])
+                continue
+
+            # A URI with another scheme/version is not a Skill alias.  Do not
+            # fall through to basename extraction, otherwise a malformed
+            # ``ftre://v2/...`` or an arbitrary HTTP URL could accidentally
+            # resolve a same-named Skill in the current scope.
+            if parsed is not None and parsed.scheme:
+                continue
+
+            candidate = raw.split("?", 1)[0].split("#", 1)[0]
+            candidate = candidate.replace("\\", "/").rstrip("/")
+            if candidate.casefold().endswith("/skill.md"):
+                candidate = candidate[: -len("/skill.md")]
+            candidate = candidate.rsplit("/", 1)[-1]
+            candidate = candidate.lstrip("$/@").strip("`'\" ")
+            add(unquote(candidate))
+        return aliases
 
     def _global_root(self) -> Path:
         return Path(self.roots.get("global", CONFIG_PATH.parent / "skills")).resolve()

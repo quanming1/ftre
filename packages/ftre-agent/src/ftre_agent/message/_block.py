@@ -14,7 +14,7 @@
   - 工具结果在 ftre 里是独立 ``{role:"tool"}`` 消息，层次 A 先保留为
     ToolResultBlock（方案 Y：边界转换时再拆回独立消息）
 
-层次 A 边界: 仅定义 Block + 状态机，不引入 Msg / append_event（层次 B）。
+层次 A 边界: 仅定义 Block + 状态机，不引入 Msg 实体（层次 B）。
 """
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ class URLSource(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 6 种内容块
+# 7 种内容块（extension 用于保留未来未知块）
 # ══════════════════════════════════════════════════════════════════
 
 class TextBlock(BaseModel):
@@ -173,12 +173,29 @@ class ToolResultBlock(BaseModel):
     finished_at: str | None = None
 
 
+class ExtensionBlock(BaseModel):
+    """未来/插件内容块的保留容器。
+
+    ``data`` 保存收到的原始 JSON，``original_type`` 保存原始判别值。这样
+    新版本加入内容块时，旧客户端仍能恢复整条 Msg，而不是因为 discriminator
+    不认识一个 type 就丢弃整个会话。
+    """
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["extension"] = "extension"
+    original_type: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    id: str = Field(default_factory=_gen_id)
+    created_at: str = Field(default_factory=_now_iso)
+    finished_at: str | None = None
+
+
 # ══════════════════════════════════════════════════════════════════
 # 类型别名
 # ══════════════════════════════════════════════════════════════════
 
 # 所有内容块的联合类型
-ContentBlock = TextBlock | ThinkingBlock | DataBlock | HintBlock | ToolCallBlock | ToolResultBlock
+ContentBlock = TextBlock | ThinkingBlock | DataBlock | HintBlock | ToolCallBlock | ToolResultBlock | ExtensionBlock
 
 # 内容块类型字符串字面量集合
 ContentBlockTypes = (
@@ -188,4 +205,5 @@ ContentBlockTypes = (
     "hint",
     "tool_call",
     "tool_result",
+    "extension",
 )

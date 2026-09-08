@@ -195,6 +195,7 @@ async def test_paused_run_does_not_consume_queue_until_confirmation_completes(tm
     assert [request.request_id for request in factory.calls] == ["r1"]
 
     await agents.resume_confirmation("s1", "ws", [], {})
+    service.schedule_next_turn("s1")
     for _ in range(100):
         if [request.request_id for request in factory.calls] == ["r1", "r2"]:
             break
@@ -205,7 +206,7 @@ async def test_paused_run_does_not_consume_queue_until_confirmation_completes(tm
 
 
 @pytest.mark.asyncio
-async def test_agent_failure_after_claim_freezes_queue(tmp_path):
+async def test_agent_failure_after_claim_does_not_create_inbox_status(tmp_path):
     from ftre_agent import AgentService
 
     agents = AgentService()
@@ -219,12 +220,12 @@ async def test_agent_failure_after_claim_freezes_queue(tmp_path):
     assert result.status == "failed"
     snapshot = await service.snapshot("s1")
     assert snapshot.pending == ()
-    assert service.status("s1") == "blocked"
+    assert not hasattr(service, "status")
     await service.close()
 
 
 @pytest.mark.asyncio
-async def test_cancelled_request_is_terminal_before_new_message(tmp_path):
+async def test_cancelled_request_does_not_block_a_new_followup(tmp_path):
     from ftre_agent import AgentService
 
     agents = AgentService()
@@ -240,9 +241,8 @@ async def test_cancelled_request_is_terminal_before_new_message(tmp_path):
     await service.followup(InboundMessage("s1", "r2", "ws", "second"))
     await asyncio.sleep(0.05)
 
-    assert [request.request_id for request in factory.calls] == ["r1"]
-    assert [item.request_id for item in (await service.snapshot("s1")).pending] == ["r2"]
-    assert service.status("s1") == "blocked"
+    assert [request.request_id for request in factory.calls] == ["r1", "r2"]
+    assert (await service.snapshot("s1")).pending == ()
     await service.close()
 
 
@@ -259,6 +259,24 @@ async def test_admission_keeps_agent_run_request_messages(tmp_path):
     assert result.accepted is True
     item = (await service.snapshot("s1")).pending[0]
     assert item.messages[0].get_text_content() == "structured"
+
+
+@pytest.mark.asyncio
+async def test_admission_uses_session_agent_when_client_metadata_omits_it(tmp_path):
+    class Sessions:
+        async def get_session(self, _session_id):
+            return {"agent_id": "coder"}
+
+    service = InboxService(
+        InboxRepository(tmp_path),
+        sessions=Sessions(),
+    )
+
+    result = await service.steer(InboundMessage("s1", "r1", "ws", "hello"))
+
+    assert result.accepted is True
+    item = (await service.snapshot("s1")).pending[0]
+    assert item.agent_id == "coder"
 
 
 @pytest.mark.asyncio

@@ -1,20 +1,19 @@
-"""AgentStateFile Schema 测试（新协议：无 summary 字段）。
+"""SessionMetaFile Snapshot Schema 测试（PRD-F44）。
 
 验收标准：
-- 合法 AgentState 可 round-trip；
-- 非法 Msg、重复 ID 被拒绝；
+- 合法 Snapshot 可 round-trip（包含 messages / seq）；
 - 未知 schema_version 明确报不支持；
-- 旧 state.json 未知字段直接拒绝（部署时清理历史 session）。
+- schema_version=1 输入直接拒绝；schema v2 仅作为迁移输入接受。
 """
 import pytest
-from ftre_agent.message import AssistantMsg, MsgName, UserMsg
 from pydantic import ValidationError
 
 from ftre.services.session.entity.state import (
-    AgentStateFile,
-    UnsupportedAgentStateVersion,
-    parse_agent_state,
-    parse_agent_state_json,
+    SessionMetaFile,
+    SessionState,
+    UnsupportedSessionMetaVersion,
+    parse_session_meta,
+    parse_session_meta_json,
 )
 
 
@@ -32,118 +31,63 @@ def _session(**overrides) -> dict:
     return base
 
 
-def _user(msg_id: str, text: str = "hi") -> dict:
-    return UserMsg(name=MsgName.DEFAULT, content=text, id=msg_id).model_dump(mode="json")
-
-
-def _compact_msg(msg_id: str = "compact_1", text: str = "摘要") -> dict:
-    return UserMsg(
-        name=MsgName.COMPACT,
-        content=text,
-        id=msg_id,
-        metadata={"hide": True, "context_compact": {"mode": "summary"}},
-    ).model_dump(mode="json")
-
-
-def test_minimal_state_round_trip():
-    state = AgentStateFile(session=_session())  # type: ignore[arg-type]
+def test_minimal_meta_round_trip():
+    state = SessionMetaFile(session=_session())  # type: ignore[arg-type]
     payload = state.model_dump(mode="json")
     assert set(payload) == {
-        "schema_version",
-        "session",
-        "messages",
-        "metadata",
+        "schema_version", "session", "metadata", "seq",
+        "messages", "requests", "extensions",
     }
-    assert payload["schema_version"] == 1
-    assert payload["messages"] == []
+    assert payload["schema_version"] == 5
     assert payload["metadata"] == {}
+    restored = parse_session_meta(payload)
+    assert restored.session.id == "ws_sess_abc123"
+    assert restored.session.last_user_text == ""
 
-    loaded = parse_agent_state(payload)
-    assert loaded == state
-    assert parse_agent_state_json(state.model_dump_json()) == state
 
-
-def test_full_state_with_compact_msg_round_trip():
-    user = _user("msg_u1")
-    assistant = AssistantMsg(
-        name=MsgName.DEFAULT, content="回答", id="reply_1"
-    ).model_dump(mode="json")
-    compact = _compact_msg("compact_1", "截至 msg_u1 的滚动摘要")
-    state = AgentStateFile(
-        session=_session(),  # type: ignore[arg-type]
-        messages=[user, assistant, compact],  # type: ignore[list-item]
-        metadata={"plan": None, "external": None},
+def test_meta_json_round_trip():
+    state = SessionMetaFile(
+        session=_session(last_user_text="最近一条用户消息"),
+        metadata={"plan": {"steps": []}},
     )
-    loaded = parse_agent_state_json(state.model_dump_json())
-    assert loaded == state
-    compact_msgs = [m for m in loaded.messages if m.name == MsgName.COMPACT]
-    assert len(compact_msgs) == 1
-    assert compact_msgs[0].get_text_content() == "截至 msg_u1 的滚动摘要"
-
-
-def test_unknown_root_field_rejected():
-    payload = AgentStateFile(session=_session()).model_dump(mode="json")  # type: ignore[arg-type]
-    payload["unexpected"] = 1
-    with pytest.raises(ValidationError):
-        parse_agent_state(payload)
+    payload = state.model_dump_json()
+    restored = parse_session_meta_json(payload)
+    assert restored.session.last_user_text == "最近一条用户消息"
+    assert restored.metadata["plan"] == {"steps": []}
 
 
 def test_unknown_schema_version_rejected():
-    payload = AgentStateFile(session=_session()).model_dump(mode="json")  # type: ignore[arg-type]
-    payload["schema_version"] = 2
-    with pytest.raises(UnsupportedAgentStateVersion):
-        parse_agent_state(payload)
-
-    payload["schema_version"] = 0
-    with pytest.raises(UnsupportedAgentStateVersion):
-        parse_agent_state(payload)
-
-    payload["schema_version"] = None
-    with pytest.raises(UnsupportedAgentStateVersion):
-        parse_agent_state(payload)
+    with pytest.raises(UnsupportedSessionMetaVersion):
+        parse_session_meta({
+            "schema_version": 99,
+            "session": _session(),
+            "metadata": {},
+        })
 
 
-def test_duplicate_msg_id_rejected():
-    with pytest.raises(ValidationError, match="duplicate Msg.id"):
-        AgentStateFile(
-            session=_session(),  # type: ignore[arg-type]
-            messages=[_user("dup"), _user("dup", text="again")],  # type: ignore[list-item]
-        )
+def test_schema_v1_with_messages_rejected():
+    """schema_version=1 且含 messages 的输入直接拒绝（旧格式不解析）。"""
+    with pytest.raises(UnsupportedSessionMetaVersion):
+        parse_session_meta({
+            "schema_version": 1,
+            "session": _session(),
+            "messages": [],
+            "metadata": {},
+        })
 
 
-def test_legacy_summary_field_is_rejected():
-    """新格式不再维护历史字段迁移。"""
-    payload = AgentStateFile(
-        session=_session(),  # type: ignore[arg-type]
-        messages=[_user("msg_u1")],  # type: ignore[list-item]
-    ).model_dump(mode="json")
-    payload["summary"] = {"message": _compact_msg(), "through_message_id": "msg_u1"}
+def test_unknown_fields_are_preserved_for_extensions():
+    restored = parse_session_meta({
+        "schema_version": 4,
+        "session": _session(),
+        "metadata": {},
+        "cursor": 12,
+        "unknown_field": True,
+    })
+    assert restored.model_dump(mode="json")["unknown_field"] is True
+    assert restored.seq == 12
+
+
+def test_session_state_requires_channel_and_timestamps():
     with pytest.raises(ValidationError):
-        parse_agent_state(payload)
-
-
-def test_event_shape_in_messages_rejected():
-    event_like = {
-        "id": "evt_1",
-        "name": "default",
-        "role": "assistant",
-        "type": "TEXT_BLOCK_DELTA",
-        "data": {"delta": "x"},
-        "content": [],
-    }
-    with pytest.raises(ValidationError):
-        AgentStateFile(
-            session=_session(),  # type: ignore[arg-type]
-            messages=[event_like],  # type: ignore[list-item]
-        )
-
-
-def test_json_schema_generable():
-    schema = AgentStateFile.model_json_schema()
-    assert schema["type"] == "object"
-    assert set(schema["properties"]) == {
-        "schema_version",
-        "session",
-        "messages",
-        "metadata",
-    }
+        SessionState(id="x", created_at="2026-01-01T00:00:00+00:00")

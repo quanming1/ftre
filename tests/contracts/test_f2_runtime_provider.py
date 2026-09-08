@@ -54,7 +54,6 @@ def test_runtime_plugin_registers_private_loop_with_agent_service(monkeypatch) -
         agent_profiles = object()
         system_prompt = "prompt"
         hook_runtime = "hooks"
-        session_events = None
         llm = object()
 
         def get(self, key, strict=False):
@@ -78,6 +77,7 @@ def test_runtime_plugin_registers_private_loop_with_agent_service(monkeypatch) -
     assert started == [True]
 
     # 注入映射：inject 声明的每个 Service 都按窄公开 key 传入 Loop。
+    # session_events 不注入（事件经 sessions.append_event）。
     assert captured == {
         "message_bus": context.message_bus,
         "sessions": context.sessions,
@@ -91,7 +91,6 @@ def test_runtime_plugin_registers_private_loop_with_agent_service(monkeypatch) -
         "traces": None,
         "system_prompt": "prompt",
         "hook_runtime": "hooks",
-        "session_events": None,
         "llm_service": context.llm,
     }
 

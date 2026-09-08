@@ -17,6 +17,11 @@
 > `next-turn/next-step` 边界仍然有效；操作成功响应中的旧 admission ACK 示例已由
 > F24 Queue Operation Response 取代，当前字段以 `PRD-F24-queue-operation-response.md`
 > 和 `docs/prd/README.md` 为准。
+>
+> **2026-09-07 维护修正版**：下文关于 Inbox 自主 worker、`wake`、`blocked_reason` 和
+> Agent 状态订阅的旧实现已被两条 Agent 生命周期 Hook 取代。Inbox 只负责入队、持久化、
+> claim 和快照；运行中的 `next-step` 由 `agent/before-reasoning` 消费，正常完成后的
+> `next-turn` 由 `agent/after-run(status=completed)` 消费。异常结束不自动派发。
 
 ## 1. 背景与问题
 
@@ -72,9 +77,9 @@ next-step：在最近的 Agent Step 边界批量领取
 它只提供三种写入语义：
 
 ```text
-followup = next-turn + wake
-steer    = next-step + wake
-inject   = next-step + no wake
+followup = next-turn（空闲新会话可启动一次首条交付）
+steer    = next-step（只由下一次 before-reasoning 领取）
+inject   = next-step（只由下一次 before-reasoning 领取）
 ```
 
 客户端只调用 `session.prompt`、`session.updateQueue` 和 `session.cancel`；服务端用
@@ -93,9 +98,11 @@ FTRE 采用这组业务语义，但不照抄 DSH 的全部实现：
 ### 2.1 目标
 
 本阶段完成后，整个消息队列能力应迁入可独立构建、安装、启用和发布的
-`packages/ftre-inbox`。该 Package 唯一拥有 `next-turn` / `next-step`、持久化、worker、
-客户端队列协议以及 `followup` / `steer` / `inject`。FTRE 内置 AgentService 只负责执行
-已经交付的 `InboundMessage`，不知道 QueueItem、pending、capacity、placement 或队列快照。
+`packages/ftre-inbox`。该 Package 唯一拥有 `next-turn` / `next-step`、持久化、claim、
+客户端队列协议以及 `followup` / `steer` / `inject`。它不运行自主调度 worker，也不维护
+Agent 运行状态；两个 Agent 生命周期 Hook 负责在明确边界触发 claim。FTRE 内置
+AgentService 只负责执行已经交付的 `InboundMessage`，不知道 QueueItem、pending、capacity、
+placement 或队列快照。
 
 ### 2.2 非目标
 
@@ -121,9 +128,9 @@ FTRE 采用这组业务语义，但不照抄 DSH 的全部实现：
 | Inbox | 某个 Session 尚未被 Agent 消费的持久化输入集合 |
 | `next-turn` | 等待开启新 Turn 的队列；每个新 Turn 最多领取一条 |
 | `next-step` | 等待进入当前或最近 Agent Step 的队列；一个边界可以批量领取 |
-| `followup` | 写入 `next-turn` 并唤醒 Inbox worker |
-| `steer` | 写入 `next-step` 并唤醒/通知 Inbox worker |
-| `inject` | 写入 `next-step`，但不主动唤醒空闲 Agent |
+| `followup` | 写入 `next-turn`；运行边界由 `agent/after-run` 决定 |
+| `steer` | 写入 `next-step`；下一次 `agent/before-reasoning` 消费 |
+| `inject` | 写入 `next-step`，不启动空闲 Agent |
 | placement | 客户端展示语义：`queued` / `steering` / `context` |
 | claim | 按 ID 和快照条件原子删除 pending，并将消息交给当前运行单元 |
 
@@ -136,10 +143,10 @@ FTRE 采用这组业务语义，但不照抄 DSH 的全部实现：
   - next-turn / next-step
   - capacity / idempotency / claim
   - followup / steer / inject
-  - 每 Session Inbox worker
+  - 两条 Agent 生命周期 Hook 的 claim 适配
   - session.prompt / updateQueue / cancel
   - session/queue 权威投影
-  - 调用 AgentService.run(InboundMessage)
+  - 为 Hook 返回已 claim 的 InboundMessage
 
 [内置] AgentService
   - run(InboundMessage) -> TurnOutcome
@@ -179,15 +186,13 @@ ftre-inbox 候选输入
   -> [Package Hook 点] inbox/before-claim
        -> [Plugin] Compaction
        -> [Plugin] Inbox policy
-  -> 原子 claim
+  -> [Agent Hook] agent/before-reasoning
+       -> [ftre-inbox Plugin] 原子领取并提供 next-step 输入
+       -> [其他 Plugin] 提供非队列上下文
   -> AgentService.run(InboundMessage)
-       -> [ftre Hook 点] agent/before-turn（一次 Turn 准入）
-       -> [Core Hook 点] agent/before-reasoning（每次 LLM 前）
-            -> [ftre-inbox Plugin] 原子领取并提供 next-step 输入
-            -> [其他 Plugin] 提供非队列上下文
        -> [Plugin] system-prompt / llm / tool / turn-stopping
-  -> [内置 Hook 点] agent/after-turn
-       -> [Plugin] Compaction / Summary
+  -> [Agent Hook] agent/after-run(status=completed)
+       -> [ftre-inbox Plugin] 原子领取一条 next-turn 并交给 AgentService
 ```
 
 AgentService 只认识 `InboundMessage` 和通用 Agent Hook。它不会调用 `peek()`、`claim()`
@@ -221,8 +226,8 @@ admission、持久化、排序和 claim 也不是可被其他 Feature 替换的 
   - QueueItem 不保存 running/completed/failed 等执行状态。
 
 - [x] **FR4：三种写入语义**
-  - `followup(session_id, message)` 原子写入 `next-turn` 并请求唤醒 Inbox worker；
-  - `steer(session_id, message)` 原子写入 `next-step` 并请求唤醒/通知 Inbox worker；
+  - `followup(session_id, message)` 原子写入 `next-turn`，不创建独立 worker；
+  - `steer(session_id, message)` 原子写入 `next-step`，等待下一次 Agent Step Hook；
   - `inject(session_id, message)` 原子写入 `next-step`，但空闲时不创建 Turn；
   - 三种入口复用同一 admission、幂等、容量和持久化实现；
   - Plugin 不需要构造 BusMessage 才能注入上下文。
@@ -252,16 +257,15 @@ admission、持久化、排序和 claim 也不是可被其他 Feature 替换的 
   - claim 与客户端 edit/remove 竞争时只允许一个操作成功。
 
 - [x] **FR8：Turn 与 Step 消费规则**
-  - 新 Turn 的首次消费边界读取全部可消费 `next-step`，并最多读取一条
-    `next-turn`；
-  - active Turn 后续安全边界只读取 `next-step`，不得提前领取下一条
-    `next-turn`；
+  - `agent/before-reasoning` 每次只消费当前 active Turn 的 `next-step`；
+  - `agent/after-run` 仅在 `status=completed` 时消费一条 `next-turn`；
+  - failed、cancelled、interrupted、paused 均不消费 `next-turn`；
   - 一批消息的 Hook 决策和 claim 必须保持一致，不能只领取半批后静默继续；
   - 同步 ToolResult 属于当前 Turn，不进入 Inbox；
   - 异步 Plugin 结果根据意图调用 `steer`、`inject` 或 `followup`。
   - `agent/before-turn` 只在新 `InboundMessage` 进入 active Turn 前触发一次；
-  - `agent/before-reasoning` 由 Core 在首次 Reasoning、Tool 后和 continuation 后的每次
-    LLM 调用前触发；它返回的消息在 Core 内进入本次 LLM snapshot；
+  - `agent/before-reasoning` 由 Runtime 在首次 Reasoning、Tool 后和 continuation 后的每次
+    LLM 调用前触发；它返回的消息在 Runtime 内进入本次 LLM snapshot；
   - ftre-inbox 只在 `agent/before-reasoning` 中消费 `next-step`，不把队列模型传入 AgentService。
 
 - [x] **FR9：Session 与 Agent 选择**
@@ -273,8 +277,8 @@ admission、持久化、排序和 claim 也不是可被其他 Feature 替换的 
 - [x] **FR10：取消与唤醒**
   - `session.cancel` 取消当前 active Turn，默认保留两条队列；
   - remove 只取消指定 pending 项，不影响 active Turn；
-  - followup/steer 必须触发 wake；inject 不触发 idle wake；
-  - close/unload 必须取消 worker 和 in-flight Hook，并保留已经持久化但尚未 claim 的项；
+- 入队不创建后台 worker；close/unload 只取消 in-flight claim/delivery，并保留已经持久化但尚未
+    claim 的项；
   - 同 Session 仍最多一个 active Turn，不同 Session 保持并行。
 
 ### 4.3 客户端协议
@@ -303,7 +307,8 @@ admission、持久化、排序和 claim 也不是可被其他 Feature 替换的 
 
 - [x] **FR14：状态与事件分离**
   - `session/queue` 只表达 pending；
-  - active/idle/maintenance/blocked 由独立 `session/status` 表达；
+  - active/idle/maintenance 由 Agent Service 的 `session/subscribed`/`session/snapshot` 状态字段表达；
+    Inbox 不产生 blocked 状态；
   - Reply、Tool 和持久消息继续使用 `session/event`；
   - ACK、queue、status、event 各自只有一个语义，不互相嵌套复制。
 
@@ -318,7 +323,7 @@ admission、持久化、排序和 claim 也不是可被其他 Feature 替换的 
 
 - [x] **FR16：旧 Mailbox API 与薄壳清理**
   - 删除 `src/ftre/services/agent_loop/runtime/mailbox` 中的 Store/Lane 队列实现；
-  - SessionLane 的 pending/worker 职责迁入 ftre-inbox；AgentService 只保留 active 执行边界；
+  - SessionLane 的 pending/调度职责迁入 ftre-inbox；AgentService 只保留 active 执行边界；
   - SessionService 删除被 ftre-inbox 接管的公开 mailbox 操作；
   - `mailbox.pending` 单队列只允许作为一次性数据迁移输入，不保留运行时双写；
   - 删除 `mailbox_snapshot`、`queue_position`、`frame_id` 输出别名和客户端乐观队列所需的
@@ -360,7 +365,7 @@ QueueItem
 
 ```text
 InboxService.pending     -> 尚未 claim，可恢复
-ftre-inbox worker        -> pending 调度、wake、claim 和重启恢复
+Agent Hooks              -> 在 before-reasoning / after-run 边界触发 claim
 AgentService.active      -> 已交付 InboundMessage，进程内，at-most-once
 SessionService.messages  -> 已提交的正式历史，可恢复
 内部 wait receipt        -> 仅同进程 task/team 等调用方，可选，不进入 wire
@@ -385,39 +390,33 @@ Channel / RPC 边界（由 ftre-inbox 贡献 session.prompt）
         |
         `-- agent prompt ---> InboxService
                                   |
-                                  +-- queue --> next-turn + wake
-                                  `-- steer --> next-step + wake
+                                  +-- queue --> next-turn
+                                  `-- steer --> next-step
 ```
 
 ### 6.2 Plugin 输入
 
 ```text
-Schedule Plugin -------- followup ------> next-turn + wake
-Team Plugin ------------ steer ---------> next-step + wake
+Schedule Plugin -------- followup ------> next-turn
+Team Plugin ------------ steer ---------> next-step
 Plan/Context Plugin ---- inject --------> next-step
 ```
 
 ### 6.3 Agent 消费
 
 ```text
-ftre-inbox worker 到达安全消费边界
+Agent/before-reasoning 或 agent/after-run
         |
         | peek candidate batch
         v
 领取前 Hook 管线
         |
-        +-- keep ----> pending 不变，进入 blocked/等待恢复
-        +-- discard -> 原子删除，发布观察事件
-        `-- enter ---> 原子 claim exact IDs
-                              |
-                              v
-                  AgentService.run(InboundMessage)
-                              |
-                         Agent Core
-                              |
-                              +-- 同步 ToolResult 留在当前 Turn
-                              |
-                              `-- 下一安全 Step 再检查 next-step
+        +-- keep/error -> pending 不变，等待下一次生命周期边界
+        +-- discard   -> 原子删除，发布观察事件
+        `-- enter     -> 原子 claim exact IDs
+                           |
+                           +-- before-reasoning：返回 next-step 输入
+                           `-- after-run：交给 AgentService 开启下一 Turn
 ```
 
 ## 7. 线协议草案
@@ -511,7 +510,7 @@ next-step + source=plugin/system  -> context
 
 ```text
 session/queue   -> pending 的完整瞬时投影
-session/status  -> idle/running/maintenance/blocked
+session/subscribed + session/snapshot.status -> idle/running/maintenance
 session/event   -> User/Reply/Tool/Command 等持久或流式事件
 ```
 
@@ -521,13 +520,13 @@ session/event   -> User/Reply/Tool/Command 等持久或流式事件
 |---|---|---|---|
 | 队列已满 | admission 失败 | 不变 | `queue-full` |
 | 重复 request ID | 返回原接纳结果 | 不重复插入 | accepted 或稳定冲突错误 |
-| pre-claim Hook 失败 | 阻止 claim | 候选保留 | status=blocked |
+| pre-claim Hook 失败 | 阻止 claim | 候选保留 | 等待下一边界 |
 | edit 与 claim 竞争 | 仅一方成功 | 原子一致 | loser 收到 `item-not-pending` |
-| steer 时 Agent idle | 写 next-step 并 wake | 可进入最近新 Turn | 新 queue snapshot |
+| steer 时 Agent idle | 写 next-step | 不自动启动 | 新 queue snapshot |
 | inject 时 Agent idle | 只写 next-step | 不启动 Turn | context queue item |
 | cancel active | 当前 Turn 取消 | pending 全保留 | status 更新 |
-| Gateway 重启 | active 不重放 | 两队列恢复 | attach 完整 snapshot |
-| Plugin unload | Listener/Task 清理 | Inbox 不受影响 | 队列继续可用 |
+| Gateway 重启 | active 不重放 | 两队列恢复但不自动 claim | attach 完整 snapshot |
+| Plugin unload | Listener 清理 | pending 保留 | 队列继续可用 |
 
 ## 9. 实施切片
 
@@ -554,10 +553,11 @@ session/event   -> User/Reply/Tool/Command 等持久或流式事件
 
 ### F12.4 AgentService 瘦身与 Hook 交付
 
-- ftre-inbox worker 在新 Turn 领取 next-step batch + 一条 next-turn；
+- ftre-inbox 在 `agent/before-reasoning` 领取 next-step batch；
+- ftre-inbox 在 `agent/after-run(status=completed)` 领取一条 next-turn；
 - AgentService 只接收 InboundMessage，删除全部 queue API 和模型依赖；
-- ftre-inbox 通过通用 Agent Step Hook 在 active Turn 安全边界贡献 next-step；
-- 保留 Inbox before-claim Hook 和 Agent after-turn barrier；
+- 删除 Inbox worker、Agent 状态订阅和 blocked 门禁；
+- 保留 Inbox before-claim Hook 和两个 Agent 生命周期 Hook；
 - 保持同 Session 串行、跨 Session 并行和 at-most-once。
 
 ### F12.5 Session 协议与 Gateway 接入
@@ -591,8 +591,8 @@ session/event   -> User/Reply/Tool/Command 等持久或流式事件
 
 - [x] **AC1**：`packages/ftre-inbox` 可独立 build、wheel 安装和洁净环境 import；基础 ftre
   未安装/未启用它时 AgentService 和 Gateway 可以启动，`session.prompt` 明确报告能力不可用。
-- [x] **AC2**：followup、steer、inject 分别满足目标队列和 wake 语义，重复 ID 不会重复
-  插入。
+- [x] **AC2**：followup、steer、inject 分别写入正确队列；首条空闲 followup 可启动一次交付，
+  后续 next-turn 只能由 `agent/after-run(status=completed)` 领取；重复 ID 不会重复插入。
 - [x] **AC3**：新 Turn 的首次候选批次为全部可消费 next-step 加最多一条 next-turn；
   active Turn 不会提前消费第二条 next-turn。
 - [x] **AC4**：Hook keep、Hook failure、cancel-before-claim 均保留 pending；discard 只删除
@@ -614,7 +614,7 @@ session/event   -> User/Reply/Tool/Command 等持久或流式事件
   followup/steer/inject。
 - [x] **AC13**：Command 不进入 Inbox、不创建 Turn；TurnExecutor 不依赖 Command 输入或
   Queue update 类型。
-- [x] **AC14**：卸载 ftre-inbox 后不残留 worker、route、listener 或 pending 内存引用；直接
+- [x] **AC14**：卸载 ftre-inbox 后不残留 worker/dispatch task、route、listener 或 pending 内存引用；直接
   `AgentService.run(InboundMessage)` 仍可执行。卸载 Compaction/Plan/Team 后 Inbox 继续工作。
 - [x] **AC15**：架构测试证明 ftre 核心不 import `ftre_inbox`，AgentService 不出现 QueueItem、
   pending、capacity、placement、mailbox snapshot；Feature 不建立第二 pending Owner。
@@ -632,13 +632,13 @@ session/event   -> User/Reply/Tool/Command 等持久或流式事件
 
 ### 11.1 Inbox 单元测试
 
-- followup/steer/inject 路由和 wake 次数；
+- followup/steer/inject 路由、首条交付和两个生命周期 Hook 的触发条件；
 - 两队列 ordering、共享 capacity 和 duplicate ID；
 - batch peek/claim 的原子性；
 - edit/remove/promote 的合法和竞争路径；
 - 旧 state.json 迁移、损坏输入和重复恢复。
 
-### 11.2 AgentService 与 Inbox worker 测试
+### 11.2 AgentService 与 Inbox 交付边界测试
 
 - 新 Turn 与 active Step 的不同领取规则；
 - 同 Session 串行和不同 Session 并行；
@@ -691,7 +691,7 @@ continuation 次数限制。
 | `inbox/before-claim` | ftre-inbox | pending 原子 claim 前的队列策略 |
 | `agent/before-turn` | ftre AgentLoop | 一条 InboundMessage 开始一个 Turn 前 |
 | `agent/before-reasoning` | ftre-agent-core | 每次真正 LLM Reasoning 前 |
-| `agent/after-turn` | ftre AgentLoop | Turn 完成或取消后的维护屏障 |
+| `agent/after-run` | ftre AgentLoop | Run 完成后的后续 Turn 派发边界；仅 completed 消费 next-turn |
 
 不得让不同 payload、不同触发时机的 Hook 共用一个名字。
 
@@ -710,3 +710,4 @@ continuation 次数限制。
 | 2026-08-24 | 修复 Inbox 与 Agent Runtime 的并发装载竞态：`ftre-inbox` 通过 Inject 显式声明 `agent_runtime` 依赖，确保 Inbox ACTIVE 前完成 admission handler 绑定；新增启动绑定回归断言 | 独立 Fiber 并发 settle 时，Inbox 可能先 ACTIVE 但未绑定 AgentLoop，客户端发送消息会收到 `inbox-unavailable` | AC1、AC5、AC14；全量测试 439 passed |
 | 2026-08-24 | F17/F18 后续收敛：当前 Gateway 将 Inbox 作为必选 Plugin；Inbox 只拥有队列 Service/Hook/Worker，`send_message`、`task`、`team_*`/`wait_agent` 分别迁入三个业务 Package，Agent Runtime 删除 Inbox 透传 | 修复 `TurnExecutor._inbox` 未接线导致 `Injected("inbox")` 永远为 None，同时避免把使用 Inbox 的业务 Tool 误归入队列 Owner | F17/F18 PRD；不改变 Inbox Package 的独立发布能力 |
 | 2026-08-25 | 补充 F24 协议覆盖说明；旧 admission ACK 示例仅作为历史记录 | 避免历史示例被误当作当前 WebSocket 成功响应 | F24 AC1、AC6 |
+| 2026-09-07 | 简化 Inbox 调度边界：删除自主 worker、wake、blocked_reason 和 Agent 状态订阅；`agent/before-reasoning` 消费 next-step，`agent/after-run(status=completed)` 消费 next-turn；异常结束不自动派发 | 修复 interrupted/failed 后 Session 被永久锁住和重启后队列语义不一致；让 Inbox 回归“入队 + claim”，由 Agent 生命周期决定唯一派发时机 | FR4、FR8、FR10、AC2、AC3、AC11、AC14；需重跑 Inbox/Hook/WS 回归 |

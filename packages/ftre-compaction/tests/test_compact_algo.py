@@ -10,6 +10,7 @@ from ftre_agent.message import (
     ToolResultBlock,
     UserMsg,
 )
+from ftre_compaction.context import TRIMMED_TOOL_RESULT_PLACEHOLDER
 from ftre_compaction.service import (
     CompactionService,
     _build_prompt,
@@ -67,7 +68,13 @@ def test_serialize_messages_includes_tool_call_and_result():
 
 
 @pytest.mark.asyncio
-async def test_fast_compact_updates_tool_result_blocks_via_emit_event():
+async def test_fast_compact_emits_done_event_without_rewriting_history():
+    """fast 压缩不改写历史 Msg，只发 compact/message(mode=fast) 事件。
+
+    读侧由 derive 按事件做占位替换（PRD-F43 FR9）；这里断言
+    a) emit_maintenance 收到 DONE 且 value 含 mode/tool_results 计数与 token 差；
+    b) session_manager 只被读取，不再调用任何写路径。
+    """
     # 构造带 turn 边界的对话：user0 → assistant0(4 个工具结果)
     user = UserMsg(name=MsgName.DEFAULT, content="请读取文件")
     assistant = AssistantMsg(
@@ -105,32 +112,26 @@ async def test_fast_compact_updates_tool_result_blocks_via_emit_event():
     )
 
     assert changed is True
+    # b) 历史只读：没有落盘/改写调用
     session_manager.save_message.assert_not_called()
-    session_manager.update_messages.assert_awaited_once()
-    updated_batch = session_manager.update_messages.await_args.args[0]
-    assert len(updated_batch) == 1
-    updated = updated_batch[0]
-    results = [
-        block for block in updated.content if isinstance(block, ToolResultBlock)
-    ]
-    # 全部 4 个工具结果被裁剪
-    assert [result.output[0].text for result in results] == [
-        "[工具输出已压缩]",
-        "[工具输出已压缩]",
-        "[工具输出已压缩]",
-        "[工具输出已压缩]",
-    ]
-    # done 事件经统一出口派发
-    assert any(
-        e.name == "context_compact_done"
-        and e.value.get("mode") == "fast"
-        for e in emitted
-    )
+    session_manager.update_messages.assert_not_awaited()
+    session_manager.update_message.assert_not_awaited()
+    # a) 事件契约：全部 4 个工具结果计入一次 fast DONE 事件
+    done = next(e for e in emitted if e.name == "context_compact_done")
+    assert done.value["mode"] == "fast"
+    assert done.value["messages"] == 4
+    assert done.value["tool_results"] == 4
+    assert done.value["tool_result_ids"] == [f"call-{index}" for index in range(4)]
+    assert done.value["tokens_before"] > done.value["tokens_after"]
+    assert set(done.value) == {
+        "mode", "messages", "tool_results", "tool_result_ids",
+        "tokens_before", "tokens_after",
+    }
 
 
 @pytest.mark.asyncio
-async def test_fast_compact_batches_multiple_changed_messages():
-    """多条 Msg 被裁剪时只走一次批量更新，避免逐条重写完整 state。"""
+async def test_fast_compact_batches_multiple_trimmed_messages_into_one_event():
+    """多条 Msg 的工具结果被裁时只汇总成一次 fast DONE 事件，不逐条重写历史。"""
     user = UserMsg(name=MsgName.DEFAULT, content="读取两个文件")
     assistants = [
         AssistantMsg(
@@ -152,9 +153,14 @@ async def test_fast_compact_batches_multiple_changed_messages():
     ]
     session_manager = AsyncMock()
     session_manager.get_context_messages.return_value = records
+    emitted: list = []
+
+    async def emit_maintenance(session_id, channel_id, name, value):
+        emitted.append(SimpleNamespace(name=name, value=value))
+
     manager = CompactionService(
         session_manager=session_manager,
-        emit_maintenance=AsyncMock(),
+        emit_maintenance=emit_maintenance,
     )
 
     changed = await manager.compress_fast(
@@ -162,12 +168,14 @@ async def test_fast_compact_batches_multiple_changed_messages():
     )
 
     assert changed is True
-    session_manager.update_messages.assert_awaited_once()
-    updated_batch = session_manager.update_messages.await_args.args[0]
-    assert [message.id for message in updated_batch] == [
-        message.id for message in assistants
-    ]
+    session_manager.update_messages.assert_not_awaited()
     session_manager.update_message.assert_not_awaited()
+    # 两条 Msg 的工具结果合并进同一次事件的计数
+    done = next(e for e in emitted if e.name == "context_compact_done")
+    assert done.value["mode"] == "fast"
+    assert done.value["messages"] == 2
+    assert done.value["tool_results"] == 2
+    assert done.value["tokens_before"] > done.value["tokens_after"]
 
 
 @pytest.mark.asyncio
@@ -210,13 +218,13 @@ async def test_fast_compact_keep_turns_protects_recent_turns():
     )
 
     assert changed is True
-    # 只更新了 assistant0（含 old 工具结果），assistant1 不动
-    session_manager.update_messages.assert_awaited_once()
-    updated_batch = session_manager.update_messages.await_args.args[0]
-    assert len(updated_batch) == 1
-    updated = updated_batch[0]
-    results = [b for b in updated.content if isinstance(b, ToolResultBlock)]
-    assert results[0].output[0].text == "[工具输出已压缩]"
+    # fast 模式不改写历史；只把保护区外的 old 工具结果计入 DONE 事件
+    session_manager.update_messages.assert_not_awaited()
+    done = next(e for e in emitted if e.name == "context_compact_done")
+    assert done.value["mode"] == "fast"
+    assert done.value["tool_results"] == 1
+    assert done.value["messages"] == 1
+    assert done.value["tokens_before"] > done.value["tokens_after"]
 
 
 @pytest.mark.asyncio
@@ -291,13 +299,14 @@ async def test_fast_compact_ignores_compact_fast_bubble_in_turn_count():
         "ws::session", "ws", config=SimpleNamespace(), keep_turns=1,
     )
     assert changed is True
-    # 只裁了 assistant0 的 old，assistant1 的 recent 保留
-    session_manager.update_messages.assert_awaited_once()
-    updated_batch = session_manager.update_messages.await_args.args[0]
-    assert len(updated_batch) == 1
-    updated = updated_batch[0]
-    results = [b for b in updated.content if isinstance(b, ToolResultBlock)]
-    assert results[0].output[0].text == "[工具输出已压缩]"
+    # 只裁 assistant0 的 old，计数经 fast DONE 事件表达，assistant1 的
+    # recent 不计入（保护区外的 tool_results 只有 1 个）。
+    session_manager.update_messages.assert_not_awaited()
+    done = next(e for e in emitted if e.name == "context_compact_done")
+    assert done.value["mode"] == "fast"
+    assert done.value["tool_results"] == 1
+    assert done.value["messages"] == 1
+    assert done.value["tokens_before"] > done.value["tokens_after"]
 
 
 def test_build_prompt_and_body_estimate():
@@ -324,3 +333,39 @@ def test_build_prompt_no_focus_hint_unchanged():
     assert "【用户强调】" not in prompt[-1]
     prompt_blank = _build_prompt(context=[text], min_chars=200, focus_hint="   ")
     assert "【用户强调】" not in prompt_blank[-1]
+
+
+@pytest.mark.asyncio
+async def test_context_loader_uses_full_snapshot_and_keeps_source_unchanged():
+    """F45：压缩策略从完整 Msg 生成临时视图，不再依赖 Session 的裁剪实现。"""
+    tool_result = ToolResultBlock(
+        id="tool-1",
+        name="read",
+        output="原始工具输出",
+        state="success",
+    )
+    messages = [
+        UserMsg(content="问题"),
+        AssistantMsg(content=[tool_result]),
+        AssistantMsg(
+            name=MsgName.COMPACT_FAST,
+            content="已快速压缩",
+            metadata={
+                "context_compact": {
+                    "mode": "fast",
+                    "tool_result_ids": ["tool-1"],
+                }
+            },
+        ),
+    ]
+    sessions = AsyncMock()
+    sessions.get_full_messages.return_value = messages
+    manager = CompactionService(session_manager=sessions)
+
+    records = await manager._load_context_records("session-1")
+
+    assert sessions.get_context_messages.await_count == 0
+    assert records[1]["content"][0]["output"][0]["text"] == (
+        TRIMMED_TOOL_RESULT_PLACEHOLDER
+    )
+    assert messages[1].content[0].output == "原始工具输出"

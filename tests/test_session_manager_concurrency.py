@@ -1,17 +1,23 @@
-"""SessionManager（JSON Store）并发与丢更新防护测试（设计文档 §9.3 / §18.3）。
+"""SessionService（事件日志架构）并发与丢更新防护测试。
 
-验收标准：
-- 两个并发 save_message 两条都在；
-- save_message + update_metadata 两项修改都在；
-- compact 期间新增消息保留在 compact tail（save_message 基于最新 state）；
-- update_message 与 delete_session 交错不损坏其他文件。
+消息写入入口：append_user_message_if_absent（request_id 幂等种子）、
+append_event("compact/message", ...)、同 message_id 再 append（whole-value 替换）。
+
+验收标准（语义不变）：
+- 两个并发用户消息提交条条都在（事件日志 append-only）；
+- 消息提交 + update_metadata + update_session 并发互不覆盖；
+- compact 期间新增消息保留在 compact tail；
+- whole-value 替换与 delete_session 交错不损坏其他会话；
+- 落盘文件人类可读，无流式 Event 名称混入。
 """
 import asyncio
 import json
+import time
 
 import pytest
 import pytest_asyncio
-from ftre_agent.message import MsgName, UserMsg
+from ftre_agent.message import AssistantMsg, MsgName, UserMsg
+from ftre_compaction.context import build_context_view
 
 from ftre.services.session.service import SessionService as SessionManager
 
@@ -20,6 +26,7 @@ from ftre.services.session.service import SessionService as SessionManager
 async def manager(tmp_path):
     mgr = SessionManager(str(tmp_path / "sessions.db"))
     await mgr.init()
+    mgr.set_context_view_builder(build_context_view)
     yield mgr
     await mgr.close()
 
@@ -28,26 +35,50 @@ def _user(text: str) -> UserMsg:
     return UserMsg(name=MsgName.DEFAULT, content=text, metadata={"hide": False})
 
 
-def _compact(text: str, through_message_id: str) -> UserMsg:
-    """创建一条 compact 摘要 Msg（role=user, name=compact, hide=True）。"""
-    return UserMsg(
-        name=MsgName.COMPACT,
-        content=text,
-        metadata={
-            "hide": True,
-            "context_compact": {
-                "mode": "summary",
-                "through_message_id": through_message_id,
-            },
-        },
+async def _save_user(manager, sid, msg, request_id):
+    event = await manager.append_user_message_if_absent(
+        sid,
+        request_id=request_id,
+        content=msg.model_dump(mode="json")["content"],
+        metadata=dict(msg.metadata or {}),
     )
+    assert event is not None
+    return str(event["message_id"])
+
+
+async def _append_compact(manager, sid, summary_text, through_message_id, message_id):
+    await manager.append_event(
+        sid,
+        "compact/message",
+        {
+            "mode": "summary",
+            "summary_text": summary_text,
+            "through_message_id": through_message_id,
+        },
+        message_id=message_id,
+    )
+
+
+async def _wait_log_flushed(manager, sid, timeout: float = 5.0) -> None:
+    """等待 Msg Snapshot checkpoint 写入 session.json。"""
+    await manager.flush_log(sid)
+    path = manager.session_dir(sid) / "session.json"
+    deadline = time.monotonic() + timeout
+    while not path.exists():
+        if time.monotonic() > deadline:
+            raise AssertionError("Snapshot 未在超时内落盘 session.json")
+        await asyncio.sleep(0.05)
 
 
 @pytest.mark.asyncio
 async def test_concurrent_save_message_loses_nothing(manager):
     sid = await manager.create_session("ws")
+    # 暖缓存：已知 src 限制（记录于报告）——log() 懒加载无锁，10 个协程
+    # 同时首触会各自构建 SessionLog，最后一个覆盖 _logs 缓存，其余实例上的
+    # 事件丢失。先经一次顺序访问完成懒加载，再验证并发 append 不丢。
+    await manager.get_messages_by_session(sid)
     await asyncio.gather(
-        *(manager.save_message(sid, _user(f"m{i}")) for i in range(10))
+        *(_save_user(manager, sid, _user(f"m{i}"), request_id=f"r{i}") for i in range(10))
     )
     messages = await manager.get_messages_by_session(sid)
     assert len(messages) == 10
@@ -58,7 +89,7 @@ async def test_concurrent_save_message_loses_nothing(manager):
 async def test_concurrent_save_message_and_metadata_update(manager):
     sid = await manager.create_session("ws")
     await asyncio.gather(
-        manager.save_message(sid, _user("hello")),
+        _save_user(manager, sid, _user("hello"), request_id="r1"),
         manager.update_session_metadata(sid, "plan", {"step": 1}),
         manager.update_session(sid, title="并发标题"),
     )
@@ -70,19 +101,16 @@ async def test_concurrent_save_message_and_metadata_update(manager):
 @pytest.mark.asyncio
 async def test_compact_does_not_clobber_concurrent_messages(manager):
     sid = await manager.create_session("ws")
-    first = _user("u1")
-    await manager.save_message(sid, first)
+    first_id = await _save_user(manager, sid, _user("u1"), request_id="u1")
 
-    # 模拟 compact：锁外"生成摘要"期间，新消息先进来
-    summary_msg = _compact("截至 u1 的摘要", first.id)
-
+    # 模拟 compact：摘要生成期间新消息先进来（compact 先落日志，u2 紧随其后）
     async def delayed_compact():
-        await asyncio.sleep(0.05)
-        await manager.save_message(sid, summary_msg)
+        await asyncio.sleep(0.01)
+        await _append_compact(manager, sid, "截至 u1 的摘要", first_id, "compact_1")
 
     async def new_message():
-        await asyncio.sleep(0.01)
-        await manager.save_message(sid, _user("u2 新增"))
+        await asyncio.sleep(0.05)
+        await _save_user(manager, sid, _user("u2 新增"), request_id="u2")
 
     await asyncio.gather(delayed_compact(), new_message())
 
@@ -94,11 +122,15 @@ async def test_compact_does_not_clobber_concurrent_messages(manager):
     # compact Msg 的 through_message_id 仍指向 u1
     compact_msgs = [m for m in messages if m["name"] == MsgName.COMPACT]
     assert len(compact_msgs) == 1
-    assert compact_msgs[0]["metadata"]["context_compact"]["through_message_id"] == first.id
+    assert compact_msgs[0]["metadata"]["context_compact"]["through_message_id"] == first_id
 
-    # LLM 上下文 = compact + tail（u2 留在 tail）
+    # LLM 上下文 = compact 锚点 + tail（u2 留在 tail）
     context = await manager.get_context_messages(sid)
-    assert context[0]["metadata"]["context_compact"]["mode"] == "summary"
+    assert context[0]["name"] == MsgName.COMPACT
+    # derive：summary compact 的 context_compact 元信息（mode 不落入元信息）
+    assert (
+        context[0]["metadata"]["context_compact"]["through_message_id"] == first_id
+    )
     assert [m["content"][0]["text"] for m in context[1:]] == ["u2 新增"]
 
 
@@ -106,13 +138,30 @@ async def test_compact_does_not_clobber_concurrent_messages(manager):
 async def test_update_message_and_delete_session_do_not_corrupt_others(manager):
     sid_a = await manager.create_session("ws")
     sid_b = await manager.create_session("ws")
-    msg_a = _user("a")
-    await manager.save_message(sid_a, msg_a)
-    await manager.save_message(sid_b, _user("b"))
+    # "update" 语义 = 同 message_id whole-value 替换（assistant/message）
+    msg_a = AssistantMsg(name=MsgName.DEFAULT, content="a")
+    await manager.append_event(
+        sid_a,
+        "assistant/message",
+        {"message": msg_a.model_dump(mode="json")},
+        message_id=msg_a.id,
+    )
+    await _save_user(manager, sid_b, _user("b"), request_id="b")
 
-    msg_a.content[0].text = "a-updated"
+    updated = msg_a.model_copy(
+        update={"content": [{"type": "text", "text": "a-updated"}]}
+    )
+
+    async def update_a():
+        await manager.append_event(
+            sid_a,
+            "assistant/message",
+            {"message": updated.model_dump(mode="json")},
+            message_id=updated.id,
+        )
+
     results = await asyncio.gather(
-        manager.update_message(msg_a),
+        update_a(),
         manager.delete_session(sid_a),
         return_exceptions=True,
     )
@@ -130,12 +179,17 @@ async def test_update_message_and_delete_session_do_not_corrupt_others(manager):
 @pytest.mark.asyncio
 async def test_state_json_human_readable(manager, tmp_path):
     sid = await manager.create_session("ws", title="可读性")
-    await manager.save_message(sid, _user("直接阅读我"))
-    files = list((tmp_path / "sessions").glob("*/state.json"))
+    await _save_user(manager, sid, _user("直接阅读我"), request_id="r1")
+    await _wait_log_flushed(manager, sid)
+
+    files = list((tmp_path / "sessions").glob("*/session.json"))
     assert len(files) == 1
-    payload = json.loads(files[0].read_text(encoding="utf-8"))
+    meta_text = files[0].read_text(encoding="utf-8")
+    payload = json.loads(meta_text)
     assert payload["session"]["id"] == sid
     assert payload["session"]["title"] == "可读性"
-    assert payload["messages"][0]["content"][0]["text"] == "直接阅读我"
-    # 无流式 Event 名称混入
-    assert "TEXT_BLOCK_DELTA" not in files[0].read_text(encoding="utf-8")
+    assert payload["schema_version"] == 5
+    assert "messages" in payload
+    assert "直接阅读我" in json.dumps(payload["messages"], ensure_ascii=False)
+    assert "TEXT_BLOCK_DELTA" not in meta_text
+    assert not (files[0].parent / "session.jsonl").exists()

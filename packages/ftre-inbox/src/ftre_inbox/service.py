@@ -1,11 +1,11 @@
-"""将外部输入持久化排队，并按 Session 顺序交给 AgentService。"""
+"""将外部输入持久化排队，并在明确的 Agent 边界交付。"""
 
 from __future__ import annotations
 
 import asyncio
 import inspect
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -26,7 +26,6 @@ from .hooks import (
     INBOX_DISCARDED_SPEC,
     INBOX_ERROR_SPEC,
     INBOX_FAILED_SPEC,
-    INBOX_STATUS_CHANGED_SPEC,
     AllowAdmission,
     BeforeAdmissionPayload,
     BeforeClaimPayload,
@@ -39,7 +38,6 @@ from .hooks import (
     InboxDiscardedPayload,
     InboxErrorPayload,
     InboxFailedPayload,
-    InboxStatusPayload,
     RejectAdmission,
     RejectClaim,
 )
@@ -53,7 +51,7 @@ logger = logging.getLogger(__name__)
 def _content_text(value: Any) -> str:
     if isinstance(value, str):
         return value
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return "".join(
             str(part.get("text", ""))
             for part in value
@@ -62,19 +60,16 @@ def _content_text(value: Any) -> str:
     return str(value or "")
 
 
-@dataclass(slots=True)
-class _SessionState:
-    wake: asyncio.Event = field(default_factory=asyncio.Event)
-    worker: asyncio.Task | None = None
-    blocked_reason: str | None = None
-
-
 class InboxService:
-    """Inbox 的唯一职责：接纳、排队、claim，然后交给 AgentService。"""
+    """Inbox 只拥有 admission、持久化、claim 和快照。
+
+    下一步输入由 ``agent/before-reasoning`` 领取；下一轮输入由
+    ``agent/after-run(status=completed)`` 触发一次交付。这里没有自主 worker、
+    Agent 状态订阅或 Inbox 阻塞状态。
+    """
 
     key = "inbox"
     changed_hook_spec = INBOX_CHANGED_SPEC
-    status_hook_spec = INBOX_STATUS_CHANGED_SPEC
 
     def __init__(
         self,
@@ -83,97 +78,89 @@ class InboxService:
         *,
         hook_runtime=None,
         before_claim=None,
-        session_events=None,
+        sessions=None,
     ) -> None:
         self.repository = repository
         self._agent = agent
         self._hook_runtime = hook_runtime
         self._before_claim = before_claim
-        self._session_events = session_events
+        self._sessions = sessions
         self._closed = False
-        self._sessions: dict[str, _SessionState] = {}
-        self._workers: dict[str, asyncio.Task] = {}
+        self._dispatch_tasks: dict[str, asyncio.Task] = {}
+        self._dispatch_requested: set[str] = set()
+        self._dispatch_wait_for_idle: set[str] = set()
         self._receipts: dict[tuple[str, str], asyncio.Future] = {}
-        self._agent_status_disposer = None
-        subscribe = getattr(agent, "on_status_changed", None)
-        if callable(subscribe):
-            self._agent_status_disposer = subscribe(self._on_agent_status)
 
     @property
     def is_closed(self) -> bool:
         return self._closed
 
     async def start(self) -> None:
+        """加载 pending；恢复只恢复数据，不自动触发 Agent。"""
         await self.repository.load_all()
 
     async def close(self) -> None:
         self._closed = True
-        tasks = tuple(self._workers.values())
+        tasks = tuple(self._dispatch_tasks.values())
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        self._workers.clear()
-        self._sessions.clear()
+        self._dispatch_tasks.clear()
+        self._dispatch_requested.clear()
+        self._dispatch_wait_for_idle.clear()
         for future in self._receipts.values():
             if not future.done():
                 future.cancel()
         self._receipts.clear()
         self.repository.close()
-        if self._agent_status_disposer is not None:
-            self._agent_status_disposer()
-            self._agent_status_disposer = None
         self._before_claim = None
         self._hook_runtime = None
-        self._session_events = None
+        self._sessions = None
         self._agent = None
 
     async def followup(self, message: InboundMessage | AgentRunRequest) -> IngressResult:
-        return await self._admit(message, "next-turn")
+        was_busy = self._agent_busy(message.session_id)
+        result = await self._admit(message, "next-turn")
+        if result.created and not was_busy and self._agent_can_receive(result.session_id):
+            self.schedule_next_turn(result.session_id)
+        return result
 
     async def steer(self, message: InboundMessage | AgentRunRequest) -> IngressResult:
         return await self._admit(message, "next-step")
 
     async def inject(self, message: InboundMessage | AgentRunRequest) -> IngressResult:
-        return await self._admit(message, "next-step", wake=False)
+        return await self._admit(message, "next-step")
 
     async def snapshot(self, session_id: str) -> InboxSnapshot:
         return await self.repository.snapshot(session_id)
 
-    async def resume_pending(self, session_id: str) -> bool:
-        """显式唤醒持久 pending；服务启动不会自动派发。"""
-        if self._closed:
-            return False
-        state = self._state(session_id)
-        snapshot = await self.repository.snapshot(session_id)
-        if not snapshot.has_pending:
-            return False
-        state.blocked_reason = None
-        self._ensure_worker(session_id)
-        state.wake.set()
-        return True
-
     async def delete_session(self, session_id: str) -> None:
-        state = self._sessions.pop(session_id, None)
-        task = self._workers.pop(session_id, None)
+        task = self._dispatch_tasks.pop(session_id, None)
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        self._dispatch_requested.discard(session_id)
+        self._dispatch_wait_for_idle.discard(session_id)
         for key, future in tuple(self._receipts.items()):
             if key[0] == session_id:
                 if not future.done():
                     future.cancel()
                 self._receipts.pop(key, None)
-        del state
         await self.repository.delete_session(session_id)
 
     async def handle_bus_message(self, message: BusMessage) -> IngressResult:
-        session_id = str(message.data.get("session_id") or message.from_session)
+        data = (
+            message.data.model_dump(mode="json")
+            if hasattr(message.data, "model_dump")
+            else dict(message.data or {})
+        )
+        session_id = str(data.get("session_id") or message.from_session)
         request_id = str(message.metadata.request_id or message.id)
         if message.type == "turn_cancel":
             cancelled = await self.cancel(
                 session_id,
-                str(message.data.get("request_id") or "") or None,
+                str(data.get("request_id") or "") or None,
             )
             return IngressResult(
                 accepted=True,
@@ -185,12 +172,12 @@ class InboxService:
             session_id=session_id,
             request_id=request_id,
             channel_id=str(message.from_channel),
-            content=_content_text(message.data.get("content")),
-            attachments=tuple(dict(item) for item in (message.data.get("attachments") or ())),
-            source=str(message.data.get("source") or "user"),
+            content=_content_text(data.get("content")),
+            attachments=tuple(dict(item) for item in (data.get("attachments") or ())),
+            source=str(data.get("source") or "user"),
             metadata=message.metadata.model_dump(mode="json"),
         )
-        mode = str(message.data.get("mode") or "queue")
+        mode = str(data.get("mode") or "queue")
         if mode == "queue":
             return await self.followup(inbound)
         if mode == "steer":
@@ -234,7 +221,6 @@ class InboxService:
         if item is None:
             return False
         await self._publish(session_id)
-        self._state(session_id).wake.set()
         return True
 
     async def remove(self, session_id: str, request_id: str) -> bool:
@@ -242,7 +228,6 @@ class InboxService:
         if item is None:
             return False
         await self._publish(session_id)
-        self._state(session_id).wake.set()
         return True
 
     async def promote(self, session_id: str, request_id: str) -> bool:
@@ -250,7 +235,6 @@ class InboxService:
         if item is None:
             return False
         await self._publish(session_id)
-        self._state(session_id).wake.set()
         return True
 
     async def cancel(self, session_id: str, request_id: str | None = None) -> bool:
@@ -270,26 +254,18 @@ class InboxService:
         return await future
 
     async def wait_session_quiescent(self, session_id: str):
-        state = self._state(session_id)
-        while True:
+        """等待队列为空且 Agent 没有 active Turn。"""
+        while not self._closed:
             snapshot = await self.repository.snapshot(session_id)
-            busy = self._agent is not None and self._agent.is_busy(session_id)
-            if not snapshot.has_pending and not busy:
+            if not snapshot.has_pending and not self._agent_busy(session_id):
                 return {"session_id": session_id, "status": "quiescent"}
-            state.wake.clear()
-            snapshot = await self.repository.snapshot(session_id)
-            busy = self._agent is not None and self._agent.is_busy(session_id)
-            if not snapshot.has_pending and not busy:
-                return {"session_id": session_id, "status": "quiescent"}
-            await state.wake.wait()
+            await asyncio.sleep(0.05)
+        return {"session_id": session_id, "status": "closed"}
 
     async def claim_next_step_for_reasoning(self, session_id: str) -> tuple[QueueItem, ...]:
         return await self.deliver_next_step_for_reasoning(session_id)
 
-    async def deliver_next_step_for_reasoning(
-        self,
-        session_id: str,
-    ) -> tuple[QueueItem, ...]:
+    async def deliver_next_step_for_reasoning(self, session_id: str) -> tuple[QueueItem, ...]:
         if self._closed:
             return ()
         snapshot = await self.repository.snapshot(session_id)
@@ -298,6 +274,7 @@ class InboxService:
             return ()
         decision, discarded = await self._before_claim_batch(session_id, snapshot, candidates)
         if decision == "keep":
+            await self._defer(session_id, candidates[0], "before-claim-rejected")
             return ()
         if decision == "discard":
             await self._discard(session_id, discarded, "before-claim-discard")
@@ -309,21 +286,130 @@ class InboxService:
         )
         if not claimed:
             return ()
+        claimed = self._attach_history_ids(claimed, history_ids)
         await self._publish(session_id)
-        return self._attach_history_ids(claimed, history_ids)
+        await self._observe(
+            INBOX_CLAIMED_SPEC,
+            InboxClaimedPayload(
+                session_id=session_id,
+                request_ids=tuple(item.request_id for item in claimed),
+            ),
+        )
+        return claimed
+
+    @staticmethod
+    def _candidate_batch(snapshot: InboxSnapshot) -> tuple[QueueItem, ...]:
+        """返回一个新 Turn 可观察的候选形状（next-step 全量加一条 next-turn）。"""
+        if snapshot.next_step:
+            return (*snapshot.next_step, *snapshot.next_turn[:1])
+        return snapshot.next_turn[:1]
+
+    def schedule_next_turn(self, session_id: str, *, wait_for_idle: bool = False) -> None:
+        """请求一次 next-turn 交付；同一 Session 的请求自动合并。"""
+        if self._closed or self._agent is None:
+            return
+        self._dispatch_requested.add(session_id)
+        if wait_for_idle:
+            self._dispatch_wait_for_idle.add(session_id)
+        task = self._dispatch_tasks.get(session_id)
+        if task is None or task.done():
+            self._dispatch_tasks[session_id] = asyncio.create_task(
+                self._dispatch_next_turn(session_id),
+                name=f"inbox-next-turn:{session_id}",
+            )
+
+    def handle_after_run(self, session_id: str, status: str, *, paused: bool = False) -> None:
+        """只把自然完成映射为一次 next-turn 触发。"""
+        if status == "completed" and not paused:
+            self.schedule_next_turn(session_id, wait_for_idle=True)
+
+    async def _dispatch_next_turn(self, session_id: str) -> None:
+        wait_for_idle = session_id in self._dispatch_wait_for_idle
+        self._dispatch_requested.discard(session_id)
+        self._dispatch_wait_for_idle.discard(session_id)
+        try:
+            if wait_for_idle:
+                while not self._closed and self._agent_busy(session_id):
+                    await asyncio.sleep(0.01)
+                if self._closed or self._agent_paused(session_id):
+                    return
+            elif not self._agent_can_receive(session_id):
+                return
+
+            snapshot = await self.repository.snapshot(session_id)
+            candidate = snapshot.next_turn[:1]
+            if not candidate:
+                return
+            decision, discarded = await self._before_claim_batch(
+                session_id, snapshot, candidate,
+            )
+            if decision == "keep":
+                await self._defer(session_id, candidate[0], "before-claim-rejected")
+                return
+            if decision == "discard":
+                await self._discard(session_id, discarded, "before-claim-discard")
+                return
+            history_ids = await self._persist_user_messages(candidate)
+            claimed = await self.repository.claim(
+                session_id,
+                tuple(item.request_id for item in candidate),
+            )
+            if not claimed:
+                return
+            claimed = self._attach_history_ids(claimed, history_ids)
+            await self._publish(session_id)
+            await self._observe(
+                INBOX_CLAIMED_SPEC,
+                InboxClaimedPayload(
+                    session_id=session_id,
+                    request_ids=tuple(item.request_id for item in claimed),
+                ),
+            )
+            await self._deliver(session_id, claimed)
+            await self._publish(session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # keep pending and make failure observable
+            await self._observe(
+                INBOX_ERROR_SPEC,
+                InboxErrorPayload(
+                    session_id=session_id,
+                    request_id="",
+                    stage="next-turn-claim",
+                    error=str(exc),
+                    retryable=True,
+                ),
+            )
+            logger.exception("[ftre-inbox] next-turn dispatch failed session=%s", session_id)
+        finally:
+            current = asyncio.current_task()
+            if self._dispatch_tasks.get(session_id) is current:
+                self._dispatch_tasks.pop(session_id, None)
+            if session_id in self._dispatch_requested and not self._closed:
+                wait = session_id in self._dispatch_wait_for_idle
+                self._dispatch_requested.discard(session_id)
+                self._dispatch_wait_for_idle.discard(session_id)
+                self.schedule_next_turn(session_id, wait_for_idle=wait)
+
+    async def deliver_one(self, session_id: str, item: QueueItem) -> bool:
+        """测试和宿主使用的单项交付入口；不会重新入队。"""
+        return await self._deliver(session_id, (item,))
 
     async def _admit(
         self,
         message: InboundMessage | AgentRunRequest,
         target: QueueTarget,
-        *,
-        wake: bool = True,
     ) -> IngressResult:
         if self._closed:
-            return IngressResult(False, message.session_id, message.request_id, False, error={
-                "code": "inbox-closed", "message": "Inbox 已关闭",
-            })
+            return IngressResult(
+                False,
+                message.session_id,
+                message.request_id,
+                False,
+                error={"code": "inbox-closed", "message": "Inbox 已关闭"},
+            )
         item = self._item_from_message(message, target)
+        item = await self._resolve_session_agent(item)
         if self._hook_runtime is not None and INBOX_BEFORE_ADMIT_SPEC is not None:
             decision = await self._hook_runtime.dispatch(
                 INBOX_BEFORE_ADMIT_SPEC,
@@ -351,13 +437,21 @@ class InboxService:
         try:
             created, _ = await self.repository.admit(item, target)
         except OverflowError as exc:
-            return IngressResult(False, item.session_id, item.request_id, False, error={
-                "code": "queue-full", "message": str(exc), "retryable": True,
-            })
+            return IngressResult(
+                False,
+                item.session_id,
+                item.request_id,
+                False,
+                error={"code": "queue-full", "message": str(exc), "retryable": True},
+            )
         except ValueError as exc:
-            return IngressResult(False, item.session_id, item.request_id, False, error={
-                "code": "session-not-found", "message": str(exc), "retryable": False,
-            })
+            return IngressResult(
+                False,
+                item.session_id,
+                item.request_id,
+                False,
+                error={"code": "session-not-found", "message": str(exc), "retryable": False},
+            )
 
         snapshot = await self.repository.snapshot(item.session_id)
         await self._publish(item.session_id)
@@ -381,12 +475,6 @@ class InboxService:
                 (item.session_id, item.request_id),
                 asyncio.get_running_loop().create_future(),
             )
-        state = self._state(item.session_id)
-        if wake:
-            if state.blocked_reason is not None and state.blocked_reason.startswith(("before-claim", "claim:")):
-                state.blocked_reason = None
-            self._ensure_worker(item.session_id)
-            state.wake.set()
         return IngressResult(True, item.session_id, item.request_id, created)
 
     def _item_from_message(
@@ -395,7 +483,7 @@ class InboxService:
         target: QueueTarget,
     ) -> QueueItem:
         metadata = dict(message.metadata or {})
-        agent_id = str(metadata.get("agent_id") or "default")
+        agent_id = str(metadata.get("agent_id") or "")
         messages = tuple(getattr(message, "messages", ()) or ())
         content = getattr(message, "content", "")
         attachments = getattr(message, "attachments", ())
@@ -416,73 +504,26 @@ class InboxService:
             agent_id=agent_id,
         )
 
-    def _state(self, session_id: str) -> _SessionState:
-        return self._sessions.setdefault(session_id, _SessionState())
+    async def _resolve_session_agent(self, item: QueueItem) -> QueueItem:
+        """Fill an omitted Agent id from the persisted Session before admission.
 
-    def _ensure_worker(self, session_id: str) -> None:
-        if self._closed or self._agent is None:
-            return
-        task = self._workers.get(session_id)
-        if task is None or task.done():
-            task = asyncio.create_task(self._worker(session_id), name=f"inbox:{session_id}")
-            self._workers[session_id] = task
-            self._state(session_id).worker = task
-
-    async def _worker(self, session_id: str) -> None:
-        state = self._state(session_id)
+        Client metadata may omit ``agent_id`` (older clients and internal callers
+        do so). Resolving it before the queue is persisted keeps the catalog shown
+        for a Session and the Runtime Tool/Prompt scope identical after restart.
+        """
+        if item.agent_id or self._sessions is None:
+            return replace(item, agent_id=item.agent_id or "default")
+        getter = getattr(self._sessions, "get_session", None)
+        if not callable(getter):
+            return replace(item, agent_id="default")
         try:
-            while not self._closed:
-                state.wake.clear()
-                snapshot = await self.repository.snapshot(session_id)
-                candidates = self._candidate_batch(snapshot)
-                if not candidates:
-                    return
-                if self._gated(state) or not self._agent_can_receive(session_id):
-                    return
-                decision, discarded = await self._before_claim_batch(
-                    session_id, snapshot, candidates,
-                )
-                if decision == "keep":
-                    state.blocked_reason = "before-claim:rejected"
-                    await self._defer(session_id, candidates[0], "before-claim-rejected")
-                    return
-                if decision == "discard":
-                    await self._discard(session_id, discarded, "before-claim-discard")
-                    continue
-                try:
-                    history_ids = await self._persist_user_messages(candidates)
-                    claimed = await self.repository.claim(
-                        session_id,
-                        tuple(item.request_id for item in candidates),
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - keep pending on claim failure
-                    state.blocked_reason = f"claim:{exc}"
-                    await self._status(session_id, "blocked")
-                    return
-                if not claimed:
-                    continue
-                claimed = self._attach_history_ids(claimed, history_ids)
-                await self._publish(session_id)
-                await self._observe(
-                    INBOX_CLAIMED_SPEC,
-                    InboxClaimedPayload(
-                        session_id=session_id,
-                        request_ids=tuple(item.request_id for item in claimed),
-                    ),
-                )
-                completed = await self._deliver(session_id, claimed)
-                await self._publish(session_id)
-                if completed:
-                    state.wake.set()
-        except asyncio.CancelledError:
-            return
-        finally:
-            if self._workers.get(session_id) is asyncio.current_task():
-                self._workers.pop(session_id, None)
-            if state.worker is asyncio.current_task():
-                state.worker = None
+            session = await getter(item.session_id)
+        except Exception:  # noqa: BLE001 - admission remains usable without metadata
+            session = None
+        value = getattr(session, "agent_id", None)
+        if value is None and isinstance(session, dict):
+            value = session.get("agent_id")
+        return replace(item, agent_id=str(value or "default"))
 
     async def _deliver(self, session_id: str, items: tuple[QueueItem, ...]) -> bool:
         for item in items:
@@ -498,13 +539,10 @@ class InboxService:
                     result = await result
                 status, reason, retryable = self._run_result_info(result)
                 if self._result_paused(result):
-                    await self._status(session_id, "paused")
                     self._resolve(item, result)
                     return False
-                if status in {"failed", "cancelled", "interrupted"}:
+                if status in {"failed", "error", "cancelled", "interrupted"}:
                     await self._report_failure(session_id, item, reason, retryable)
-                    self._state(session_id).blocked_reason = f"agent:{reason or status}"
-                    await self._status(session_id, "blocked")
                     self._resolve(item, result)
                     return False
                 await self._observe(
@@ -519,26 +557,8 @@ class InboxService:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                await self._observe(
-                    INBOX_ERROR_SPEC,
-                    InboxErrorPayload(
-                        session_id=session_id,
-                        request_id=item.request_id,
-                        stage="agent-run",
-                        error=str(exc),
-                    ),
-                )
-                await self._observe(
-                    INBOX_FAILED_SPEC,
-                    InboxFailedPayload(
-                        session_id=session_id,
-                        request_id=item.request_id,
-                        reason=str(exc),
-                    ),
-                )
+                await self._report_failure(session_id, item, str(exc), False)
                 self._resolve_exception(item, exc)
-                self._state(session_id).blocked_reason = f"agent:{exc}"
-                await self._status(session_id, "blocked")
                 logger.exception(
                     "[ftre-inbox] AgentService.run failed session=%s request=%s",
                     session_id,
@@ -547,39 +567,51 @@ class InboxService:
                 return False
         return True
 
-    async def deliver_one(self, session_id: str, item: QueueItem) -> Any:
-        """内部测试/宿主使用的单项交付入口；不重新入队。"""
-        return await self._deliver(session_id, (item,))
-
-    async def _persist_user_messages(
-        self,
-        candidates: tuple[QueueItem, ...],
-        *,
-        run_id: str = "",
-    ) -> dict[str, str]:
-        if self._session_events is None:
+    async def _persist_user_messages(self, candidates: tuple[QueueItem, ...]) -> dict[str, str]:
+        if self._sessions is None:
             return {}
         history_ids: dict[str, str] = {}
         previous_assistant_id = None
-        active_id = getattr(self._session_events, "active_assistant_message_id", None)
-        if callable(active_id):
-            previous_assistant_id = await active_id(candidates[0].session_id)
+        append_user = getattr(self._sessions, "append_user_message_if_absent", None)
+        active_id = getattr(self._sessions, "log", None)
+        if callable(active_id) and callable(append_user):
+            try:
+                log = await active_id(candidates[0].session_id)
+                previous_assistant_id = next(
+                    (
+                        event.get("message_id")
+                        for event in reversed(log.events)
+                        if event.get("type") == "assistant/message"
+                    ),
+                    None,
+                )
+            except Exception:  # noqa: BLE001 - best-effort context only
+                previous_assistant_id = None
         for candidate in candidates:
-            if candidate.source != "user":
+            if candidate.source != "user" or not callable(append_user):
                 continue
-            result = await self._session_events.emit_user_message_if_absent(
+            content_parts = candidate.content
+            if isinstance(content_parts, str):
+                content_parts = [{"type": "text", "text": content_parts}]
+            result = await append_user(
                 candidate.session_id,
-                candidate.channel_id,
                 request_id=candidate.request_id,
-                content=candidate.content,
-                attachments=candidate.attachments,
-                source=candidate.source,
-                run_id=run_id,
+                content=list(content_parts),
+                metadata={
+                    "hide": False,
+                    "request_id": candidate.request_id,
+                    "source": candidate.source,
+                    "agent_id": candidate.agent_id or "default",
+                    **(
+                        {"previous_assistant_message_id": previous_assistant_id}
+                        if previous_assistant_id
+                        else {}
+                    ),
+                },
                 previous_assistant_message_id=previous_assistant_id,
             )
-            persisted = getattr(result, "persisted_messages", ()) or ()
-            if persisted:
-                history_ids[candidate.request_id] = persisted[0].id
+            if result is not None:
+                history_ids[candidate.request_id] = str(result.get("message_id") or "")
             previous_assistant_id = None
         return history_ids
 
@@ -637,8 +669,6 @@ class InboxService:
                 ),
             )
         await self._publish(session_id)
-        self._state(session_id).blocked_reason = None
-        self._state(session_id).wake.set()
 
     async def _defer(self, session_id: str, item: QueueItem, reason: str) -> None:
         await self._observe(
@@ -683,13 +713,6 @@ class InboxService:
                 InboxChangedPayload(session_id=session_id),
             )
 
-    async def _status(self, session_id: str, status: str) -> None:
-        if self._hook_runtime is not None and INBOX_STATUS_CHANGED_SPEC is not None:
-            await self._hook_runtime.dispatch(
-                INBOX_STATUS_CHANGED_SPEC,
-                InboxStatusPayload(session_id=session_id, status=status),
-            )
-
     async def _observe(self, spec, payload) -> None:
         if self._hook_runtime is None or spec is None:
             return
@@ -700,105 +723,62 @@ class InboxService:
         except Exception:
             logger.exception("[ftre-inbox] observe hook failed: %s", spec.name)
 
-    def status(self, session_id: str) -> str | None:
-        state = self._state(session_id)
-        if state.blocked_reason is not None:
-            return "blocked"
-        status = getattr(self._agent, "status", None)
-        if callable(status):
-            try:
-                current = str(status(session_id))
-            except Exception:  # noqa: BLE001 - status is diagnostic only
-                current = ""
-            if current == "paused":
-                return "paused"
-            if current in {"failed", "cancelled", "interrupted"}:
-                return "blocked"
-        return None
-
-    def _on_agent_status(self, view: Any) -> None:
-        session_id = getattr(view, "session_id", None) or getattr(view, "agent_id", None)
-        if session_id:
-            session_id = str(session_id)
-            self._state(session_id).wake.set()
-            if str(getattr(view, "state", "")) in {"idle", "completed"}:
-                self._ensure_worker(session_id)
-
-    def _agent_can_receive(self, session_id: str) -> bool:
+    def _agent_busy(self, session_id: str) -> bool:
         if self._agent is None:
             return False
-        # AgentService 的公开 status(session_id) 接口兼容 Runtime 的
-        # session 查询，但一个 Agent 的公开 id 可能是 ``session:profile``。
-        # 先检查 AgentView，避免把 paused/等待确认误判成 idle。
         list_agents = getattr(self._agent, "list", None)
         if callable(list_agents):
             try:
                 views = tuple(list_agents())
-            except Exception:  # noqa: BLE001 - status gate is diagnostic only
+            except Exception:  # noqa: BLE001 - diagnostic gate only
                 views = ()
-            session_views = tuple(
-                view for view in views
-                if getattr(view, "session_id", None) == session_id
-            )
-            if session_views:
-                current = str(getattr(session_views[0], "state", ""))
-                if current in {
-                    "running", "processing", "compacting", "paused", "stopping",
-                    "failed", "cancelled", "interrupted", "awaiting_confirmation",
+            for view in views:
+                if getattr(view, "session_id", None) != session_id:
+                    continue
+                if str(getattr(view, "state", "")) in {
+                    "running",
+                    "processing",
+                    "compacting",
+                    "paused",
+                    "stopping",
+                    "awaiting_confirmation",
                 }:
-                    return False
-                if current:
                     return True
-        status = getattr(self._agent, "status", None)
-        if callable(status):
-            try:
-                current = str(status(session_id))
-            except Exception:  # noqa: BLE001 - a status probe must not break delivery
-                current = ""
-            if current in {
-                "running", "processing", "compacting", "paused", "stopping",
-                "failed", "cancelled", "interrupted", "awaiting_confirmation",
-            }:
-                return False
-            if current:
-                return True
         busy = getattr(self._agent, "is_busy", None)
-        return not callable(busy) or not busy(session_id)
+        if not callable(busy):
+            return False
+        try:
+            return bool(busy(session_id))
+        except Exception:  # noqa: BLE001 - diagnostic gate only
+            return True
+
+    def _agent_paused(self, session_id: str) -> bool:
+        if self._agent is None:
+            return False
+        list_agents = getattr(self._agent, "list", None)
+        if callable(list_agents):
+            try:
+                if any(
+                    getattr(view, "session_id", None) == session_id
+                    and str(getattr(view, "state", "")) == "paused"
+                    for view in list_agents()
+                ):
+                    return True
+            except Exception:
+                logger.debug("[ftre-inbox] paused status probe failed", exc_info=True)
+        status = getattr(self._agent, "status", None)
+        if not callable(status):
+            return False
+        try:
+            return str(status(session_id)) == "paused"
+        except Exception:  # noqa: BLE001 - diagnostic gate only
+            return False
+
+    def _agent_can_receive(self, session_id: str) -> bool:
+        return self._agent is not None and not self._agent_busy(session_id)
 
     def _uses_agent_service(self) -> bool:
         return self._agent is not None and callable(getattr(self._agent, "get", None))
-
-    @staticmethod
-    def _candidate_batch(snapshot: InboxSnapshot) -> tuple[QueueItem, ...]:
-        if snapshot.next_step:
-            return (*snapshot.next_step, *snapshot.next_turn[:1])
-        return snapshot.next_turn[:1]
-
-    @staticmethod
-    def _gated(state: _SessionState) -> bool:
-        return state.blocked_reason is not None
-
-    @staticmethod
-    def _run_result_info(result: Any) -> tuple[str, str, bool]:
-        if isinstance(result, dict):
-            status = str(result.get("status") or "completed")
-            error = result.get("error")
-        else:
-            status = str(getattr(result, "status", "completed"))
-            error = getattr(result, "error", None)
-        if isinstance(error, dict):
-            reason = str(error.get("message") or error.get("code") or status)
-            retryable = bool(error.get("retryable", status != "failed"))
-        else:
-            reason = str(error or status)
-            retryable = status != "failed"
-        return status, reason, retryable
-
-    @staticmethod
-    def _result_paused(result: Any) -> bool:
-        return bool(result.get("paused", False)) if isinstance(result, dict) else bool(
-            getattr(result, "paused", False)
-        )
 
     async def _ensure_agent(self, item: QueueItem) -> str:
         if self._agent is None:
@@ -847,6 +827,28 @@ class InboxService:
             if item.request_id in history_ids
             else item
             for item in claimed
+        )
+
+    @staticmethod
+    def _run_result_info(result: Any) -> tuple[str, str, bool]:
+        if isinstance(result, dict):
+            status = str(result.get("status") or "completed")
+            error = result.get("error")
+        else:
+            status = str(getattr(result, "status", "completed"))
+            error = getattr(result, "error", None)
+        if isinstance(error, dict):
+            reason = str(error.get("message") or error.get("code") or status)
+            retryable = bool(error.get("retryable", status != "failed"))
+        else:
+            reason = str(error or status)
+            retryable = status != "failed"
+        return status, reason, retryable
+
+    @staticmethod
+    def _result_paused(result: Any) -> bool:
+        return bool(result.get("paused", False)) if isinstance(result, dict) else bool(
+            getattr(result, "paused", False)
         )
 
     def _resolve(self, item: QueueItem, result: Any) -> None:

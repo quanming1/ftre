@@ -72,7 +72,7 @@ def test_turn_executor_receives_data_plane_services_explicitly() -> None:
 def test_plugins_declare_context_service_attributes() -> None:
     ignored = {"get", "provide", "effect", "events", "fiber", "parent", "scope"}
     optional_get = {
-        "inbox", "mcp", "attachments", "system_prompt", "session_events",
+        "inbox", "mcp", "attachments", "system_prompt",
         "agents",
     }
     plugin_paths = list((SRC / "services").rglob("plugin.py")) + list(

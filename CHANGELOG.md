@@ -1,28 +1,32 @@
 # Changelog
 
-## [0.3.2] - 2026-09-03
+## [0.3.3] - 2026-09-08
 
-### F40 MCP 三层配置与统一目录
+### F45 Agent ContextView Hook 与 Fork/回滚
 
-- MCP 目录统一解析 global/agent/project 三层配置，按 `project > agent > global` 返回 effective/source
-  视图，HTTP CRUD 委托 Config、Agent Profile 和 Workspace Service，并对凭据字段脱敏。
-- ToolService 按 Agent/Session 隔离 MCP 工具；ConfigService watcher 负责全局热重载，ToolView 准备失败会
-  回滚工具、限制和私有连接，Agent MCP 配置使用原子写入并兼容 UTF-8 BOM。
-- 后端全量 pytest 776 passed，Ruff、架构扫描和 MCP 回归通过。
+- 新增 `agent/context-build` 公共 Hook；Runtime 在 Provider 转换前对完整 Msg 深拷贝构建
+  ContextView，同一 Reasoning 的 Retry 复用视图，恢复重试会重新读取最新 Snapshot。
+- 压缩策略迁移到 `ftre-compaction` Plugin：summary/fast marker 只在内存视图中解释，完整
+  Msg、原始 ToolResult 和 `session.json` 不被改写；卸载后恢复完整历史透传。
+- Fork 按 `through_message_id` 从稳定完整 Snapshot 创建独立 Session；子 Session 不继承 Inbox、
+  运行态和 request 幂等索引。回滚改用独立 `/rollback` 接口原地截断当前 Session，清理已移除
+  request 索引并回填输入框；客户端支持 AI Fork 与用户回滚。
 
-## [0.3.1] - 2026-08-27
+### F44 会话快照协议与持久化收敛
 
-### 修复
+- Session transcript 改为每个会话单一 `session.json` Msg Snapshot；流式 chunk 仅在内存中聚合，
+  不再逐条写入 JSONL。
+- 新增固定窗口/语义边界 checkpoint、旧 JSONL 一次性迁移和 HTTP Msg 基线 + WebSocket
+  attach Event[] 恢复，并修复重启后历史与 LLM 上下文被遗漏的问题。
+- request_id 增加跨重启内容指纹幂等校验；未知 Msg block 通过 extension 容器保留原始 JSON。
+- 修复 Runtime 回灌历史 Assistant 时重新生成消息并重复落盘的问题；历史上下文现在不会再次产生
+  `assistant/message`，并清理一份受影响的会话快照。
+### F43 SessionLog 存储与 Token 水位修复
 
-- **responses reasoning 跨 Provider 重放 400**（F30）：历史 reasoning 组重放前按目标协议形状校验，
-  不兼容组自动降级重建路径，避免跨 Provider 请求被上游拒绝。
-- **CI 安装失败**（D1）：补齐 `ftre-agent` 与 `ftre-agent-runtime` 的本地发行物注册。
-
-### 测试
-
-- inbox hook 测试改用 `ftre_llm` 事件类型，解除对已退休 Core 私有 API 的依赖。
-
-## [未发布]
+- 流式 `assistant/chunk` 在 JSONL 落盘前按连续增量无损打包，读取时还原原事件；未知形状原样保留。
+- Assistant whole-value 快照改为 Turn 语义边界唯一收口，不再为同一条累计消息重复写入几十次。
+- 分离 Turn 累计 Token 与最后一次 LLM 调用 Token，压缩水位使用当前 prompt 上下文，不再因整轮累计值误触发。
+- 后端全量 pytest 通过，Ruff 与 diff check 通过。
 
 ### F39 ConfigService 外部变更热更新与模型目录
 
@@ -52,6 +56,8 @@
 - 审计补齐模型提示与发现规则的一致性，`loadSkill` 按当前 Agent/工作区解析，管理面板明确显示查询作用域。
 - Windows 编辑器写入的 UTF-8 BOM、以及 YAML key/value 前缀 BOM 不再导致 Skill 消失；只要 `name` 和
   `description` 合法即可被发现，错误的可选 metadata/策略字段会回退默认或被忽略。
+- 收尾审计统一生命周期 Hook、用户消息与 Skill 预览的 Agent 作用域；`loadSkill` 只接受当前目录
+  的合法别名，错误版本/外部 URI 不再误匹配同名 Skill。
 
 ### F38 Inbox 恢复幂等与队列生命周期（已完成，未发布）
 
@@ -59,8 +65,8 @@
   启动恢复不会自动发送历史队列。
 - UserMessage 按 `session_id + request_id` 幂等落盘并保留原始身份/时间/内容；Agent Run 防止
   重复执行；Inbox 统一使用 Session canonical 用户数据根。
-- Steering 按 Session 持久化并在同一 Session 的 Reasoning 边界交付；未赶上当前 Run 的消息会由正常完成后的 FIFO worker 交给后续 Run，并发重放有单写保护。
-- 修复目标 Run 在最后一次推理前正常结束时 Next Step 永久滞留：`agent/after-run` 完成事件会解除目标绑定，交由现有 FIFO worker 进入下一轮；取消、失败、暂停和中断仍保留队列。
+- Steering 按 Session 持久化并在同一 Session 的 Reasoning 边界交付；未赶上当前 Run 的消息留在 `next-step`，不创建独立调度器。
+- 修复目标 Run 在最后一次推理前正常结束时 Next Turn 永久滞留：`agent/after-run(status=completed)` 只触发一次队列领取；取消、失败、暂停和中断不自动派发。
 - Inbox 进一步收敛为 `Inbound → QueueItem → FIFO claim → AgentService`，删除 delivery lease、
   release/ack 回退分支；claim 后消息永久离开 pending，失败由 AgentService 返回终态。
 - 后端全量 pytest 745 passed、Ruff 与架构门禁通过；Desktop renderer 537 tests passed，三个
@@ -234,6 +240,28 @@
   claim Inbox；Session 写入失败时 pending 保留，重试使用稳定 message id 幂等。
 - 客户端队列横幅新增“插入当前运行”按钮，服务端 placement 切换为 steering 后等待
   `USER_MESSAGE` 交接，不创建第二条消息，也不产生消失→出现的视觉空窗。
+
+## [0.3.2] - 2026-09-03
+
+### F40 MCP 三层配置与统一目录
+
+- MCP 目录统一解析 global/agent/project 三层配置，按 `project > agent > global` 返回 effective/source
+  视图，HTTP CRUD 委托 Config、Agent Profile 和 Workspace Service，并对凭据字段脱敏。
+- ToolService 按 Agent/Session 隔离 MCP 工具；ConfigService watcher 负责全局热重载，ToolView 准备失败会
+  回滚工具、限制和私有连接，Agent MCP 配置使用原子写入并兼容 UTF-8 BOM。
+- 后端全量 pytest 776 passed，Ruff、架构扫描和 MCP 回归通过。
+
+## [0.3.1] - 2026-08-27
+
+### 修复
+
+- **responses reasoning 跨 Provider 重放 400**（F30）：历史 reasoning 组重放前按目标协议形状校验，
+  不兼容组自动降级重建路径，避免跨 Provider 请求被上游拒绝。
+- **CI 安装失败**（D1）：补齐 `ftre-agent` 与 `ftre-agent-runtime` 的本地发行物注册。
+
+### 测试
+
+- inbox hook 测试改用 `ftre_llm` 事件类型，解除对已退休 Core 私有 API 的依赖。
 
 ## [0.3.0] - 2026-08-24
 

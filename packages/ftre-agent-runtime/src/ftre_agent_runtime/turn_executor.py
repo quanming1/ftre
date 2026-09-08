@@ -30,11 +30,16 @@ from ftre_agent import (
     RequestErrorPayload,
     RetryRequest,
 )
-from ftre_agent.event import (
-    ReplyFinishedReason,
-    UserConfirmResultEvent,
+from ftre_agent.event import UserConfirmResultEvent
+from ftre_agent.session.events import (
+    TurnEnd,
+    TurnEndData,
+    TurnRetry,
+    TurnRetryData,
+    TurnStart,
+    TurnStartData,
 )
-from ftre_agent.message import Msg
+from ftre_agent.types import ReplyFinishedReason
 
 from .factory import create_runtime_agent, default_agent_state
 from .protocol import RuntimeInput
@@ -120,8 +125,77 @@ class TurnExecutor:
             confirm_event=confirm_event,
             user_message_id=user_message_id,
         )
-        await self._emit_step(turn, "PIPELINE_START")
+        await self._append_turn_started(turn)
         return await self._drive(turn)
+
+    async def _append_turn_started(self, turn: Turn) -> None:
+        """turn/start 事件：任务开始的唯一信号（PRD-F41 §4.2）。"""
+        trigger = "confirm" if turn.confirm_event is not None else (
+            "cron" if turn.inbound.channel_id == "cron"
+            else "plugin" if turn.inbound.source == "plugin"
+            else "system" if turn.inbound.source == "system"
+            else "user"
+        )
+        model = ""
+        if turn.config is not None:
+            model = str(getattr(turn.config.llm, "model", "") or "")
+        agent_id = await self.resolve_inbound_agent_id(
+            turn.inbound,
+            profile=turn.agent_profile,
+        )
+        turn.resolved_agent_id = turn.resolved_agent_id or agent_id
+        await self._loop.append_session_event(
+            turn.session_id,
+            TurnStart(
+                data=TurnStartData(
+                    turn_id=turn.turn_id,
+                    request_id=turn.inbound.request_id,
+                    trigger=trigger,
+                    agent_id=agent_id,
+                    model=model,
+                )
+            ),
+        )
+
+    async def _append_turn_end(self, turn: Turn, outcome: str, reason: str) -> None:
+        """turn/end 事件：任务结束的唯一信号（usage/error/message_id 终态标记）。"""
+        usage: dict | None = None
+        error: dict | None = None
+        iterations = 0
+        run_state = getattr(turn.agent, "run_state", None) if turn.agent is not None else None
+        if run_state is not None:
+            token_usage = dict(getattr(run_state, "token_usage", {}) or {})
+            if token_usage.get("total_tokens"):
+                usage = {
+                    "prompt_tokens": token_usage.get("prompt_tokens", 0),
+                    "completion_tokens": token_usage.get("completion_tokens", 0),
+                    "total_tokens": token_usage.get("total_tokens", 0),
+                }
+            iterations = int(getattr(run_state, "iteration", 0) or 0)
+            if outcome == "error":
+                error = {
+                    "code": str(getattr(run_state, "error_code", "") or "turn_error"),
+                    "message": str(getattr(run_state, "error", "") or "Turn 执行失败"),
+                }
+        await self._loop.append_session_event(
+            turn.session_id,
+            TurnEnd(
+                data=TurnEndData(
+                    turn_id=turn.turn_id,
+                    request_id=turn.inbound.request_id,
+                    outcome=outcome,
+                    reason=reason,
+                    error=error,
+                    usage=usage,
+                    iterations=iterations,
+                ),
+                message_id=self._last_message_id(turn),
+            ),
+        )
+
+    @staticmethod
+    def _last_message_id(turn: Turn) -> str | None:
+        return getattr(turn, "_last_event_message_id", None)
 
     async def _drive(self, turn: Turn) -> AgentRunResult:
         """推进一个已准备好的 Turn，并统一负责 stopping/finalize 边界。"""
@@ -134,8 +208,6 @@ class TurnExecutor:
                 turn.status = await self._advance(turn)
         except asyncio.CancelledError:
             turn.status = TurnStatus.CANCELLED
-            if turn.agent is not None:
-                await self._persist_open_replies(turn, ReplyFinishedReason.INTERRUPTED)
         except Exception:
             logger.exception(
                 f"[turn-executor] 状态机异常 session={turn.session_id} "
@@ -143,32 +215,62 @@ class TurnExecutor:
             )
             turn.status = TurnStatus.ERROR
         finally:
-            # 无论正常完成、异常还是取消，都必须在离开 execute() 前关闭开放中的
-            # reply/tool 生命周期并发送 PIPELINE_END。Inbox 在这里返回之后
-            # 清除自己的内存运行态并唤醒同进程等待者；聊天事实已经写入 messages。
+            # turn/end：任务结束唯一信号（含 paused / error / cancelled 终态标记）。
             if turn.agent is not None:
                 await self._finalize(turn)
-            await self._emit_step(
-                turn,
-                "PIPELINE_END",
-                success=turn.status == TurnStatus.COMPLETED,
-                reason=(
-                    "error"
-                    if turn.status == TurnStatus.ERROR
-                    else "cancelled"
-                    if turn.status == TurnStatus.CANCELLED
-                    else ""
-                ),
-            )
+            run_state = getattr(turn.agent, "run_state", None) if turn.agent is not None else None
+            done_reason = getattr(run_state, "done_reason", None)
+            run_status = getattr(run_state, "status", None)
+            if turn.paused:
+                outcome, reason = "paused", "paused"
+            elif turn.status == TurnStatus.CANCELLED or run_status == RunStatus.CANCELLED:
+                outcome, reason = "cancelled", str(ReplyFinishedReason.INTERRUPTED)
+            elif turn.status == TurnStatus.ERROR or (
+                done_reason == ReplyFinishedReason.ERROR
+                and run_status != RunStatus.COMPLETED
+            ):
+                outcome, reason = "error", str(done_reason or ReplyFinishedReason.ERROR)
+            else:
+                outcome = "completed"
+                reason = str(done_reason or ReplyFinishedReason.COMPLETED)
+            try:
+                await self._append_final_assistant(turn)
+            except Exception:
+                logger.exception(
+                    "[turn-executor] final assistant 快照失败 session=%s",
+                    turn.session_id,
+                )
+            try:
+                await self._append_turn_end(turn, outcome, reason)
+            except Exception:
+                logger.exception(
+                    "[turn-executor] turn/end 事件失败 session=%s", turn.session_id
+                )
+            # checkpoint（PRD-F43 FR5③）：turn/end 落定即同步 flush，
+            # 崩溃损失框在批窗口内；失败降级为告警，等下一次窗口兜底。
+            flush_log = getattr(self._sessions, "flush_log", None)
+            if callable(flush_log):
+                try:
+                    await flush_log(turn.session_id)
+                except Exception:
+                    logger.exception(
+                        "[turn-executor] turn/end flush 失败（等待批窗口兜底） session=%s",
+                        turn.session_id,
+                    )
+        public_status = (
+            "failed" if outcome == "error"
+            else "cancelled" if outcome == "cancelled"
+            else PUBLIC_RUN_STATUS[turn.status]
+        )
         return AgentRunResult(
             session_id=turn.session_id,
             turn_id=turn.turn_id,
-            status=PUBLIC_RUN_STATUS[turn.status],
+            status=public_status,
             user_message_id=turn.user_message_id,
             final_content=turn.final_content,
             error=(
                 {"code": "turn_error", "message": "Turn 执行失败", "retryable": True}
-                if turn.status == TurnStatus.ERROR
+                if public_status == "failed"
                 else None
             ),
             paused=turn.paused,
@@ -267,9 +369,10 @@ class TurnExecutor:
         session_id = turn.session_id
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
 
-        # 只读 LLM 有效上下文（最后一条 compact 摘要 + tail），避免把已经被摘要
-        # 覆盖的完整 transcript 重新注入。保留 typed Msg 以维持 ToolCallState。
-        records = await self._sessions.get_context_messages(session_id)
+        # 读取完整 typed Msg；下一次 Reasoning 会通过 context-build 生成本次
+        # Provider 视图。恢复阶段必须保留完整 ToolCallState，不能把 fast
+        # 占位文本当成持久历史。
+        records = await self._load_session_messages(session_id)
         hook_config = copy.deepcopy(config)
         hook_config = await self._assemble_prompt(
             turn,
@@ -278,7 +381,12 @@ class TurnExecutor:
             workspace=workspace,
             profile=agent_profile,
         )
-        context_msgs = [self._sessions.record_to_msg(r) for r in records]
+        context_msgs = [
+            item.model_copy(deep=True)
+            if hasattr(item, "model_copy")
+            else self._sessions.record_to_msg(item)
+            for item in records
+        ]
         # 复用默认权限规则，注入历史 context
         state = default_agent_state()
         state.context = context_msgs
@@ -310,10 +418,7 @@ class TurnExecutor:
         """Create the Runtime Agent and its shared tool context for both Turn paths."""
         loop = self._loop
         inbound = turn.inbound
-        metadata = dict(inbound.metadata or {})
-        agent_id = agent_profile.agent_id if agent_profile is not None else str(
-            metadata.get("agent_id") or "default"
-        )
+        agent_id = self._agent_id_for_turn(turn, agent_profile)
         agent_hooks, agent_hook_context = self._agent_hook_binding(turn)
         effective_llm_config = (
             agent_profile.llm if agent_profile is not None else config.llm
@@ -342,13 +447,13 @@ class TurnExecutor:
                     api_key=effective_llm_config.api_key,
                     api_base=effective_llm_config.api_base,
                 ),
-                agent_id=str(metadata.get("agent_id") or "default"),
+                agent_id=agent_id,
                 session_id=turn.session_id,
                 turn_id=turn.turn_id,
                 cancellation=turn.cancellation,
             )
         system_prompt = config.system_prompt
-        runtime_agent_id = str(metadata.get("agent_id") or "default")
+        runtime_agent_id = agent_id
         effective_config = turn.config if turn.config is not None else config
         runtime_state = state or default_agent_state()
         turn.agent = self._runtime_factory(
@@ -376,6 +481,7 @@ class TurnExecutor:
             "agent": self._agents,
             "attachments": self._attachments,
             "llm_config": effective_config.llm,
+            "context_limit": getattr(effective_llm_config, "context_window", None),
             "agent_profile": agent_profile,
             "permission_context": runtime_state.permission_context,
             "workspace": self._workspaces.create_accessor(
@@ -411,10 +517,7 @@ class TurnExecutor:
         turn.final_content = ""
 
         try:
-            # TURN_START：Agent 执行开始，客户端据此显示流式区域
-            await self._emit_step(turn, "TURN_START", start_trigger="user")
-
-            # ── 遍历 Agent 产出的事件流 ──
+            # ── 遍历 Agent 产出的事件流，逐条提交 SessionLog ──
             # 恢复请求传 UserConfirmResultEvent 驱动 Runtime 从挂起继续；
             # 普通请求传消息列表。
             run_input = (
@@ -423,31 +526,17 @@ class TurnExecutor:
             async for event in agent.run(
                 run_input, runtime_context=turn.runtime_context
             ):
-                # Event 逐条交给 SessionProjection；Projection 按 message_id 聚合并在
-                # 语义屏障 checkpoint，REPLY_END 只负责当前 Assistant 的最终收尾。
-                completed_message = await self.publish_agent_event(turn, event)
-                if completed_message is not None:
-                    turn.final_content = completed_message.get_text_content() or ""
+                await self._append_event(turn, event)
 
             # AgentState 只保存可持久化的消息上下文；一次 run 的结束原因、
             # 迭代次数、token 用量和错误信息都属于临时 RunState。
             run_state = agent.run_state
 
             # ── 权限挂起（PAUSED）──
-            # 工具命中 ASK → run() 提前结束但未 finalize，done_reason 为 None。
-            # 这不是错误也不是回复结束：ASKING 状态已随 Msg 落盘，不产 error TURN_END、
-            # 不 finish open replies；发一条 success 的 TURN_END(reason=paused) 让客户端
-            # 退出 busy，Turn 正常收尾、agent 实例销毁。用户确认后由新 Turn 恢复。
+            # 工具命中 ASK → run() 提前结束但未 finalize。
+            # turn/end(paused) 由 _drive finally 统一产出；用户确认后由新 Turn 恢复。
             if run_state.status == RunStatus.PAUSED:
                 turn.paused = True
-                await self._emit_step(
-                    turn,
-                    "TURN_END",
-                    success=True,
-                    reason="paused",
-                    iterations=run_state.iteration,
-                    token_usage=dict(run_state.token_usage),
-                )
                 return TurnStatus.FINALIZING
 
             done_reason = run_state.done_reason or ReplyFinishedReason.ERROR
@@ -458,16 +547,7 @@ class TurnExecutor:
                 message=run_state.error or "Agent request failed",
             ):
                 return TurnStatus.RUNNING
-            await self._emit_step(
-                turn,
-                "TURN_END",
-                success=(done_reason == ReplyFinishedReason.COMPLETED),
-                reason=str(done_reason),
-                iterations=run_state.iteration,
-                token_usage=dict(run_state.token_usage),
-                error_message=run_state.error if _is_error else None,
-                error_code=run_state.error_code if _is_error else None,
-            )
+            del _is_error
             return TurnStatus.FINALIZING
 
         except asyncio.CancelledError:
@@ -475,14 +555,7 @@ class TurnExecutor:
             logger.info(
                 f"[turn-executor] Agent 被 cancel 中断 session={turn.session_id}"
             )
-            await self._persist_open_replies(turn, ReplyFinishedReason.INTERRUPTED)
-            # 仍发 TURN_END，让实时客户端立即结束本轮 busy 状态
-            await self._emit_step(
-                turn,
-                "TURN_END",
-                success=False,
-                reason=str(ReplyFinishedReason.INTERRUPTED),
-            )
+            # turn/end(cancelled) 由 _drive finally 统一产出
             return TurnStatus.CANCELLED
         except Exception:
             # 未预期异常
@@ -491,19 +564,6 @@ class TurnExecutor:
                 turn, error_code="request_exception", message="Agent request raised"
             ):
                 return TurnStatus.RUNNING
-            await self._persist_open_replies(
-                turn,
-                ReplyFinishedReason.ERROR,
-                error={"message": "Agent 执行异常", "code": "unknown"},
-            )
-            await self._emit_step(
-                turn,
-                "TURN_END",
-                success=False,
-                reason=str(ReplyFinishedReason.ERROR),
-                error_message="Agent 执行异常",
-                error_code="unknown",
-            )
             return TurnStatus.ERROR
 
     async def _finalize(self, turn: Turn) -> TurnStatus:
@@ -522,48 +582,70 @@ class TurnExecutor:
 
     # ─── 事件发布 ──────────────────────────────────────────
 
-    async def _emit_step(self, turn: Turn, phase: str, **kwargs) -> None:
-        """Emit a Host-owned pipeline event outside AgentStreamEvent."""
-        session_events = getattr(self._loop, "session_events", None)
-        if session_events is None:
-            raise RuntimeError("SessionEventService is not available")
-        await session_events.emit_pipeline(
-            turn.session_id,
-            turn.inbound.channel_id,
-            phase,
-            kwargs,
-            reply_id=turn.turn_id,
-            metadata=dict(turn.inbound.metadata or {}),
-        )
+    async def _append_final_assistant(self, turn: Turn) -> None:
+        """在 turn/end 前提交本 Turn 新增/变更的 Assistant 快照。"""
+        if turn.agent is None:
+            return
+        builders = getattr(turn.agent, "build_final_assistant_events", None)
+        if callable(builders):
+            events = builders() or []
+        else:
+            builder = getattr(turn.agent, "build_final_assistant_event", None)
+            event = builder() if callable(builder) else None
+            events = [event] if event is not None else []
+        for event in events:
+            message_id = getattr(event, "message_id", None)
+            if message_id and message_id in turn.assistant_message_ids_emitted:
+                continue
+            await self._append_event(turn, event)
+            if message_id:
+                turn.assistant_message_ids_emitted.add(message_id)
 
-    async def publish_agent_event(self, turn: Turn, event) -> Msg | None:
-        """实时派发 Event，并在 Reply 生命周期内管理 Msg 持久化。
+    async def _append_event(self, turn: Turn, event) -> None:
+        """把 Runtime 事件提交 SessionLog，并维护 turn 级跟踪状态。
 
-        - REPLY_START: 创建 AssistantMsg + save_message + 注册 ActiveReplyRegistry
-        - 其他 Event: append_event + checkpoint（节流/立即）
-        - REPLY_END: append_event + update_message + 注销 registry
-        - Host maintenance events are projected by SessionEventService
+        - 记录最后一个 message_id（turn/end 终态标记目标）；
+        - assistant/message whole-value 到达时更新 final_content。
         """
-        result = await self._loop.emit_session_event(
-            turn.session_id,
-            turn.inbound.channel_id,
-            event,
-            metadata=dict(turn.inbound.metadata or {}),
-        )
-        return result.completed_message
+        message_id = getattr(event, "message_id", None)
+        if message_id:
+            turn._last_event_message_id = message_id
+        if getattr(event, "type", "") == "assistant/message":
+            turn.assistant_message_emitted = True
+            payload = (event.data.model_dump(mode="json") if hasattr(event.data, "model_dump") else {}).get("message") or {}
+            content = payload.get("content") or []
+            texts = [
+                str(block.get("text") or "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            joined = "".join(texts).strip()
+            if joined:
+                turn.final_content = joined
+        await self._loop.append_session_event(turn.session_id, event)
 
-    async def _persist_open_replies(
+    async def _append_turn_retry(
         self,
         turn: Turn,
-        reason: ReplyFinishedReason,
         *,
-        error: dict | None = None,
+        code: str,
+        message: str,
+        attempt: int,
+        max_attempts: int = 0,
     ) -> None:
-        """异常中断时更新已持久化的 open Msg，写入终态。"""
-        for message in await self._sessions.finish_open_replies(
-            turn.session_id, reason, error=error
-        ):
-            turn.final_content = message.get_text_content() or turn.final_content
+        """REQUEST_RETRY 恢复路径的 turn/retry 事件。"""
+        await self._loop.append_session_event(
+            turn.session_id,
+            TurnRetry(
+                data=TurnRetryData(
+                    turn_id=turn.turn_id,
+                    code=code,
+                    message=message,
+                    attempt=attempt,
+                    max_attempts=max(0, int(max_attempts)),
+                )
+            ),
+        )
 
     async def _assemble_prompt(
         self,
@@ -582,7 +664,7 @@ class TurnExecutor:
         """
         loop = self._loop
         metadata = dict(turn.inbound.metadata or {})
-        agent_id = str(metadata.get("agent_id") or "default")
+        agent_id = self._agent_id_for_turn(turn, profile)
         updated = copy.deepcopy(config)
         if self._system_prompt is None:
             # 无 Prompt Service 的独立测试环境：与 default waterfall 等价，
@@ -623,7 +705,7 @@ class TurnExecutor:
         """Return the host Dispatcher and Cordis scope for this Agent/Turn."""
         hooks = self._hooks
         registry = self._agent_registry
-        agent_id = str(dict(turn.inbound.metadata or {}).get("agent_id") or "default")
+        agent_id = self._agent_id_for_turn(turn)
         if hooks is None or registry is None:
             return None, None
         # scope_carrier 要求 identity 已登记；ensure 幂等，重复调用安全。
@@ -635,8 +717,7 @@ class TurnExecutor:
     ) -> bool:
         """Run request-error waterfall and accept only bounded progress tokens."""
         loop = self._loop
-        metadata = dict(turn.inbound.metadata or {})
-        agent_id = str(metadata.get("agent_id") or "default")
+        agent_id = self._agent_id_for_turn(turn)
         payload = RequestErrorPayload(
             agent=loop.agent_subject(agent_id),
             session_id=turn.session_id,
@@ -666,13 +747,41 @@ class TurnExecutor:
             return False
         turn.retry_tokens.add(result.progress_token)
         turn.retry_count += 1
-        await self._emit_step(
+        await self._refresh_agent_context(turn)
+        await self._append_turn_retry(
             turn,
-            "REQUEST_RETRY",
-            reason=result.reason,
+            code="request_error_recovery",
+            message=str(result.reason or "Turn 失败，进入恢复重试"),
             attempt=turn.retry_count,
+            max_attempts=max(0, int(result.max_attempts)),
         )
         return True
+
+    async def _refresh_agent_context(self, turn: Turn) -> None:
+        """恢复重试前重新读取完整 Msg，让新 ContextView 看到刚写入的 marker。"""
+        agent = turn.agent
+        if agent is None:
+            return
+        try:
+            records = await self._load_session_messages(turn.session_id)
+            if not records:
+                return
+            normalized = [
+                item.model_copy(deep=True)
+                if hasattr(item, "model_copy") and getattr(item, "role", None)
+                else self._sessions.record_to_msg(item)
+                for item in records
+            ]
+            agent.state.context = normalized
+            turn.messages = list(normalized)
+        except Exception:
+            # 恢复重试仍应保留原错误路径；读侧刷新失败只记录诊断，
+            # 不把一个可选的上下文刷新步骤升级成新的 Turn 异常。
+            logger.warning(
+                "[turn-executor] retry context refresh failed session=%s",
+                turn.session_id,
+                exc_info=True,
+            )
 
     # ─── 工具方法 ──────────────────────────────────────────
 
@@ -701,6 +810,29 @@ class TurnExecutor:
         )
         return await self._resolve_turn_config(turn)
 
+    async def resolve_inbound_agent_id(
+        self,
+        inbound: RuntimeInput,
+        *,
+        profile: Any | None = None,
+    ) -> str:
+        """Resolve the single Agent scope shared by lifecycle Hooks and a Turn.
+
+        Inbox and older callers may omit ``agent_id`` from inbound metadata.  The
+        persisted Session is then the source of truth; a resolved Profile wins
+        when one was already selected for this request.  Keeping this lookup in
+        the Runtime avoids letting each lifecycle boundary invent its own
+        ``default`` fallback.
+        """
+        profile_agent_id = self._profile_agent_id(profile)
+        metadata_agent_id = str(dict(inbound.metadata or {}).get("agent_id") or "")
+        return str(
+            profile_agent_id
+            or metadata_agent_id
+            or await self._session_agent_id(inbound.session_id)
+            or "default"
+        )
+
     async def _resolve_turn_config(
         self, turn: Turn
     ) -> tuple[AgentConfig, Any | None]:
@@ -716,18 +848,22 @@ class TurnExecutor:
         3. 全局 agent（metadata.agent_id 或 default）
         """
         if turn.config is not None:
+            if not turn.resolved_agent_id:
+                metadata_agent_id = dict(turn.inbound.metadata or {}).get("agent_id")
+                turn.resolved_agent_id = str(
+                    self._profile_agent_id(turn.agent_profile)
+                    or metadata_agent_id
+                    or await self._session_agent_id(turn.session_id)
+                    or "default"
+                )
             return turn.config, turn.agent_profile
 
         config = copy.deepcopy(self._load_current_config())
         profile = None
-        session_model = await self._sessions.get_session(turn.session_id)
-        session_agent_id = (
-            str(session_model.get("agent_id") or "default")
-            if session_model is not None
-            else "default"
-        )
+        session_agent_id = await self._session_agent_id(turn.session_id)
         metadata = dict(turn.inbound.metadata or {})
         agent_id = str(metadata.get("agent_id") or session_agent_id)
+        turn.resolved_agent_id = agent_id
         if self._profiles is not None:
             snapshot = await self._profiles.resolve_for_inbound(
                 agent_id,
@@ -744,42 +880,89 @@ class TurnExecutor:
         turn.config = config
         return config, profile
 
+    async def _session_agent_id(self, session_id: str) -> str:
+        """Read the persisted Session Agent used when inbound metadata is absent."""
+        getter = getattr(self._sessions, "get_session", None)
+        if not callable(getter):
+            return ""
+        try:
+            session = await getter(session_id)
+        except Exception:  # noqa: BLE001 - scope fallback must not hide the Turn
+            return ""
+        value = getattr(session, "agent_id", None)
+        if value is None and isinstance(session, dict):
+            value = session.get("agent_id")
+        return str(value or "")
+
+    @staticmethod
+    def _profile_agent_id(profile: Any | None) -> str:
+        value = getattr(profile, "agent_id", None)
+        if isinstance(profile, dict):
+            value = profile.get("agent_id") or value
+        return str(value or "")
+
+    @classmethod
+    def _agent_id_for_turn(cls, turn: Turn, profile=None) -> str:
+        """Return the one Agent scope shared by Prompt, Tool and Agent Hooks."""
+        selected = profile if profile is not None else turn.agent_profile
+        metadata_agent_id = dict(turn.inbound.metadata or {}).get("agent_id")
+        return str(
+            cls._profile_agent_id(selected)
+            or turn.resolved_agent_id
+            or metadata_agent_id
+            or "default"
+        )
+
     async def _build_messages(
         self,
         session_id: str,
         content: str,
         attachments: list[dict],
         config: AgentConfig,
-    ) -> tuple[list[dict], AgentConfig]:
+    ) -> tuple[list, AgentConfig]:
         """构建发给 LLM 的消息列表。
 
-        关键点：用户消息已在 Agent Work Item 接纳后持久化，这里读
-        get_context_messages()（summary + tail，已含本轮用户消息）。
+        关键点：用户消息已在 Agent Work Item 接纳后持久化，这里读完整
+        typed Msg（已含本轮用户消息）；summary/fast 视图由 Agent Hook 生成。
         所以【不能再 append】当前用户输入，否则 LLM 会收到两份重复消息。
-        完整 transcript 只服务 Desktop 历史展示，不进入 LLM 上下文。
 
         消息格式转换（content parts、OpenAI dict、typed Msg）由注入的
         SessionService 窄方法完成；Runtime 不 import Host 的转换模块。
         """
-        # 读模型上下文（summary + tail，已含本轮用户消息）。
-        messages = await self._sessions.get_context_messages(session_id)
+        # 读取完整 typed Msg（已含 Inbox claim 时落盘的本轮用户消息）。
+        # 压缩/裁剪策略由 Agent context-build Hook 在 Runtime 内存副本上决定。
+        messages = await self._load_session_messages(session_id)
 
         hook_config = copy.deepcopy(config)
 
-        # 当前用户输入转成 OpenAI content 格式（文字 + 图片）
+        if messages:
+            # SessionService 的新接口返回 typed Msg；旧替身返回 MessageModel，
+            # 统一还原为 Runtime 可识别的 Msg，Provider 转换延后到
+            # agent/context-build 之后。
+            normalized = [
+                item.model_copy(deep=True)
+                if hasattr(item, "model_copy") and getattr(item, "role", None)
+                else self._sessions.record_to_msg(item)
+                for item in messages
+            ]
+            return normalized, hook_config
+
+        # 无历史（首条消息）：直接用当前输入
         user_content = self._sessions.build_user_content(
             content,
             attachments,
             include_images=hook_config.llm.vision,
         )
-
-        if messages:
-            # 持久化 Msg 转 OpenAI messages（已含本轮 user Msg）
-            history = self._sessions.to_openai_messages(
-                messages,
-                vision=hook_config.llm.vision,
-            )
-            return history, hook_config
-
-        # 无历史（首条消息）：直接用当前输入
         return [{"role": "user", "content": user_content}], hook_config
+
+    async def _load_session_messages(self, session_id: str) -> list:
+        """读取完整 Msg；只在窄测试替身上回退旧的记录接口。"""
+        loader = getattr(self._sessions, "get_full_messages", None)
+        if callable(loader):
+            messages = await loader(session_id)
+            if isinstance(messages, (list, tuple)):
+                return list(messages)
+        # SessionService 的正式契约是 get_full_messages；这个回退只为
+        # 独立 Runtime 嵌入者保留，不改变生产上下文 Owner。
+        messages = await self._sessions.get_messages_by_session(session_id)
+        return list(messages) if isinstance(messages, (list, tuple)) else []
