@@ -21,14 +21,6 @@
 - request_id 增加跨重启内容指纹幂等校验；未知 Msg block 通过 extension 容器保留原始 JSON。
 - 修复 Runtime 回灌历史 Assistant 时重新生成消息并重复落盘的问题；历史上下文现在不会再次产生
   `assistant/message`，并清理一份受影响的会话快照。
-
-### F40 MCP 三层配置与统一目录
-
-- MCP 目录统一解析 global/agent/project 三层配置，按 `project > agent > global` 返回 effective/source
-  视图，HTTP CRUD 委托 Config、Agent Profile 和 Workspace Service，并对凭据字段脱敏。
-- ToolService 按 Agent/Session 隔离 MCP 工具；ConfigService watcher 负责全局热重载，ToolView 准备失败会
-  回滚工具、限制和私有连接，Agent MCP 配置使用原子写入。
-
 ### F43 SessionLog 存储与 Token 水位修复
 
 - 流式 `assistant/chunk` 在 JSONL 落盘前按连续增量无损打包，读取时还原原事件；未知形状原样保留。
@@ -248,6 +240,28 @@
   claim Inbox；Session 写入失败时 pending 保留，重试使用稳定 message id 幂等。
 - 客户端队列横幅新增“插入当前运行”按钮，服务端 placement 切换为 steering 后等待
   `USER_MESSAGE` 交接，不创建第二条消息，也不产生消失→出现的视觉空窗。
+
+## [0.3.2] - 2026-09-03
+
+### F40 MCP 三层配置与统一目录
+
+- MCP 目录统一解析 global/agent/project 三层配置，按 `project > agent > global` 返回 effective/source
+  视图，HTTP CRUD 委托 Config、Agent Profile 和 Workspace Service，并对凭据字段脱敏。
+- ToolService 按 Agent/Session 隔离 MCP 工具；ConfigService watcher 负责全局热重载，ToolView 准备失败会
+  回滚工具、限制和私有连接，Agent MCP 配置使用原子写入并兼容 UTF-8 BOM。
+- 后端全量 pytest 776 passed，Ruff、架构扫描和 MCP 回归通过。
+
+## [0.3.1] - 2026-08-27
+
+### 修复
+
+- **responses reasoning 跨 Provider 重放 400**（F30）：历史 reasoning 组重放前按目标协议形状校验，
+  不兼容组自动降级重建路径，避免跨 Provider 请求被上游拒绝。
+- **CI 安装失败**（D1）：补齐 `ftre-agent` 与 `ftre-agent-runtime` 的本地发行物注册。
+
+### 测试
+
+- inbox hook 测试改用 `ftre_llm` 事件类型，解除对已退休 Core 私有 API 的依赖。
 
 ## [0.3.0] - 2026-08-24
 
