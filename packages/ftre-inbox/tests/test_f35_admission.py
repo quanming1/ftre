@@ -262,6 +262,24 @@ async def test_admission_keeps_agent_run_request_messages(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_admission_uses_session_agent_when_client_metadata_omits_it(tmp_path):
+    class Sessions:
+        async def get_session(self, _session_id):
+            return {"agent_id": "coder"}
+
+    service = InboxService(
+        InboxRepository(tmp_path),
+        sessions=Sessions(),
+    )
+
+    result = await service.steer(InboundMessage("s1", "r1", "ws", "hello"))
+
+    assert result.accepted is True
+    item = (await service.snapshot("s1")).pending[0]
+    assert item.agent_id == "coder"
+
+
+@pytest.mark.asyncio
 async def test_before_admit_hook_rejects_without_persisting_item(tmp_path):
     service = InboxService(
         InboxRepository(tmp_path),

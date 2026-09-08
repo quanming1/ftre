@@ -4,7 +4,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from ftre_agent.tool import Injected, ToolDefinition, ToolParameter
+
+logger = logging.getLogger(__name__)
 
 
 def build_load_skill_tool(service):
@@ -25,9 +29,29 @@ def build_load_skill_tool(service):
             str(resolved_workspace) if resolved_workspace else None,
         )
         if record is None:
+            logger.warning(
+                "[skill] loadSkill miss name=%r agent_id=%s workspace=%s",
+                name,
+                agent_id or "default",
+                resolved_workspace or "",
+            )
             return f"Skill not found: {name}"
         if record.disabled or not record.model_invocable:
             return f"Skill not available for model invocation: {name}"
         return record.content
 
-    return ToolDefinition(name="loadSkill", description="Load a named Skill", parameters=[ToolParameter("name", "string", "Skill name")], func=load_skill)
+    return ToolDefinition(
+        name="loadSkill",
+        description=(
+            "Load a Skill by its canonical name from Available skills. "
+            "Display titles and ftre://v1/skill/... references are accepted."
+        ),
+        parameters=[
+            ToolParameter(
+                "name",
+                "string",
+                "Canonical Skill name, for example refactor-cleanup-audit",
+            )
+        ],
+        func=load_skill,
+    )

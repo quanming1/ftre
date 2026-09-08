@@ -21,6 +21,7 @@ _SKILL_GUIDANCE = """# 使用技能
 - 触发规则：用户点名一个可用 Skill（例如 `$skill-name`、Skill 名称或消息中的 `ftre://v1/skill/...` 引用），或任务明显匹配某个可用 Skill 的描述时，必须使用它。除非用户再次提及，已使用的 Skill 不跨任务沿用。
 - 缺失/受阻：点名的 Skill 不存在、被禁用、不可由模型调用或无法加载时，简要说明原因，并用安全的最佳回退继续；不要猜测相近 Skill。
 - 决定使用 Skill 后，必须在采取分析、工具调用或文件修改动作前完整读取其 `SKILL.md` 正文。名称匹配或任务匹配通过 `loadSkill` 读取；不要只凭名称猜测指令。
+- 调用 `loadSkill` 时优先传 `Available skills` 条目反引号中的 canonical name（例如 `refactor-cleanup-audit`），不要把 UI 展示标题当成新的 Skill 名称；服务端会兼容标题、前缀和 `ftre://v1/skill/...` 引用，但不会跨当前 Agent/工作区猜测或回退。
 - 消息中的 canonical `ftre://v1/skill/...` 引用会在 reasoning 前由宿主注入完整 `<skill_content>`；先阅读并遵循注入内容，不要重复调用 `loadSkill`。
 - 如果正文引用 `references/`、`scripts/`、`assets/` 或其它资源，只访问完成当前任务所需的部分；相对路径以该 Skill 的目录为基准，并继续遵守 Tool/Permission 边界。
 - 优先复用 Skill 提供的脚本、资源和模板；不要把脚本、网络请求或文件写入当作 Skill 自身授予的权限。

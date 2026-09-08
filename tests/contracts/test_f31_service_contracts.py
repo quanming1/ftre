@@ -118,7 +118,9 @@ def test_session_and_message_bus_public_methods_are_stable() -> None:
     assert {
         "get_session",
         "get_session_metadata",
+        "get_full_messages",
         "get_context_messages",
+        "set_context_view_builder",
         "append_event",
         "append_user_message_if_absent",
     } <= _method_names(SessionService)

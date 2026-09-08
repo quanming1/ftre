@@ -1,6 +1,6 @@
 """fork_session 行为测试（Msg Snapshot 深拷贝，PRD-F44）。
 
-fork 完整拷贝 Msg Snapshot；message_id / request_id 原样保留。
+fork 从完整 Msg Snapshot 复制消息；消息 id 保留，子 Session request 索引重新建立。
 
 锁定的对外语义与关键不变量：
 - 事件日志全量克隆：派生 messages 与父逐条一致（id/内容/顺序/created_at/metadata）
@@ -13,11 +13,12 @@ fork 完整拷贝 Msg Snapshot；message_id / request_id 原样保留。
 """
 import pytest
 import pytest_asyncio
-from ftre_agent.message import AssistantMsg, UserMsg
+from ftre_agent.message import AssistantMsg, ToolCallBlock, ToolCallState, UserMsg
 from ftre_inbox.protocol import InboundMessage
 from ftre_inbox.repository import InboxRepository
 from ftre_inbox.service import InboxService
 
+from ftre.services.session.service import ForkTargetError
 from ftre.services.session.service import SessionService as SessionManager
 
 
@@ -39,6 +40,7 @@ def _assistant(text: str):
 
 async def _seed_parent(manager, sid, n_turns=3, *, tag="seed"):
     """播种 n 轮 user/assistant 事件（request_id 以 tag 区分）。"""
+    ids = []
     for i in range(n_turns):
         user = _user(f"user {i}")
         event = await manager.append_user_message_if_absent(
@@ -48,6 +50,7 @@ async def _seed_parent(manager, sid, n_turns=3, *, tag="seed"):
             metadata=dict(user.metadata or {}),
         )
         assert event is not None
+        ids.append(event["message_id"])
         assistant = _assistant(f"assistant {i}")
         await manager.append_event(
             sid,
@@ -55,6 +58,8 @@ async def _seed_parent(manager, sid, n_turns=3, *, tag="seed"):
             {"message": assistant.model_dump(mode="json")},
             message_id=assistant.id,
         )
+        ids.append(assistant.id)
+    return ids
 
 
 @pytest.mark.asyncio
@@ -244,3 +249,81 @@ async def test_fork_repairs_unloaded_parent_before_copying(manager):
         message["content"] for message in parent_messages
     ]
     assert not legacy.exists()
+
+
+@pytest.mark.asyncio
+async def test_fork_can_stop_at_message_id(manager):
+    parent = await manager.create_session("ws", title="parent")
+    ids = await _seed_parent(manager, parent, n_turns=3)
+
+    result = await manager.fork_session(parent, through_message_id=ids[3])
+
+    fork_messages = await manager.get_messages_by_session(result.fork_session_id)
+    assert [message["id"] for message in fork_messages] == ids[:4]
+    assert result.parent_session_id == parent
+    assert result.through_message_id == ids[3]
+
+
+@pytest.mark.asyncio
+async def test_rollback_rewrites_current_session_and_returns_prefill(manager):
+    parent = await manager.create_session("ws", title="parent")
+    ids = await _seed_parent(manager, parent, n_turns=2)
+    user_message_id = ids[2]
+
+    result = await manager.rollback_session(
+        parent,
+        through_message_id=user_message_id,
+    )
+
+    current_messages = await manager.get_messages_by_session(parent)
+    assert result.session_id == parent
+    assert [message["id"] for message in current_messages] == ids[:2]
+    assert result.removed_message_ids == ids[2:]
+    assert result.prefill_content[0]["text"] == "user 1"
+
+    # 回滚后重新发送同一内容必须允许新的 request_id 接纳，旧 request
+    # 索引不能把已经移除的消息继续挡住。
+    await manager.append_user_message_if_absent(
+        parent,
+        request_id="rollback-new-request",
+        content=[{"type": "text", "text": "user 1"}],
+        metadata={},
+    )
+    assert len(await manager.get_messages_by_session(parent)) == 3
+
+
+@pytest.mark.asyncio
+async def test_fork_starts_with_empty_request_index(manager):
+    parent = await manager.create_session("ws")
+    await _seed_parent(manager, parent, n_turns=1)
+
+    result = await manager.fork_session(parent)
+    state = manager._repo.get_state(result.fork_session_id)
+
+    assert state is not None
+    assert state.requests == {}
+
+
+@pytest.mark.asyncio
+async def test_fork_rejects_unfinished_tool_boundary(manager):
+    parent = await manager.create_session("ws")
+    assistant = AssistantMsg(
+        id="assistant-pending",
+        content=[
+            ToolCallBlock(
+                id="call-pending",
+                name="bash",
+                arguments={"command": "echo hi"},
+                state=ToolCallState.PENDING,
+            )
+        ],
+    )
+    await manager.append_event(
+        parent,
+        "assistant/message",
+        {"message": assistant.model_dump(mode="json")},
+        message_id=assistant.id,
+    )
+
+    with pytest.raises(ForkTargetError):
+        await manager.fork_session(parent, through_message_id=assistant.id)

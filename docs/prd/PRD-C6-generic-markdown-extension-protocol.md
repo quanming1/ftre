@@ -9,10 +9,10 @@
 |---|---|
 | 阶段 | C6 |
 | 名称 | 通用 Ftre Markdown 扩展协议与客户端渲染 |
-| 状态 | 开发中 |
+| 状态 | 已验收 |
 | 创建日期 | 2026-08-29 |
 | 定稿日期 | 2026-08-29 |
-| 验收日期 | — |
+| 验收日期 | 2026-09-08 |
 | 关联文档 | docs/TODO.yaml 的 C6；PRD-C5（file 链接兼容）；AGENTS.md |
 
 ## 1. 背景与目标
@@ -307,6 +307,28 @@ Agent / ToolService
 - `disable-model-invocation=true` 的 Skill 不注入模型可见目录，也不能由模型自动选择；用户显式调用仍需通过 `user-invocable` 和权限检查。
 - `disabled`、不存在、frontmatter 无效、scope 不匹配或权限拒绝时，canonical token 保留为普通文本并返回 `accepted=false`；不能猜测相近 Skill，也不能执行降级脚本。
 - 客户端渲染只使用持久化的 `ExtensionRef/display`；不读取本地 Skill 目录、不执行脚本、不根据 alt 文本调用后端。
+
+#### 2.5.6.1 Skill 加载名称的单一解析规则
+
+列表、输入框和模型工具必须共享 YAML `name` 这一规范 ID。`loadSkill(name)` 首先在当前
+`agent_id/workspace` 解析出的 winner 中查找规范 ID，再兼容以下不改变作用域和权限的
+展示层写法：大小写差异、`$name` 或 `/name` 前缀、Markdown 代码标记、由 kebab-case
+转换出的展示标题（例如 `Refactor Cleanup Audit`），以及
+`ftre://v1/skill/<name>` 资源 URI（可带查询参数）。兼容解析只能在已解析的目录快照中
+匹配，不能把输入当作文件路径，也不能跨 root 回退或猜测相近 Skill。找不到或不可由模型
+调用时仍返回明确的 Skill 错误，不执行其它文件。
+
+#### 2.5.6.2 输入框 Slash 触发规则
+
+客户端编辑器在当前光标所在文本中遇到 `/` 即打开 Skill 候选；不要求 slash 前有空格，
+因此正文中的 `请检查/review-code` 也可以插入 Skill。斜杠后的连续空白结束本次候选。
+普通 slash 指令仍只在它位于整个输入（允许前导空白）的第一个非空位置时展示；正文中
+出现的 slash 只展示 Skill，不得把文本中间的内容误识别为可执行指令。选中 Skill 始终
+写入 canonical `ftre://v1/skill/<name>` token。
+
+Agent 作用域必须先由 Session 的 `agent_id` 与本轮 Profile 解析为一个最终值，再同时
+传给 SystemPrompt、ToolContext 和 Agent Hook；当 inbound metadata 缺少 `agent_id` 时，
+不得把 Prompt/Tool 静默降级到 `default`，导致客户端按私有 Agent 列出的 Skill 无法加载。
 
 #### 2.5.7 资源、安全和变更规则
 
@@ -928,22 +950,22 @@ skills/
 
 ## 9. 验收标准
 
-- [ ] AC1：v1 canonical 语法、编码规则和 `ExtensionRef` 前后端一致。
-- [ ] AC2：客户端 Markdown 在聊天、摘要、Inspector 中统一识别 `ftre://` 并渲染专用组件。
-- [ ] AC3：`ftre://` 永不触发真实图片、网络或浏览器导航。
-- [ ] AC4：Skill 是首个 Handler，但协议不包含 Skill 专用字段以外的硬编码分支。
-- [ ] AC5：后端只在用户消息的 `agent/pre-step` 阶段处理扩展，未知扩展安全降级。
-- [ ] AC6：原始用户消息、扩展投影和隐藏 `extension-invocation` UserMessage 独立保存。
-- [ ] AC7：`invocation_id` 保证重试、重连、刷新和历史重放幂等。
-- [ ] AC8：卸载 Skill Plugin 后，基础 Markdown 和普通 Agent 流程不受影响。
-- [ ] AC9：后端 pytest/Ruff/架构扫描和客户端 test/build 全部通过。
-- [ ] AC10：C6.1-C6.7 每阶段完成独立验证和提交，未完成阶段不得提前标记 done。
-- [ ] AC11：Skill 发现严格遵守一层规则，只接受 `<folder>/SKILL.md` 或 root 直下 `.md` 候选；无合法 frontmatter 的 README、LICENSE 不出现在目录，Skill 内部的 references、scripts、assets 和嵌套 `SKILL.md` 永不被扫描；`.system` 作为独立 scope 处理。
-- [ ] AC12：每个候选都通过 BOM 兼容读取、完整 YAML mapping 与必填 YAML name/description 校验；可选字段独立尽力解析，无法消费时回退默认/省略而不拒绝候选；目录名/文件 basename 不参与资格判定，坏候选只产生结构化诊断，不阻断其它候选。
-- [ ] AC13：`list()`/HTTP/输入框只返回摘要，`get()`/激活才读取正文；发现阶段不执行脚本、不读取资源、不发起网络请求。
-- [ ] AC14：workspace、agent、global、runtime 的 winner/shadowed 结果确定且可解释，重名 Skill 不重复展示。
-- [ ] AC15：Skill 的调用权限与 Tool/Permission Service 分离；`allowed-tools` 等 frontmatter 描述字段不能自行授予权限。
-- [ ] AC16：Skill 审查清单和 8.5 的目录、策略、资源、安全、刷新/重连用例均有自动化回归测试及验收记录。
+- [x] AC1：v1 canonical 语法、编码规则和 `ExtensionRef` 前后端一致。
+- [x] AC2：客户端 Markdown 在聊天、摘要、Inspector 中统一识别 `ftre://` 并渲染专用组件。
+- [x] AC3：`ftre://` 永不触发真实图片、网络或浏览器导航。
+- [x] AC4：Skill 是首个 Handler，但协议不包含 Skill 专用字段以外的硬编码分支。
+- [x] AC5：后端只在用户消息的 `agent/pre-step` 阶段处理扩展，未知扩展安全降级。
+- [x] AC6：原始用户消息、扩展投影和隐藏 `extension-invocation` UserMessage 独立保存。
+- [x] AC7：`invocation_id` 保证重试、重连、刷新和历史重放幂等。
+- [x] AC8：卸载 Skill Plugin 后，基础 Markdown 和普通 Agent 流程不受影响。
+- [x] AC9：后端 pytest/Ruff/架构扫描和客户端 test/build 全部通过。
+- [x] AC10：C6.1-C6.7 每阶段完成独立验证和提交，未完成阶段不得提前标记 done。
+- [x] AC11：Skill 发现严格遵守一层规则，只接受 `<folder>/SKILL.md` 或 root 直下 `.md` 候选；无合法 frontmatter 的 README、LICENSE 不出现在目录，Skill 内部的 references、scripts、assets 和嵌套 `SKILL.md` 永不被扫描；`.system` 作为独立 scope 处理。
+- [x] AC12：每个候选都通过 BOM 兼容读取、完整 YAML mapping 与必填 YAML name/description 校验；可选字段独立尽力解析，无法消费时回退默认/省略而不拒绝候选；目录名/文件 basename 不参与资格判定，坏候选只产生结构化诊断，不阻断其它候选。
+- [x] AC13：`list()`/HTTP/输入框只返回摘要，`get()`/激活才读取正文；发现阶段不执行脚本、不读取资源、不发起网络请求。
+- [x] AC14：workspace、agent、global、runtime 的 winner/shadowed 结果确定且可解释，重名 Skill 不重复展示。
+- [x] AC15：Skill 的调用权限与 Tool/Permission Service 分离；`allowed-tools` 等 frontmatter 描述字段不能自行授予权限。
+- [x] AC16：Skill 审查清单和 8.5 的目录、策略、资源、安全、刷新/重连用例均有自动化回归测试及验收记录。
 - [x] AC17：Skill 详情返回稳定 `ftre://v1/skill/<name>`、`media_type`、`revision`、`source` 和 `capabilities`；客户端不自行映射 URI 到路径。
 - [x] AC18：workspace、agent、global winner 的详情返回经过 containment 校验的真实 `SKILL.md` 路径，点击预览可展开真实父目录。
 - [x] AC19：无 filesystem source 的 runtime Skill 使用 content source，只读预览不调用 fs IPC、git 查询或当前工作目录回退。
@@ -952,8 +974,11 @@ skills/
 - [x] AC22：Skill 发现不使用按文件名排除的黑名单；root 直下 `.md` 只有通过完整 YAML frontmatter 才进入列表，根目录 `SKILL.md` 和嵌套资源不被扫描。
 - [x] AC23：frontmatter `name` 是唯一规范名称；目录名/文件 basename 不一致不拒绝，`list/get/update/delete` 与 winner/shadowed 均按 YAML name 工作。
 - [x] AC24：列表返回已验证 `scope/origin/source` 摘要，`r0/r1` 外部 Skill 不被客户端映射为 global；外部、workspace、agent Skill 在管理面板中只读。
-- [x] AC25：输入框和管理面板按当前 Session 的 `agent_id/workspace` 查询，作用域切换取消旧请求并刷新，私有 Skill 可在正确 Agent 下出现。
+- [x] AC25：输入框和管理面板按当前 outbound Agent 的 `agent_id` 与当前 Session 的 `workspace` 查询；作用域切换取消旧请求并刷新，私有 Skill 可在实际发送请求使用的 Agent 下出现。
 - [x] AC26：Skill diagnostics 在客户端可查看，覆盖 frontmatter、编码和必填字段错误；坏候选不会阻断其它 Skill 或 HTTP 列表。
+- [x] AC27：客户端候选中的每个 canonical Skill 在同一 Session 内都能被 `loadSkill` 加载；展示标题、`$`/`/` 前缀、代码标记和 `ftre://v1/skill/...` URI 均只解析到当前作用域的同一 winner，不能因别名跨作用域或绕过 `disabled/model_invocable` 检查。
+- [x] AC28：编辑器在文本任意位置输入 `/` 都能展示 Skill 候选；指令候选仅在整个输入的第一个非空位置出现，正文中的 slash 不触发指令；选中结果序列化为 canonical Skill URI，且输入焦点和现有多行/空白行为不回归。
+- [x] AC29：当 inbound 未携带 `agent_id` 时，Runtime 仍从 Session/Profile 得到唯一最终 Agent 作用域，并让 Skill Prompt、`loadSkill` ToolContext、Agent Hook 使用同一值；私有 Skill 不回退到 `default`。
 
 ## 10. 目标文件结构
 
@@ -1012,3 +1037,5 @@ E:\binn\ftre-desktop\
 | 2026-08-30 | 收尾审计补充模型提示与发现规则的一致性、`loadSkill` 当前 Agent/工作区注入和管理面板作用域提示；新增合法 README 与私有 Skill 工具回归 | 防止模型提示与真实解析规则分叉，避免模型加载私有 Skill 时错误回退到 default |
 | 2026-09-01 | 新增 C6.7：Skill frontmatter 兼容 UTF-8 BOM；资格收口为可解析 YAML mapping 内合法 `name` 与 `description`，可选 metadata/策略字段改为独立尽力解析 | 修复 Windows 生成或编辑的 BOM 文件、以及非关键 YAML 字段异常导致整份合法 Skill 被错误隐藏的问题 |
 | 2026-09-01 | 完成 C6.7 实现与验证：以 `utf-8-sig` 读取文件并规范化 key/scalar BOM；可选字段异常回退默认/省略；补充 BOM、可选字段和 CRUD 容错回归 | Skill 契约专项 20 passed；后端全量 770 passed、Ruff、TODO YAML 和 diff check 通过；待提交/PR 后收尾 |
+| 2026-09-08 | 修复 Skill 加载与 Slash 候选不一致：`loadSkill` 在当前 winner 内兼容展示名/URI/前缀别名；Runtime 统一 Session/Profile Agent 作用域；输入框任意位置展示 Skill，普通指令限定在输入开头；补充后端与客户端回归验收（后端全量 817 passed、Renderer 602 passed、tsc/Ruff 通过） | 消除“客户端可见但模型 loadSkill 找不到”的名称与作用域差异，并避免正文中的 slash 被当成指令 |
+| 2026-09-08 | 收尾审计修复生命周期作用域与协议别名边界：turn/start、after-run 和用户消息统一使用 Session/Profile 解析出的 Agent；预览详情跟随 outbound Agent；已选择 Skill 后的 slash 不再伪装成输入开头指令；拒绝错误版本/外部 URI basename 误匹配；C6 总阶段状态同步为已验收 | 审计发现的唯一 Owner、作用域一致性、协议安全与文档状态漂移已闭合；后端 818 passed、Renderer 605 passed、tsc/Ruff/build 通过 |

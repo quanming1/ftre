@@ -7,10 +7,13 @@ import pytest
 from cordis import Context
 from ftre_agent import (
     AGENT_AFTER_RUN_SPEC,
+    AGENT_CONTEXT_BUILD_SPEC,
     AfterRunPayload,
     AgentRegistry,
     AgentSubject,
+    ContextBuildPayload,
 )
+from ftre_agent.message import AssistantMsg, MsgName, ToolResultBlock, UserMsg
 from ftre_compaction.config import CompactionConfig
 from ftre_compaction.hooks import register_hooks
 from ftre_inbox.hooks import (
@@ -134,6 +137,53 @@ async def test_inbox_before_claim_failure_keeps_pending():
     result = await context.get("hook_runtime").dispatch(INBOX_BEFORE_CLAIM_SPEC, payload)
     assert isinstance(result, RejectClaim)
     assert result.disposition == "keep"
+    for receipt in receipts:
+        receipt.dispose()
+    context.dispose()
+
+
+@pytest.mark.asyncio
+async def test_context_build_applies_fast_marker_to_copy_only():
+    context = _context(inbox=False)
+    service = _Service()
+    receipts = register_hooks(context, service)
+    registry = AgentRegistry()
+    registry.ensure("default")
+    tool_result = ToolResultBlock(
+        id="tool-1",
+        name="read",
+        output="very large output",
+    )
+    messages = (
+        UserMsg(content="question"),
+        AssistantMsg(content=[tool_result]),
+        AssistantMsg(
+            name=MsgName.COMPACT_FAST,
+            content="fast compact",
+            metadata={"context_compact": {"mode": "fast", "tool_result_ids": ["tool-1"]}},
+        ),
+    )
+    payload = ContextBuildPayload(
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        iteration=1,
+        model="test-model",
+        messages=messages,
+        context_limit=1000,
+        cancellation=asyncio.Event(),
+    )
+    result = await context.get("hook_runtime").dispatch(
+        AGENT_CONTEXT_BUILD_SPEC,
+        payload,
+        context=context.get("hook_runtime").context_for_scope(
+            registry.scope_carrier("default")
+        ),
+    )
+    assert result.messages[1].content[0].output[0].text == (
+        "[已压缩裁剪：原始工具输出不再可见]"
+    )
+    assert messages[1].content[0].output == "very large output"
     for receipt in receipts:
         receipt.dispose()
     context.dispose()

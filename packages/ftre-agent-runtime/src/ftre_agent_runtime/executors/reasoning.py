@@ -26,8 +26,11 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from ftre_agent.hooks import (
+    AGENT_CONTEXT_BUILD_SPEC,
     LLM_ERROR_SPEC,
     LLM_STREAM_SPEC,
+    ContextBuildPayload,
+    ContextBuildResult,
     HookDispatcher,
     LLMErrorDecision,
     LLMErrorPayload,
@@ -35,6 +38,7 @@ from ftre_agent.hooks import (
 )
 from ftre_agent.message import (
     HintBlock,
+    Msg,
     TextBlock,
     ThinkingBlock,
     ToolCallBlock,
@@ -91,6 +95,44 @@ class ReasoningExecutor:
         self.hook_context = hook_context
         self.result: TurnResult | None = None
 
+    async def _build_context_view(self) -> list[Msg]:
+        """构建一次本轮 LLM 使用的 Msg 视图，Retry 复用该结果。
+
+        AgentState.context 始终保留完整历史；插件只能修改这里的深拷贝。
+        这样压缩、脱敏等策略不会污染 Session Snapshot，也不会在每次
+        Provider retry 时重复执行。
+        """
+        base_context = tuple(
+            message.model_copy(deep=True) for message in self.agent.state.context
+        )
+        cancellation = self.state.runtime_context.get("cancellation")
+        if not isinstance(cancellation, asyncio.Event):
+            cancellation = asyncio.Event()
+        payload = ContextBuildPayload(
+            session_id=str(self.state.runtime_context.get("session_id", "")),
+            turn_id=self.state.turn_id,
+            request_id=str(self.state.runtime_context.get("request_id") or ""),
+            iteration=self.state.iteration,
+            model=getattr(self.llm, "model", "") or self.agent.model,
+            messages=base_context,
+            context_limit=self.state.runtime_context.get("context_limit"),
+            cancellation=cancellation,
+        )
+        if self.hooks is None:
+            result = await AGENT_CONTEXT_BUILD_SPEC.default(payload)
+        else:
+            result = await self.hooks.dispatch(
+                AGENT_CONTEXT_BUILD_SPEC,
+                payload,
+                context=self.hook_context,
+            )
+        # OBSERVE 型监听器失败时 HookRuntime 可能返回 None；安全地回到
+        # 完整上下文，而不是让可选压缩插件阻断 Agent。
+        if result is None:
+            result = ContextBuildResult(base_context)
+        AGENT_CONTEXT_BUILD_SPEC.validate_result(result)
+        return [message.model_copy(deep=True) for message in result.messages]
+
     async def _stream(self, messages, tools, *, attempt: int, max_attempts: int):
         cancellation = self.state.runtime_context.get("cancellation")
         if not isinstance(cancellation, asyncio.Event):
@@ -143,8 +185,11 @@ class ReasoningExecutor:
                 message_id=message_id,
             )
 
-        # ── 阶段 2：准备 messages + tools ────────────────────────────────
-        messages = MessageContext.get_messages(self.agent.state.context, self.agent.system_prompt)
+        # ── 阶段 2：准备完整 Msg ContextView + tools ─────────────────────
+        # context-build 只在这一轮开始时执行一次；后续 Provider retry
+        # 复用同一份 provider messages。
+        context_view = await self._build_context_view()
+        messages = MessageContext.get_messages(context_view, self.agent.system_prompt)
         tools = None if action.force_no_tools else self.agent.tool_view.to_openai_tools() or None
 
         max_attempts = 1 + self.agent.max_retries
@@ -443,7 +488,8 @@ class ReasoningExecutor:
                     except (TypeError, ValueError):
                         delay = self.agent.retry_delay
                 await asyncio.sleep(delay)
-                messages = MessageContext.get_messages(self.agent.state.context, self.agent.system_prompt)
+                # Provider retry 复用本轮已构建的 ContextView，避免重复执行
+                # 压缩/脱敏等 Hook；只有下一轮 Reasoning 才重新构建。
                 text_parts = []
                 reasoning_parts = []
                 tool_calls = []

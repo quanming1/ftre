@@ -2,6 +2,16 @@
 
 ## [未发布]
 
+### F45 Agent ContextView Hook 与 Fork/回滚
+
+- 新增 `agent/context-build` 公共 Hook；Runtime 在 Provider 转换前对完整 Msg 深拷贝构建
+  ContextView，同一 Reasoning 的 Retry 复用视图，恢复重试会重新读取最新 Snapshot。
+- 压缩策略迁移到 `ftre-compaction` Plugin：summary/fast marker 只在内存视图中解释，完整
+  Msg、原始 ToolResult 和 `session.json` 不被改写；卸载后恢复完整历史透传。
+- Fork 按 `through_message_id` 从稳定完整 Snapshot 创建独立 Session；子 Session 不继承 Inbox、
+  运行态和 request 幂等索引。回滚改用独立 `/rollback` 接口原地截断当前 Session，清理已移除
+  request 索引并回填输入框；客户端支持 AI Fork 与用户回滚。
+
 ### F44 会话快照协议与持久化收敛
 
 - Session transcript 改为每个会话单一 `session.json` Msg Snapshot；流式 chunk 仅在内存中聚合，
@@ -54,6 +64,8 @@
 - 审计补齐模型提示与发现规则的一致性，`loadSkill` 按当前 Agent/工作区解析，管理面板明确显示查询作用域。
 - Windows 编辑器写入的 UTF-8 BOM、以及 YAML key/value 前缀 BOM 不再导致 Skill 消失；只要 `name` 和
   `description` 合法即可被发现，错误的可选 metadata/策略字段会回退默认或被忽略。
+- 收尾审计统一生命周期 Hook、用户消息与 Skill 预览的 Agent 作用域；`loadSkill` 只接受当前目录
+  的合法别名，错误版本/外部 URI 不再误匹配同名 Skill。
 
 ### F38 Inbox 恢复幂等与队列生命周期（已完成，未发布）
 

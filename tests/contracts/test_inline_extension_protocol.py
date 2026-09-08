@@ -459,6 +459,32 @@ def test_skill_service_supports_codex_and_agents_skill_roots(tmp_path: Path) -> 
     assert service.get("agent-skill").content == "body\n"
 
 
+def test_skill_service_lookup_accepts_display_and_reference_aliases(tmp_path: Path) -> None:
+    service = SkillService({"global": tmp_path / "global", "agent": tmp_path / "agent"})
+    service.create(
+        "refactor-cleanup-audit",
+        "body\n",
+        "Audit refactors",
+        "file",
+    )
+
+    for name in (
+        "refactor-cleanup-audit",
+        "Refactor Cleanup Audit",
+        "$refactor-cleanup-audit",
+        "/refactor-cleanup-audit",
+        "`refactor-cleanup-audit`",
+        "ftre://v1/skill/refactor-cleanup-audit?path=references",
+    ):
+        record = service.get(name)
+        assert record is not None
+        assert record.name == "refactor-cleanup-audit"
+        assert record.content.strip() == "body"
+
+    assert service.get("ftre://v2/skill/refactor-cleanup-audit") is None
+    assert service.get("https://example.com/refactor-cleanup-audit") is None
+
+
 @pytest.mark.asyncio
 async def test_load_skill_tool_uses_the_active_agent_scope(tmp_path: Path) -> None:
     agent_root = tmp_path / "agent"
@@ -484,6 +510,28 @@ async def test_load_skill_tool_uses_the_active_agent_scope(tmp_path: Path) -> No
     )
 
     assert result.output == "private body\n"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_tool_accepts_the_display_title_from_the_catalog(tmp_path: Path) -> None:
+    service = SkillService({"global": tmp_path / "global", "agent": tmp_path / "agent"})
+    service.create("refactor-cleanup-audit", "body\n", "Audit refactors", "file")
+    tools = ToolService()
+    tools.register(build_load_skill_tool(service), owner="skill")
+    view = await tools.prepare_view("default", "session-1")
+
+    result = await view.execute(
+        "loadSkill",
+        {"name": "Refactor Cleanup Audit"},
+        ToolContext(
+            call_id="call-1",
+            name="loadSkill",
+            arguments={"name": "Refactor Cleanup Audit"},
+            metadata={"agent_id": "default", "workspace": ""},
+        ),
+    )
+
+    assert result.output.strip() == "body"
 
 
 def test_skill_service_crud_rejects_invalid_shape(tmp_path: Path) -> None:

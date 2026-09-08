@@ -12,6 +12,7 @@ from cordis import Context
 
 from .commands import register_commands
 from .config import CompactionConfig
+from .context import build_context_view
 from .hooks import register_hooks
 from .service import CompactionService
 
@@ -63,6 +64,17 @@ def apply(ctx: Context, config=None):
         )
         ctx.provide("compaction", service)
         ctx.effect(lambda: service.close, label="ftre-compaction:close")
+
+    # Token 统计等 Host 读接口也需要同一套 ContextView 口径，但投影函数仍
+    # 属于本包；SessionService 只保存可逆的通用回调，不知道 compact marker。
+    set_context_view = getattr(ctx.sessions, "set_context_view_builder", None)
+    if callable(set_context_view):
+        context_disposer = set_context_view(build_context_view)
+        if callable(context_disposer):
+            ctx.effect(
+                lambda disposer=context_disposer: disposer,
+                label="ftre-compaction:context-view",
+            )
 
     # HookRuntime 已把每个 receipt 绑定到当前 Plugin Fiber；Plugin 不重复注册 disposer。
     register_hooks(ctx, service)

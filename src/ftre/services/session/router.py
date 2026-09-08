@@ -11,6 +11,13 @@ import json
 
 from fastapi import APIRouter, HTTPException, Request
 
+from .service import (
+    ForkBusyError,
+    ForkTargetError,
+    RollbackBusyError,
+    RollbackTargetError,
+)
+
 
 def build_router(sessions, agents, inbox) -> APIRouter:
     """Build the session HTTP surface from public Service handles."""
@@ -84,11 +91,99 @@ def build_router(sessions, agents, inbox) -> APIRouter:
         return {"status": "deleted", "session_id": session_id}
 
     @router.post("/sessions/{session_id}/fork")
-    async def fork_session(session_id: str):
+    async def fork_session(session_id: str, request: Request):
         if await sessions.get_session(session_id) is None:
             raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
-        result = await sessions.fork_session(session_id)
-        return {"fork_session_id": result.fork_session_id, "title": result.title, "workspace": result.workspace}
+        is_busy = getattr(agents, "is_session_busy", None)
+        if callable(is_busy) and is_busy(session_id):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "session_busy", "message": "会话正在运行或维护中"},
+            )
+        try:
+            raw = await request.body()
+            payload = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=400, detail=f"非法 JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
+        through_message_id = payload.get("through_message_id")
+        if through_message_id is not None and not isinstance(through_message_id, str):
+            raise HTTPException(status_code=400, detail="through_message_id 必须是字符串")
+        try:
+            result = await sessions.fork_session(
+                session_id,
+                through_message_id=through_message_id or None,
+            )
+        except ForkBusyError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "session_busy", "message": str(exc)},
+            ) from exc
+        except ForkTargetError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "fork_target_invalid", "message": str(exc)},
+            ) from exc
+        return {
+            "fork_session_id": result.fork_session_id,
+            "parent_session_id": result.parent_session_id,
+            "through_message_id": result.through_message_id,
+            "seq": result.seq,
+            "title": result.title,
+            "workspace": result.workspace,
+        }
+
+    @router.post("/sessions/{session_id}/rollback")
+    async def rollback_session(session_id: str, request: Request):
+        if await sessions.get_session(session_id) is None:
+            raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
+        is_busy = getattr(agents, "is_session_busy", None)
+        if callable(is_busy) and is_busy(session_id):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "session_busy", "message": "会话正在运行或维护中"},
+            )
+        if inbox is not None:
+            queue = await inbox.wire_snapshot(session_id)
+            if queue.get("items"):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "session_busy", "message": "会话还有排队消息"},
+                )
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"非法 JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="body 必须是 JSON 对象")
+        through_message_id = payload.get("through_message_id")
+        if not isinstance(through_message_id, str) or not through_message_id:
+            raise HTTPException(status_code=400, detail="through_message_id 必须是非空字符串")
+        try:
+            result = await sessions.rollback_session(
+                session_id,
+                through_message_id=through_message_id,
+            )
+        except RollbackBusyError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "session_busy", "message": str(exc)},
+            ) from exc
+        except RollbackTargetError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "rollback_target_invalid", "message": str(exc)},
+            ) from exc
+        return {
+            "session_id": result.session_id,
+            "through_message_id": result.through_message_id,
+            "seq": result.seq,
+            "removed_message_ids": result.removed_message_ids,
+            "prefill_content": result.prefill_content,
+            "title": result.title,
+            "workspace": result.workspace,
+        }
 
     @router.get("/sessions/{session_id}/messages")
     async def get_messages(

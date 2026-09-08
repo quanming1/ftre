@@ -24,15 +24,15 @@
 | 检查项 | 结果 |
 |---|---|
 | 后端 Skill 契约专项 | 通过，19 tests |
-| 后端全量 `pytest -q` | 通过，769 passed |
+| 后端全量 `pytest -q` | 通过，818 passed |
 | 后端 `ruff check src packages tests` | 通过 |
 | 后端扫描实际用户 Skill | 19 个有效 Skill，0 个 diagnostics；包含 `prompt-engineering`、`meituan-travel` |
 | 客户端 Skill/Chat 专项 | 通过，21 tests |
-| 客户端 renderer 全量 | 通过，61 files / 572 tests |
+| 客户端 renderer 全量 | 通过，64 files / 605 tests |
 | 客户端 TypeScript | 通过 |
 | 客户端 production build | 通过；仅有既有 CSS、动态 import 和 chunk 大小警告 |
 | 两仓库 `git diff --check` | 通过 |
-| 审计补丁专项 | 通过，19 tests；提示规则与 `loadSkill` 作用域回归通过 |
+| 审计补丁专项 | 通过；提示规则、`loadSkill` 作用域、预览作用域、生命周期 Agent 作用域和 Slash 边界回归通过 |
 
 ## 手工等价验收
 
@@ -44,12 +44,12 @@
 
 ## 交付状态
 
-C6.6 代码、测试、PRD、TODO 和执行记录已完成。基础提交为后端 `2d2373a`、客户端 `3cf99cb`；本轮审计补丁（提示规则、`loadSkill` 作用域和管理面板作用域提示）尚未提交。工作区原有 F39 变更未被覆盖，未执行 push、merge 或 PR 合入。
+C6.6 代码、测试、PRD、TODO 和执行记录已完成。基础提交为后端 `2d2373a`、客户端 `3cf99cb`；本轮审计补丁（提示规则、`loadSkill` 作用域、生命周期作用域、预览作用域和 Slash 边界）仍未提交。工作区原有 F39/F45 变更未被覆盖，未执行 push、merge 或 PR 合入。
 
 ## 收尾审计
 
 - 唯一 Owner：`src/ftre/plugins/builtin/skill/service.py` 持有文件发现、解析、winner 和 CRUD；Plugin 只负责装配 HTTP、Tool、Prompt 和 inline handler，没有第二套 Skill 目录解析器。
 - 旧规则扫描：生产代码和活动测试中没有 `_IGNORED_ROOT_FILES`、旧解析函数、未参数化的 `fetchSkills()` 或 `ftre_agent_core` 引用；Prompt 的 README 规则已与 frontmatter 资格判定一致。
 - 生命周期：Skill Plugin 的 HTTP/Tool/Prompt/inline 注册均绑定 Cordis Fiber disposer；`SkillService.register()` 和 `clear_loaded()` 可重复调用；审计未发现悬挂监听器或重复注册入口。
-- 生成物：后端清理 `79` 个 `__pycache__`、`.pytest_cache`、`.ruff_cache`；用户数据、依赖目录、客户端 `dist` 与 `release-f39` 保留。
+- 生成物：本轮最终验证后清理后端 `83` 个 `__pycache__`、`.pytest_cache`、`.ruff_cache`；用户数据、依赖目录、客户端 `.cache`/`dist` 与既有 `release-*` 包保留。
 - 最终工作区：两仓库仍保留原有 F39/发布相关未提交文件，以及本轮审计补丁未提交文件；没有执行 push、merge 或 release。

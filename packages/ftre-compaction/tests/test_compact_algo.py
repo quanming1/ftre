@@ -10,6 +10,7 @@ from ftre_agent.message import (
     ToolResultBlock,
     UserMsg,
 )
+from ftre_compaction.context import TRIMMED_TOOL_RESULT_PLACEHOLDER
 from ftre_compaction.service import (
     CompactionService,
     _build_prompt,
@@ -332,3 +333,39 @@ def test_build_prompt_no_focus_hint_unchanged():
     assert "【用户强调】" not in prompt[-1]
     prompt_blank = _build_prompt(context=[text], min_chars=200, focus_hint="   ")
     assert "【用户强调】" not in prompt_blank[-1]
+
+
+@pytest.mark.asyncio
+async def test_context_loader_uses_full_snapshot_and_keeps_source_unchanged():
+    """F45：压缩策略从完整 Msg 生成临时视图，不再依赖 Session 的裁剪实现。"""
+    tool_result = ToolResultBlock(
+        id="tool-1",
+        name="read",
+        output="原始工具输出",
+        state="success",
+    )
+    messages = [
+        UserMsg(content="问题"),
+        AssistantMsg(content=[tool_result]),
+        AssistantMsg(
+            name=MsgName.COMPACT_FAST,
+            content="已快速压缩",
+            metadata={
+                "context_compact": {
+                    "mode": "fast",
+                    "tool_result_ids": ["tool-1"],
+                }
+            },
+        ),
+    ]
+    sessions = AsyncMock()
+    sessions.get_full_messages.return_value = messages
+    manager = CompactionService(session_manager=sessions)
+
+    records = await manager._load_context_records("session-1")
+
+    assert sessions.get_context_messages.await_count == 0
+    assert records[1]["content"][0]["output"][0]["text"] == (
+        TRIMMED_TOOL_RESULT_PLACEHOLDER
+    )
+    assert messages[1].content[0].output == "原始工具输出"

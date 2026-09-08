@@ -38,6 +38,14 @@
 > `Msg.append_event` 折叠引擎全部退场。当前会话数据面契约以 F44 为准，下方 F12 契约中仍
 > 有效的仅剩队列 Owner 边界（Inbox/AgentService/SessionService 三 Owner 表）。
 
+> **F45 已验收（2026-09-07）**：
+> [`PRD-F45-context-build-hook.md`](PRD-F45-context-build-hook.md) 新增
+> `agent/context-build` 扩展边界。Runtime 只负责在 `before-reasoning` 与 Provider
+> 转换之间构建一次本轮 ContextView，Retry 复用该视图；摘要/fast 的上下文替换由
+> `ftre-compaction` Plugin 负责，完整 Msg、compact marker 和原始 ToolResult 仍由
+> Session Snapshot 保存。Fork/回滚也在 F45 中交付：只允许从完整 Snapshot 取数，
+> 通过 `through_message_id` 截止复制，不继承 Inbox 或 active request。
+
 > **F20 已验收（2026-08-24）**：
 > [`PRD-F20-default-package-install.md`](PRD-F20-default-package-install.md) 将仓内五个 Package
 > 纳入 `ftre` 默认发行依赖和 Composition 清单；extras 保留为裁剪安装兼容入口，不再是默认

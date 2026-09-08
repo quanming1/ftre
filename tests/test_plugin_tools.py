@@ -6,6 +6,7 @@ from cordis import Context, FiberState
 from fastapi import APIRouter
 from ftre_agent import AgentRegistry, AgentSubject
 from ftre_agent.event import HintBlockEvent
+from ftre_agent.message import UserMsg
 from ftre_agent.tool import ToolDefinition
 
 from ftre.kernel.hooks import HookRuntime
@@ -147,6 +148,43 @@ async def test_structured_prompt_hook_replaces_assembly_without_mutable_filter()
         context=runtime.context_for_scope(registry.scope_carrier("default")),
     )
     assert result.text.endswith("persona: Alice")
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_hook_receives_json_messages_from_typed_runtime_context():
+    runtime = HookRuntime(Context())
+    service = SystemPromptService()
+    registry = AgentRegistry()
+    registry.ensure("default")
+    seen = []
+
+    async def observe(payload, next_):
+        seen.append(payload.messages)
+        return await next_()
+
+    runtime.register(
+        SYSTEM_PROMPT_ASSEMBLE_SPEC,
+        observe,
+        owner="prompt-test",
+        all_agent_scopes=True,
+    )
+
+    await service.assemble_agent_prompt(
+        agent_subject=AgentSubject("default", registry.scope_identity("default")),
+        session_id="sess_1",
+        workspace="E:/repo",
+        messages=(UserMsg(content="hello"),),
+        base_prompt="",
+        inbound_data={},
+        config=SimpleNamespace(),
+        hook_runtime=runtime,
+        scope_context=runtime.context_for_scope(registry.scope_carrier("default")),
+        cancellation=asyncio.Event(),
+    )
+
+    assert len(seen) == 1
+    assert isinstance(seen[0][0], dict)
+    assert seen[0][0]["role"] == "user"
 
 
 class _FakeWorkspace(WorkspaceAccessor):
