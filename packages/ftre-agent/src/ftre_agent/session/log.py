@@ -230,6 +230,22 @@ class SessionLog:
         }
         return self.append("user/message", data, message_id=message_id)
 
+    def reset(self, *, start_seq: int = 0) -> None:
+        """Replace the live tail after an explicit session history rewrite.
+
+        Session snapshots are the durable history.  A rollback commits a new
+        snapshot first, then uses this boundary to discard the old in-memory
+        event tail while retaining subscribers and the next sequence number.
+        It is intentionally not part of the normal append path.
+        """
+        if self._appending:
+            raise ValueError("session cannot reset while publishing")
+        self._events.clear()
+        self._next_seq = max(0, int(start_seq))
+        self._user_requests.clear()
+        self._fingerprints.clear()
+        self._turn_outcomes.clear()
+
     def _check_user_request(self, request_id: str, payload: dict[str, Any]) -> None:
         existing_fp = self._fingerprints.get(request_id)
         if existing_fp is not None and existing_fp != request_fingerprint(payload.get("content")):

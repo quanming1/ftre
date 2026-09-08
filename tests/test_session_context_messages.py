@@ -6,16 +6,18 @@ append_event("compact/message", {mode:"summary", ...})。
 
 语义要点：compact 锚点按事件位置切 tail——锚点之前的历史不进入
 LLM 上下文，锚点之后的 turn 是 tail。因此测试里 compact 事件必须插在
-"被覆盖轮"与"tail 轮"之间。
+"被覆盖轮"与"tail 轮"之间。ContextView 通过压缩 Plugin 注入，SessionService
+本身只保存完整 Msg。
 
 验收标准（语义不变）：
 - Desktop（get_messages_by_session）返回完整历史，包含 compact Msg（hide=True）；
-- LLM（get_context_messages）只收到最后一条 compact Msg + tail；
+- LLM 读侧（注入 ContextView builder 后）只收到最后一条 compact Msg + tail；
 - compact 后 token 统计明显下降。
 """
 import pytest
 import pytest_asyncio
 from ftre_agent.message import AssistantMsg, MsgName, UserMsg
+from ftre_compaction.context import build_context_view
 
 from ftre.services.session.message.converter import to_openai
 from ftre.services.session.service import SessionService as SessionManager
@@ -25,6 +27,7 @@ from ftre.services.session.service import SessionService as SessionManager
 async def manager(tmp_path):
     mgr = SessionManager(str(tmp_path / "sessions.db"))
     await mgr.init()
+    mgr.set_context_view_builder(build_context_view)
     yield mgr
     await mgr.close()
 
@@ -178,6 +181,7 @@ async def test_restart_keeps_compact_context_anchor(tmp_path):
 
     second = SessionManager(db_path, snapshot_interval_ms=20)
     await second.init()
+    second.set_context_view_builder(build_context_view)
     try:
         context = await second.get_context_messages(sid)
         assert [message["content"][0]["text"] for message in context] == [

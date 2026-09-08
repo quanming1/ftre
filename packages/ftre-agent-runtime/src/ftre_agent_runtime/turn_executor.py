@@ -139,7 +139,11 @@ class TurnExecutor:
         model = ""
         if turn.config is not None:
             model = str(getattr(turn.config.llm, "model", "") or "")
-        agent_id = str(dict(turn.inbound.metadata or {}).get("agent_id") or "default")
+        agent_id = await self.resolve_inbound_agent_id(
+            turn.inbound,
+            profile=turn.agent_profile,
+        )
+        turn.resolved_agent_id = turn.resolved_agent_id or agent_id
         await self._loop.append_session_event(
             turn.session_id,
             TurnStart(
@@ -365,9 +369,10 @@ class TurnExecutor:
         session_id = turn.session_id
         workspace = session.get("workspace", "") or config.workspace or os.getcwd()
 
-        # 只读 LLM 有效上下文（最后一条 compact 摘要 + tail），避免把已经被摘要
-        # 覆盖的完整 transcript 重新注入。保留 typed Msg 以维持 ToolCallState。
-        records = await self._sessions.get_context_messages(session_id)
+        # 读取完整 typed Msg；下一次 Reasoning 会通过 context-build 生成本次
+        # Provider 视图。恢复阶段必须保留完整 ToolCallState，不能把 fast
+        # 占位文本当成持久历史。
+        records = await self._load_session_messages(session_id)
         hook_config = copy.deepcopy(config)
         hook_config = await self._assemble_prompt(
             turn,
@@ -376,7 +381,12 @@ class TurnExecutor:
             workspace=workspace,
             profile=agent_profile,
         )
-        context_msgs = [self._sessions.record_to_msg(r) for r in records]
+        context_msgs = [
+            item.model_copy(deep=True)
+            if hasattr(item, "model_copy")
+            else self._sessions.record_to_msg(item)
+            for item in records
+        ]
         # 复用默认权限规则，注入历史 context
         state = default_agent_state()
         state.context = context_msgs
@@ -408,10 +418,7 @@ class TurnExecutor:
         """Create the Runtime Agent and its shared tool context for both Turn paths."""
         loop = self._loop
         inbound = turn.inbound
-        metadata = dict(inbound.metadata or {})
-        agent_id = agent_profile.agent_id if agent_profile is not None else str(
-            metadata.get("agent_id") or "default"
-        )
+        agent_id = self._agent_id_for_turn(turn, agent_profile)
         agent_hooks, agent_hook_context = self._agent_hook_binding(turn)
         effective_llm_config = (
             agent_profile.llm if agent_profile is not None else config.llm
@@ -440,13 +447,13 @@ class TurnExecutor:
                     api_key=effective_llm_config.api_key,
                     api_base=effective_llm_config.api_base,
                 ),
-                agent_id=str(metadata.get("agent_id") or "default"),
+                agent_id=agent_id,
                 session_id=turn.session_id,
                 turn_id=turn.turn_id,
                 cancellation=turn.cancellation,
             )
         system_prompt = config.system_prompt
-        runtime_agent_id = str(metadata.get("agent_id") or "default")
+        runtime_agent_id = agent_id
         effective_config = turn.config if turn.config is not None else config
         runtime_state = state or default_agent_state()
         turn.agent = self._runtime_factory(
@@ -474,6 +481,7 @@ class TurnExecutor:
             "agent": self._agents,
             "attachments": self._attachments,
             "llm_config": effective_config.llm,
+            "context_limit": getattr(effective_llm_config, "context_window", None),
             "agent_profile": agent_profile,
             "permission_context": runtime_state.permission_context,
             "workspace": self._workspaces.create_accessor(
@@ -656,7 +664,7 @@ class TurnExecutor:
         """
         loop = self._loop
         metadata = dict(turn.inbound.metadata or {})
-        agent_id = str(metadata.get("agent_id") or "default")
+        agent_id = self._agent_id_for_turn(turn, profile)
         updated = copy.deepcopy(config)
         if self._system_prompt is None:
             # 无 Prompt Service 的独立测试环境：与 default waterfall 等价，
@@ -697,7 +705,7 @@ class TurnExecutor:
         """Return the host Dispatcher and Cordis scope for this Agent/Turn."""
         hooks = self._hooks
         registry = self._agent_registry
-        agent_id = str(dict(turn.inbound.metadata or {}).get("agent_id") or "default")
+        agent_id = self._agent_id_for_turn(turn)
         if hooks is None or registry is None:
             return None, None
         # scope_carrier 要求 identity 已登记；ensure 幂等，重复调用安全。
@@ -709,8 +717,7 @@ class TurnExecutor:
     ) -> bool:
         """Run request-error waterfall and accept only bounded progress tokens."""
         loop = self._loop
-        metadata = dict(turn.inbound.metadata or {})
-        agent_id = str(metadata.get("agent_id") or "default")
+        agent_id = self._agent_id_for_turn(turn)
         payload = RequestErrorPayload(
             agent=loop.agent_subject(agent_id),
             session_id=turn.session_id,
@@ -740,6 +747,7 @@ class TurnExecutor:
             return False
         turn.retry_tokens.add(result.progress_token)
         turn.retry_count += 1
+        await self._refresh_agent_context(turn)
         await self._append_turn_retry(
             turn,
             code="request_error_recovery",
@@ -748,6 +756,32 @@ class TurnExecutor:
             max_attempts=max(0, int(result.max_attempts)),
         )
         return True
+
+    async def _refresh_agent_context(self, turn: Turn) -> None:
+        """恢复重试前重新读取完整 Msg，让新 ContextView 看到刚写入的 marker。"""
+        agent = turn.agent
+        if agent is None:
+            return
+        try:
+            records = await self._load_session_messages(turn.session_id)
+            if not records:
+                return
+            normalized = [
+                item.model_copy(deep=True)
+                if hasattr(item, "model_copy") and getattr(item, "role", None)
+                else self._sessions.record_to_msg(item)
+                for item in records
+            ]
+            agent.state.context = normalized
+            turn.messages = list(normalized)
+        except Exception:
+            # 恢复重试仍应保留原错误路径；读侧刷新失败只记录诊断，
+            # 不把一个可选的上下文刷新步骤升级成新的 Turn 异常。
+            logger.warning(
+                "[turn-executor] retry context refresh failed session=%s",
+                turn.session_id,
+                exc_info=True,
+            )
 
     # ─── 工具方法 ──────────────────────────────────────────
 
@@ -776,6 +810,29 @@ class TurnExecutor:
         )
         return await self._resolve_turn_config(turn)
 
+    async def resolve_inbound_agent_id(
+        self,
+        inbound: RuntimeInput,
+        *,
+        profile: Any | None = None,
+    ) -> str:
+        """Resolve the single Agent scope shared by lifecycle Hooks and a Turn.
+
+        Inbox and older callers may omit ``agent_id`` from inbound metadata.  The
+        persisted Session is then the source of truth; a resolved Profile wins
+        when one was already selected for this request.  Keeping this lookup in
+        the Runtime avoids letting each lifecycle boundary invent its own
+        ``default`` fallback.
+        """
+        profile_agent_id = self._profile_agent_id(profile)
+        metadata_agent_id = str(dict(inbound.metadata or {}).get("agent_id") or "")
+        return str(
+            profile_agent_id
+            or metadata_agent_id
+            or await self._session_agent_id(inbound.session_id)
+            or "default"
+        )
+
     async def _resolve_turn_config(
         self, turn: Turn
     ) -> tuple[AgentConfig, Any | None]:
@@ -791,18 +848,22 @@ class TurnExecutor:
         3. 全局 agent（metadata.agent_id 或 default）
         """
         if turn.config is not None:
+            if not turn.resolved_agent_id:
+                metadata_agent_id = dict(turn.inbound.metadata or {}).get("agent_id")
+                turn.resolved_agent_id = str(
+                    self._profile_agent_id(turn.agent_profile)
+                    or metadata_agent_id
+                    or await self._session_agent_id(turn.session_id)
+                    or "default"
+                )
             return turn.config, turn.agent_profile
 
         config = copy.deepcopy(self._load_current_config())
         profile = None
-        session_model = await self._sessions.get_session(turn.session_id)
-        session_agent_id = (
-            str(session_model.get("agent_id") or "default")
-            if session_model is not None
-            else "default"
-        )
+        session_agent_id = await self._session_agent_id(turn.session_id)
         metadata = dict(turn.inbound.metadata or {})
         agent_id = str(metadata.get("agent_id") or session_agent_id)
+        turn.resolved_agent_id = agent_id
         if self._profiles is not None:
             snapshot = await self._profiles.resolve_for_inbound(
                 agent_id,
@@ -819,42 +880,89 @@ class TurnExecutor:
         turn.config = config
         return config, profile
 
+    async def _session_agent_id(self, session_id: str) -> str:
+        """Read the persisted Session Agent used when inbound metadata is absent."""
+        getter = getattr(self._sessions, "get_session", None)
+        if not callable(getter):
+            return ""
+        try:
+            session = await getter(session_id)
+        except Exception:  # noqa: BLE001 - scope fallback must not hide the Turn
+            return ""
+        value = getattr(session, "agent_id", None)
+        if value is None and isinstance(session, dict):
+            value = session.get("agent_id")
+        return str(value or "")
+
+    @staticmethod
+    def _profile_agent_id(profile: Any | None) -> str:
+        value = getattr(profile, "agent_id", None)
+        if isinstance(profile, dict):
+            value = profile.get("agent_id") or value
+        return str(value or "")
+
+    @classmethod
+    def _agent_id_for_turn(cls, turn: Turn, profile=None) -> str:
+        """Return the one Agent scope shared by Prompt, Tool and Agent Hooks."""
+        selected = profile if profile is not None else turn.agent_profile
+        metadata_agent_id = dict(turn.inbound.metadata or {}).get("agent_id")
+        return str(
+            cls._profile_agent_id(selected)
+            or turn.resolved_agent_id
+            or metadata_agent_id
+            or "default"
+        )
+
     async def _build_messages(
         self,
         session_id: str,
         content: str,
         attachments: list[dict],
         config: AgentConfig,
-    ) -> tuple[list[dict], AgentConfig]:
+    ) -> tuple[list, AgentConfig]:
         """构建发给 LLM 的消息列表。
 
-        关键点：用户消息已在 Agent Work Item 接纳后持久化，这里读
-        get_context_messages()（summary + tail，已含本轮用户消息）。
+        关键点：用户消息已在 Agent Work Item 接纳后持久化，这里读完整
+        typed Msg（已含本轮用户消息）；summary/fast 视图由 Agent Hook 生成。
         所以【不能再 append】当前用户输入，否则 LLM 会收到两份重复消息。
-        完整 transcript 只服务 Desktop 历史展示，不进入 LLM 上下文。
 
         消息格式转换（content parts、OpenAI dict、typed Msg）由注入的
         SessionService 窄方法完成；Runtime 不 import Host 的转换模块。
         """
-        # 读模型上下文（summary + tail，已含本轮用户消息）。
-        messages = await self._sessions.get_context_messages(session_id)
+        # 读取完整 typed Msg（已含 Inbox claim 时落盘的本轮用户消息）。
+        # 压缩/裁剪策略由 Agent context-build Hook 在 Runtime 内存副本上决定。
+        messages = await self._load_session_messages(session_id)
 
         hook_config = copy.deepcopy(config)
 
-        # 当前用户输入转成 OpenAI content 格式（文字 + 图片）
+        if messages:
+            # SessionService 的新接口返回 typed Msg；旧替身返回 MessageModel，
+            # 统一还原为 Runtime 可识别的 Msg，Provider 转换延后到
+            # agent/context-build 之后。
+            normalized = [
+                item.model_copy(deep=True)
+                if hasattr(item, "model_copy") and getattr(item, "role", None)
+                else self._sessions.record_to_msg(item)
+                for item in messages
+            ]
+            return normalized, hook_config
+
+        # 无历史（首条消息）：直接用当前输入
         user_content = self._sessions.build_user_content(
             content,
             attachments,
             include_images=hook_config.llm.vision,
         )
-
-        if messages:
-            # 持久化 Msg 转 OpenAI messages（已含本轮 user Msg）
-            history = self._sessions.to_openai_messages(
-                messages,
-                vision=hook_config.llm.vision,
-            )
-            return history, hook_config
-
-        # 无历史（首条消息）：直接用当前输入
         return [{"role": "user", "content": user_content}], hook_config
+
+    async def _load_session_messages(self, session_id: str) -> list:
+        """读取完整 Msg；只在窄测试替身上回退旧的记录接口。"""
+        loader = getattr(self._sessions, "get_full_messages", None)
+        if callable(loader):
+            messages = await loader(session_id)
+            if isinstance(messages, (list, tuple)):
+                return list(messages)
+        # SessionService 的正式契约是 get_full_messages；这个回退只为
+        # 独立 Runtime 嵌入者保留，不改变生产上下文 Owner。
+        messages = await self._sessions.get_messages_by_session(session_id)
+        return list(messages) if isinstance(messages, (list, tuple)) else []

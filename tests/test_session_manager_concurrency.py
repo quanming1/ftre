@@ -17,6 +17,7 @@ import time
 import pytest
 import pytest_asyncio
 from ftre_agent.message import AssistantMsg, MsgName, UserMsg
+from ftre_compaction.context import build_context_view
 
 from ftre.services.session.service import SessionService as SessionManager
 
@@ -25,6 +26,7 @@ from ftre.services.session.service import SessionService as SessionManager
 async def manager(tmp_path):
     mgr = SessionManager(str(tmp_path / "sessions.db"))
     await mgr.init()
+    mgr.set_context_view_builder(build_context_view)
     yield mgr
     await mgr.close()
 

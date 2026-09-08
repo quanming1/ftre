@@ -10,7 +10,8 @@ ftre-compaction 是 ftre 的可选上下文压缩发行物。它把“什么时�
 |---|---|
 | config.py | 读取 ConfigService.snapshot()，解析本包自己的阈值、预算和摘要模型 |
 | service.py | 唯一真实实现：token 水位、按 token 分块的 LLM 摘要、确定性合并、快速裁剪、事件、并发和取消 |
-| hooks.py | 在 inbox/before-claim、agent/after-run、agent/run-error 上接入策略 |
+| context.py | 解释 compact/fast marker，生成不落盘的 ContextView |
+| hooks.py | 在 agent/context-build、inbox/before-claim、agent/after-run、agent/run-error 上接入策略 |
 | commands.py | 注册 /compact 与 /compress-fast，绕过 Agent Turn 直接调用 Service |
 | plugin.py | Cordis 装配入口，把 Service、Hook、Command 和关闭 effect 绑定起来 |
 | events.py | 复用 ftre Session 维护事件名称，不复制事件协议 |
@@ -25,6 +26,8 @@ ftre-compaction 是 ftre 的可选上下文压缩发行物。它把“什么时�
           → 再次检查水位
       → Lane claim
       → Agent Turn
+          → agent/context-build
+              → 从完整 Msg 生成本次请求的 ContextView
       → agent/after-run
           → 使用 70% 预压线
 

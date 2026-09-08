@@ -23,6 +23,22 @@ from ftre.services.session.entity.state import SessionMetaFile
 SNIPPET_RADIUS = 80
 
 
+def _contains(text: str, query: str, *, fold_case: bool) -> bool:
+    """匹配短查询，避免中文长预览在每次循环都创建 lower 副本。"""
+    if query in text:
+        return True
+    if not fold_case:
+        return False
+    # CJK/Unicode 内容通常没有 ASCII 字母；encode(ignore) 在 C 层快速
+    # 跳过这些字符，避免为每条长预览创建完整的 lower 副本。
+    if not any(
+        65 <= value <= 90 or 97 <= value <= 122
+        for value in text.encode("ascii", "ignore")
+    ):
+        return False
+    return query in text.lower()
+
+
 def _snippet(text: str, q_lower: str) -> str:
     """命中位置前后各 SNIPPET_RADIUS 字符；未定位到则取开头。"""
     idx = text.lower().find(q_lower) if q_lower else -1
@@ -63,20 +79,18 @@ def search_sessions(
     results: list[dict[str, Any]] = []
     for sid, state in states:
         session = state.session
-        ws = session.workspace or ""
-        if workspace is not None and ws != workspace:
+        if workspace is not None and (session.workspace or "") != workspace:
             continue
         title = session.title or ""
-        title_matched = q_lower in (title.lower() if fold_case else title)
+        title_matched = _contains(title, q_lower, fold_case=fold_case)
 
         # 检索面：last_user_text 反规范化预览（用户输入），最多 1 条命中
         preview = session.last_user_text or ""
-        preview_matched = bool(
-            preview and q_lower in (preview.lower() if fold_case else preview)
-        )
+        preview_matched = bool(preview and _contains(preview, q_lower, fold_case=fold_case))
 
         if not title_matched and not preview_matched:
             continue
+        ws = session.workspace or ""
         hits = (
             [{"mid": "", "role": "user", "snippet": _snippet(preview, q_lower)}]
             if preview_matched

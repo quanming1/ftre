@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import inspect
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -335,11 +335,12 @@ class SystemPromptService:
         监听器等价）；``scope_context`` 由调用方用 HookRuntime 的
         ``context_for_scope`` 构造后传入。
         """
+        prompt_messages = self._normalize_hook_messages(messages)
         assembly = self.assemble_result(
             agent_subject.agent_id,
             session_id,
             workspace=workspace,
-            messages=messages,
+            messages=prompt_messages,
             base_prompt=base_prompt,
             profile=profile,
             channel_id=channel_id,
@@ -352,7 +353,7 @@ class SystemPromptService:
             session_id=session_id,
             workspace=workspace,
             assembly=assembly,
-            messages=tuple(messages),
+            messages=prompt_messages,
             inbound_data=inbound_data,
             config=copy.deepcopy(config),
             event_loop=event_loop,
@@ -368,6 +369,31 @@ class SystemPromptService:
         if not isinstance(result, PromptAssembly):
             raise TypeError("system-prompt/assemble must return PromptAssembly")
         return result
+
+    @staticmethod
+    def _normalize_hook_messages(messages: Iterable[Any]) -> tuple[dict[str, Any], ...]:
+        """将 Runtime 的 typed Msg 统一转换为 Prompt Hook 的公开映射。
+
+        Agent Runtime 内部使用 ``Msg`` 保留工具状态；System Prompt Hook 是
+        Host 扩展边界，历史监听器读取的是 JSON 风格的 ``message.get(...)``。
+        在这里做一次深拷贝转换，既兼容旧监听器，也不把 Hook 对消息的修改
+        回写到 AgentState 或 Session Snapshot。
+        """
+        normalized: list[dict[str, Any]] = []
+        for message in messages:
+            if isinstance(message, Mapping):
+                normalized.append(copy.deepcopy(dict(message)))
+                continue
+            model_dump = getattr(message, "model_dump", None)
+            if callable(model_dump):
+                value = model_dump(mode="json")
+                if isinstance(value, Mapping):
+                    normalized.append(copy.deepcopy(dict(value)))
+                    continue
+            raise TypeError(
+                "system-prompt/assemble messages must contain Msg or mapping values"
+            )
+        return tuple(normalized)
 
     def snapshot(self) -> tuple[PromptSection, ...]:
         """Return registered sections for diagnostics without exposing the mutable list."""

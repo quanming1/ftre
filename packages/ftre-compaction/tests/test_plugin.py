@@ -13,6 +13,7 @@ from ftre_agent import (
     RequestErrorPayload,
     RetryRequest,
 )
+from ftre_compaction.context import build_context_view
 from ftre_compaction.plugin import apply
 
 from ftre.kernel.hooks import HookRuntime
@@ -23,6 +24,21 @@ from ftre.services.messaging.bus import BusMessage, InboundMetadata
 class _Sessions:
     async def get_session(self, _session_id):
         return {"channel_id": "ws"}
+
+
+class _SessionsWithContextBuilder(_Sessions):
+    def __init__(self) -> None:
+        self.builder = None
+
+    def set_context_view_builder(self, builder):
+        previous = self.builder
+        self.builder = builder
+
+        def dispose():
+            self.builder = previous
+            return True
+
+        return dispose
 
 
 class _Config:
@@ -52,8 +68,31 @@ async def test_compaction_service_and_feature_hooks_register_separately():
 
     assert context.get("compaction") is not None
     hooks = {item.hook for item in runtime.snapshot()}
-    assert hooks == {"agent/after-run", "agent/run-error", "inbox/before-claim"}
+    assert hooks == {
+        "agent/after-run",
+        "agent/context-build",
+        "agent/run-error",
+        "inbox/before-claim",
+    }
     await context.dispose()
+
+
+@pytest.mark.asyncio
+async def test_context_view_builder_is_reversible_on_plugin_unload():
+    context = Context()
+    runtime = HookRuntime(context)
+    sessions = _SessionsWithContextBuilder()
+    context.provide("hook_runtime", runtime)
+    context.provide("config", _Config())
+    context.provide("llm", object())
+    context.provide("sessions", sessions)
+    context.provide("inbox", object())
+    context.provide("commands", type("Commands", (), {"register": lambda *_args, **_kwargs: lambda: True})())
+
+    apply(context)
+    assert sessions.builder is build_context_view
+    await context.dispose()
+    assert sessions.builder is None
 
 
 @pytest.mark.asyncio

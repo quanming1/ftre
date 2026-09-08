@@ -1,7 +1,8 @@
 """derive_messages——事件日志 → Msg 列表的幂等纯函数 fold（PRD-F43 FR8/FR9）。
 
-读侧唯一投影：HTTP /messages、LLM 上下文构建、compact 锚点裁剪都从这里出。
-客户端 ConversationAssembler（F42）实现同一规则，golden fixture 对拍。
+读侧唯一事实投影：HTTP /messages 和 Agent ContextView 的输入都从这里出。
+本模块只负责 Event → 完整 Msg；compact/fast 的请求裁剪由业务 Plugin 解释。
+客户端 ConversationAssembler（F42）实现同一完整 Msg fold，golden fixture 对拍。
 
 fold 规则（与 F41 §4.2 surface 列一致）：
   user/message      → 新 UserMsg（并封口上一条未完成 assistant——steering 边界）
@@ -317,108 +318,6 @@ def derive_messages(events: list[dict[str, Any]]) -> list[Msg]:
     return [state.messages[message_id] for message_id in state.order]
 
 
-def derive_context_messages(events: list[dict[str, Any]]) -> list[Msg]:
-    """LLM 上下文视图：最后一条 summary compact 为锚点（含锚点），
-    fast 模式 compact 累计裁剪的 tool_result 输出置为占位文本。"""
-    messages = derive_messages(events)
-    trim_ids: set[str] = set()
-    tool_result_event_order = [
-        (int(event.get("seq") or 0), str((event.get("data") or {}).get("tool_call_id") or ""))
-        for event in events
-        if event.get("type") == "tool/result"
-        and (event.get("data") or {}).get("tool_call_id")
-    ]
-    for event in events:
-        if event.get("type") != "compact/message":
-            continue
-        data = event.get("data") or {}
-        if data.get("mode") != "fast":
-            continue
-        ids = data.get("tool_result_ids") or []
-        if isinstance(ids, list) and ids:
-            trim_ids.update(str(item) for item in ids if item)
-            continue
-        count = max(0, int(data.get("tool_results") or 0))
-        cutoff = int(event.get("seq") or 0)
-        if count:
-            eligible = [
-                tool_id
-                for seq, tool_id in tool_result_event_order
-                if seq < cutoff and tool_id not in trim_ids
-            ]
-            trim_ids.update(eligible[:count])
-    return _context_from_messages(messages, trim_ids=trim_ids)
-
-
-def derive_context_messages_from_messages(messages: list[Msg]) -> list[Msg]:
-    """从已持久化的 Msg Snapshot 构造 LLM 上下文。
-
-    Snapshot 不再保留 compact Event 的 seq，因此 fast compact 的裁剪依据必须
-    随 compact Msg 一起保存为 ``context_compact.tool_result_ids``；旧快照没有
-    该字段时按 Msg 顺序和 ``tool_results`` 数量做兼容降级。返回深拷贝，调用方
-    可以安全地把被裁剪的 tool_result 输出替换为占位文本。
-    """
-    snapshot = [message.model_copy(deep=True) for message in messages]
-    trim_ids: set[str] = set()
-    for index, message in enumerate(snapshot):
-        if message.name != MsgName.COMPACT_FAST:
-            continue
-        compact_meta = message.metadata.get("context_compact") or {}
-        ids = compact_meta.get("tool_result_ids") or []
-        if isinstance(ids, list) and ids:
-            trim_ids.update(str(item) for item in ids if item)
-            continue
-        count = max(0, int(compact_meta.get("tool_results") or 0))
-        if count:
-            eligible = [
-                block.id
-                for previous in snapshot[:index]
-                for block in previous.content
-                if block.type == "tool_result" and block.id not in trim_ids
-            ]
-            trim_ids.update(eligible[:count])
-    return _context_from_messages(snapshot, trim_ids=trim_ids)
-
-
-def _context_from_messages(messages: list[Msg], *, trim_ids: set[str]) -> list[Msg]:
-    """按 compact 锚点切上下文，并对 fast compact 做确定性裁剪。"""
-    anchor_index = -1
-    for index, message in enumerate(messages):
-        if message.role == "user" and message.name == MsgName.COMPACT:
-            anchor_index = index
-
-    if anchor_index >= 0:
-        compact = messages[anchor_index]
-        compact_meta = compact.metadata.get("context_compact") or {}
-        through_id = str(compact_meta.get("through_message_id") or "")
-        if through_id:
-            through_index = next(
-                (index for index, item in enumerate(messages) if item.id == through_id),
-                -1,
-            )
-        else:
-            through_index = -1
-        if through_index >= 0:
-            # compact 事件通常位于 through 消息之后；把摘要提升到首位，
-            # 只保留 through 之后的消息（包括压缩期间到达的消息）。
-            tail = [compact, *(
-                item for item in messages[through_index + 1:]
-                if item.id != compact.id
-            )]
-        else:
-            tail = [compact, *messages[anchor_index + 1:]]
-    else:
-        tail = messages
-
-    if trim_ids:
-        for message in tail:
-            for block in message.content:
-                if block.type == "tool_result" and block.id in trim_ids:
-                    block.output = [TextBlock(text="[已压缩裁剪：原始工具输出不再可见]")]
-                    block.metadata = dict(block.metadata or {})
-    return tail
-
-
 def _to_output_blocks(parts: list[Any]) -> list[Any]:
     """tool/result 的 output parts → 类型化 Block（TextBlock/DataBlock）。"""
     blocks: list[Any] = []
@@ -673,4 +572,4 @@ def _apply_event(state: _FoldState, event: dict[str, Any]) -> None:
     return
 
 
-__all__ = ["derive_context_messages", "derive_messages"]
+__all__ = ["derive_messages"]

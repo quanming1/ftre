@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 from ftre_agent.message import Msg, MsgName
-from ftre_agent.session import SessionLog, derive_context_messages, derive_messages
+from ftre_agent.session import SessionLog, derive_messages
 
 
 def _mk_log() -> SessionLog:
@@ -113,6 +113,26 @@ class TestSessionLogAppend:
             "outcome": "error", "reason": "error",
         })
         assert log.request_state("r2") == "failed"
+
+    def test_reset_discards_live_tail_but_keeps_subscribers_and_sequence(self):
+        log = _mk_log()
+        seen = []
+        log.subscribe(lambda event: seen.append(event["seq"]))
+        log.append("turn/start", {"turn_id": "t1", "trigger": "user"})
+        log.append_user_message(
+            request_id="r1", content=[{"type": "text", "text": "before"}]
+        )
+
+        log.reset(start_seq=10)
+        assert log.events == ()
+        assert log.seq == 9
+        assert not log.has_user_request("r1")
+
+        event = log.append("turn/end", {
+            "turn_id": "t2", "outcome": "completed", "reason": "completed",
+        })
+        assert event["seq"] == 10
+        assert seen == [0, 1, 10]
 
 
 class TestSessionLogLoad:
@@ -300,43 +320,6 @@ class TestDerive:
         messages = derive_messages(list(log.events))
         assert messages[0].finished_reason == "completed"
 
-    def test_context_anchor_trimming(self):
-        log = SessionLog("s")
-        log.append_user_message(request_id="r1", content=[{"type": "text", "text": "旧轮"}])
-        log.append("compact/message", {
-            "mode": "summary", "summary_text": "摘要内容",
-            "through_message_id": "user_r1", "trigger": "auto",
-        }, message_id="c1")
-        log.append_user_message(request_id="r2", content=[{"type": "text", "text": "新轮"}])
-        context = derive_context_messages(list(log.events))
-        assert [m.get_text_content() for m in context if m.role == "user"] == ["摘要内容", "新轮"]
-        full = derive_messages(list(log.events))
-        assert len(full) == 3
-
-    def test_fast_compact_elides_tool_results(self):
-        log = SessionLog("s")
-        log.append_user_message(request_id="r1", content=[{"type": "text", "text": "go"}])
-        log.append("tool/call-start", {
-            "tool_call_id": "tc_a", "name": "read", "arguments": {"path": "x"},
-        }, message_id="m1")
-        log.append("tool/result", {
-            "tool_call_id": "tc_a", "name": "read",
-            "output": [{"type": "text", "text": "很长的文件内容"}],
-            "state": "success", "metadata": {},
-        }, message_id="m1")
-        log.append("compact/message", {
-            "mode": "fast", "tool_results": 1,
-            "tokens_before": 1000, "tokens_after": 200,
-        }, message_id="cf1")
-        context = derive_context_messages(list(log.events))
-        assistant = next(m for m in context if m.role == "assistant")
-        result_block = next(b for b in assistant.content if b.type == "tool_result")
-        assert "已压缩裁剪" in result_block.output[0].text
-        full = derive_messages(list(log.events))
-        assistant_full = next(m for m in full if m.role == "assistant")
-        result_full = next(b for b in assistant_full.content if b.type == "tool_result")
-        assert result_full.output[0].text == "很长的文件内容"
-
     def test_compact_bubble_names(self):
         log = SessionLog("s")
         log.append("compact/message", {
@@ -369,29 +352,6 @@ class TestDerive:
             block.created_at for block in second.content
         ]
         assert "review-code" in first.get_text_content()
-
-    def test_fast_compact_uses_exact_tool_result_ids(self):
-        events = [
-            {"type": "tool/call-start", "seq": 0, "time": 1, "message_id": "m1",
-             "data": {"tool_call_id": "old", "name": "read", "arguments": {}}},
-            {"type": "tool/result", "seq": 1, "time": 2, "message_id": "m1",
-             "data": {"tool_call_id": "old", "name": "read", "output": [{"type": "text", "text": "old"}], "state": "success"}},
-            {"type": "compact/message", "seq": 2, "time": 3, "message_id": "c1",
-             "data": {"mode": "fast", "tool_results": 1, "tool_result_ids": ["old"]}},
-            {"type": "tool/call-start", "seq": 3, "time": 4, "message_id": "m2",
-             "data": {"tool_call_id": "new", "name": "read", "arguments": {}}},
-            {"type": "tool/result", "seq": 4, "time": 5, "message_id": "m2",
-             "data": {"tool_call_id": "new", "name": "read", "output": [{"type": "text", "text": "new"}], "state": "success"}},
-        ]
-        context = derive_context_messages(events)
-        by_id = {
-            block.id: block
-            for message in context
-            for block in message.content
-            if block.type == "tool_result"
-        }
-        assert by_id["old"].output[0].text.startswith("[已压缩裁剪")
-        assert by_id["new"].output[0].text == "new"
 
     def test_unknown_msg_block_is_preserved_as_extension(self):
         message = Msg.model_validate({

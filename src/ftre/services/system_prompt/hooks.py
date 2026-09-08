@@ -25,7 +25,7 @@ class PromptAssemblyPayload:
     session_id: str
     workspace: str
     assembly: PromptAssembly
-    messages: tuple[Any, ...]
+    messages: tuple[Mapping[str, Any], ...]
     inbound_data: Mapping[str, Any]
     config: Any
     event_loop: Any

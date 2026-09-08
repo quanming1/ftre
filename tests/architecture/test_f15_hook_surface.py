@@ -1,7 +1,7 @@
 """F16 Hook 面终局基线与目标门禁。
 
-该测试从实际导出的 ``HookSpec`` 读取事实，而不是复制生产表格。Inbox 生命周期 Hook
-扩展后，全系统 23 个名称仍必须唯一，门禁会阻止已删除的状态 Hook 以 alias 或第二份 Spec 偷渡回来。
+该测试从实际导出的 ``HookSpec`` 读取事实，而不是复制生产表格。Agent ContextView Hook
+加入后，全系统 24 个名称仍必须唯一，门禁会阻止已删除的状态 Hook 以 alias 或第二份 Spec 偷渡回来。
 """
 
 from __future__ import annotations
@@ -22,13 +22,14 @@ HOST_MODULES = (
 )
 PACKAGE_MODULES = ("ftre_inbox.hooks",)
 
-# F16/F35.4/F35.6 完成后的目标快照；Agent 契约 6 项与 Host/Package 17 项均必须唯一。
+# F16/F35.4/F35.6/F45 完成后的目标快照；Agent 契约 7 项与 Host/Package 17 项均必须唯一。
 CURRENT_HOOK_NAMES = {
     "tool/before",
     "tool/after",
     "llm/stream",
     "llm/error",
     "agent/before-reasoning",
+    "agent/context-build",
     "agent/stop-decision",
     "agent/before-run",
     "agent/after-run",
@@ -55,6 +56,7 @@ F16_TARGET_HOOK_NAMES = {
     "llm/stream",
     "llm/error",
     "agent/before-reasoning",
+    "agent/context-build",
     "agent/stop-decision",
     "agent/before-run",
     "agent/after-run",
@@ -106,23 +108,24 @@ def _fact_snapshot() -> dict[str, list[tuple[str, str, str, str]]]:
     return snapshot
 
 
-def test_f16_target_snapshot_has_exactly_23_unique_hook_names():
+def test_f16_target_snapshot_has_exactly_24_unique_hook_names():
     snapshot = _fact_snapshot()
     names = [item[0] for group in snapshot.values() for item in group]
     # Agent Host 为了稳定导入面重导出两项公共 Spec；事实门禁按唯一名称计数，
     # 不把同一个对象的公开重导出误判为第二个 Hook Owner。
-    assert len(set(names)) == 23
+    assert len(set(names)) == 24
     assert set(names) == CURRENT_HOOK_NAMES
 
 
 def test_f16_target_set_is_explicit_and_core_boundary_is_frozen():
-    assert len(F16_TARGET_HOOK_NAMES) == 23
+    assert len(F16_TARGET_HOOK_NAMES) == 24
     core_names = {
         "tool/before",
         "tool/after",
         "llm/stream",
         "llm/error",
         "agent/before-reasoning",
+        "agent/context-build",
         "agent/stop-decision",
     }
     assert core_names <= F16_TARGET_HOOK_NAMES

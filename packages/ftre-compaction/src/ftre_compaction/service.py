@@ -11,7 +11,8 @@ CompactionService — 上下文压缩 Service 的唯一真实实现
 （经 ``emit_maintenance`` Host sink 提交，读侧 derive 折叠为 compact Msg），
 原始 Msg 永不删除。下一轮 LLM 上下文从最后一条 compact Msg 开始。
 CompactionService 不直接写 state、不直接派发 WebSocket，全部通过注入的
-``emit_maintenance`` Host sink 完成。快速压缩直接更新旧 Msg 中的工具结果块。
+``emit_maintenance`` Host sink 完成。快速压缩只写入 marker，工具结果的
+内存替换由本包 ContextView 完成。
 
 并发安全：
 - 每个 session 同一时间最多只有一个真正的压缩 Task。
@@ -30,6 +31,11 @@ from ftre_agent.message import Msg, MsgName, TextBlock, ToolResultBlock
 from ftre_llm import LlmCallConfig, LlmCredentials, LLMError, LlmRequest
 
 from .config import CompactionConfig, parse_compaction_config
+from .context import (
+    LEGACY_TRIMMED_TOOL_RESULT_PLACEHOLDER,
+    TRIMMED_TOOL_RESULT_PLACEHOLDER,
+    build_context_view,
+)
 from .events import CompactEventName
 
 logger = logging.getLogger(__name__)
@@ -224,6 +230,30 @@ class CompactionService:
             return False
         return (estimated / prompt_budget) >= threshold
 
+    async def _load_context_records(self, session_id: str) -> list[dict]:
+        """读取完整 Msg 并在压缩包内生成本次算法使用的 ContextView。
+
+        ``SessionService.get_full_messages`` 是 F45 的唯一历史输入；压缩策略
+        在这里解释 compact/fast marker，再把临时 Msg 转成摘要算法需要的
+        JSON 记录。旧的窄测试替身若没有该方法，继续消费已经派生好的
+        ``get_context_messages``，不会把兼容逻辑带回 Runtime。
+        """
+        loader = getattr(self.session_manager, "get_full_messages", None)
+        if callable(loader):
+            loaded = await loader(session_id)
+            if isinstance(loaded, (list, tuple)):
+                messages = [
+                    item if isinstance(item, Msg) else Msg.model_validate(item)
+                    for item in loaded
+                ]
+                view = build_context_view(messages)
+                return [message.model_dump(mode="json") for message in view]
+
+        legacy = await self.session_manager.get_context_messages(session_id)
+        if not isinstance(legacy, (list, tuple)):
+            return []
+        return [copy.deepcopy(dict(record)) for record in legacy]
+
     # ─── 异步执行压缩 ──────────────────────────────────────────────
 
     async def compact(
@@ -324,11 +354,12 @@ class CompactionService:
             True: 执行了裁剪
             False: 没有工具结果可裁剪
         """
-        # 活跃区间 = 最后一条 compact Msg 之后的 tail（无 compact 则全量）
-        context_records = await self.session_manager.get_context_messages(session_id)
+        # 活跃区间 = ContextView 中最后一条 compact Msg 之后的 tail
+        #（无 summary compact 则为全量；fast marker 已在本包内解释）。
+        context_records = await self._load_context_records(session_id)
         if not context_records:
             return False
-        # get_context_messages 返回 [last_compact?, *tail]；去掉 leading compact
+        # ContextView 返回 [last_compact?, *tail]；去掉 leading compact。
         active_records = context_records
         if context_records[0].get("name") == MsgName.COMPACT:
             active_records = context_records[1:]
@@ -356,7 +387,11 @@ class CompactionService:
             for block in message.content:
                 if (
                     isinstance(block, ToolResultBlock)
-                    and _tool_result_text(block) != "[工具输出已压缩]"
+                    and _tool_result_text(block)
+                    not in {
+                        LEGACY_TRIMMED_TOOL_RESULT_PLACEHOLDER,
+                        TRIMMED_TOOL_RESULT_PLACEHOLDER,
+                    }
                 ):
                     tool_results.append((message, block))
 
@@ -418,8 +453,8 @@ class CompactionService:
         本方法不直接写 state。
         """
 
-        # 1. 读取模型上下文（最后一条 compact + tail）
-        context_records = await self.session_manager.get_context_messages(session_id)
+        # 1. 读取压缩包自己的 ContextView（最后一条 compact + tail）
+        context_records = await self._load_context_records(session_id)
         if not context_records:
             logger.info(f"[compact] session={session_id} 无消息，跳过")
             await self._emit_failed(session_id, channel_id, "当前会话没有历史消息")

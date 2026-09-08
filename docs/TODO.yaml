@@ -175,10 +175,11 @@ stages:
 
       - id: C6
         title: 通用 Ftre Markdown 扩展协议与客户端渲染
-        status: in_progress
+        status: done
         date: 2026-08-29
         prd: docs/prd/PRD-C6-generic-markdown-extension-protocol.md
-        prd_status: 开发中
+        prd_status: 已验收
+        completion_date: 2026-09-08
         depends_on:
           - C1
           - C5
@@ -1981,4 +1982,47 @@ stages:
             status: done
           - id: F44.5
             title: 统一 seq、attach Event[] 与旧恢复路径清理
+            status: done
+      - id: F45
+        title: Agent Context Build Hook 与压缩策略插件化
+        status: done
+        date: 2026-09-07
+        prd: docs/prd/PRD-F45-context-build-hook.md
+        prd_status: 已验收
+        completion_date: 2026-09-07
+        depends_on:
+          - F44
+          - F11
+        paired_stage: E:\\binn\\ftre-desktop
+        implementation_boundary: 新增 Agent context-build Hook、Runtime 上下文视图调用、ftre-compaction 插件迁移，以及基于完整 Snapshot 的 Fork/回滚接口与客户端入口；不修改 LLM Provider、Inbox 核心和 F44 wire 基础协议
+        modules:
+          - packages/ftre-agent/src/ftre_agent/hooks.py
+          - packages/ftre-agent-runtime/src/ftre_agent_runtime/executors/reasoning.py
+          - packages/ftre-compaction/src/ftre_compaction/hooks.py
+          - packages/ftre-compaction/src/ftre_compaction/service.py
+          - packages/ftre-agent/src/ftre_agent/session/derive.py
+          - packages/ftre-agent-runtime/tests/
+          - packages/ftre-compaction/tests/
+          - tests/contracts/
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/services/api.ts
+          - 配对 E:\\binn\\ftre-desktop/packages/renderer/src/features/chat/
+        acceptance: context-build 在 before-reasoning 后、Provider 转换前执行；同一 iteration 的 Retry 复用 ContextView；压缩策略只由 ftre-compaction Plugin 实现且不修改 session.json；未安装压缩包时默认透传；Fork 仅创建独立子 Session，rollback 原地改写当前 Session，二者都不复制 ContextView、Inbox 或 active request
+        tasks:
+          - id: F45.1
+            title: ContextBuild Hook 契约与 golden fixture
+            status: done
+          - id: F45.2
+            title: Runtime 调用顺序、深拷贝与 Retry 复用
+            status: done
+          - id: F45.3
+            title: Compaction Plugin summary/fast 上下文迁移
+            status: done
+          - id: F45.4
+            title: 共享 derive 压缩策略清理
+            status: done
+          - id: F45.5
+            title: through_message_id、Snapshot 屏障与 Fork/回滚实现
+            status: done
+          - id: F45.6
+            title: 全量验收、架构扫描与文档收尾
             status: done

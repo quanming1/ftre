@@ -15,13 +15,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ftre_agent.message import Msg
-from ftre_agent.session import (
-    SessionLog,
-    derive_context_messages_from_messages,
-    derive_messages,
-    request_fingerprint,
+from ftre_agent.message import (
+    Msg,
+    ToolCallBlock,
+    ToolCallState,
+    ToolResultBlock,
+    ToolResultState,
 )
+from ftre_agent.session import SessionLog, derive_messages, request_fingerprint
 from ftre_agent.session.events import (
     AssistantMessageData,
 )
@@ -57,6 +58,7 @@ from ftre.services.session.persistence.snapshot import (
 logger = logging.getLogger(__name__)
 
 FramePublisher = Callable[..., Any]
+ContextViewBuilder = Callable[[list[Msg]], list[Msg]]
 
 
 def _now_iso() -> str:
@@ -69,6 +71,38 @@ class ForkResult:
     fork_session_id: str
     title: str
     workspace: str
+    parent_session_id: str = ""
+    through_message_id: str | None = None
+    seq: int = -1
+
+
+class ForkBusyError(RuntimeError):
+    """父 Session 在运行态，不能生成一致的分支快照。"""
+
+
+class ForkTargetError(ValueError):
+    """Fork 截止点不是可用的完整 Msg。"""
+
+
+@dataclass
+class RollbackResult:
+    """原地回滚当前 Session 后返回的边界和输入框回填内容。"""
+
+    session_id: str
+    through_message_id: str
+    seq: int
+    removed_message_ids: list[str]
+    prefill_content: list[dict[str, Any]]
+    title: str
+    workspace: str
+
+
+class RollbackBusyError(RuntimeError):
+    """当前 Session 仍有运行态或 checkpoint 竞争，不能原地回滚。"""
+
+
+class RollbackTargetError(ValueError):
+    """回滚目标不是稳定的 user Msg。"""
 
 
 class SessionService:
@@ -101,6 +135,9 @@ class SessionService:
         self._derive_cache: dict[str, tuple[int, list[Msg]]] = {}
         # per-session 日志装配锁（懒加载并发首触去重）
         self._log_locks: dict[str, asyncio.Lock] = {}
+        # 可选 ContextView 投影器由业务 Plugin 注入；SessionService 本身只
+        # 保存完整 Msg，未安装压缩包时默认使用完整历史。
+        self._context_view_builder: ContextViewBuilder | None = None
 
     # ============================================================
     # 帧转发（plugin 装配）
@@ -520,6 +557,21 @@ class SessionService:
         self._derive_cache[session_id] = (log.seq, messages)
         return messages
 
+    async def get_full_messages(self, session_id: str) -> list[Msg]:
+        """返回完整的 Provider 无关 Msg 快照，供 Agent Runtime 构建 ContextView。
+
+        这里故意不应用 compact/fast 裁剪。上下文策略由 Agent Hook（例如
+        ``ftre-compaction`` 的 ``agent/context-build``）在本次请求的深拷贝上
+        决定；SessionService 只提供完整历史，避免把某个可选 Plugin 的策略
+        固化进 Session Owner。
+        """
+        if self._repo.get_state(session_id) is None:
+            return []
+        return [
+            message.model_copy(deep=True)
+            for message in await self.derived_messages(session_id)
+        ]
+
     async def _records(self, session_id: str) -> list[MessageModel]:
         messages = await self.derived_messages(session_id)
         return [self._repo.to_message_model(m, session_id) for m in messages]
@@ -572,14 +624,53 @@ class SessionService:
         return log.seq
 
     async def get_context_messages(self, session_id: str) -> list[MessageModel]:
-        """返回给 LLM 使用的上下文消息：最后 summary compact 锚点 + tail。"""
+        """返回由可选 ContextView 投影器生成的读侧消息视图。
+
+        该方法只服务于 token 统计等 Host 读接口，不参与 Agent Runtime 的
+        LLM 调用。默认返回完整历史；压缩 Plugin 可注入一个纯函数，使统计
+        口径与 ``agent/context-build`` 保持一致。SessionService 不解释任何
+        compact/fast marker。
+        """
         if self._repo.get_state(session_id) is None:
             return []
-        log = await self.log(session_id)
-        baseline = self._baseline_messages.get(session_id, [])
-        messages = self._merge_messages(baseline, derive_messages(list(log.events)))
-        messages = derive_context_messages_from_messages(messages)
+        messages = await self.get_full_messages(session_id)
+        builder = self._context_view_builder
+        if builder is not None:
+            projected = builder([message.model_copy(deep=True) for message in messages])
+            if not isinstance(projected, (list, tuple)):
+                raise TypeError("ContextView builder must return a message sequence")
+            messages = [
+                message.model_copy(deep=True)
+                if isinstance(message, Msg)
+                else Msg.model_validate(message)
+                for message in projected
+            ]
         return [self._repo.to_message_model(m, session_id) for m in messages]
+
+    def set_context_view_builder(
+        self, builder: ContextViewBuilder | None
+    ) -> Callable[[], bool]:
+        """安装一个可逆的通用 ContextView 投影器。
+
+        业务规则由 Plugin 持有；返回的 disposer 只恢复上一个投影器，供
+        Plugin Effect 在卸载时调用。重复调用 disposer 安全无副作用。
+        """
+        if builder is not None and not callable(builder):
+            raise TypeError("ContextView builder must be callable or None")
+        previous = self._context_view_builder
+        self._context_view_builder = builder
+        disposed = False
+
+        def dispose() -> bool:
+            nonlocal disposed
+            if disposed:
+                return False
+            disposed = True
+            if self._context_view_builder is builder:
+                self._context_view_builder = previous
+            return True
+
+        return dispose
 
     # ============================================================
     # lifecycle Hook
@@ -630,6 +721,7 @@ class SessionService:
         self._baseline_messages.clear()
         self._derive_cache.clear()
         self._log_locks.clear()
+        self._context_view_builder = None
 
     # ============================================================
     # Session CRUD（委托 storage）
@@ -861,7 +953,7 @@ class SessionService:
         return await self._repo.list_workspaces(channel_id)
 
     # ============================================================
-    # 上下文裁剪（给 LLM 的上下文窗口与按轮分页）
+    # 消息转换与 token 读侧兼容入口
     # ============================================================
 
     def build_user_content(
@@ -1069,20 +1161,65 @@ class SessionService:
 
     FORK_METADATA_EXCLUDE = frozenset({"teams", "team_member", "external"})
 
-    async def fork_session(self, parent_session_id: str) -> ForkResult:
-        """把 parent 的当前 Msg Snapshot 派生为独立 session。"""
+    async def fork_session(
+        self,
+        parent_session_id: str,
+        *,
+        through_message_id: str | None = None,
+    ) -> ForkResult:
+        """从完整 Snapshot 创建独立分支，不复制 ContextView 或运行态。
+
+        ``through_message_id`` 是 Msg 边界，不是 seq；截止消息包含在子会话中。
+        回滚是另一条原地修改当前 Session 的操作，由 ``rollback_session`` 负责。
+        调用方应在进入本方法前拒绝 active Turn；这里仍会做 checkpoint 水位复核，
+        避免复制未落盘的半成品。
+        """
+        # 先把当前进程中的 live Event 收敛到 Snapshot；随后在 Repo 锁内
+        # 再核对 seq，若仍有事件在飞行，宁可返回 busy 也不复制旧基线。
+        try:
+            await self.flush_log(parent_session_id)
+        except Exception as exc:
+            raise ForkBusyError(f"session checkpoint 未完成: {parent_session_id}") from exc
+
         async with self._repo.lock_for(parent_session_id):
             parent_state = self._repo.get_state(parent_session_id)
             if parent_state is None:
                 raise ValueError(f"session not found: {parent_session_id}")
-            messages = await self.derived_messages(parent_session_id)
             parent_log = self._logs.get(parent_session_id)
-            fork_requests = copy.deepcopy(parent_state.requests)
-            if parent_log is not None:
-                fork_requests.update(
-                    self._request_index_from_events(list(parent_log.events))
-                )
+            if parent_log is not None and int(parent_state.seq) < int(parent_log.seq):
+                raise ForkBusyError(f"session 仍有未完成 checkpoint: {parent_session_id}")
+            messages = [
+                message.model_copy(deep=True)
+                for message in await self.derived_messages(parent_session_id)
+            ]
             parent_header = parent_state.session
+
+            target_index: int | None = None
+            target: Msg | None = None
+            if through_message_id:
+                for index, message in enumerate(messages):
+                    if message.id == through_message_id:
+                        target_index = index
+                        target = message
+                        break
+                if target_index is None or target is None:
+                    raise ForkTargetError(
+                        f"through_message_id 不存在: {through_message_id}"
+                    )
+                if not self._is_stable_message(target):
+                    raise ForkTargetError(
+                        f"目标消息尚未完成，不能 Fork: {through_message_id}"
+                    )
+            if target_index is None:
+                selected_messages = messages
+            else:
+                selected_messages = messages[: target_index + 1]
+
+            # 只允许稳定消息进入新 Snapshot；运行中的 tool result / approval
+            # 不应被复制成一个看似可继续的历史。
+            if any(not self._is_stable_message(message) for message in selected_messages):
+                raise ForkBusyError(f"session 含未完成消息，不能 Fork: {parent_session_id}")
+
             fork_id = self._repo.make_session_id(parent_header.channel_id)
             fork_title = (
                 f"fork of {parent_header.title}"
@@ -1098,32 +1235,163 @@ class SessionService:
                 for key, value in parent_state.metadata.items()
                 if key not in self.FORK_METADATA_EXCLUDE
             }
+            fork_metadata.update(
+                {
+                    "forked_from": parent_session_id,
+                    "forked_at": datetime.now(UTC).isoformat(),
+                    "forked_through_message_id": through_message_id or "",
+                }
+            )
+            fork_seq = max(
+                (int(message.seq) for message in selected_messages if int(message.seq) >= 0),
+                default=-1,
+            )
+            last_user_text = summarize_last_user_text(selected_messages) or ""
+            new_state = SessionMetaFile(
+                session=SessionState(
+                    id=fork_id,
+                    agent_id=parent_agent_id,
+                    channel_id=parent_channel_id,
+                    title=fork_title,
+                    workspace=fork_workspace,
+                    created_at=now,
+                    updated_at=now,
+                    last_user_text=last_user_text,
+                ),
+                metadata=fork_metadata,
+                seq=fork_seq,
+                messages=[message.model_dump(mode="json") for message in selected_messages],
+                # request_id/run_id 只对父 Session 有意义，子 Session 从空索引开始。
+                requests={},
+                extensions=copy.deepcopy(parent_state.extensions),
+            )
 
-        fork_metadata["forked_from"] = parent_session_id
-        fork_metadata["forked_at"] = datetime.now(UTC).isoformat()
-        new_state = SessionMetaFile(
-            session=SessionState(
-                id=fork_id,
-                agent_id=parent_agent_id,
-                channel_id=parent_channel_id,
-                title=fork_title,
-                workspace=fork_workspace,
-                created_at=now,
-                updated_at=now,
-                last_user_text=parent_header.last_user_text,
-            ),
-            metadata=fork_metadata,
-            seq=int(parent_log.seq if parent_log is not None else parent_state.seq),
-            messages=[message.model_dump(mode="json") for message in messages],
-            requests=fork_requests,
-            extensions=copy.deepcopy(parent_state.extensions),
-        )
         await self._repo.create_session_with_state(new_state)
         return ForkResult(
             fork_session_id=fork_id,
             title=fork_title,
             workspace=fork_workspace,
+            parent_session_id=parent_session_id,
+            through_message_id=through_message_id,
+            seq=fork_seq,
         )
+
+    async def rollback_session(
+        self,
+        session_id: str,
+        *,
+        through_message_id: str,
+    ) -> RollbackResult:
+        """原地回滚当前 Session，并返回被移除用户消息的回填内容。
+
+        ``through_message_id`` 必须指向稳定的 user Msg。该消息及其之后的
+        历史从当前 Snapshot 中移除，父 Session 身份、metadata 和 workspace
+        保持不变；不会创建子 Session，也不会重新执行任何副作用。
+        """
+        if not isinstance(through_message_id, str) or not through_message_id:
+            raise RollbackTargetError("rollback 必须提供 through_message_id")
+
+        try:
+            await self.flush_log(session_id)
+        except Exception as exc:
+            raise RollbackBusyError(f"session checkpoint 未完成: {session_id}") from exc
+
+        async with self._repo.lock_for(session_id):
+            state = self._repo.get_state(session_id)
+            if state is None:
+                raise ValueError(f"session not found: {session_id}")
+            log = self._logs.get(session_id)
+            if log is not None and int(state.seq) < int(log.seq):
+                raise RollbackBusyError(f"session 仍有未完成 checkpoint: {session_id}")
+
+            messages = [
+                message.model_copy(deep=True)
+                for message in await self.derived_messages(session_id)
+            ]
+            target_index: int | None = None
+            target: Msg | None = None
+            for index, message in enumerate(messages):
+                if message.id == through_message_id:
+                    target_index = index
+                    target = message
+                    break
+            if target_index is None or target is None:
+                raise RollbackTargetError(
+                    f"through_message_id 不存在: {through_message_id}"
+                )
+            if target.role != "user":
+                raise RollbackTargetError("rollback 的截止点必须是 user Msg")
+            if not self._is_stable_message(target):
+                raise RollbackTargetError(
+                    f"目标消息尚未完成，不能 rollback: {through_message_id}"
+                )
+
+            kept_messages = messages[:target_index]
+            if any(not self._is_stable_message(message) for message in kept_messages):
+                raise RollbackBusyError(f"session 含未完成消息，不能 rollback: {session_id}")
+
+            kept_ids = {message.id for message in kept_messages}
+            kept_request_ids = {
+                str(message.metadata.get("request_id") or "")
+                for message in kept_messages
+                if str(message.metadata.get("request_id") or "")
+            }
+            requests = {
+                request_id: copy.deepcopy(record)
+                for request_id, record in state.requests.items()
+                if request_id in kept_request_ids
+                or (
+                    isinstance(record, dict)
+                    and str(record.get("message_id") or "") in kept_ids
+                )
+            }
+            snapshot_seq = int(state.seq)
+            new_state = state.model_copy(
+                deep=True,
+                update={
+                    "schema_version": CURRENT_SCHEMA_VERSION,
+                    "seq": snapshot_seq,
+                    "messages": [
+                        message.model_dump(mode="json") for message in kept_messages
+                    ],
+                    "requests": requests,
+                },
+            )
+            new_state.session.updated_at = _now_iso()
+            new_state.session.last_user_text = summarize_last_user_text(kept_messages) or ""
+            await self._repo.commit(new_state)
+
+            # Snapshot 已经落盘成功，才切换当前进程的完整历史基线；保留
+            # SessionLog 的订阅者，但丢弃被回滚的 live tail。
+            self._baseline_messages[session_id] = [
+                message.model_copy(deep=True) for message in kept_messages
+            ]
+            if log is not None:
+                log.reset(start_seq=snapshot_seq + 1)
+            self._derive_cache.pop(session_id, None)
+
+            prefill_content = [
+                block.model_dump(mode="json") for block in target.content
+            ]
+            return RollbackResult(
+                session_id=session_id,
+                through_message_id=through_message_id,
+                seq=snapshot_seq,
+                removed_message_ids=[message.id for message in messages[target_index:]],
+                prefill_content=prefill_content,
+                title=new_state.session.title,
+                workspace=new_state.session.workspace,
+            )
+
+    @staticmethod
+    def _is_stable_message(message: Msg) -> bool:
+        """检查 Msg 是否包含未闭合的工具状态。"""
+        for block in message.content:
+            if isinstance(block, ToolResultBlock) and block.state == ToolResultState.RUNNING:
+                return False
+            if isinstance(block, ToolCallBlock) and block.state != ToolCallState.FINISHED:
+                return False
+        return True
 
 
 def _user_msg_of_event(event: dict[str, Any]) -> Msg:

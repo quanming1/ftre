@@ -69,6 +69,9 @@ class Turn:
 
     # ── Agent 执行上下文（_build 写入，_run 读取）──
     agent_profile: Any | None = None  # 本轮选定的 Agent Profile 快照值
+    # _resolve_turn_config 计算出的最终 Agent 作用域；即使没有 profile，
+    # 也必须让 Prompt/Tool/Hook 使用和 Session 一致的 agent_id。
+    resolved_agent_id: str = ""
     config: AgentConfig | None = None  # 本轮实际使用的有效配置快照
     agent: ReActAgent | None = None  # 创建的 Agent 实例，None 表示未进入执行
     messages: list = field(default_factory=list)  # 发给 LLM 的消息列表

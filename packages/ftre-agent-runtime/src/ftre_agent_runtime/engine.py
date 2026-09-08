@@ -12,6 +12,7 @@ import asyncio
 import inspect
 import logging
 import uuid
+from dataclasses import replace
 
 from ftre_agent import (
     AGENT_AFTER_RUN_SPEC,
@@ -285,7 +286,13 @@ class AgentLoop:
                     error=validation_error,
                 )
             config, profile = await self._executor.resolve_inbound_config(inbound, turn_id=turn_id)
-            agent_id = str(metadata_values.get("agent_id") or "default")
+            agent_id = await self._resolve_inbound_agent_id(inbound, profile)
+            # RuntimeInput 保持不可变；创建带最终作用域的本轮快照，避免
+            # 让 frozen 对象内部的 metadata 被隐式改写。
+            inbound = replace(
+                inbound,
+                metadata={**dict(inbound.metadata or {}), "agent_id": agent_id},
+            )
             current = self.agent_registry.ensure(agent_id)
             step_decision = await self._dispatch_agent_hook(
                 AGENT_BEFORE_RUN_SPEC,
@@ -367,7 +374,7 @@ class AgentLoop:
             self._direct_signals.pop(session_id, None)
             if executed:
                 try:
-                    final_agent_id = str(metadata_values.get("agent_id") or "default")
+                    final_agent_id = agent_id
                     record = self.agent_registry.ensure(final_agent_id)
                     await self._dispatch_agent_hook(
                         AGENT_AFTER_RUN_SPEC,
@@ -599,6 +606,11 @@ class AgentLoop:
         turn_id = f"confirm_{uuid.uuid4().hex[:12]}"
         cancellation = asyncio.Event()
         config, profile = await self._executor.resolve_inbound_config(inbound, turn_id=turn_id)
+        agent_id = await self._resolve_inbound_agent_id(inbound, profile)
+        inbound = replace(
+            inbound,
+            metadata={**dict(inbound.metadata or {}), "agent_id": agent_id},
+        )
         outcome = None
         task = asyncio.create_task(
             self._executor.execute(
@@ -623,7 +635,7 @@ class AgentLoop:
             self._direct_tasks.pop(session_id, None)
             self._direct_signals.pop(session_id, None)
             try:
-                final_agent_id = str(metadata_values.get("agent_id") or "default")
+                final_agent_id = agent_id
                 record = self.agent_registry.ensure(final_agent_id)
                 await self._dispatch_agent_hook(
                     AGENT_AFTER_RUN_SPEC,
@@ -643,6 +655,21 @@ class AgentLoop:
                 )
             except Exception:
                 logger.exception("[agent-loop] confirmation agent/after-run failed session=%s", session_id)
+
+    async def _resolve_inbound_agent_id(self, inbound: RuntimeInput, profile) -> str:
+        """Resolve lifecycle Hook scope through TurnExecutor's Session-aware rule."""
+        resolver = getattr(self._executor, "resolve_inbound_agent_id", None)
+        if callable(resolver):
+            value = resolver(inbound, profile=profile)
+            if inspect.isawaitable(value):
+                value = await value
+            if value:
+                return str(value)
+        profile_agent_id = getattr(profile, "agent_id", None)
+        if isinstance(profile, dict):
+            profile_agent_id = profile.get("agent_id") or profile_agent_id
+        metadata_agent_id = dict(inbound.metadata or {}).get("agent_id")
+        return str(profile_agent_id or metadata_agent_id or "default")
 
     def _set_maintenance_status(self, session_id: str):
         """Return the callback used by after-run maintenance Hooks.

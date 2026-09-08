@@ -8,10 +8,11 @@
 # 唯一"时机接线"点，符合 PRD-F14 §4.4/§8：Compaction 只通过公开 HookSpec 与
 # 公开 Service 工作，不 import Host 私有 Runtime/Repository。
 #
-# 三个 Hook 的分工（对应 §8 数据流中的"Compaction 仅通过 Hook 工作"）：
+# 四个 Hook 的分工（对应 §8 数据流中的"Compaction 仅通过 Hook 工作"）：
 #   1. inbox/before-claim   —— 交付前水位门控：领取队首前检查水位，超线先压缩；
 #   2. agent/after-run      —— 轮后维护：每轮结束按 precompact 阈值预压缩；
-#   3. agent/run-error      —— overflow 恢复：LLM 报上下文溢出时强制压缩并请求重试。
+#   3. agent/run-error      —— overflow 恢复：LLM 报上下文溢出时强制压缩并请求重试；
+#   4. agent/context-build  —— 本轮请求视图：按 compact marker 在内存副本裁剪上下文。
 #
 # 边界约定：
 #   - 每个 Hook 都拿到"本轮 Agent 的 AgentConfig"，但压缩专属阈值/安全余量
@@ -24,22 +25,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from ftre_agent import (
     AGENT_AFTER_RUN_SPEC,
+    AGENT_CONTEXT_BUILD_SPEC,
     AGENT_RUN_ERROR_SPEC,
+    ContextBuildPayload,
+    ContextBuildResult,
     RequestErrorPayload,
     RetryRequest,
 )
+from ftre_agent.message import TextBlock, ToolResultBlock
 from ftre_inbox.hooks import INBOX_BEFORE_CLAIM_SPEC, EnterClaim, RejectClaim
 
 from ftre.services.agent_profile.config import load_config
+
+from .context import TRIMMED_TOOL_RESULT_PLACEHOLDER, build_context_view
 
 logger = logging.getLogger(__name__)
 
 
 def register_hooks(ctx, service) -> list[object]:
-    """注册三个 Hook，并把返回的 Receipt 交给 Plugin effect 管理。
+    """注册压缩 Hook，并把返回的 Receipt 交给 Plugin effect 管理。
 
     每个 Hook 都拿到当前调用的 AgentConfig，但阈值等压缩专属字段来自
     ``CompactionService.config_for``。这样多 Agent 场景仍使用本轮 Agent 的
@@ -163,6 +171,45 @@ def register_hooks(ctx, service) -> list[object]:
             )
         return await next_()
 
+    async def on_context_build(payload: ContextBuildPayload, next_):
+        """在本次 LLM 请求的深拷贝上应用 compact marker。"""
+        started = time.perf_counter()
+        result = await next_()
+        if result is None:
+            result = ContextBuildResult(payload.messages)
+        if not isinstance(result, ContextBuildResult):
+            raise TypeError("agent/context-build must return ContextBuildResult")
+        if payload.cancellation.is_set():
+            return result
+
+        source = list(result.messages)
+        view = build_context_view(source)
+        marker_ids = [
+            message.id
+            for message in source
+            if str(message.name) in {"compact", "compact_fast"}
+        ]
+        trimmed = sum(
+            1
+            for message in view
+            for block in message.content
+            if isinstance(block, ToolResultBlock) and _is_trimmed(block)
+        )
+        logger.info(
+            "[compact] context-build session=%s turn=%s iteration=%s messages=%s->%s "
+            "trimmed_tool_results=%s marker_ids=%s elapsed_ms=%.1f plugin=%s",
+            payload.session_id,
+            payload.turn_id,
+            payload.iteration,
+            len(source),
+            len(view),
+            trimmed,
+            marker_ids,
+            (time.perf_counter() - started) * 1000,
+            "ftre-compaction",
+        )
+        return ContextBuildResult(tuple(view))
+
     # ── Hook 3：inbox/before-claim（交付前水位门控）──
     # 语义：Inbox Package 在领取队首前触发。若水位超线先压缩再放行；
     # 任何失败都返回 RejectClaim("keep")——队首保留 pending，下次再试，
@@ -199,7 +246,7 @@ def register_hooks(ctx, service) -> list[object]:
             logger.warning("[compaction] inbox before-claim failed session=%s: %s", payload.session_id, exc)
             return RejectClaim("keep", f"上下文压缩失败：{exc}")
 
-    # 注册三个 Hook；receipts 统一返回给 Plugin，由 ctx.effect 在卸载时摘除
+    # 注册 Hook；receipts 统一返回给 Plugin，由 ctx.effect 在卸载时摘除
     receipts = [
         ctx.hook_runtime.register(
             AGENT_AFTER_RUN_SPEC,
@@ -215,6 +262,13 @@ def register_hooks(ctx, service) -> list[object]:
             context=ctx,
             all_agent_scopes=True,
         ),
+        ctx.hook_runtime.register(
+            AGENT_CONTEXT_BUILD_SPEC,
+            on_context_build,
+            owner="ftre-compaction",
+            context=ctx,
+            all_agent_scopes=True,
+        ),
     ]
     receipts.append(
         ctx.hook_runtime.register(
@@ -226,6 +280,24 @@ def register_hooks(ctx, service) -> list[object]:
         )
     )
     return receipts
+
+
+def _is_trimmed(block: ToolResultBlock) -> bool:
+    """判断工具结果是否已被 ContextView 替换为稳定占位文本。"""
+    placeholders = {
+        TRIMMED_TOOL_RESULT_PLACEHOLDER,
+        "[工具输出已压缩]",
+    }
+    output = block.output
+    if isinstance(output, str):
+        return output in placeholders
+    if isinstance(output, list):
+        return any(
+            (item.text if isinstance(item, TextBlock) else item.get("text")) in placeholders
+            for item in output
+            if isinstance(item, (TextBlock, dict))
+        )
+    return False
 
 
 def _is_overflow(error_code: str) -> bool:

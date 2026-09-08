@@ -409,6 +409,7 @@ class InboxService:
                 error={"code": "inbox-closed", "message": "Inbox 已关闭"},
             )
         item = self._item_from_message(message, target)
+        item = await self._resolve_session_agent(item)
         if self._hook_runtime is not None and INBOX_BEFORE_ADMIT_SPEC is not None:
             decision = await self._hook_runtime.dispatch(
                 INBOX_BEFORE_ADMIT_SPEC,
@@ -482,7 +483,7 @@ class InboxService:
         target: QueueTarget,
     ) -> QueueItem:
         metadata = dict(message.metadata or {})
-        agent_id = str(metadata.get("agent_id") or "default")
+        agent_id = str(metadata.get("agent_id") or "")
         messages = tuple(getattr(message, "messages", ()) or ())
         content = getattr(message, "content", "")
         attachments = getattr(message, "attachments", ())
@@ -502,6 +503,27 @@ class InboxService:
             messages=messages,
             agent_id=agent_id,
         )
+
+    async def _resolve_session_agent(self, item: QueueItem) -> QueueItem:
+        """Fill an omitted Agent id from the persisted Session before admission.
+
+        Client metadata may omit ``agent_id`` (older clients and internal callers
+        do so). Resolving it before the queue is persisted keeps the catalog shown
+        for a Session and the Runtime Tool/Prompt scope identical after restart.
+        """
+        if item.agent_id or self._sessions is None:
+            return replace(item, agent_id=item.agent_id or "default")
+        getter = getattr(self._sessions, "get_session", None)
+        if not callable(getter):
+            return replace(item, agent_id="default")
+        try:
+            session = await getter(item.session_id)
+        except Exception:  # noqa: BLE001 - admission remains usable without metadata
+            session = None
+        value = getattr(session, "agent_id", None)
+        if value is None and isinstance(session, dict):
+            value = session.get("agent_id")
+        return replace(item, agent_id=str(value or "default"))
 
     async def _deliver(self, session_id: str, items: tuple[QueueItem, ...]) -> bool:
         for item in items:
