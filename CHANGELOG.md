@@ -1,6 +1,6 @@
 # Changelog
 
-## [未发布]
+## [0.3.3] - 2026-09-08
 
 ### F45 Agent ContextView Hook 与 Fork/回滚
 
